@@ -1,0 +1,3697 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "workbook-83126",
+  "sourceWorkbook": "Copy of ScoutAI_Planning_Schema [FINAL]83126.xlsx",
+  "sourceWorkbookVersion": "83126",
+  "extractedOn": "2026-08-31",
+  "sheets": {
+    "README": {
+      "range": "A1:B20",
+      "values": [
+        [
+          null,
+          "ScoutAI Planning Intelligence - Tactic & Measurement Training Schema"
+        ],
+        [
+          null,
+          "Reference library for training the ScoutAI planning tool. "
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          "STRUCTURE: CORE AXES vs ENHANCEMENT LAYERS"
+        ],
+        [
+          null,
+          "CORE AXES - the tool builds every plan from these. They stand alone."
+        ],
+        [
+          null,
+          "   1. AUDIENCE (who) - targeting tactics. Slide 11.  [ScoutAI]"
+        ],
+        [
+          null,
+          "   2. CHANNEL (where) - media channels. Slide 16.  [ScoutAI]"
+        ],
+        [
+          null,
+          "   3. MEASUREMENT (how we prove) - Echo. The ScoutAI-to-Echo handoff."
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          "ENHANCEMENT LAYERS - never stand alone; they ATTACH to a core element and surface only on a trigger."
+        ],
+        [
+          null,
+          "   - Creative & Formats (incl. High Impact Units) - attach to a channel (+audience). Upsell / when execution benefits."
+        ],
+        [
+          null,
+          "   - Inventory & Placement Controls - attach to a channel; govern where-within / how-clean delivery runs."
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          "THE ENHANCEMENT RULE (how the tool decides where a recommendation lives)"
+        ],
+        [
+          null,
+          "Every enhancement entry carries: 'Attaches To' (which channel/axis it rides on) and 'Trigger' (the condition that surfaces it)."
+        ],
+        [
+          null,
+          "The tool recommends CORE AXES first, then walks the enhancement layers and attaches any whose TRIGGER fires."
+        ],
+        [
+          null,
+          "An enhancement NEVER appears on a plan without a core element to attach to. High Impact Units are never the hero - always an element on a base channel."
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          "STATUS FLAGS"
+        ],
+        [
+          null,
+          "Live = deliverable today.  Future = roadmap placeholder, never pitch as live.  Beta = limited availability."
+        ]
+      ]
+    },
+    "Master_Schema": {
+      "range": "A1:H126",
+      "values": [
+        [
+          "Axis / Layer",
+          "Entry",
+          "Category / Group",
+          "Include When / Trigger (short)",
+          "Attaches To",
+          "Echo Compatible?",
+          "Vertical Gate",
+          "Data Dependency"
+        ],
+        [
+          "Audience",
+          "Behavioral / Demographic",
+          "Audience-Based",
+          "Clear profile; default",
+          "Any Channel",
+          true,
+          "None",
+          "3P data"
+        ],
+        [
+          "Audience",
+          "Interest / Affinity",
+          "Audience-Based",
+          "Passion/lifestyle",
+          "Any Channel",
+          true,
+          "None",
+          "3P data"
+        ],
+        [
+          "Audience",
+          "B2B Job Title / Company IP",
+          "Audience-Based",
+          "B2B decision-makers",
+          "Any Channel",
+          true,
+          "B2B-weighted",
+          "Firmographic + intent"
+        ],
+        [
+          "Audience",
+          "Purchase / Transaction Data",
+          "Audience-Based",
+          "Offline panels available",
+          "Any Channel",
+          true,
+          "None",
+          "Circana/Affinity"
+        ],
+        [
+          "Audience",
+          "Survey / Attitudinal",
+          "Audience-Based",
+          "Mindset differentiator",
+          "Any Channel",
+          true,
+          "None",
+          "Resonate"
+        ],
+        [
+          "Audience",
+          "CRM Targeting",
+          "First-Party",
+          "Usable 1P list",
+          "Any Channel",
+          true,
+          "Avoid Pharma & Healthcare",
+          "Client CRM file"
+        ],
+        [
+          "Audience",
+          "CRM Lookalike",
+          "First-Party",
+          "Seed + prospecting",
+          "Any Channel",
+          true,
+          "Avoid Pharma & Healthcare",
+          "Seed CRM list"
+        ],
+        [
+          "Audience",
+          "Site Retargeting",
+          "First-Party",
+          "High-intent site traffic",
+          "Any Channel",
+          true,
+          "Avoid Pharma & Healthcare",
+          "Pixel + traffic"
+        ],
+        [
+          "Audience",
+          "CRM Suppression",
+          "First-Party",
+          "Exclude customers",
+          "Any Channel",
+          true,
+          "None",
+          "Client CRM file"
+        ],
+        [
+          "Audience",
+          "Genre Targeting",
+          "Intent-Based",
+          "Content Specific Inquiries on Streaming TV",
+          "CTV/OTT",
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Audience",
+          "Contextual Targeting",
+          "Intent-Based",
+          "Content-vertical / cookieless / mid funnel",
+          "Display & OLV",
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Audience",
+          "Contextual Suppression",
+          "Brand Safety",
+          "Sensitive category / brand safe content",
+          "Display & OLV",
+          true,
+          null,
+          null
+        ],
+        [
+          "Audience",
+          "Keyword / Semantic Contextual",
+          "Intent-Based",
+          "Page-level keyword",
+          "Display & OLV",
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Audience",
+          "Search Intent Retargeting",
+          "Intent-Based",
+          "Active search/comparison",
+          "Any Channel",
+          true,
+          "Avoid Pharma & Healthcare",
+          "Search signal"
+        ],
+        [
+          "Audience",
+          "In-Market / Shopping Intent",
+          "Intent-Based",
+          "3P in-market signals available",
+          "Any Channel",
+          true,
+          "Avoid Pharma & Healthcare",
+          null
+        ],
+        [
+          "Audience",
+          "ACR Targeting",
+          "Intent-Based",
+          "TV Exposure ",
+          "Any Channel",
+          true,
+          "None",
+          "ACR Partner & Creative"
+        ],
+        [
+          "Audience",
+          "Sequential Retargeting off CTV / OTT",
+          "Retargeting (by medium)",
+          "Exposed to CTV/OTT",
+          "Channel: Display, Audio or OLV",
+          true,
+          "None",
+          "CTV exposure data"
+        ],
+        [
+          "Audience",
+          "Sequential Retargeting off Online Video",
+          "Retargeting (by medium)",
+          "Exposed to OLV",
+          "Channel: Display",
+          true,
+          "None",
+          "Video exposure data"
+        ],
+        [
+          "Audience",
+          "Sequential Retargeting off Display",
+          "Retargeting (by medium)",
+          "Exposed to Display",
+          null,
+          true,
+          "None",
+          "Display pixel"
+        ],
+        [
+          "Audience",
+          "Sequential Retargeting off Audio",
+          "Retargeting (by medium)",
+          "Exposed to Audio",
+          "Channel: Display or OLV",
+          true,
+          "None",
+          "Audio exposure data"
+        ],
+        [
+          "Audience",
+          "Sequential Retargeting off DOOH",
+          "Retargeting (by medium)",
+          "Exposed to DOOH",
+          "Channel: Display or OLV",
+          true,
+          "None",
+          "DOOH-to-mobile-ID"
+        ],
+        [
+          "Audience",
+          "Sequential Retargeting off Native",
+          "Retargeting (by medium)",
+          "Engaged with native",
+          "Channel: Display or OLV",
+          true,
+          "None",
+          "Native engagement"
+        ],
+        [
+          "Audience",
+          "Geo-Targeting",
+          "Location",
+          "Defined markets",
+          "Any Channel",
+          true,
+          "None",
+          "Location data"
+        ],
+        [
+          "Audience",
+          "Geo-Conquesting",
+          "Location",
+          "Competitor locations",
+          "Any Channel",
+          true,
+          "None",
+          "Location data"
+        ],
+        [
+          "Audience",
+          "Geo-Fencing",
+          "Location",
+          "Venue/event-level",
+          "Display or OLV only",
+          false,
+          "Avoid Pharma & Healthcare",
+          "Precise location"
+        ],
+        [
+          "Audience",
+          "Geo-Framing / Historical Location",
+          "Location",
+          "Devices at a location over time",
+          "Any Channel",
+          true,
+          "Avoid Pharma & Healthcare",
+          "Historical location"
+        ],
+        [
+          "Audience",
+          "Daypart Targeting",
+          "Environment",
+          "Defined windows",
+          "Any Channel",
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Audience",
+          "Device / OS Targeting",
+          "Environment",
+          "Device-specific",
+          null,
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Audience",
+          "Weather / Trigger-Based",
+          "Environment",
+          "Condition-driven",
+          "Any Channel but would weight Display & OLV more than others",
+          true,
+          "Travel/seasonal-weighted",
+          "Weather feed"
+        ],
+        [
+          "Audience",
+          "ScoutAI Dynamic ",
+          "Partner/Platform",
+          "Multi-audience/channel",
+          "Display",
+          true,
+          "Avoid for Healthcare & Finance",
+          "None"
+        ],
+        [
+          "Audience",
+          "Walmart Connect (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Walmart Connect's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "CTV/OTT, Display, OLV",
+          false,
+          "None",
+          "Walmart Connect on-site purchase data"
+        ],
+        [
+          "Audience",
+          "Amazon (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Amazon's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "CTV/OTT, Display, OLV",
+          false,
+          "None",
+          "Amazon on-site purchase data"
+        ],
+        [
+          "Audience",
+          "Roundel / Target (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Roundel / Target's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "CTV/OTT, Display, OLV",
+          false,
+          "None",
+          "Roundel / Target on-site purchase data"
+        ],
+        [
+          "Audience",
+          "Kroger Precision Marketing (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Kroger Precision Marketing's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "CTV/OTT, Display, OLV",
+          false,
+          "None",
+          "Kroger Precision Marketing on-site purchase data"
+        ],
+        [
+          "Audience",
+          "Costco (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Costco's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "CTV/OTT, Display, OLV",
+          false,
+          "None",
+          "Costco on-site purchase data"
+        ],
+        [
+          "Audience",
+          "Home Depot / Orange Apron (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Home Depot / Orange Apron's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "CTV/OTT, Display, OLV",
+          false,
+          "None",
+          "Home Depot / Orange Apron on-site purchase data"
+        ],
+        [
+          "Channel",
+          "Display",
+          "Core",
+          "Universal prospecting + RT",
+          null,
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Online Video (OLV)",
+          "Core",
+          "Video researchers; mobile",
+          null,
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "CTV / OTT",
+          "Core",
+          "High streaming; awareness",
+          null,
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Native",
+          "Core",
+          "Editorial over-index",
+          "OLV, Display",
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Native Article",
+          "Core",
+          "Article with relevant Ads",
+          "Article",
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Audio",
+          "Core",
+          "Commuters/podcast",
+          null,
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "DOOH",
+          "Core",
+          "Geo-concentrated",
+          null,
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Search (SEM)",
+          "Deprioritized",
+          "TRIGGER: branded conquest / bottom-funnel",
+          null,
+          false,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Social - Meta",
+          "Deprioritized",
+          "TRIGGER: broad visual reach",
+          null,
+          false,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Social - TikTok",
+          "Deprioritized",
+          "TRIGGER: younger short-form",
+          null,
+          false,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Social - YouTube",
+          "Deprioritized",
+          "TRIGGER: video reach + intent",
+          null,
+          false,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Social - LinkedIn",
+          "Deprioritized",
+          "TRIGGER: B2B decision-makers",
+          null,
+          false,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Social - Snapchat",
+          "Deprioritized",
+          "TRIGGER: younger mobile-first",
+          null,
+          false,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Social - Pinterest",
+          "Deprioritized",
+          "TRIGGER: discovery/visual",
+          null,
+          false,
+          "None",
+          "None"
+        ],
+        [
+          "Channel",
+          "Social - Reddit",
+          "Deprioritized",
+          "TRIGGER: research communities",
+          null,
+          true,
+          "None",
+          "None"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Save to Wallet - Social Boost",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display ",
+          true,
+          "None",
+          "Social"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Interactive Pre-Roll",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Online Video",
+          true,
+          "None",
+          "Online Video"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "CTV DCO",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "CTV / OTT",
+          true,
+          "None",
+          "CTV / OTT"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Card Deck",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Expandable Cube",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Peekaboo Window",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Swell Showcase",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum In-Screen",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Expandable",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Expandable Video",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display / Video",
+          true,
+          "None",
+          "Display / Video"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Velocity",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Desktop Skin",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display (Desktop)",
+          true,
+          "None",
+          "Display (Desktop)"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Desktop Skin with Video",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display (Desktop)",
+          true,
+          "None",
+          "Display (Desktop)"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Expandable Corner",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Frame",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Hang Time",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Scroller",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Mobile Skin",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display (Mobile)",
+          true,
+          "None",
+          "Display (Mobile)"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Mobile Skin with Video",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display (Mobile)",
+          true,
+          "None",
+          "Display (Mobile)"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "GumGum Hang Time Video",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display / Video",
+          true,
+          "None",
+          "Display / Video"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "In Store Moments (Push Notifications)",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Mobile",
+          true,
+          "None",
+          "Mobile"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Accordion Expansion Units",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Blindscape Units",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Product Tiles",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Conversational Units",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Glide & Guide",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Tap to Map",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Mobile"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Personality Quiz Banner",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Tappable Game",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display / Mobile"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Native Enhanced Stories",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Native",
+          false,
+          "None",
+          "Native"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Performance Carousel",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Native",
+          false,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Shoppable Carousel",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Native",
+          false,
+          "None",
+          "Display / Commerce"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Tappable Video",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Video",
+          false,
+          "None",
+          "Video"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "OTT Canvas Unit",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "CTV / OTT",
+          true,
+          "None",
+          "CTV / OTT"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "OTT Picture in Picture Sports",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "CTV / OTT",
+          true,
+          "None",
+          "CTV / OTT"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "CTV Programmatic Pause Ads",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "CTV / OTT",
+          true,
+          "None",
+          "CTV / OTT"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "DCO Product Retargeting",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "DCO Event Variable",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "DCO Store Locator",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display",
+          true,
+          "None",
+          "Display"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Social Boost",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Social",
+          true,
+          "None",
+          "Social"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Social Boost with Retailers",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Social / Commerce",
+          true,
+          "None",
+          "Social / Commerce"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Click2Cart - Direct to Cart",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display / Commerce",
+          true,
+          "None",
+          "Display / Commerce"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "Click2Cart - Shoppers Choice",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "Display / Commerce",
+          true,
+          "None",
+          "Display / Commerce"
+        ],
+        [
+          "Enh: High Impact Unit",
+          "CTV QR Codes",
+          "Enhancement Layer",
+          "Upsell; surface when attached channel on plan + engagement/premium goal",
+          "CTV / OTT",
+          true,
+          "None",
+          "CTV / OTT"
+        ],
+        [
+          "Enh: Inventory",
+          "Domain/App Allowlist",
+          "Inventory Control",
+          "Premium/reputation-sensitive",
+          "Display, OLV, Native",
+          "N/A",
+          "None",
+          "Curated list"
+        ],
+        [
+          "Enh: Inventory",
+          "Domain/App Blocklist",
+          "Inventory Control",
+          "Scale + guardrails",
+          "Any channel",
+          "N/A",
+          "None",
+          "Exclusion list"
+        ],
+        [
+          "Enh: Inventory",
+          "MFA Filtering",
+          "Inventory Control",
+          "Default-on; open buys",
+          "Any open-exchange channel",
+          "N/A",
+          "None",
+          "None"
+        ],
+        [
+          "Enh: Inventory",
+          "Ads.txt / Sellers.json / Supply Path",
+          "Inventory Control",
+          "Default-on; transparency",
+          "Any programmatic channel",
+          "N/A",
+          "None",
+          "None"
+        ],
+        [
+          "Enh: Inventory",
+          "Viewability / Attention Thresholds",
+          "Inventory Control",
+          "Quality-focused",
+          "Any channel",
+          "N/A",
+          "None",
+          "None"
+        ],
+        [
+          "Enh: Inventory",
+          "IVT / Fraud Filtering",
+          "Inventory Control",
+          "Default-on; always",
+          "Any channel",
+          "N/A",
+          "None",
+          "None"
+        ],
+        [
+          "Enh: Inventory",
+          "Content-Category Suitability Tiers",
+          "Inventory Control",
+          "Category-sensitive",
+          "Any channel",
+          "N/A",
+          "None",
+          "None"
+        ],
+        [
+          "Enh: Inventory",
+          "PMP / Programmatic Guaranteed",
+          "Inventory Control",
+          "Premium/guaranteed deal-based buy",
+          "Any channel",
+          "N/A",
+          "None",
+          "Deal ID"
+        ],
+        [
+          "Measurement",
+          "LeadMatch",
+          "Attribution",
+          "Lead quality -> revenue; >=70% via site",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "Avoid Pharma & Healthcare (Home Svcs/Auto/Edu weighted)",
+          "Pixel + Lead ID + CRM export"
+        ],
+        [
+          "Measurement",
+          "MatchBack",
+          "Attribution",
+          "Prove offline/CRM purchase",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "Avoid Pharma & Healthcare",
+          "Bridge; 50K+ records, Addr1+Zip5"
+        ],
+        [
+          "Measurement",
+          "Online/Order Attribution",
+          "Attribution",
+          "TRIGGER: Advanced Performance\nClick+view-through",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "None",
+          "Site pixel"
+        ],
+        [
+          "Measurement",
+          "Purchase Attribution (Affinity)",
+          "Attribution",
+          "Card-transaction purchases",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "Retail/CPG",
+          "Card panel data"
+        ],
+        [
+          "Measurement",
+          "Auto Sales Attribution (Polk)",
+          "Attribution",
+          "Vehicle sales",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "Auto ONLY",
+          "TBD"
+        ],
+        [
+          "Measurement",
+          "Script Lift (Infillion+Purple Labs)",
+          "Attribution",
+          "Prescription lift",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "Pharma ONLY",
+          "TBD"
+        ],
+        [
+          "Measurement",
+          "CPG Sales Validation (Circana)",
+          "Attribution",
+          "Category/SKU lift; regional test/control",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "CPG ONLY",
+          "POS; distinct test/control markets"
+        ],
+        [
+          "Measurement",
+          "In-Store Sales Lift (Pathformance)",
+          "Attribution",
+          "In-store lift by retailer/SKU",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "CPG/Retail",
+          "Shopper data + control"
+        ],
+        [
+          "Measurement",
+          "Foot Traffic",
+          "Attribution",
+          "TRIGGER: Advanced Performance\nVerified physical visits",
+          "CTV/OTT, Display, OLV, Audio, DOOH",
+          true,
+          "Physical location",
+          "Device location match"
+        ],
+        [
+          "Measurement",
+          "DOOH Attribution",
+          "Attribution",
+          "Action from DOOH exposure",
+          "DOOH",
+          true,
+          "DOOH present",
+          "Mobile-ID match"
+        ],
+        [
+          "Measurement",
+          "Destination Impact Report (Arrivalist)",
+          "Attribution",
+          "Visitation + spend + iROAS",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "Travel ONLY",
+          "Arrivalist GPS + card panel"
+        ],
+        [
+          "Measurement",
+          "Consumer Journey / OPA",
+          "Path",
+          "Full touchpoint sequence",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "None",
+          "Cross-channel exposure"
+        ],
+        [
+          "Measurement",
+          "Halo Effect",
+          "Path",
+          "TRIGGER: Advanced Performance\nCTV/audio lift on search+social",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "None",
+          "UTMs + LP pixel + CTV/audio"
+        ],
+        [
+          "Measurement",
+          "CrossView (Linear+CTV)",
+          "Path",
+          "TRIGGER: Linear & CTV/OTT & Advaced Performance\nDedup R&F + separate conversion",
+          "CTV/OTT & Linear",
+          true,
+          "Linear+CTV present",
+          "ACR data"
+        ],
+        [
+          "Measurement",
+          "Reach & Frequency",
+          "Efficiency",
+          "Deduplicated reach/frequency",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "None",
+          "Delivery data"
+        ],
+        [
+          "Measurement",
+          "Incrementality",
+          "Efficiency",
+          "TRIGGER: Advanced Performance\nCausal lift (RCT/holdout)",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "None",
+          "Test/control design"
+        ],
+        [
+          "Measurement",
+          "Audience Insights",
+          "Audience/Brand",
+          "Post-campaign composition",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "None",
+          "Delivery data"
+        ],
+        [
+          "Measurement",
+          "Brand Lift",
+          "Audience/Brand",
+          "Awareness/favorability shift",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "None",
+          "Survey exposed vs control"
+        ],
+        [
+          "Measurement",
+          "Firmographic/ABM (Octane11)",
+          "Audience/Brand",
+          "TRIGGER: B2B Targeting \nWhich companies engaged",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "B2B ONLY",
+          "Deterministic firmographic match"
+        ],
+        [
+          "Measurement",
+          "VoterReach",
+          "Audience/Brand",
+          "Political reach/verification",
+          "CTV/OTT, Display, OLV, Audio",
+          true,
+          "Political ONLY",
+          null
+        ],
+        [
+          "Measurement",
+          "Consumer Panel (Circana)",
+          "Audience/Brand",
+          "TRIGGER: Advanced Performance\nSKU Level Sales ",
+          "CTV/OTT, Display, OLV, Audio",
+          false,
+          "CPG",
+          "SKU Level Brand Data"
+        ],
+        [
+          "Measurement",
+          "ScoutAI Insights",
+          "AI Layer",
+          "Real-time optimization recs",
+          "Any Channel",
+          "N/A",
+          "None",
+          "Campaign signals"
+        ]
+      ]
+    },
+    "Audience_Targeting": {
+      "range": "A1:F36",
+      "values": [
+        [
+          "Tactic",
+          "Category",
+          "Include When (Audience)",
+          "Include When (KPI)",
+          "Creative / Messaging Fit",
+          "Data Dependency"
+        ],
+        [
+          "Behavioral / Demographic",
+          "Audience-Based",
+          "Clear age/HHI/interest profile; foundational default",
+          "Awareness, reach, efficiency",
+          "Broad brand + value messaging",
+          "3P data"
+        ],
+        [
+          "Interest / Affinity",
+          "Audience-Based",
+          "Passion / lifestyle-defined segments",
+          "Awareness, consideration",
+          "Lifestyle-aligned",
+          "3P data"
+        ],
+        [
+          "B2B Job Title / Company IP",
+          "Audience-Based",
+          "B2B decision-makers; firmographic (100+ employee firms)",
+          "Lead gen, high-value / bulk conversion",
+          "ROI-forward, team-benefit",
+          "Firmographic + intent (Bombora, D&B, LinkedIn)"
+        ],
+        [
+          "Purchase / Transaction Data",
+          "Audience-Based",
+          "Offline sales panels available",
+          null,
+          null,
+          "Circana / Affinity panels"
+        ],
+        [
+          "Survey / Attitudinal (psychographic)",
+          "Audience-Based",
+          "Differentiator is mindset, not demo",
+          null,
+          null,
+          "Resonate / GWI"
+        ],
+        [
+          "CRM Targeting",
+          "First-Party / CRM",
+          "Usable first-party list (customers, past leads, abandoned apps)",
+          "Retention, re-enrollment, win-back, efficient conversion",
+          "Personalized, lifecycle-stage",
+          "Client CRM file"
+        ],
+        [
+          "CRM Lookalike",
+          "First-Party / CRM",
+          "Seed list + net-new prospecting need",
+          "Efficient qualified prospecting",
+          "Acquisition messaging",
+          "Seed CRM list"
+        ],
+        [
+          "Site Retargeting",
+          "First-Party / CRM",
+          "Meaningful high-intent site traffic (program/pricing/apply)",
+          "Conversion, close-rate lift",
+          "Direct CTA, urgency, offer",
+          "Pixel + traffic"
+        ],
+        [
+          "CRM Suppression",
+          "First-Party / CRM",
+          "Exclude current customers/enrollees",
+          "Efficiency / waste control",
+          "N/A (suppression)",
+          "Client CRM file"
+        ],
+        [
+          "Contextual Targeting",
+          "Intent-Based",
+          "Content-vertical concentration; cookieless need",
+          "Awareness, consideration, brand-safe reach",
+          "Message matches editorial context",
+          "None (page-level)"
+        ],
+        [
+          "Contextual Suppression",
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "Keyword / Semantic Contextual",
+          "Intent-Based",
+          "Page-level keyword relevance matters",
+          null,
+          "Keyword-matched",
+          "None"
+        ],
+        [
+          "Search Intent Retargeting",
+          "Intent-Based",
+          "Strong active-search / comparison behavior",
+          "Consideration to conversion; intercept active shoppers",
+          "Comparison, differentiation",
+          "Search behavior signal"
+        ],
+        [
+          "In-Market / Shopping Intent",
+          "Intent-Based",
+          "3P in-market signals available",
+          "Conversion",
+          null,
+          "3P in-market data"
+        ],
+        [
+          "ACR Targeting",
+          "Intent-Based",
+          "CTV-heavy audience; target on actual viewing",
+          "Awareness, compeitive conquesting, precision CTV reach",
+          "Video-first, competitive framing",
+          "ACR data partner"
+        ],
+        [
+          "Sequential Retargeting off CTV / OTT",
+          "Retargeting (by medium)",
+          "Users exposed to CTV/OTT; extend to lower funnel",
+          "Awareness-to-action, conversion",
+          "Follow CTV story with direct CTA",
+          "CTV exposure data"
+        ],
+        [
+          "Sequential Retargeting off Online Video",
+          "Retargeting (by medium)",
+          "Users exposed to OLV/pre-roll",
+          "Consideration to conversion",
+          "Video story then CTA",
+          "Video exposure data"
+        ],
+        [
+          "Sequential Retargeting off Display",
+          "Retargeting (by medium)",
+          "Users exposed to display",
+          "Conversion, close-rate",
+          "Offer + urgency",
+          "Display exposure / pixel"
+        ],
+        [
+          "Sequential Retargeting off Audio",
+          "Retargeting (by medium)",
+          "Users exposed to digital audio",
+          "Frequency, conversion",
+          "Reinforce audio message",
+          "Audio exposure data"
+        ],
+        [
+          "Sequential Retargeting off DOOH",
+          "Retargeting (by medium)",
+          "Devices exposed to DOOH near concentrated geos",
+          "Bridge offline-to-online; frequency",
+          "DOOH presence -> mobile/display CTA",
+          "DOOH-to-mobile-ID match"
+        ],
+        [
+          "Sequential Retargeting off Native",
+          "Retargeting (by medium)",
+          "Users engaged with native/editorial",
+          "Consideration to conversion",
+          "Continue editorial narrative",
+          "Native engagement data"
+        ],
+        [
+          "Geo-Targeting",
+          "Location-Based",
+          "Defined physical markets / campuses / footprint",
+          "Local awareness, market efficiency",
+          "Location-relevant",
+          "Location data"
+        ],
+        [
+          "Geo-Conquesting",
+          "Location-Based",
+          "Named competitors with physical locations",
+          "Conquesting, share capture",
+          "Competitive framing",
+          "Location data"
+        ],
+        [
+          "Geo-Fencing",
+          "Location-Based",
+          "Precise venue/event-level (campuses, conferences)",
+          null,
+          "Event-relevant",
+          "Precise location data"
+        ],
+        [
+          "Geo-Framing / Historical Location",
+          "Location-Based",
+          "Retarget devices seen at a location over time",
+          null,
+          null,
+          "Historical location data"
+        ],
+        [
+          "Daypart Targeting",
+          "Environment & Context",
+          "Defined consumption windows (commute, evening)",
+          "Frequency, efficiency, relevance",
+          "Time/context-appropriate",
+          "None"
+        ],
+        [
+          "Device / OS Targeting",
+          "Environment & Context",
+          "Creative or context is device-specific",
+          null,
+          null,
+          "None"
+        ],
+        [
+          "Weather / Trigger-Based",
+          "Environment & Context",
+          "Event- or condition-driven verticals",
+          "Relevance, timeliness",
+          "Condition-responsive",
+          "Weather/trigger feed"
+        ],
+        [
+          "ScoutAI Dynamic ",
+          "Partner / Platform",
+          "Multi-audience, multi-channel flights",
+          "Efficiency, performance max",
+          "Applies across all creative",
+          "None"
+        ],
+        [
+          "Walmart Connect (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Walmart Connect's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "Conversion, sales lift",
+          "Shopper-relevant / offer",
+          "Walmart Connect on-site purchase data (activated off-site)"
+        ],
+        [
+          "Amazon (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Amazon's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "Conversion, sales lift",
+          "Shopper-relevant / offer",
+          "Amazon on-site purchase data (activated off-site)"
+        ],
+        [
+          "Roundel / Target (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Roundel / Target's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "Conversion, sales lift",
+          "Shopper-relevant / offer",
+          "Roundel / Target on-site purchase data (activated off-site)"
+        ],
+        [
+          "Kroger Precision Marketing (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Kroger Precision Marketing's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "Conversion, sales lift",
+          "Shopper-relevant / offer",
+          "Kroger Precision Marketing on-site purchase data (activated off-site)"
+        ],
+        [
+          "Costco (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Costco's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "Conversion, sales lift",
+          "Shopper-relevant / offer",
+          "Costco on-site purchase data (activated off-site)"
+        ],
+        [
+          "Home Depot / Orange Apron (retail data, off-site activation)",
+          "Retail Data (Off-Site)",
+          "Home Depot / Orange Apron's on-site (first-party purchase) shopper data, activated off-site across DR channels",
+          "Conversion, sales lift",
+          "Shopper-relevant / offer",
+          "Home Depot / Orange Apron on-site purchase data (activated off-site)"
+        ]
+      ]
+    },
+    "Channels": {
+      "range": "A1:F17",
+      "values": [
+        [
+          "Channel",
+          "Default Priority",
+          "Include When (Audience)",
+          "Include When (KPI)",
+          "Creative / Messaging Fit",
+          "Competitive / Whitespace Note"
+        ],
+        [
+          "Display",
+          "Core",
+          "Near-universal; prospecting + retargeting layer",
+          "Conversion, reach",
+          "Static/animated, offer + CTA",
+          "Commodity; differentiate via targeting"
+        ],
+        [
+          "Online Video (OLV)",
+          "Core",
+          "Video-consuming, mobile-heavy, high-intent researchers",
+          "Consideration, extended video reach",
+          "Pre/mid-roll, :06-:30",
+          "Extends CTV into desktop/mobile"
+        ],
+        [
+          "CTV / OTT",
+          "Core",
+          "High streaming index; awareness-oriented; broad reach",
+          "Awareness, upper-funnel reach",
+          ":15/:30 video, brand story",
+          "Check competitor CTV spend for whitespace"
+        ],
+        [
+          "Native",
+          "Core",
+          "Over-indexes on editorial/content; research-heavy",
+          "Consideration, trust-building",
+          "Editorial-style, non-interruptive",
+          "Often low competitive presence"
+        ],
+        [
+          "Audio",
+          "Core",
+          "Commuters, podcast listeners, screen-free windows",
+          "Frequency, efficient reach",
+          ":15/:30 audio + companion banner",
+          "Often zero-competition, low CPM"
+        ],
+        [
+          "DOOH",
+          "Core",
+          "Geographically concentrated (offices, campuses, corridors)",
+          "Awareness, physical presence, frequency",
+          "Bold, simple, high-glance",
+          "Frequently uncontested, differentiate via attribution and retargeting"
+        ],
+        [
+          "Search (SEM)",
+          "Deprioritized",
+          "TRIGGER: strong active-search demand, branded-term conquesting, or bottom-funnel gap",
+          "Conversion, intent capture, defensive branded",
+          "Keyword-matched, direct response",
+          "Include when competitors bid on branded terms"
+        ],
+        [
+          "Social - Meta (FB + IG)",
+          "Deprioritized",
+          "TRIGGER: broad reach, lookalike/interest scale, visual product",
+          "Awareness, consideration, conversion",
+          "Feed-native, thumb-stopping visual",
+          "Include when audience broad + creative visual"
+        ],
+        [
+          "Social - TikTok",
+          "Deprioritized",
+          "TRIGGER: younger skew, short-form video-native, discovery",
+          "Awareness, consideration",
+          "Native short-form, creator/UGC",
+          null
+        ],
+        [
+          "Social - YouTube",
+          "Deprioritized",
+          "TRIGGER: broad video reach + intent; how-to/research",
+          "Awareness through consideration",
+          ":06 bumper, :15/:30 skippable",
+          "House under Social to avoid OLV double-count"
+        ],
+        [
+          "Social - LinkedIn",
+          "Deprioritized",
+          "TRIGGER: B2B decision-makers; job-title/firmographic",
+          "B2B lead gen, credibility",
+          "Professional tone, ROI/thought-leadership",
+          "Include for B2B decision-maker segments"
+        ],
+        [
+          "Social - Snapchat",
+          "Deprioritized",
+          "TRIGGER: younger skew, mobile-first, AR/lens",
+          "Awareness, app installs",
+          "Vertical video, playful, AR",
+          null
+        ],
+        [
+          "Social - Pinterest",
+          "Deprioritized",
+          "TRIGGER: planning/discovery mindset, visual verticals",
+          "Upper-funnel discovery",
+          "Aspirational, visual, save-worthy",
+          null
+        ],
+        [
+          "Social - Reddit",
+          "Deprioritized",
+          "TRIGGER: niche/research communities, high-consideration verticals",
+          "Consideration, community trust",
+          "Authentic, community-aware, non-salesy",
+          "Include when audience researches in communities"
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "SEARCH & SOCIAL LOGIC: Default = do NOT lead with Search or Social. Surface only on a specific trigger. Frame as 'include when needed', never a default programmatic channel. ChatGPT/Conversational AI removed from core channel list pending real availability - track separately if/when live.",
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      ]
+    },
+    "Measurement": {
+      "range": "A1:L23",
+      "values": [
+        [
+          "Capability",
+          "Status",
+          "Group",
+          "Methodology Class",
+          "Answers / What It Proves",
+          "Unit of Analysis",
+          "Outcome Source",
+          "Exposure Match Method",
+          "What It CANNOT Prove",
+          "Include When (KPI/Goal)",
+          "Vertical Gate",
+          "Pricing"
+        ],
+        [
+          "LeadMatch",
+          "Live",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Media exposure -> lead -> appointment -> sale -> ROAS by media/publisher/creative; lead QUALITY not just volume",
+          "Lead record, aggregated for reporting",
+          "Media exposure -> lead -> appointment -> sale -> ROAS by media/publisher/creative; lead QUALITY not just volume",
+          "DR Universal Pixel + Lead ID in order_number + recurring CRM export (Lead ID, milestone, date; +revenue for ROAS). >=70% leads via website",
+          "Person-level identity of converters (non-PII only)",
+          "Lead-gen; client frustrated with lead quality",
+          "None (weighted: Home Services, Auto, Education)",
+          "$50K/month per campaign"
+        ],
+        [
+          "MatchBack",
+          "Live",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Whether exposed users/households later bought/enrolled offline or in CRM/POS; shows actual verified individuals",
+          "Matched record/household, aggregated for reporting",
+          "Whether exposed users/households later bought/enrolled offline or in CRM/POS; shows actual verified individuals",
+          "Bridge segment, Yahoo log-level data, CRM/POS/loyalty >=50K records, Address1+Zip5 per record (phone optional); client shares data with Bridge",
+          "Full pre-conversion funnel stages (that's LeadMatch)",
+          "Prove media drove sales already tracked in CRM/POS; or client building a CRM",
+          "No Pharma / Health if BAA required",
+          "$1.00 CPM add-on; $30K/month budget min"
+        ],
+        [
+          "Online / Booking / Order Attribution",
+          "Live",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Click + view-through conversions, revenue/ROAS by channel/publisher/audience",
+          "Aggregate campaign/channel/audience",
+          "Click + view-through conversions, revenue/ROAS by channel/publisher/audience",
+          "DR Universal Pixel + DSP log-level data",
+          "Offline / in-store purchases",
+          "Any online-conversion KPI",
+          "Pharma / Health subject to individual review",
+          "Included (Echo)"
+        ],
+        [
+          "Purchase Attribution (Affinity Solutions)",
+          "Future",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Card-transaction purchases tied to exposure",
+          "Aggregate campaign/channel/audience",
+          "Card-transaction purchases tied to exposure",
+          "Affinity Solutions crosswalk, credit card transaction data feed, DSP log-level data",
+          "SKU/product-level purchases",
+          "Provde media drove volume and lift in sales, shoppers, and/or transactions",
+          "Retail / CPG",
+          "TBD"
+        ],
+        [
+          "Auto Sales Attribution (Polk)",
+          "Future",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Vehicle sales tied to exposure",
+          "Aggregate campaign/channel/audience",
+          "Vehicle sales tied to exposure",
+          "TBD – document exposure identity and join method",
+          null,
+          null,
+          "Auto ONLY",
+          "TBD"
+        ],
+        [
+          "Script Lift (Infillion + Purple Labs)",
+          "Future",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Prescription lift from exposure",
+          "Aggregate campaign/channel/audience",
+          "Prescription lift from exposure",
+          "TBD – document exposure identity and join method",
+          null,
+          null,
+          "Pharma / Health ONLY",
+          "TBD"
+        ],
+        [
+          "CPG Sales Validation (Circana / MarketLift)",
+          "Live",
+          "Attribution",
+          "Matched test/control sales analysis",
+          "Category/subcategory/SKU sales lift; weekly POS incl. Walmart; new-vs-heavy buyer deciles; matched test vs control",
+          "Aggregate campaign/channel/audience",
+          "Category/subcategory/SKU sales lift; weekly POS incl. Walmart; new-vs-heavy buyer deciles; matched test vs control",
+          "POS data; distinct regional test/control markets; SKU-level needs higher (TBD) min",
+          "National campaigns (not suitable); SKU-level without higher min",
+          "CPG sales lift with distinct test/control markets",
+          "CPG ONLY",
+          "MarketLift $25K/campaign"
+        ],
+        [
+          "In-Store Sales Lift (Pathformance)",
+          "Live",
+          "Attribution",
+          "Matched test/control sales analysis",
+          "Incremental in-store lift % by retailer/region/SKU; exposed vs matched control; pre-campaign shopper insights",
+          "Aggregate campaign/channel/audience",
+          "Incremental in-store lift % by retailer/region/SKU; exposed vs matched control; pre-campaign shopper insights",
+          "Shopper purchase data + matched control",
+          "Online-only conversions",
+          "In-store sales lift goal",
+          "CPG / Retail",
+          "$200k campaign minimum w/ a 10% CPM markup"
+        ],
+        [
+          "Foot Traffic",
+          "Live",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Verified physical visits from exposure; visit rate + cost-per-visit by channel; geo by location/DMA",
+          "Qualified device/POI or destination aggregate",
+          "Verified physical visits from exposure; visit rate + cost-per-visit by channel; geo by location/DMA",
+          "Device-level location match + DSP log-level data",
+          "Purchase value / basket",
+          "Physical-visit goal; non-click channel proof",
+          "Physical location",
+          "Included (Echo)"
+        ],
+        [
+          "DOOH Attribution",
+          "Live",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Action driven by DOOH exposure",
+          "Qualified device/POI or destination aggregate",
+          "Action driven by DOOH exposure",
+          "Mobile-ID / device match from Vistar DOOH exposure feed + Experian Tapad device graph",
+          "1:1 DOOH impression tracking to attribution",
+          "DOOH in the plan",
+          "DOOH present",
+          "$1 CPM Upcharge\nNo Budget minimums"
+        ],
+        [
+          "Destination Impact Report (Arrivalist)",
+          "Live",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Real visitation (VisitLift), spend (SpendLift), iROAS, origin-market analysis; exposed vs control",
+          "Qualified device/POI or destination aggregate",
+          "Real visitation (VisitLift), spend (SpendLift), iROAS, origin-market analysis; exposed vs control",
+          "Arrivalist GPS panel (16B daily pts, 500M+ devices) + card panel (~60M cards); DSP log-level data, exposed vs control",
+          "Non-travel outcomes",
+          "Prove media drove real visits + economic impact",
+          "Travel / Tourism ONLY",
+          "$1.25 CPM Up charge\n$150k budget minimum (only for media channels that this viable for)\n- If under 10m impression $2 CPM markup \n- Over 10m $1.25 CPM Markup\n\n**Fixed Margin ONLY: When AM setups in AdReady we need to call out in Activation Notes to MOT to include the charge from Arrivalist as a platform fee ($0.80 CPM)"
+        ],
+        [
+          "Consumer Journey Analytics (OPA)",
+          "Live",
+          "Path & Cross-Channel",
+          "Cross-channel/path analysis with modeled control",
+          "Full touchpoint sequence to conversion; the ~47% single-touch misses; exposures-before-conversion",
+          "Aggregate campaign/channel/audience",
+          "Full touchpoint sequence to conversion; the ~47% single-touch misses; exposures-before-conversion",
+          "DSP log-level data + Experian Tapad idenitity graph + Experian ConsumerView Data for control model",
+          "Causal lift (that's Incrementality)",
+          "Multi-channel; which touchpoints drive conversion",
+          "None",
+          "Included (Echo)"
+        ],
+        [
+          "Halo Effect",
+          "Live",
+          "Path & Cross-Channel",
+          "Cross-channel/path analysis",
+          "Lift CTV/audio drives on SEARCH + SOCIAL (exposed vs unexposed); 'multi-touch measures goals, Halo measures assists'",
+          "Aggregate campaign/channel/audience",
+          "Lift CTV/audio drives on SEARCH + SOCIAL (exposed vs unexposed); 'multi-touch measures goals, Halo measures assists'",
+          "UTMs + landing-page pixel + CTV/audio campaign",
+          "Direct in-platform conversions",
+          "Client runs programmatic AND search/social; defend upper-funnel budget",
+          "None",
+          "Included (Echo)"
+        ],
+        [
+          "CrossView (Linear + CTV)",
+          "Live",
+          "Path & Cross-Channel",
+          "Cross-channel/path analysis",
+          "Deduplicated R&F across linear+CTV; SEPARATE honest linear vs CTV conversion (no false unified attribution); ACR 80M+ TVs / 210 markets",
+          "Aggregate campaign/channel/audience",
+          "Deduplicated R&F across linear+CTV; SEPARATE honest linear vs CTV conversion (no false unified attribution); ACR 80M+ TVs / 210 markets",
+          "ACR data",
+          "Unified single cross-platform conversion number (deliberately)",
+          "Client runs linear + CTV; is CTV incremental to linear?",
+          "None (linear+CTV present)",
+          "CrossView Measurement (CTV/OTT + Linear TV Insights) - $0.50 CPM upcharge\n\nCrossView Measurement + Linear Conversions - $1.00 CPM upcharge\n\nAdded Value - $300k for both options (does not apply to fixed margin campaigns)"
+        ],
+        [
+          "Reach & Frequency",
+          "Live",
+          "Efficiency & Delivery",
+          "Descriptive reporting",
+          "Deduplicated unique reach + exposure frequency",
+          "Aggregate campaign/channel/audience",
+          "Deduplicated unique reach + exposure frequency",
+          "Delivery data",
+          "Conversion / outcomes",
+          "Any awareness/frequency KPI (near-universal)",
+          "None",
+          "Included (Echo)"
+        ],
+        [
+          "Incrementality",
+          "Live",
+          "Efficiency & Delivery",
+          "Experimental / holdout",
+          "Causal lift via RCT/holdout; true lift % that would NOT have happened; by channel/creative/segment/geo (CTV, display, audio)",
+          "Aggregate campaign/channel/audience",
+          "Causal lift via RCT/holdout; true lift % that would NOT have happened; by channel/creative/segment/geo (CTV, display, audio)",
+          "Test/control (holdout) design",
+          "Which specific person converted",
+          "Client questions media's true causal contribution",
+          "None",
+          "Included (Echo)"
+        ],
+        [
+          "Audience Insights",
+          "Live",
+          "Audience & Brand",
+          "Descriptive reporting",
+          "Post-campaign audience composition / who was reached",
+          "Aggregate campaign/channel/audience",
+          "Post-campaign audience composition / who was reached",
+          "Delivery data",
+          "Sales / causal impact",
+          "Discovery, learning agenda, profiling",
+          "None",
+          "Included (Echo)"
+        ],
+        [
+          "Brand Lift",
+          "Live",
+          "Audience & Brand",
+          "Exposed/control survey",
+          "Shift in awareness/familiarity/consideration/favorability vs control; competitive comparison",
+          "Aggregate campaign/channel/audience",
+          "Shift in awareness/familiarity/consideration/favorability vs control; competitive comparison",
+          "Survey (exposed vs control)",
+          "Sales / conversions",
+          "Upper-funnel / awareness KPI",
+          "None",
+          "Included (Echo); low cost vs 3P"
+        ],
+        [
+          "Firmographic Reporting / ABM (Octane11)",
+          "Live",
+          "Audience & Brand",
+          "Descriptive reporting",
+          "Which companies/seniority/industry/size engaged; + Pages Visited & Sessions (short <30s / long >30s)",
+          "Company/account aggregate",
+          "Which companies/seniority/industry/size engaged; + Pages Visited & Sessions (short <30s / long >30s)",
+          "Deterministic match (Bombora, D&B, LinkedIn)",
+          "Individual PII of visitors",
+          "B2B; prove which named accounts engaged",
+          "B2B ONLY",
+          "CPM: \n- Flights > 6 months - $4 CPM Upcharge\n- Flights < 6 months - $4.50 CPM Upcharge\n\nNo Budget Minimums "
+        ],
+        [
+          "VoterReach",
+          "Live",
+          "Audience & Brand",
+          "Cross-channel/path analysis",
+          "Political audience reach / verification",
+          "Aggregate campaign/channel/audience",
+          "Political audience reach / verification",
+          "DSP log-level data + US Census/public political geography data",
+          "Actual voter audiences reached, political campaign outcomes",
+          "Political campaigns",
+          "Political ONLY",
+          "Included (Echo)"
+        ],
+        [
+          "Consumer Panel (Circana)",
+          "Live",
+          "Attribution",
+          "Exposure-to-outcome match",
+          "Weekly SKU-level sales for measured products within Circana panel by channel/publisher/audience",
+          "Aggregate campaign/channel/audience",
+          "SKU-level sales from Circana loyalty card panel",
+          "Experian crosswalk match with Circana, Cricana data feed + DSP log-level data",
+          "Non-CPG outcomes",
+          "CPG category behavior read",
+          "CPG",
+          "10M impression minimum\n\n$3 CPM Upcharge (covers all costs for Solution)"
+        ],
+        [
+          "ScoutAI Insights",
+          "Live",
+          "AI Layer",
+          "Operational optimization analytics / AI narrative",
+          "Real-time optimization recommendations + narratives",
+          "Aggregate campaign/channel/audience",
+          "Real-time optimization recommendations + narratives",
+          "Campaign signals",
+          "(not an attribution method)",
+          "Always-on across flights",
+          "None",
+          "Included"
+        ]
+      ]
+    },
+    "High_Impact_Units": {
+      "range": "A1:F47",
+      "values": [
+        [
+          "High Impact Unit",
+          "Attaches To (Channel / Environment)",
+          "Trigger (when to add)",
+          "Recommend As",
+          "Format Type",
+          "Spec / Vendor Notes"
+        ],
+        [
+          "Save to Wallet - Social Boost",
+          "Social ",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Interactive Pre-Roll",
+          "Online Video",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "CTV DCO",
+          "CTV / OTT",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Card Deck",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Expandable Cube",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Peekaboo Window",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Swell Showcase",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum In-Screen",
+          "Display",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Expandable",
+          "Display",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Expandable Video",
+          "Display / Video",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Velocity",
+          null,
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Desktop Skin",
+          "Display (Desktop)",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Desktop Skin with Video",
+          "Display (Desktop)",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Expandable Corner",
+          "Display",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Frame",
+          "Display",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Hang Time",
+          "Display",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Scroller",
+          "Display",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Mobile Skin",
+          "Display (Mobile)",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Mobile Skin with Video",
+          "Display (Mobile)",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "GumGum Hang Time Video",
+          "Display / Video",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "In Store Moments (Push Notifications)",
+          "Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Accordion Expansion Units",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Blindscape Units",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Product Tiles",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Conversational Units",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Glide & Guide",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Tap to Map",
+          "Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Personality Quiz Banner",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Tappable Game",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Native Enhanced Stories",
+          "Native",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Performance Carousel",
+          "Display",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Shoppable Carousel",
+          "Display / Commerce",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Tappable Video",
+          "Video",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "OTT Canvas Unit",
+          "CTV / OTT",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "OTT Picture in Picture Sports",
+          "CTV / OTT",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "CTV Pause Ads",
+          "CTV / OTT",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "DCO Product Retargeting",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "DCO Event Variable",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "DCO Store Locator",
+          "Display / Mobile",
+          null,
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Social Boost",
+          "Social",
+          "Any Vertical ",
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Social Boost with Retailers",
+          "Social / Commerce",
+          "Retail Vertical",
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Click2Cart - Direct to Cart",
+          "Display / Commerce",
+          "Retail Vertical",
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "Click2Cart - Shoppers Choice",
+          "Display / Commerce",
+          "Retail Vertical",
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          "CTV QR Codes",
+          "CTV / OTT",
+          "Any Vertical ",
+          "Upsell / when-triggered",
+          null,
+          null
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "HIGH IMPACT UNITS = enhancement layer. RULES: (1) never auto-include; (2) surface as an upsell only when the channel it attaches to is already on the plan AND an engagement/premium goal or creative budget applies; (3) never the hero - always an element on a base channel. '",
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      ]
+    },
+    "Inventory_Controls": {
+      "range": "A1:E11",
+      "values": [
+        [
+          "Control",
+          "Attaches To",
+          "Trigger (when to add)",
+          "Recommend As",
+          "What It Does"
+        ],
+        [
+          "Domain/App Allowlist (inclusion)",
+          "Any channel",
+          "Premium-only, high brand-sensitivity vertical, known publishers, or transparency demanded",
+          "Enhancement",
+          "Restricts delivery to a curated, pre-vetted set of sites/apps"
+        ],
+        [
+          "Domain/App Blocklist (exclusion)",
+          "Any channel",
+          "Broad reach but need guardrails (exclude MFA, low-quality, competitor-owned)",
+          "Enhancement",
+          "Removes specific sites/apps/categories from an open buy"
+        ],
+        [
+          "MFA (Made-for-Advertising) Filtering",
+          "Any open-exchange channel",
+          "Any open-exchange buy",
+          "Default-on",
+          "Filters made-for-advertising junk inventory"
+        ],
+        [
+          "Ads.txt / Sellers.json / Supply Path",
+          "Any programmatic channel",
+          "Transparency / SPO priority",
+          "Default-on",
+          "Verifies authorized sellers / clean supply path"
+        ],
+        [
+          "Viewability / Attention Thresholds",
+          "Any channel",
+          "Quality-focused client / brand campaign",
+          "Enhancement",
+          "Enforces minimum viewability / attention"
+        ],
+        [
+          "IVT / Fraud Filtering",
+          "Any channel",
+          "Always",
+          "Default-on",
+          "Invalid-traffic and fraud filtering"
+        ],
+        [
+          "Content-Category Suitability Tiers",
+          "Any channel",
+          "Category- or client-sensitive",
+          "Enhancement",
+          "Tiered brand-suitability by content category"
+        ],
+        [
+          "Programmatic Guaranteed",
+          "Any channel",
+          null,
+          null,
+          null
+        ],
+        [
+          "PMP ",
+          "Any channel",
+          null,
+          null,
+          null
+        ],
+        [
+          "Inventory Controls are an ENHANCEMENT layer, not a core axis: they attach to a channel and govern WHERE-WITHIN / HOW-CLEAN delivery runs. Some ('Default-on') apply to every relevant buy; others surface on a trigger (brand-sensitive vertical, premium goal). Allowlist = 'we only go here'; Blocklist = 'we go everywhere except here'. Never conflate with audience targeting.",
+          null,
+          null,
+          null,
+          null
+        ]
+      ]
+    },
+    "Publishers": {
+      "range": "A1:D68",
+      "values": [
+        [
+          "Publisher",
+          "Channel",
+          "Notes / Environment",
+          "Tier"
+        ],
+        [
+          "A&E Networks",
+          "CTV / OTT",
+          "Include for Female Focused Audience",
+          null
+        ],
+        [
+          "ABC",
+          "CTV / OTT",
+          "Include as often as possible",
+          null
+        ],
+        [
+          "ABC News",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "AMC Networks",
+          "CTV / OTT",
+          "Include often",
+          null
+        ],
+        [
+          "BET",
+          "CTV / OTT",
+          "Include for African American focused audiences",
+          null
+        ],
+        [
+          "Bloomberg",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "Bounce",
+          "CTV / OTT",
+          "Include for African American focused audiences",
+          null
+        ],
+        [
+          "CBS",
+          "CTV / OTT",
+          "Include often",
+          null
+        ],
+        [
+          "Cheddar",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "CNBC",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "CNN",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "Comedy Central",
+          "CTV / OTT",
+          "Include for Young Male Audience",
+          null
+        ],
+        [
+          "Spectrum",
+          "CTV / OTT",
+          "Cable Replacement - include often",
+          null
+        ],
+        [
+          "DirecTV",
+          "CTV / OTT",
+          "Cable Replacement - include often",
+          null
+        ],
+        [
+          "Discovery",
+          "CTV / OTT",
+          "Include as often as possible",
+          null
+        ],
+        [
+          "Discovery+",
+          "CTV / OTT",
+          "Premium, Include as often as possible",
+          null
+        ],
+        [
+          "Disney+",
+          "CTV / OTT",
+          "Premium, Include as often as possible",
+          null
+        ],
+        [
+          "ESPN",
+          "CTV / OTT",
+          "Include as often as possible",
+          null
+        ],
+        [
+          "Food Network",
+          "CTV / OTT",
+          "Include often but low scale",
+          null
+        ],
+        [
+          "Fox",
+          "CTV / OTT",
+          "Include often",
+          null
+        ],
+        [
+          "Fox News",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "Freeform",
+          "CTV / OTT",
+          "Include for Female or Young Family Focused Audience",
+          null
+        ],
+        [
+          "Fubo",
+          "CTV / OTT",
+          "FAST / ad-supported",
+          null
+        ],
+        [
+          "FX",
+          "CTV / OTT",
+          "Include often",
+          null
+        ],
+        [
+          "Hallmark Network",
+          "CTV / OTT",
+          "Include for Female Focused or Holiday Audience",
+          null
+        ],
+        [
+          "HGTV",
+          "CTV / OTT",
+          "Include for Female Focused Audience",
+          null
+        ],
+        [
+          "Hulu",
+          "CTV / OTT",
+          "Premium, Include as often as possible",
+          null
+        ],
+        [
+          "LG",
+          "CTV / OTT",
+          "FAST / ad-supported - include often",
+          null
+        ],
+        [
+          "Lifetime",
+          "CTV / OTT",
+          "Include for Female Focused Audience",
+          null
+        ],
+        [
+          "Local Now",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "HBO Max",
+          "CTV / OTT",
+          "Premium Inventory - include for higher HHI audience & large budget opportunities",
+          null
+        ],
+        [
+          "NBC",
+          "CTV / OTT",
+          "Include as often as possible",
+          null
+        ],
+        [
+          "NewsON",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "Newsy",
+          "CTV / OTT",
+          "Include for news interest and/or B2B targeting campaigns",
+          null
+        ],
+        [
+          "NFL Network",
+          "CTV / OTT",
+          "Include for male or sport focused audience",
+          null
+        ],
+        [
+          "Outside TV",
+          "CTV / OTT",
+          "Include of active audience",
+          null
+        ],
+        [
+          "OWN",
+          "CTV / OTT",
+          "Include for African American or Female focused audiences",
+          null
+        ],
+        [
+          "Paramount",
+          "CTV / OTT",
+          "Include as often as possible",
+          null
+        ],
+        [
+          "Peacock",
+          "CTV / OTT",
+          "Premium Inventory - include for higher HHI audience & large budget opportunities",
+          null
+        ],
+        [
+          "Philo",
+          "CTV / OTT",
+          "FAST / ad-supported",
+          null
+        ],
+        [
+          "Plex",
+          "CTV / OTT",
+          "FAST / ad-supported",
+          null
+        ],
+        [
+          "Pluto",
+          "CTV / OTT",
+          "FAST / ad-supported - include often",
+          null
+        ],
+        [
+          "Roku",
+          "CTV / OTT",
+          "Cable Replacement - include often",
+          null
+        ],
+        [
+          "Samsung",
+          "CTV / OTT",
+          "FAST / ad-supported - include often",
+          null
+        ],
+        [
+          "Science Channel",
+          "CTV / OTT",
+          "Low Scale",
+          null
+        ],
+        [
+          "Sling",
+          "CTV / OTT",
+          "FAST / ad-supported",
+          null
+        ],
+        [
+          "The Weather Channel",
+          "CTV / OTT",
+          "Low Scale",
+          null
+        ],
+        [
+          "Travel Channel",
+          "CTV / OTT",
+          "Include for travel interests",
+          null
+        ],
+        [
+          "Tubi",
+          "CTV / OTT",
+          "FAST / ad-supported- include often",
+          null
+        ],
+        [
+          "Turner",
+          "CTV / OTT",
+          "Include as often as possible",
+          null
+        ],
+        [
+          "USA",
+          "CTV / OTT",
+          "Low Scale",
+          null
+        ],
+        [
+          "VH1",
+          "CTV / OTT",
+          "Low Scale",
+          null
+        ],
+        [
+          "Warner Brothers Discovery",
+          "CTV / OTT",
+          "Include as often as possible",
+          null
+        ],
+        [
+          "Vizio",
+          "CTV / OTT",
+          "FAST / ad-supported - include often",
+          null
+        ],
+        [
+          "Xumo",
+          "CTV / OTT",
+          "FAST / ad-supported",
+          null
+        ],
+        [
+          "Amazon Prime",
+          "CTV / OTT",
+          "Advanced Performance not supported",
+          null
+        ],
+        [
+          "Netflix",
+          "CTV / OTT",
+          "Advanced Performance not supported",
+          null
+        ],
+        [
+          "YouTube TV",
+          "CTV / OTT",
+          "Advanced Performance not supported",
+          null
+        ],
+        [
+          "Spotify",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ],
+        [
+          "iHeartRadio",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ],
+        [
+          "Cumulus",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ],
+        [
+          "Spreaker",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ],
+        [
+          "Triton",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ],
+        [
+          "TuneIn",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ],
+        [
+          "AccuRadio",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ],
+        [
+          "WestwoodOne",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ],
+        [
+          "Audacy",
+          "Audio",
+          "Should combine all audio pubs unless called out specifically",
+          null
+        ]
+      ]
+    },
+    "Master_Compatibility": {
+      "range": "A1:J58",
+      "values": [
+        [
+          "Type",
+          "Item",
+          "Display",
+          "OLV",
+          "CTV/OTT",
+          "Native",
+          "Audio",
+          "DOOH",
+          "Search",
+          "Social"
+        ],
+        [
+          "Targeting",
+          "Behavioral / Demographic",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Interest / Affinity",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "B2B Job Title / Company IP",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Purchase / Transaction Data",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Survey / Attitudinal",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "CRM Targeting",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "CRM Lookalike",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Site Retargeting",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Contextual",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Keyword / Semantic Contextual",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Search Intent Retargeting",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-"
+        ],
+        [
+          "Targeting",
+          "In-Market / Shopping Intent",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "ACR Targeting",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Retargeting off CTV/OTT",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Retargeting off Online Video",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Retargeting off Display",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Retargeting off Audio",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Retargeting off DOOH",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Retargeting off Native",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Cross-Channel Sequential Messaging",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Geo-Targeting",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Geo-Conquesting",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Geo-Fencing",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Geo-Framing / Historical",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Daypart Targeting",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Targeting",
+          "Device / OS Targeting",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Weather / Trigger-Based",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y"
+        ],
+        [
+          "Targeting",
+          "Retail Data (on-site data, off-site activation - all partners)",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y"
+        ],
+        [
+          "Creative/HIU",
+          "Display HIUs (GumGum, Expandable, Cube, etc.)",
+          "Y",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Creative/HIU",
+          "Mobile HIUs (Mobile Skin, Tap to Map, In-Store Moments)",
+          "Y",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Creative/HIU",
+          "Video HIUs (Interactive Pre-Roll, Tappable Video)",
+          "-",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Creative/HIU",
+          "CTV/OTT HIUs (OTT Canvas, PiP, Pause Ads, CTV DCO, CTV QR)",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Creative/HIU",
+          "Commerce HIUs (Click2Cart, Shoppable Carousel)",
+          "Y",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Creative/HIU",
+          "Social HIUs (Social Boost, Save to Wallet)",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Creative/HIU",
+          "DCO units (Product RT, Event Variable, Store Locator)",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Creative/HIU",
+          "Native HIUs (Native Enhanced Stories)",
+          "-",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Online/Order Attribution",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-"
+        ],
+        [
+          "Measurement",
+          "LeadMatch",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "MatchBack",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Foot Traffic",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "DOOH Attribution",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "ACR / CrossView (Linear+CTV)",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Halo Effect (needs CTV/Audio driving search+social)",
+          "-",
+          "-",
+          "Y",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Consumer Journey / OPA",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Incrementality",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Reach & Frequency",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Brand Lift",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Firmographic / ABM",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "In-Store Sales Lift (Pathformance)",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Measurement",
+          "Destination Impact (Arrivalist)",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Inventory",
+          "Allowlist / Blocklist",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Inventory",
+          "MFA / IVT / Fraud / Supply Path",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Inventory",
+          "Viewability / Attention",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Inventory",
+          "Content-Category Suitability",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          "Inventory",
+          "PMP / Programmatic Guaranteed",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "Y",
+          "-",
+          "-"
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "MASTER COMPATIBILITY = everything-against-channels (the spine everything attaches to). Y = valid, - = n/a. Targeting/Creative/Measurement/Inventory rows grouped by Type (filterable). HIUs grouped by environment (full named list on High_Impact_Units). INFERRED logic - review before enforcing. Retail data (off-site) rides all DR channels; not shown as its own column because it is a targeting input, not a channel.",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      ]
+    }
+  }
+}

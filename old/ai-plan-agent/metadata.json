@@ -1,0 +1,8 @@
+{
+  "name": "AI Plan Agent",
+  "description": "Generate research-backed digital advertising and media plan strategies",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

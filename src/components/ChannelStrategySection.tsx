@@ -1,20 +1,333 @@
 import React, { useState } from 'react';
-import { Sparkles, Copy, Check, Info, ArrowLeftRight, TrendingUp, Layers, HelpCircle, FileText } from 'lucide-react';
-import { ChannelStrategyData, ChannelEvaluation } from '../types';
+import { Sparkles, Copy, Check, Info, ArrowLeftRight, TrendingUp, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2 } from 'lucide-react';
+import { ChannelStrategyData } from '../types';
+import type { AttachedPlanningRecord, CandidateScoreComponents } from '../planning/types';
 import { isNonMediaItem } from '../utils/mediaTaxonomy';
+import {
+  addMediaTypeAndRebalance,
+  allocationBasisPoints,
+  applyBasisPointAllocations,
+  rebalanceEditedAllocation,
+  type AllocationBasisPoints,
+} from '../planning/manualAllocations';
 
 interface ChannelStrategySectionProps {
   data: ChannelStrategyData;
   onToggleBudgetMode?: (mode: 'reallocation' | 'incremental') => void;
+  onManualMediaTypeChange?: (channelId: string, action: 'add' | 'remove') => Promise<void>;
+  onSaveAllocations?: (basisPoints: AllocationBasisPoints, lockedChannelIds: string[]) => Promise<void>;
+  onResetAllocations?: () => Promise<void>;
+  onUndoPlanChange?: () => void;
+  canUndoPlanChange?: boolean;
 }
+
+interface AllocationInputValue {
+  percent: string;
+  dollars: string;
+}
+
+const allocationInputs = (basisPoints: AllocationBasisPoints, totalBudget: number): Record<string, AllocationInputValue> =>
+  Object.fromEntries(Object.entries(basisPoints).map(([channelId, value]) => [channelId, {
+    percent: String(value / 100),
+    dollars: ((totalBudget * value) / 10_000).toFixed(2),
+  }]));
+
+const parseAllocationNumber = (value: string): number => Number(value.replace(/[$,%\s,]/g, ''));
+
+const displayRecommendationStatus = (status: string) => status === 'CONDITIONAL' ? 'TEST' : status;
+
+interface MediaTypeDetailsProps {
+  detailsId: string;
+  gapAddressed: string;
+  planningRationale: string;
+  activationGuidance: string;
+  measurementApproach: string;
+  targetingTactics: AttachedPlanningRecord[];
+  publishers: AttachedPlanningRecord[];
+  creativeEnhancements: AttachedPlanningRecord[];
+  inventoryControls: AttachedPlanningRecord[];
+  measurementCapabilities: AttachedPlanningRecord[];
+  evidence: Array<{ detail: string }>;
+  scoreComponents?: CandidateScoreComponents;
+  decisionRule: string;
+  prerequisites: string[];
+  tradeoffs: string[];
+  eligibilityFailures?: string[];
+  minimumAllocationPercent: number;
+  maximumAllocationPercent: number;
+  minimumTotalSpend: number;
+  minimumFlightDays?: number;
+  typicalCpmLow: number | null;
+  typicalCpmHigh: number | null;
+  monthlyEquivalentSpend?: number;
+  fundingSource?: string;
+  isPreview?: boolean;
+}
+
+const planningRecordNames = (records: AttachedPlanningRecord[] | undefined, fallback: string) =>
+  records?.map((item) => item.displayName).join(', ') || fallback;
+
+const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
+  detailsId,
+  gapAddressed,
+  planningRationale,
+  activationGuidance,
+  measurementApproach,
+  targetingTactics,
+  publishers,
+  creativeEnhancements,
+  inventoryControls,
+  measurementCapabilities,
+  evidence,
+  scoreComponents,
+  decisionRule,
+  prerequisites,
+  tradeoffs,
+  eligibilityFailures = [],
+  minimumAllocationPercent,
+  maximumAllocationPercent,
+  minimumTotalSpend,
+  minimumFlightDays,
+  typicalCpmLow,
+  typicalCpmHigh,
+  monthlyEquivalentSpend,
+  fundingSource,
+  isPreview = false,
+}) => {
+  const warnings = Array.from(new Set([...eligibilityFailures, ...prerequisites, ...tradeoffs]));
+  const scoreLabels: Array<[keyof CandidateScoreComponents, string]> = [
+    ['kpiAndFunnelFit', 'KPI & funnel'],
+    ['audienceAndPersonaFit', 'Audience'],
+    ['incrementalGapCoverage', 'Gap coverage'],
+    ['dataReadiness', 'Data readiness'],
+    ['creativeReadiness', 'Creative readiness'],
+    ['measurementFit', 'Measurement'],
+  ];
+
+  return (
+    <div id={detailsId} className="mt-4 border-t border-slate-100 pt-4">
+      {isPreview && (
+        <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50/70 px-3 py-2 text-xs text-indigo-900">
+          This is a planning-stack preview. Final allocation dollars and the surrounding media mix are recalculated only after this media type is added.
+        </div>
+      )}
+
+      <div className="grid gap-3 text-xs md:grid-cols-2">
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Gap addressed: </span><span className="text-slate-700">{gapAddressed}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Planning rationale: </span><span className="text-slate-700">{planningRationale}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Activation guidance: </span><span className="text-slate-700">{activationGuidance}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Targeting tactics: </span><span className="text-slate-700">{planningRecordNames(targetingTactics, 'Use channel-compatible targeting after readiness confirmation.')}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Publishers: </span><span className="text-slate-700">{planningRecordNames(publishers, 'Open inventory; no publisher-specific guidance triggered.')}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Creative enhancements: </span><span className="text-slate-700">{planningRecordNames(creativeEnhancements, 'No complete workbook enhancement trigger fired.')}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Inventory controls: </span><span className="text-slate-700">{planningRecordNames(inventoryControls, 'Apply standard platform safeguards.')}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement approach: </span><span className="text-slate-700">{measurementApproach}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement capabilities: </span><span className="text-slate-700">{planningRecordNames(measurementCapabilities, 'Confirm an eligible measurement capability.')}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Evidence: </span><span className="text-slate-700">{evidence.slice(0, 2).map((item) => item.detail).join(' ') || 'No additional evidence was supplied.'}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3 md:col-span-2"><span className="font-bold text-slate-900">Decision rule: </span><span className="text-slate-700">{decisionRule}</span></div>
+      </div>
+
+      {scoreComponents && (
+        <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+          <div className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">Score breakdown</div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            {scoreLabels.map(([key, label]) => (
+              <div key={key} className="rounded-lg bg-slate-50 px-2.5 py-2">
+                <div className="text-[10px] font-semibold text-slate-500">{label}</div>
+                <div className="mt-0.5 font-extrabold text-slate-900">{scoreComponents[key]}/100</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-semibold text-slate-600">
+        {monthlyEquivalentSpend !== undefined && <span className="rounded-md border border-slate-200 px-2 py-1">${monthlyEquivalentSpend.toLocaleString()} monthly equivalent</span>}
+        {isPreview && <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-indigo-700">Allocation calculated after add</span>}
+        <span className="rounded-md border border-slate-200 px-2 py-1">Min {Math.ceil(minimumAllocationPercent)}% / Max {Math.floor(maximumAllocationPercent)}%</span>
+        <span className="rounded-md border border-slate-200 px-2 py-1">Min spend ${minimumTotalSpend.toLocaleString()}</span>
+        {minimumFlightDays !== undefined && <span className="rounded-md border border-slate-200 px-2 py-1">Min flight {minimumFlightDays} days</span>}
+        <span className="rounded-md border border-slate-200 px-2 py-1">{typicalCpmLow !== null && typicalCpmHigh !== null ? `Est. CPM $${typicalCpmLow}–$${typicalCpmHigh}` : 'CPM varies by buy model'}</span>
+        {fundingSource && <span className="rounded-md border border-slate-200 px-2 py-1">{fundingSource}</span>}
+      </div>
+
+      {warnings.length > 0 && (
+        <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50/70 p-3 text-xs text-amber-900">
+          {warnings.join(' • ')}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   data,
   onToggleBudgetMode,
+  onManualMediaTypeChange,
+  onSaveAllocations,
+  onResetAllocations,
+  onUndoPlanChange,
+  canUndoPlanChange = false,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [expandedChannels, setExpandedChannels] = useState<Set<string>>(() => new Set());
+  const [pendingChannelId, setPendingChannelId] = useState<string | null>(null);
+  const [manualUpdateError, setManualUpdateError] = useState('');
+  const [manualUpdateMessage, setManualUpdateMessage] = useState('');
+  const [isEditingAllocations, setIsEditingAllocations] = useState(false);
+  const [draftBasisPoints, setDraftBasisPoints] = useState<AllocationBasisPoints>({});
+  const [draftInputs, setDraftInputs] = useState<Record<string, AllocationInputValue>>({});
+  const [draftLockedChannelIds, setDraftLockedChannelIds] = useState<string[]>([]);
+  const [allocationEditorError, setAllocationEditorError] = useState('');
+  const [isSavingAllocations, setIsSavingAllocations] = useState(false);
+
+  React.useEffect(() => {
+    setExpandedChannels(new Set());
+    setManualUpdateError('');
+    setIsEditingAllocations(false);
+    setAllocationEditorError('');
+  }, [data?.generatedAt]);
 
   if (!data) return null;
+  const mediaPlan = data.mediaPlan;
+  const manualIncludedIds = new Set(data.manualIncludedChannelIds || []);
+  const selectedChannelIds = new Set(mediaPlan?.channels.map((channel) => channel.channelId) || []);
+  const unselectedCandidates = (mediaPlan?.evaluatedCandidates || [])
+    .filter((candidate) => !selectedChannelIds.has(candidate.product.id))
+    .sort((a, b) => {
+      const rank = (status: string) => status === 'ADD' ? 0 : displayRecommendationStatus(status) === 'TEST' ? 1 : 2;
+      return rank(a.status) - rank(b.status) || b.recommendationScore - a.recommendationScore || a.product.displayName.localeCompare(b.product.displayName);
+    });
+  const candidateGroups = [
+    {
+      id: 'recommended',
+      title: 'ScoutAI recommended alternatives',
+      description: 'Qualified recommendations that did not fit the highest-value feasible mix.',
+      candidates: unselectedCandidates.filter((candidate) => candidate.status === 'ADD'),
+    },
+    {
+      id: 'test',
+      title: 'ScoutAI test opportunities',
+      description: 'Promising options that need additional validation or readiness before scaling.',
+      candidates: unselectedCandidates.filter((candidate) => displayRecommendationStatus(candidate.status) === 'TEST'),
+    },
+    {
+      id: 'not-recommended',
+      title: 'Not currently recommended',
+      description: 'Media types blocked by eligibility rules or below the current recommendation threshold.',
+      candidates: unselectedCandidates.filter((candidate) => !['ADD', 'TEST'].includes(displayRecommendationStatus(candidate.status))),
+    },
+  ].filter((group) => group.candidates.length > 0);
+
+  const toggleChannelDetails = (channelId: string) => {
+    setExpandedChannels((current) => {
+      const next = new Set(current);
+      if (next.has(channelId)) next.delete(channelId);
+      else next.add(channelId);
+      return next;
+    });
+  };
+
+  const updateManualMediaType = async (channelId: string, action: 'add' | 'remove') => {
+    if (!onManualMediaTypeChange || pendingChannelId) return;
+    setPendingChannelId(channelId);
+    setManualUpdateError('');
+    setManualUpdateMessage('');
+    try {
+      await onManualMediaTypeChange(channelId, action);
+      const channelName = mediaPlan?.evaluatedCandidates.find((candidate) => candidate.product.id === channelId)?.product.displayName || 'Media type';
+      setManualUpdateMessage(action === 'add'
+        ? `${channelName} was added and the unlocked allocations were rebalanced. The working-media budget did not change.`
+        : `${channelName} was removed and its allocation was redistributed. The working-media budget did not change.`);
+    } catch (error) {
+      setManualUpdateError(error instanceof Error ? error.message : 'The media plan could not be updated.');
+    } finally {
+      setPendingChannelId(null);
+    }
+  };
+
+  const startAllocationEditor = () => {
+    if (!mediaPlan) return;
+    const current = allocationBasisPoints(mediaPlan);
+    setDraftBasisPoints(current);
+    setDraftInputs(allocationInputs(current, mediaPlan.workingMediaBudget));
+    setDraftLockedChannelIds((data.lockedAllocationChannelIds || []).filter((id) => current[id] !== undefined));
+    setAllocationEditorError('');
+    setIsEditingAllocations(true);
+  };
+
+  const cancelAllocationEditor = () => {
+    setIsEditingAllocations(false);
+    setAllocationEditorError('');
+  };
+
+  const commitAllocationInput = (channelId: string, unit: 'percent' | 'dollars', rawInput?: string) => {
+    if (!mediaPlan) return;
+    const input = rawInput ?? draftInputs[channelId]?.[unit] ?? '';
+    const parsed = parseAllocationNumber(input);
+    if (!Number.isFinite(parsed)) {
+      setAllocationEditorError('Enter a valid allocation amount.');
+      setDraftInputs(allocationInputs(draftBasisPoints, mediaPlan.workingMediaBudget));
+      return;
+    }
+    const requestedPercent = unit === 'percent'
+      ? parsed
+      : (parsed / mediaPlan.workingMediaBudget) * 100;
+    if (Math.abs(requestedPercent - Math.round(requestedPercent)) > 0.000001) {
+      const dollarIncrement = mediaPlan.workingMediaBudget / 100;
+      setAllocationEditorError(unit === 'percent'
+        ? 'Allocation percentages must be whole numbers.'
+        : `Dollar allocations must equal a whole percentage of the budget (increments of $${dollarIncrement.toLocaleString(undefined, { maximumFractionDigits: 2 })}).`);
+      setDraftInputs(allocationInputs(draftBasisPoints, mediaPlan.workingMediaBudget));
+      return;
+    }
+    const targetBasisPoints = Math.round(requestedPercent) * 100;
+    try {
+      const draftPlan = applyBasisPointAllocations(mediaPlan, draftBasisPoints, 'Draft allocation preview.');
+      const next = rebalanceEditedAllocation(draftPlan, channelId, targetBasisPoints, draftLockedChannelIds);
+      setDraftBasisPoints(next);
+      setDraftInputs(allocationInputs(next, mediaPlan.workingMediaBudget));
+      setAllocationEditorError('');
+    } catch (error) {
+      setAllocationEditorError(error instanceof Error ? error.message : 'That allocation cannot be balanced.');
+      setDraftInputs(allocationInputs(draftBasisPoints, mediaPlan.workingMediaBudget));
+    }
+  };
+
+  const toggleDraftLock = (channelId: string) => {
+    setDraftLockedChannelIds((current) => current.includes(channelId)
+      ? current.filter((id) => id !== channelId)
+      : [...current, channelId]);
+  };
+
+  const saveAllocationEditor = async () => {
+    if (!onSaveAllocations || isSavingAllocations) return;
+    setIsSavingAllocations(true);
+    setAllocationEditorError('');
+    try {
+      await onSaveAllocations(draftBasisPoints, draftLockedChannelIds);
+      setManualUpdateMessage('Allocation changes were saved. The total remains 100% of the fixed working-media budget.');
+      setIsEditingAllocations(false);
+    } catch (error) {
+      setAllocationEditorError(error instanceof Error ? error.message : 'The allocation changes could not be saved.');
+    } finally {
+      setIsSavingAllocations(false);
+    }
+  };
+
+  const resetAllocations = async () => {
+    if (!onResetAllocations || isSavingAllocations) return;
+    setIsSavingAllocations(true);
+    setAllocationEditorError('');
+    try {
+      await onResetAllocations();
+      setManualUpdateMessage('Allocations were reset to the ScoutAI recommendation for the current media mix.');
+      setIsEditingAllocations(false);
+    } catch (error) {
+      setAllocationEditorError(error instanceof Error ? error.message : 'Allocations could not be reset.');
+    } finally {
+      setIsSavingAllocations(false);
+    }
+  };
 
   const getScoreColor = (score: number) => {
     if (score >= 8.0) return 'text-emerald-500 font-bold';
@@ -28,8 +341,17 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     return 'bg-rose-50 text-rose-700 border-rose-200';
   };
 
+  const getRecommendationScoreBg = (score: number) => {
+    if (score >= 72) return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    if (score >= 55) return 'bg-amber-50 text-amber-700 border-amber-200';
+    return 'bg-rose-50 text-rose-700 border-rose-200';
+  };
+
   const handleCopyText = () => {
-    const text = `CHANNEL STRATEGY ANALYSIS\n\nRFP Channels:\n${data.rfpChannels
+    const allocationText = mediaPlan
+      ? `\n\nDETERMINISTIC MEDIA ALLOCATION\n${mediaPlan.channels.map((channel) => `- ${channel.channelName}: ${channel.allocationPercent.toFixed(0)}% / $${channel.allocationDollars.toLocaleString()} (${displayRecommendationStatus(channel.status)}, score ${channel.recommendationScore})`).join('\n')}`
+      : '';
+    const text = `CHANNEL STRATEGY ANALYSIS${allocationText}\n\nRFP Channels:\n${data.rfpChannels
       .map(
         c =>
           `- ${c.channelName} (Score: ${c.score.toFixed(1)} | Audience Fit: ${c.audienceFit}/10 | Goal Match: ${c.goalMatch}/10)\n  Evidence: ${c.mediaConsumptionEvidence}\n  Why: ${c.whyItEarnsASpot}`
@@ -74,7 +396,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
         {/* Action Controls */}
         <div className="flex items-center gap-3">
           {/* Budget Strategy Mode Toggle */}
-          <div className="inline-flex rounded-lg p-1 bg-slate-100 border border-slate-200 text-xs font-medium">
+          {mediaPlan?.planningMode !== 'greenfield' && <div className="inline-flex rounded-lg p-1 bg-slate-100 border border-slate-200 text-xs font-medium">
             <button
               onClick={() => onToggleBudgetMode && onToggleBudgetMode('reallocation')}
               className={`px-3 py-1.5 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
@@ -97,7 +419,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
               <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
               Incremental Spend
             </button>
-          </div>
+          </div>}
 
           <button
             onClick={handleCopyText}
@@ -108,6 +430,435 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
           </button>
         </div>
       </div>
+
+      {mediaPlan && (
+        <div className="mt-6 space-y-5">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+            {[
+              { label: 'Working media', value: `$${mediaPlan.workingMediaBudget.toLocaleString()}`, icon: DollarSign },
+              { label: 'Flight', value: mediaPlan.flightDays ? `${mediaPlan.flightDays} days` : 'Not supplied', icon: CalendarDays },
+              { label: '30-day normalized', value: `$${mediaPlan.normalized30DayBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: Gauge },
+              { label: 'Automatic cap', value: String(mediaPlan.maxMediaTypes), icon: Layers },
+              { label: 'Selected', value: String(mediaPlan.selectedMediaTypeCount), icon: Check },
+              { label: 'Mode', value: mediaPlan.planningMode, icon: ArrowLeftRight },
+            ].map(({ label, value, icon: Icon }) => (
+              <div key={label} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500"><Icon className="h-3.5 w-3.5" />{label}</div>
+                <div className="mt-1 text-sm font-extrabold capitalize text-slate-900">{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {mediaPlan.assumptions.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+              <div className="mb-1 flex items-center gap-2 font-bold"><Info className="h-4 w-4" /> Planning assumptions</div>
+              <ul className="list-disc space-y-1 pl-5">{mediaPlan.assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}</ul>
+            </div>
+          )}
+
+          <div className="overflow-hidden rounded-2xl border-2 border-indigo-500 bg-white shadow-md">
+            <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-800 px-4 py-2 text-xs font-bold uppercase tracking-widest text-white">
+              <ShieldCheck className="h-4 w-4 text-indigo-200" /> Validated channel allocation
+            </div>
+            {mediaPlan.channels.length > 0 && (
+              <div className="border-b border-indigo-100 bg-indigo-50/60 px-4 py-3 md:px-5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs font-extrabold text-indigo-800">
+                        <Lock className="h-3.5 w-3.5" /> Fixed budget: ${mediaPlan.workingMediaBudget.toLocaleString()}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700"><Check className="h-3.5 w-3.5" /> 100% allocated</span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-600">Edit either dollars or whole-number percentages. Every change is balanced across unlocked media types without changing the budget.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {canUndoPlanChange && onUndoPlanChange && (
+                      <button
+                        type="button"
+                        onClick={onUndoPlanChange}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Undo2 className="h-3.5 w-3.5" /> Undo last change
+                      </button>
+                    )}
+                    {!isEditingAllocations && (
+                      <button
+                        type="button"
+                        onClick={startAllocationEditor}
+                        disabled={!onSaveAllocations}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" /> Edit allocations
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {isEditingAllocations && (
+                  <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                    <div className="hidden border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[10px] font-extrabold uppercase tracking-wide text-slate-500 sm:block">
+                      <div className="grid grid-cols-[minmax(130px,1fr)_100px_130px_52px] items-center gap-2">
+                        <span>Media type</span>
+                        <span className="text-right">Percent (whole)</span>
+                        <span className="text-right">Dollars</span>
+                        <span className="text-center">Lock</span>
+                      </div>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {mediaPlan.channels.map((channel) => {
+                        const locked = draftLockedChannelIds.includes(channel.channelId);
+                        const effectiveMinimum = Math.ceil(Math.max(
+                          channel.minimumAllocationPercent,
+                          mediaPlan.workingMediaBudget > 0 ? (channel.minimumTotalSpend / mediaPlan.workingMediaBudget) * 100 : 100,
+                        ));
+                        const effectiveMaximum = Math.floor(channel.maximumAllocationPercent);
+                        return (
+                          <div key={channel.channelId} className={`px-3 py-3 transition-colors ${locked ? 'bg-indigo-50/40' : 'bg-white'}`}>
+                            <div className="relative grid grid-cols-2 items-center gap-2 sm:grid-cols-[minmax(130px,1fr)_100px_130px_52px]">
+                              <div className="col-span-2 row-start-1 min-w-0 pr-12 sm:col-span-1 sm:pr-0">
+                                <div className="truncate text-sm font-extrabold text-slate-900">{channel.channelName}</div>
+                                <div className="mt-0.5 text-[10px] font-semibold text-slate-500">{effectiveMinimum}% min · {effectiveMaximum}% max</div>
+                              </div>
+                              <label className="col-start-1 row-start-2 block sm:col-start-2 sm:row-start-1">
+                                <span className="sr-only">{channel.channelName} allocation percentage</span>
+                                <span className="mb-1 block text-[10px] font-extrabold uppercase tracking-wide text-slate-400 sm:hidden">Percent (whole)</span>
+                                <span className="relative block">
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    pattern="[0-9]*"
+                                    value={draftInputs[channel.channelId]?.percent ?? ''}
+                                    onChange={(event) => setDraftInputs((current) => ({
+                                      ...current,
+                                      [channel.channelId]: { ...(current[channel.channelId] || { percent: '', dollars: '' }), percent: event.target.value },
+                                    }))}
+                                    onBlur={(event) => commitAllocationInput(channel.channelId, 'percent', event.currentTarget.value)}
+                                    onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+                                    onFocus={(event) => event.currentTarget.select()}
+                                    className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-2.5 pr-6 text-right text-sm font-extrabold text-indigo-700 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                                  />
+                                  <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-xs font-bold text-slate-400">%</span>
+                                </span>
+                              </label>
+                              <label className="col-start-2 row-start-2 block sm:col-start-3 sm:row-start-1">
+                                <span className="sr-only">{channel.channelName} allocation dollars</span>
+                                <span className="mb-1 block text-[10px] font-extrabold uppercase tracking-wide text-slate-400 sm:hidden">Dollars</span>
+                                <span className="relative block">
+                                  <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-xs font-bold text-slate-400">$</span>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    value={draftInputs[channel.channelId]?.dollars ?? ''}
+                                    onChange={(event) => setDraftInputs((current) => ({
+                                      ...current,
+                                      [channel.channelId]: { ...(current[channel.channelId] || { percent: '', dollars: '' }), dollars: event.target.value },
+                                    }))}
+                                    onBlur={(event) => commitAllocationInput(channel.channelId, 'dollars', event.currentTarget.value)}
+                                    onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+                                    onFocus={(event) => event.currentTarget.select()}
+                                    className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-6 pr-2.5 text-right text-sm font-extrabold text-slate-900 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                                  />
+                                </span>
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => toggleDraftLock(channel.channelId)}
+                                aria-label={`${locked ? 'Unlock' : 'Lock'} ${channel.channelName} allocation`}
+                                title={locked ? 'Allow this allocation to rebalance' : 'Protect this allocation from automatic rebalancing'}
+                                className={`absolute right-0 top-0 inline-flex h-9 w-9 items-center justify-center rounded-lg border transition sm:static sm:col-start-4 sm:row-start-1 sm:mx-auto ${locked ? 'border-indigo-200 bg-indigo-100 text-indigo-700' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}
+                              >
+                                {locked ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="border-t border-slate-200 bg-slate-50 px-3 py-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="text-xs font-extrabold text-slate-900">
+                            Total {((Object.values(draftBasisPoints) as number[]).reduce((sum, value) => sum + value, 0) / 100).toFixed(0)}% · ${mediaPlan.workingMediaBudget.toLocaleString()}
+                          </div>
+                          <div className="mt-0.5 text-[10px] font-semibold text-emerald-700">Budget remains fixed while unlocked rows rebalance proportionally.</div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {data.hasManualAllocationChanges && onResetAllocations && (
+                            <button
+                              type="button"
+                              onClick={resetAllocations}
+                              disabled={isSavingAllocations}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" /> Reset to ScoutAI
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={cancelAllocationEditor}
+                            disabled={isSavingAllocations}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                          >
+                            <X className="h-3.5 w-3.5" /> Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={saveAllocationEditor}
+                            disabled={!onSaveAllocations || isSavingAllocations || Boolean(allocationEditorError)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isSavingAllocations ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />} Save allocations
+                          </button>
+                        </div>
+                      </div>
+                      {allocationEditorError && <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">{allocationEditorError}</div>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {mediaPlan.channels.length === 0 ? (
+              <div className="p-5 text-sm text-slate-700">No product cleared every hard constraint. Review the excluded candidate reasons before allocating budget.</div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {mediaPlan.channels.map((channel) => {
+                  const evaluatedCandidate = mediaPlan.evaluatedCandidates.find((candidate) => candidate.product.id === channel.channelId);
+                  const detailsId = `media-type-details-${channel.channelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+                  return (
+                  <article key={channel.channelId} className="p-4 md:p-5">
+                    <div className="flex items-start gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleChannelDetails(channel.channelId)}
+                        aria-expanded={expandedChannels.has(channel.channelId)}
+                        aria-controls={detailsId}
+                        className="flex min-w-0 flex-1 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 md:flex-row md:items-start md:justify-between"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-base font-extrabold text-slate-900">{channel.channelName}</h3>
+                            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${channel.status === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>{displayRecommendationStatus(channel.status)}</span>
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{channel.confidence} confidence</span>
+                            {manualIncludedIds.has(channel.channelId) && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Manual</span>}
+                          </div>
+                          <p className="mt-1 text-sm text-slate-600">{channel.role}</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="grid grid-cols-3 gap-3 text-right">
+                            <div><div className="text-[10px] font-bold uppercase text-slate-400">Allocation</div><div className="font-extrabold text-indigo-700">{channel.allocationPercent.toFixed(0)}%</div></div>
+                            <div><div className="text-[10px] font-bold uppercase text-slate-400">Dollars</div><div className="font-extrabold text-slate-900">${channel.allocationDollars.toLocaleString()}</div></div>
+                            <div><div className="text-[10px] font-bold uppercase text-slate-400">Score</div><div className="font-extrabold text-slate-900">{channel.recommendationScore}/100</div></div>
+                          </div>
+                          <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expandedChannels.has(channel.channelId) ? 'rotate-180' : ''}`} />
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateManualMediaType(channel.channelId, 'remove')}
+                        disabled={!onManualMediaTypeChange || pendingChannelId !== null}
+                        className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label={`Remove ${channel.channelName} from plan`}
+                        title="Remove media type from this plan"
+                      >
+                        {pendingChannelId === channel.channelId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Minus className="h-4 w-4" />}
+                      </button>
+                    </div>
+
+                    {expandedChannels.has(channel.channelId) && (
+                      <MediaTypeDetails
+                        detailsId={detailsId}
+                        gapAddressed={channel.gapAddressed}
+                        planningRationale={channel.allocationRationale}
+                        activationGuidance={evaluatedCandidate?.activationGuidance || `Activate ${channel.channelName} with channel-compatible targeting and creative.`}
+                        measurementApproach={evaluatedCandidate?.measurementApproach || 'Use the best eligible measurement capability for the primary KPI.'}
+                        targetingTactics={channel.targetingTactics}
+                        publishers={channel.publishers}
+                        creativeEnhancements={channel.creativeEnhancements}
+                        inventoryControls={channel.inventoryControls}
+                        measurementCapabilities={channel.measurementCapabilities}
+                        evidence={channel.evidence}
+                        scoreComponents={evaluatedCandidate?.components}
+                        decisionRule={channel.decisionRule}
+                        prerequisites={channel.prerequisites}
+                        tradeoffs={channel.tradeoffs}
+                        minimumAllocationPercent={channel.minimumAllocationPercent}
+                        maximumAllocationPercent={channel.maximumAllocationPercent}
+                        minimumTotalSpend={channel.minimumTotalSpend}
+                        minimumFlightDays={evaluatedCandidate?.product.minimumFlightDays}
+                        typicalCpmLow={channel.typicalCpmLow}
+                        typicalCpmHigh={channel.typicalCpmHigh}
+                        monthlyEquivalentSpend={channel.monthlyEquivalentSpend}
+                        fundingSource={channel.fundingSource}
+                      />
+                    )}
+                  </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {manualUpdateError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-800">{manualUpdateError}</div>
+          )}
+          {manualUpdateMessage && (
+            <div className="flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900 sm:flex-row sm:items-center sm:justify-between">
+              <span className="inline-flex items-start gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0" />{manualUpdateMessage}</span>
+              {canUndoPlanChange && onUndoPlanChange && (
+                <button type="button" onClick={onUndoPlanChange} className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg border border-emerald-300 bg-white px-2.5 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100 sm:self-auto">
+                  <Undo2 className="h-3.5 w-3.5" /> Undo
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 md:px-5">
+              <h3 className="text-sm font-extrabold text-slate-900">Media types not in plan</h3>
+              <p className="mt-1 text-xs text-slate-600">Expand any media type to preview its full planning stack. “Add &amp; rebalance” preserves the selected portfolio and fixed working-media budget while proportionally adjusting unlocked allocations. Hard execution, geography, spend, overlap, and allocation rules remain enforced.</p>
+            </div>
+            <div>
+              {candidateGroups.map((group) => (
+                <section key={group.id} aria-labelledby={`candidate-group-${group.id}`}>
+                  <div className="border-b border-slate-200 bg-white px-4 py-2.5 md:px-5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 id={`candidate-group-${group.id}`} className="text-[11px] font-extrabold uppercase tracking-wide text-slate-700">{group.title}</h4>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{group.candidates.length}</span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">{group.description}</p>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {group.candidates.map((candidate) => {
+                      const manuallyRequested = manualIncludedIds.has(candidate.product.id);
+                      const blockingFailures = candidate.eligibilityFailures.filter((failure) => !failure.includes('explicitly excluded by the planner'));
+                      const overlappingSelected = mediaPlan.evaluatedCandidates.find((selectedCandidate) =>
+                        selectedChannelIds.has(selectedCandidate.product.id) &&
+                        (
+                          selectedCandidate.product.familyId === candidate.product.familyId ||
+                          selectedCandidate.product.overlapFamilyIds.includes(candidate.product.familyId) ||
+                          candidate.product.overlapFamilyIds.includes(selectedCandidate.product.familyId)
+                        ),
+                      );
+                      const passesHardAddRules = candidate.product.digitalRemedyExecutable && candidate.product.recommendationEligible && candidate.product.status === 'live' && blockingFailures.length === 0 && !overlappingSelected;
+                      let allocationConstraint = '';
+                      if (passesHardAddRules && !manuallyRequested) {
+                        try {
+                          addMediaTypeAndRebalance(mediaPlan, candidate.product.id, data.lockedAllocationChannelIds || []);
+                        } catch (error) {
+                          allocationConstraint = error instanceof Error ? error.message : 'The current allocation cannot fund this media type.';
+                        }
+                      }
+                      const canAdd = passesHardAddRules && !allocationConstraint;
+                      const displayedStatus = displayRecommendationStatus(candidate.status);
+                      const detailsId = `media-type-details-${candidate.product.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+                      const constraintReason = [...candidate.eligibilityFailures, ...candidate.prerequisites].join(' • ');
+                      const reason = manuallyRequested
+                        ? 'Manual inclusion is requested, but the current spend, overlap, or allocation constraints cannot form a feasible portfolio.'
+                        : overlappingSelected
+                          ? `Recommended as an alternative to ${overlappingSelected.product.displayName}; both cannot be included in the same portfolio.`
+                          : allocationConstraint
+                            ? allocationConstraint
+                          : constraintReason
+                            ? constraintReason
+                            : displayedStatus === 'ADD'
+                              ? 'Qualified recommendation omitted because the optimizer favored a higher-value feasible mix within the current portfolio constraints.'
+                              : displayedStatus === 'TEST'
+                                ? 'Promising test opportunity omitted from the automatic portfolio pending stronger fit or readiness.'
+                                : 'The score did not clear the current recommendation threshold.';
+                      return (
+                        <article key={candidate.product.id} className="px-4 py-3 md:px-5 md:py-4">
+                          <div className="flex items-start gap-2">
+                            <button
+                              type="button"
+                              onClick={() => toggleChannelDetails(candidate.product.id)}
+                              aria-expanded={expandedChannels.has(candidate.product.id)}
+                              aria-controls={detailsId}
+                              className="flex min-w-0 flex-1 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 md:flex-row md:items-start md:justify-between"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <h5 className="font-extrabold text-slate-900">{candidate.product.displayName}</h5>
+                                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${displayedStatus === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : displayedStatus === 'TEST' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{displayedStatus}</span>
+                                  {displayedStatus === 'ADD' && candidate.eligibilityFailures.length === 0 && (
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700"><Sparkles className="h-3 w-3" />ScoutAI Recommended Alternative</span>
+                                  )}
+                                  {displayedStatus === 'TEST' && (
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800"><Sparkles className="h-3 w-3" />ScoutAI Test Opportunity</span>
+                                  )}
+                                  <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{candidate.confidence} confidence</span>
+                                  {manuallyRequested && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Manual request pending</span>}
+                                </div>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">Role: {candidate.product.funnelRoles.join(' / ')}</p>
+                                <p className="mt-1 text-xs leading-5 text-slate-600">{reason}</p>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-3">
+                                <div className={`min-w-[82px] rounded-lg border px-3 py-1.5 text-right ${getRecommendationScoreBg(candidate.recommendationScore)}`}>
+                                  <div className="text-[10px] font-bold uppercase tracking-wide opacity-70">Score</div>
+                                  <div className="font-extrabold">{candidate.recommendationScore}<span className="text-[10px]">/100</span></div>
+                                </div>
+                                <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${expandedChannels.has(candidate.product.id) ? 'rotate-180' : ''}`} />
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateManualMediaType(candidate.product.id, manuallyRequested ? 'remove' : 'add')}
+                              disabled={!onManualMediaTypeChange || pendingChannelId !== null || (!manuallyRequested && !canAdd)}
+                              className={`mt-1 inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-35 ${manuallyRequested ? 'border-rose-200 text-rose-600 hover:bg-rose-50' : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}
+                              aria-label={`${manuallyRequested ? 'Remove' : 'Add'} ${candidate.product.displayName} ${manuallyRequested ? 'from' : 'to'} plan`}
+                              title={manuallyRequested ? 'Cancel this manual inclusion' : canAdd ? 'Add this media type and rebalance the fixed budget' : allocationConstraint || 'Resolve the listed hard constraints before adding'}
+                            >
+                              {pendingChannelId === candidate.product.id ? <Loader2 className="h-4 w-4 animate-spin" /> : manuallyRequested ? <><Minus className="h-4 w-4" /><span>Cancel</span></> : <><Plus className="h-4 w-4" /><span className="hidden sm:inline">Add &amp; rebalance</span></>}
+                            </button>
+                          </div>
+
+                          {expandedChannels.has(candidate.product.id) && (
+                            <MediaTypeDetails
+                              detailsId={detailsId}
+                              gapAddressed={candidate.gapAddressed}
+                              planningRationale={candidate.allocationRationale}
+                              activationGuidance={candidate.activationGuidance}
+                              measurementApproach={candidate.measurementApproach}
+                              targetingTactics={candidate.targetingTactics || []}
+                              publishers={candidate.publishers || []}
+                              creativeEnhancements={candidate.creativeEnhancements || []}
+                              inventoryControls={candidate.inventoryControls || []}
+                              measurementCapabilities={candidate.measurementCapabilities || []}
+                              evidence={candidate.evidence}
+                              scoreComponents={candidate.components}
+                              decisionRule={candidate.decisionRule}
+                              prerequisites={candidate.prerequisites}
+                              tradeoffs={candidate.tradeoffs}
+                              eligibilityFailures={candidate.eligibilityFailures}
+                              minimumAllocationPercent={candidate.product.minimumAllocationPercent}
+                              maximumAllocationPercent={candidate.product.maximumAllocationPercent}
+                              minimumTotalSpend={candidate.product.minimumTotalSpend}
+                              minimumFlightDays={candidate.product.minimumFlightDays}
+                              typicalCpmLow={candidate.product.typicalCpmLow}
+                              typicalCpmHigh={candidate.product.typicalCpmHigh}
+                              isPreview
+                            />
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+              {candidateGroups.length === 0 && <div className="px-5 py-6 text-sm text-slate-600">Every evaluated media type is already represented in the plan.</div>}
+            </div>
+          </div>
+
+          {mediaPlan.nonMediaCosts.length > 0 && (
+            <details className="rounded-xl border border-slate-200 bg-white">
+              <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-slate-800">Non-media costs kept outside channel allocation</summary>
+              <div className="border-t border-slate-100 p-4 text-xs">
+                {mediaPlan.nonMediaCosts.map((cost) => <div key={cost.id} className="flex justify-between border-b border-slate-100 py-2"><span>{cost.displayName}</span><span className="font-bold">${cost.amount.toLocaleString()}</span></div>)}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
 
       {/* Intro Context Callout */}
       <div className="mt-6 text-slate-700 text-sm md:text-base font-medium leading-relaxed bg-slate-50/80 p-4 rounded-xl border border-slate-200/60">

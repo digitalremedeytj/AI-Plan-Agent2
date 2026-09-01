@@ -1,3 +1,6 @@
+import type { PlanningSettings } from "./planning/settings";
+import type { MediaRecommendationPlan, RecommendationStatus, ConfidenceLevel } from "./planning/types";
+
 export interface Persona {
   name: string;
   gender: string;
@@ -210,6 +213,9 @@ export interface SavedProfile {
   geography: string;
   campaignFocus: string;
   additionalContext: string;
+  budget?: string;
+  campaignLength?: string;
+  planningSettings?: PlanningSettings;
   profile: AudienceProfile;
   groundingSources?: Array<{ title: string; uri: string }>;
   selectedPlanOptions?: ParsedPlanOption[];
@@ -280,6 +286,10 @@ export interface ChannelEvaluation {
   mediaConsumptionEvidence: string;
   whyItEarnsASpot: string;
   suggestedAllocationPercent?: number;
+  channelId?: string;
+  recommendationStatus?: RecommendationStatus;
+  confidence?: ConfidenceLevel;
+  allocationDollars?: number;
 }
 
 export interface ChannelStrategyData {
@@ -290,5 +300,10 @@ export interface ChannelStrategyData {
   totalRfpBudget: number;
   analyzedPlanNames: string[];
   generatedAt: string;
+  manualIncludedChannelIds?: string[];
+  manualExcludedChannelIds?: string[];
+  allocationBaselineBasisPoints?: Record<string, number>;
+  lockedAllocationChannelIds?: string[];
+  hasManualAllocationChanges?: boolean;
+  mediaPlan?: MediaRecommendationPlan;
 }
-

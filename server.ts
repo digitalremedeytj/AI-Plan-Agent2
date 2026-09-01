@@ -8,7 +8,12 @@ import multer from "multer";
 import os from "os";
 import fs from "fs";
 import crypto from "crypto";
-import { CANONICAL_MEDIA_TAXONOMY, normalizeRawChannel } from "./src/utils/mediaTaxonomy";
+import { CANONICAL_MEDIA_TAXONOMY, isNonMediaItem, normalizeRawChannel } from "./src/utils/mediaTaxonomy";
+import { buildCampaignFacts, buildMediaRecommendationPlan, profileSignals } from "./src/planning/engine";
+import { DIGITAL_REMEDY_PRODUCT_REGISTRY, validateProductRegistry } from "./src/planning/knowledge/registry";
+import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
+import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
+import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
 import {
   companyOverview,
   mainSolutionCategories,
@@ -90,7 +95,13 @@ function extractPlanAudiences(selectedPlanOptions: any[]): string[] {
   return Array.from(audienceSet);
 }
 
-dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: false, quiet: true });
+dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: false, quiet: true });
+
+const planningStartupErrors = [...validateProductRegistry(), ...validatePlanningKnowledgeBase()];
+if (planningStartupErrors.length > 0) {
+  throw new Error(`Planning knowledge validation failed:\n${planningStartupErrors.join("\n")}`);
+}
 
 const upload = multer({ dest: os.tmpdir() });
 
@@ -548,211 +559,226 @@ const profileCorrectionSchema = {
   required: ["correctedProfile", "autoFixes"]
 };
 
-const channelStrategySchema = {
-  type: Type.OBJECT,
-  properties: {
-    rfpChannels: {
-      type: Type.ARRAY,
-      description: "Evaluation of channels present in the uploaded RFP plan.",
-      items: {
+const candidateSignalSchema = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      channelId: { type: Type.STRING },
+      components: {
         type: Type.OBJECT,
         properties: {
-          channelName: { type: Type.STRING },
-          canonicalId: { type: Type.STRING },
-          isRecommended: { type: Type.BOOLEAN },
-          audienceFit: { type: Type.NUMBER, description: "Integer score from 1 to 10" },
-          goalMatch: { type: Type.NUMBER, description: "Integer score from 1 to 10" },
-          score: { type: Type.NUMBER, description: "Calculated score: (audienceFit * 0.5) + (goalMatch * 0.5)" },
-          mediaConsumptionEvidence: { type: Type.STRING, description: "Concise evidence of audience media habits" },
-          whyItEarnsASpot: { type: Type.STRING, description: "Strategic justification" },
-          suggestedAllocationPercent: { type: Type.NUMBER }
+          kpiAndFunnelFit: { type: Type.NUMBER },
+          audienceAndPersonaFit: { type: Type.NUMBER },
+          incrementalGapCoverage: { type: Type.NUMBER },
+          dataReadiness: { type: Type.NUMBER },
+          creativeReadiness: { type: Type.NUMBER },
+          measurementFit: { type: Type.NUMBER },
         },
-        required: ["channelName", "canonicalId", "isRecommended", "audienceFit", "goalMatch", "score", "mediaConsumptionEvidence", "whyItEarnsASpot"]
-      }
-    },
-    scoutAiRecommendedChannels: {
-      type: Type.ARRAY,
-      description: "Additional complementary programmatic media channels recommended by ScoutAI.",
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          channelName: { type: Type.STRING },
-          canonicalId: { type: Type.STRING },
-          isRecommended: { type: Type.BOOLEAN },
-          audienceFit: { type: Type.NUMBER, description: "Integer score from 1 to 10" },
-          goalMatch: { type: Type.NUMBER, description: "Integer score from 1 to 10" },
-          score: { type: Type.NUMBER, description: "Calculated score: (audienceFit * 0.5) + (goalMatch * 0.5)" },
-          mediaConsumptionEvidence: { type: Type.STRING, description: "Concise evidence of audience media habits" },
-          whyItEarnsASpot: { type: Type.STRING, description: "Strategic justification" },
-          suggestedAllocationPercent: { type: Type.NUMBER }
+        required: ["kpiAndFunnelFit", "audienceAndPersonaFit", "incrementalGapCoverage", "dataReadiness", "creativeReadiness", "measurementFit"],
+      },
+      gapAddressed: { type: Type.STRING },
+      evidence: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            sourceType: { type: Type.STRING },
+            detail: { type: Type.STRING },
+            sourceId: { type: Type.STRING },
+          },
+          required: ["sourceType", "detail"],
         },
-        required: ["channelName", "canonicalId", "isRecommended", "audienceFit", "goalMatch", "score", "mediaConsumptionEvidence", "whyItEarnsASpot"]
-      }
+      },
+      activationGuidance: { type: Type.STRING },
+      measurementApproach: { type: Type.STRING },
+      tradeoffs: { type: Type.ARRAY, items: { type: Type.STRING } },
+      allocationRationale: { type: Type.STRING },
+      decisionRule: { type: Type.STRING },
     },
-    executiveInsight: {
-      type: Type.STRING,
-      description: "One high-level executive insight sentence summarizing the strength of the baseline RFP and how recommended channels expand coverage."
-    }
+    required: ["channelId", "components", "gapAddressed", "evidence", "activationGuidance", "measurementApproach", "tradeoffs", "allocationRationale", "decisionRule"],
   },
-  required: ["rfpChannels", "scoutAiRecommendedChannels", "executiveInsight"]
 };
+
+async function generateCandidateSignals(audienceProfile: any, facts: any): Promise<AiCandidateSignal[]> {
+  const candidates = DIGITAL_REMEDY_PRODUCT_REGISTRY
+    .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live")
+    .map((product) => ({
+      channelId: product.id,
+      displayName: product.displayName,
+      familyId: product.familyId,
+      funnelRoles: product.funnelRoles,
+      supportedKpis: product.supportedKpis,
+      audienceSignals: product.audienceSignals,
+      sourceLabels: product.sourceMetadata.sourceLabels,
+    }));
+  const prompt = `You are ScoutAI's media-strategy reasoning layer. Evaluate only the supplied, Digital Remedy-executable product candidates.
+
+Code—not you—owns eligibility, availability, budget tiers, product minimums, family overlap, portfolio selection, and allocation arithmetic. Do not add products, change IDs, or claim a prerequisite is present when it is unknown.
+
+Score each component from 0 to 100 using campaign-specific evidence. Keep confidence separate from fit by citing evidence source types. Provide concise activation, measurement, tradeoff, allocation-rationale, and scale/stop explanations. Do not calculate final allocations.
+
+CAMPAIGN FACTS:
+${JSON.stringify({
+  advertiserName: facts.advertiserName,
+  vertical: facts.vertical,
+  primaryKpi: facts.primaryKpi,
+  kpis: facts.kpis,
+  funnelStages: facts.funnelStages,
+  audienceDescriptions: facts.audienceDescriptions,
+  audienceSignals: facts.audienceSignals.slice(0, 20),
+  geography: facts.geography,
+  planningMode: facts.planningMode,
+  workingMediaBudget: facts.totalWorkingMediaBudget,
+  normalized30DayBudget: facts.normalized30DayBudget,
+  flightDays: facts.campaignFlightDays,
+  existingChannelIds: facts.existingChannelIds,
+  dataReadiness: facts.dataReadiness,
+  creativeReadiness: facts.creativeReadiness,
+}, null, 2)}
+
+AI-RESEARCHED AUDIENCE PROFILE:
+${JSON.stringify({
+  intro: audienceProfile?.intro,
+  personas: audienceProfile?.personas,
+  executiveSummary: audienceProfile?.executiveSummary,
+  takeaways: audienceProfile?.takeaways,
+  sources: audienceProfile?.sources?.slice?.(0, 15),
+}, null, 2)}
+
+ALLOWED PRODUCT CANDIDATES:
+${JSON.stringify(candidates, null, 2)}
+
+Return one signal object per allowed candidate and no other products.`;
+
+  try {
+    const response = await withTimeout(
+      getAiClient().models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: candidateSignalSchema,
+          temperature: 0.1,
+        },
+      }),
+      TIMEOUT_SCORING_MS,
+      null as any,
+    );
+    if (!response?.text) return [];
+    const parsed = JSON.parse(response.text);
+    const allowedIds = new Set(candidates.map((candidate) => candidate.channelId));
+    return Array.isArray(parsed)
+      ? parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId))
+      : [];
+  } catch (error) {
+    console.warn("[PLANNING] AI candidate reasoning unavailable; using deterministic fallback scores and explanations.", error);
+    return [];
+  }
+}
 
 async function buildChannelStrategy(
   audienceProfile: any,
-  selectedPlanOptions: any[],
+  selectedPlanOptions: any[] = [],
   budgetStrategyMode: 'reallocation' | 'incremental' = 'reallocation',
   advertiserName?: string,
-  kpis?: string[]
+  kpis?: string[],
+  options?: {
+    advertiserUrl?: string;
+    campaignFocus?: string;
+    geography?: string;
+    workingMediaBudget?: number;
+    campaignFlightDays?: number | null;
+    planningSettings?: unknown;
+    requiredChannelIds?: string[];
+    excludedChannelIds?: string[];
+    candidateSignals?: AiCandidateSignal[];
+  },
 ) {
   const totalRfpBudget = selectedPlanOptions.reduce((acc, opt) => acc + (opt.budget || 0), 0);
-  const planSummaryText = summarizeSelectedPlansForPrompt(selectedPlanOptions);
-
-  let maxAdditionalChannels = 0;
-  if (totalRfpBudget >= 100000) {
-    maxAdditionalChannels = 6;
-  } else if (totalRfpBudget >= 50000) {
-    maxAdditionalChannels = 5;
-  } else if (totalRfpBudget >= 30000) {
-    maxAdditionalChannels = 4;
-  } else if (totalRfpBudget >= 15000) {
-    maxAdditionalChannels = 3;
-  } else {
-    maxAdditionalChannels = 0;
-  }
-
-  const prompt = `You are a world-class digital media director and omni-channel media strategy AI representing Digital Remedy.
-Your task is to analyze an advertiser's target audience profile alongside an uploaded RFP Media Plan and evaluate channels to construct a pristine Channel Strategy grounded in Digital Remedy's official capabilities.
-
---- DIGITAL REMEDY OFFICIAL SOLUTIONS & CAPABILITIES ---
-${companyOverview}
-${JSON.stringify(mainSolutionCategories, null, 2)}
-
---- ADVERTISER & TARGET AUDIENCE CONTEXT ---
-${advertiserName ? `Advertiser Name: ${advertiserName}\n` : ''}${kpis && kpis.length > 0 ? `Target Campaign KPIs (Goals): ${kpis.join('; ')}\n` : ''}${JSON.stringify({
-  intro: audienceProfile.intro,
-  personas: audienceProfile.personas,
-  demographics: audienceProfile.demographics,
-  executiveSummary: audienceProfile.executiveSummary,
-}, null, 2)}
-
---- UPLOADED MEDIA PLAN SUMMARY ---
-${planSummaryText}
-
---- BUDGET TIER RULES & CONSTRAINTS ---
-Total Spend: $${totalRfpBudget.toLocaleString()}
-Maximum Allowed Additional Recommended Channels: ${maxAdditionalChannels} (in addition to Display Retargeting if missing).
-Budget Strategy Mode: ${budgetStrategyMode.toUpperCase()}
-
-MANDATORY MEDIA PLANNING RULES:
-1. CANONICAL MEDIA TAXONOMY: Map channels ONLY to these canonical media types:
-   'ctv', 'youtube_tv', 'sports_ott', 'performance_tv', 'digital_video_blend', 'digital_audio', 'geofence_video', 'social_advertising', 'amazon_ott', 'programmatic_display', 'programmatic_video', 'youtube', 'email_marketing', 'linear_tv', 'google_search', 'geofence_display', 'digital_out_of_home', 'native', 'display_retargeting', 'advanced_measurement', 'ad_serving'.
-
-2. RFP CHANNELS EVALUATION ('rfpChannels'):
-   - Evaluate every distinct media line item / channel present in the uploaded RFP plan options.
-   - ADDED VALUE & NON-MEDIA EXCLUSION RULE: Line items representing 'Ad Serving' (canonicalId: 'ad_serving', or ad server fees/third party ad serving) or 'Advanced Measurement' (canonicalId: 'advanced_measurement', or halo studies/incrementality) ARE ADDED VALUE OR TECHNICAL ITEMS, NOT MEDIA REACH CHANNELS.
-   - For 'Ad Serving' and 'Advanced Measurement' items: set 'audienceFit': 0, 'goalMatch': 0, 'score': 0.0. In 'mediaConsumptionEvidence' set "Non-media line item (Added Value / Technical Service)", and in 'whyItEarnsASpot' set "Added value or technical line item; excluded from media reach channel evaluation scoring."
-   - For all active media reach channels: set 'isRecommended': false. Assign 'audienceFit' (integer 1 to 10) and 'goalMatch' (integer 1 to 10). CALCULATE SCORE STRICTLY USING FORMULA: score = (audienceFit * 0.5) + (goalMatch * 0.5).
-
-3. SCOUTAI RECOMMENDED CHANNELS ('scoutAiRecommendedChannels'):
-   - DISPLAY RETARGETING MANDATORY RULE: Display Retargeting ('display_retargeting') MUST ALWAYS be included in final recommendations at 10% budget allocation if it is not already in the RFP!
-   - Recommend up to ${maxAdditionalChannels} additional complementary programmatic media channels from the canonical taxonomy that are NOT already in the RFP.
-   - NEVER recommend 'Ad Serving' or 'Advanced Measurement' as ScoutAI recommended media channels.
-   - For each recommended channel, set 'isRecommended': true. Assign 'audienceFit' (integer 1 to 10) and 'goalMatch' (integer 1 to 10). CALCULATE SCORE STRICTLY USING FORMULA: score = (audienceFit * 0.5) + (goalMatch * 0.5).
-
-4. EXECUTIVE INSIGHT ('executiveInsight'):
-   - Write 1-2 polished sentences summarizing how the recommended channels address gaps or expand coverage for this target audience.
-
-Return ONLY a valid JSON matching the schema.`;
-
-  const ai = getAiClient();
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: channelStrategySchema,
-      temperature: 0.1,
-    }
+  const validatedSettings = validatePlanningSettings(options?.planningSettings);
+  const planningSettings = validatedSettings.valid && validatedSettings.settings
+    ? validatedSettings.settings
+    : DEFAULT_PLANNING_SETTINGS;
+  const mode: PlanningMode = selectedPlanOptions.length === 0 ? "greenfield" : budgetStrategyMode;
+  const signals = profileSignals(audienceProfile);
+  const uploadedWorkingMediaBudget = selectedPlanOptions
+    .flatMap((option) => option.placements || [])
+    .filter((placement) => {
+      const raw = placement.mediaType || placement.productType || placement.placementName || placement.publisher || "";
+      const canonical = normalizeRawChannel(raw).canonicalId;
+      return !isNonMediaItem(raw) && !isNonMediaItem(canonical);
+    })
+    .reduce((sum, placement) => sum + (Number(placement.budget) || 0), 0);
+  const resolvedBudget = mode === "reallocation" && uploadedWorkingMediaBudget > 0
+    ? uploadedWorkingMediaBudget
+    : Number(options?.workingMediaBudget) > 0
+      ? Number(options?.workingMediaBudget)
+      : totalRfpBudget;
+  const facts = buildCampaignFacts({
+    advertiserName,
+    advertiserUrl: options?.advertiserUrl,
+    kpis,
+    campaignFocus: options?.campaignFocus,
+    audienceDescriptions: signals.audienceDescriptions,
+    audienceSignals: signals.audienceSignals,
+    geography: options?.geography || "United States",
+    workingMediaBudget: resolvedBudget,
+    campaignFlightDays: options?.campaignFlightDays,
+    planningMode: mode,
+    selectedPlanOptions,
+    requiredChannelIds: options?.requiredChannelIds,
+    excludedChannelIds: options?.excludedChannelIds,
+    planningSettings,
   });
+  const allowedSignalIds = new Set(DIGITAL_REMEDY_PRODUCT_REGISTRY.map((product) => product.id));
+  const suppliedSignals = Array.isArray(options?.candidateSignals)
+    ? options.candidateSignals.filter((signal) => signal && allowedSignalIds.has(signal.channelId))
+    : [];
+  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts);
+  const mediaPlan = buildMediaRecommendationPlan(facts, aiSignals);
 
-  const parsed = JSON.parse(response.text || '{}');
-
-  const enforceScoreFormula = (item: any) => {
-    const cId = (item.canonicalId || '').toLowerCase();
-    const cName = (item.channelName || '').toLowerCase();
-    const isNonMedia =
-      cId === 'ad_serving' ||
-      cId === 'advanced_measurement' ||
-      cName.includes('ad serving') ||
-      cName.includes('ad server') ||
-      cName.includes('advanced measurement') ||
-      cName.includes('halo effect') ||
-      cName.includes('incrementality');
-
-    if (isNonMedia) {
-      item.canonicalId = cName.includes('serving') || cName.includes('server') ? 'ad_serving' : 'advanced_measurement';
-      item.audienceFit = 0;
-      item.goalMatch = 0;
-      item.score = 0;
-      item.mediaConsumptionEvidence = item.mediaConsumptionEvidence || "Non-media line item (Added Value / Technical Service)";
-      item.whyItEarnsASpot = "Added value or technical line item; excluded from media reach channel evaluation scoring.";
-      return;
-    }
-
-    const fit = Math.min(10, Math.max(1, Math.round(Number(item.audienceFit) || 5)));
-    const goal = Math.min(10, Math.max(1, Math.round(Number(item.goalMatch) || 5)));
-    item.audienceFit = fit;
-    item.goalMatch = goal;
-    item.score = Math.round(((fit * 0.5) + (goal * 0.5)) * 10) / 10;
+  const toLegacyEvaluation = (candidate: any) => {
+    const allocation = mediaPlan.channels.find((channel) => channel.channelId === candidate.product.id);
+    return {
+      channelName: candidate.product.displayName,
+      canonicalId: candidate.product.legacyCanonicalId,
+      isRecommended: Boolean(allocation),
+      audienceFit: Math.round(candidate.components.audienceAndPersonaFit / 10),
+      goalMatch: Math.round(candidate.components.kpiAndFunnelFit / 10),
+      score: Math.round((candidate.recommendationScore / 10) * 10) / 10,
+      mediaConsumptionEvidence: candidate.evidence[0]?.detail || candidate.gapAddressed,
+      whyItEarnsASpot: candidate.eligibilityFailures[0] || candidate.gapAddressed,
+      suggestedAllocationPercent: allocation?.allocationPercent,
+      channelId: candidate.product.id,
+      recommendationStatus: candidate.status,
+      confidence: candidate.confidence,
+      allocationDollars: allocation?.allocationDollars,
+    };
   };
 
-  (parsed.rfpChannels || []).forEach(enforceScoreFormula);
-
-  // Filter out any non-media items if accidentally included in recommended channels
-  parsed.scoutAiRecommendedChannels = (parsed.scoutAiRecommendedChannels || []).filter((item: any) => {
-    const cId = (item.canonicalId || '').toLowerCase();
-    const cName = (item.channelName || '').toLowerCase();
-    return (
-      cId !== 'ad_serving' &&
-      cId !== 'advanced_measurement' &&
-      !cName.includes('ad serving') &&
-      !cName.includes('ad server') &&
-      !cName.includes('advanced measurement')
-    );
-  });
-
-  parsed.scoutAiRecommendedChannels.forEach(enforceScoreFormula);
-
-  const rfpHasRetargeting = (parsed.rfpChannels || []).some(
-    (c: any) => c.canonicalId === 'display_retargeting' || (c.channelName || '').toLowerCase().includes('retarget')
-  );
-  const recHasRetargeting = (parsed.scoutAiRecommendedChannels || []).some(
-    (c: any) => c.canonicalId === 'display_retargeting' || (c.channelName || '').toLowerCase().includes('retarget')
-  );
-
-  if (!rfpHasRetargeting && !recHasRetargeting) {
-    parsed.scoutAiRecommendedChannels = parsed.scoutAiRecommendedChannels || [];
-    parsed.scoutAiRecommendedChannels.unshift({
-      channelName: 'Display Retargeting',
-      canonicalId: 'display_retargeting',
-      isRecommended: true,
-      audienceFit: 9,
-      goalMatch: 9,
-      score: 9.0,
-      suggestedAllocationPercent: 10,
-      mediaConsumptionEvidence: 'Target audience engages across multiple digital touchpoints before converting.',
-      whyItEarnsASpot: 'Display Retargeting re-engages warm visitors from upper-funnel video, ensuring conversion capture at 10% budget allocation.'
-    });
-  }
+  const rfpChannels = facts.existingChannelIds
+    .map((channelId) => mediaPlan.evaluatedCandidates.find((candidate) => candidate.product.id === channelId))
+    .filter(Boolean)
+    .map(toLegacyEvaluation);
+  const recommendedIds = new Set(mediaPlan.channels.map((channel) => channel.channelId));
+  const scoutAiRecommendedChannels = mediaPlan.evaluatedCandidates
+    .filter((candidate) => recommendedIds.has(candidate.product.id) && !facts.existingChannelIds.includes(candidate.product.id))
+    .map(toLegacyEvaluation);
 
   return {
-    rfpChannels: parsed.rfpChannels || [],
-    scoutAiRecommendedChannels: parsed.scoutAiRecommendedChannels || [],
-    executiveInsight: parsed.executiveInsight || 'ScoutAI recommends adding targeted programmatic channels to complement your RFP baseline.',
+    rfpChannels,
+    scoutAiRecommendedChannels,
+    executiveInsight: mediaPlan.channels.length > 0
+      ? `ScoutAI allocated the full $${mediaPlan.workingMediaBudget.toLocaleString()} working media budget across ${mediaPlan.selectedMediaTypeCount} media type(s). The normalized 30-day budget permits ${mediaPlan.maxMediaTypes} automatic selection(s)${facts.requiredChannelIds.length > 0 ? `, with ${facts.requiredChannelIds.length} planner-required override(s) allowed beyond that cap` : ""}.`
+      : "No channel cleared all deterministic availability, prerequisite, budget, and portfolio constraints; resolve the listed conditions before allocation.",
     budgetStrategyMode,
-    totalRfpBudget,
+    totalRfpBudget: mediaPlan.workingMediaBudget,
     analyzedPlanNames: selectedPlanOptions.map(p => p.name),
-    generatedAt: new Date().toISOString()
+    generatedAt: new Date().toISOString(),
+    manualIncludedChannelIds: facts.requiredChannelIds,
+    manualExcludedChannelIds: facts.excludedChannelIds,
+    mediaPlan,
   };
 }
 
@@ -1494,13 +1520,36 @@ Write a Python script that implements the above logic, execute it in the sandbox
 // API: Standalone Media Plan Channel Strategy Analysis
 app.post("/api/analyze-media-plan", async (req, res) => {
   try {
-    const { audienceProfile, selectedPlanOptions, budgetStrategyMode, advertiserName, kpis } = req.body;
-    if (!selectedPlanOptions || selectedPlanOptions.length === 0) {
-      res.status(400).json({ error: "No plan options selected for analysis." });
+    const {
+      audienceProfile,
+      selectedPlanOptions,
+      budgetStrategyMode,
+      advertiserName,
+      advertiserUrl,
+      kpis,
+      campaignFocus,
+      geography,
+      workingMediaBudget,
+      campaignFlightDays,
+      planningSettings,
+      requiredChannelIds,
+      excludedChannelIds,
+      candidateSignals,
+    } = req.body;
+    const selectedOptions = Array.isArray(selectedPlanOptions) ? selectedPlanOptions : [];
+    if (selectedOptions.length === 0 && !(Number(workingMediaBudget) > 0)) {
+      res.status(400).json({ error: "A selected plan option or positive working media budget is required for analysis." });
       return;
     }
-    console.log(`[API /api/analyze-media-plan] Running channel strategy analysis for ${selectedPlanOptions.length} option(s)...`);
-    const channelStrategy = await buildChannelStrategy(audienceProfile, selectedPlanOptions, budgetStrategyMode || 'reallocation', advertiserName, kpis);
+    console.log(`[API /api/analyze-media-plan] Running channel strategy analysis for ${selectedOptions.length} option(s)...`);
+    const channelStrategy = await buildChannelStrategy(
+      audienceProfile,
+      selectedOptions,
+      budgetStrategyMode || 'reallocation',
+      advertiserName,
+      kpis,
+      { advertiserUrl, campaignFocus, geography, workingMediaBudget, campaignFlightDays, planningSettings, requiredChannelIds, excludedChannelIds, candidateSignals },
+    );
     res.json({ success: true, channelStrategy });
   } catch (err: any) {
     console.error("Error in /api/analyze-media-plan:", err);
@@ -1623,7 +1672,22 @@ app.post("/api/generate-profile", async (req, res) => {
   // Prevent Express or Node from timing out socket connections on this long-running streaming endpoint
   req.socket.setTimeout(0);
   
-  const { advertiserName, kpis, audienceDescription, url, geography, campaignFocus, additionalContext, regenerateType, selectedPlanOptions, budgetStrategyMode, rfpAnalysis } = req.body;
+  const {
+    advertiserName,
+    kpis,
+    audienceDescription,
+    url,
+    geography,
+    campaignFocus,
+    additionalContext,
+    regenerateType,
+    selectedPlanOptions,
+    budgetStrategyMode,
+    rfpAnalysis,
+    workingMediaBudget,
+    campaignFlightDays,
+    planningSettings,
+  } = req.body;
 
   // SSE Setup Headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -1972,10 +2036,12 @@ If an uploaded RFP document, RFP questions, or RFP analysis is provided in the u
     const synthesisUserPrompt = `You are provided with four highly detailed, domain-specific research dossiers for the target audience: "${cleanAudienceDesc}".
 
 ADVERTISER NAME: ${cleanAdvertiserName || "None provided"}
-TARGET CAMPAIGN KPIS (GOALS): ${cleanKpis.length > 0 ? cleanKpis.join("; ") : "None provided"}
-GEOGRAPHY: ${geography}
-CAMPAIGN FOCUS: ${campaignFocus}
-BRAND URL: ${cleanUrl || "None provided"}
+	TARGET CAMPAIGN KPIS (GOALS): ${cleanKpis.length > 0 ? cleanKpis.join("; ") : "None provided"}
+	GEOGRAPHY: ${geography}
+	CAMPAIGN FOCUS: ${campaignFocus}
+	WORKING MEDIA BUDGET: $${Number(workingMediaBudget || 0).toLocaleString()}
+	CAMPAIGN FLIGHT DAYS: ${campaignFlightDays || "Unknown"}
+	BRAND URL: ${cleanUrl || "None provided"}
 ADDITIONAL CONTEXT: ${cleanAdditionalContext || "None provided"}
 ${contextGuidance}
 
@@ -2108,22 +2174,30 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       originalData.audienceAnalysis = "";
     }
 
-    // Stage 2: Media Plan Channel Strategy Analysis (if plan options are selected)
-    if (selectedPlanOptions && selectedPlanOptions.length > 0) {
-      sendEvent("status", { message: "Analyzing uploaded RFP Media Plan and evaluating channel strategy..." });
+    // Stage 2: Deterministic media recommendation and allocation for greenfield or uploaded plans
+    if (Number(workingMediaBudget) > 0 || (selectedPlanOptions && selectedPlanOptions.length > 0)) {
+      sendEvent("status", { message: "Evaluating Digital Remedy product eligibility, portfolio constraints, and deterministic allocations..." });
       try {
         const channelStrategy = await buildChannelStrategy(
           originalData,
-          selectedPlanOptions,
+          selectedPlanOptions || [],
           budgetStrategyMode || 'reallocation',
           cleanAdvertiserName,
-          cleanKpis
+          cleanKpis,
+          {
+            advertiserUrl: cleanUrl,
+            campaignFocus,
+            geography,
+            workingMediaBudget: Number(workingMediaBudget) || 0,
+            campaignFlightDays: Number(campaignFlightDays) || null,
+            planningSettings,
+          },
         );
         originalData.channelStrategy = channelStrategy;
-        sendEvent("status", { message: "Channel Strategy analysis generated successfully." });
+        sendEvent("status", { message: "Media portfolio and allocation constraints validated successfully." });
       } catch (channelErr: any) {
-        console.error("Error generating Channel Strategy:", channelErr);
-        sendEvent("status", { message: "Note: Media plan channel strategy analysis encountered a minor issue. Proceeding with audience profile." });
+        console.error("Error generating media recommendation plan:", channelErr);
+        sendEvent("status", { message: "Note: Media recommendation allocation encountered an issue. Proceeding with the audience profile and no unvalidated allocation." });
       }
     }
 
@@ -2253,6 +2327,7 @@ Please correct the profile to resolve all issues.`
         try {
           const correctionData = JSON.parse(correctionResult.output_text);
           finalProfile = correctionData.correctedProfile;
+          if (originalData.channelStrategy) finalProfile.channelStrategy = originalData.channelStrategy;
           autoFixesList = correctionData.autoFixes || [];
           console.log(`AI Auto-Remediation complete. Applied ${autoFixesList.length} patches.`);
         } catch (e) {

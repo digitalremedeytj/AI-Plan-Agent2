@@ -129,6 +129,28 @@ export function exportProfileToMarkdown(
       markdown += `### Executive Channel Strategy Insight\n`;
       markdown += `${profile.channelStrategy.executiveInsight}\n\n`;
     }
+    const mediaPlan = profile.channelStrategy.mediaPlan;
+    if (mediaPlan) {
+      markdown += `### Planning Summary\n`;
+      markdown += `- **Working Media Budget**: $${mediaPlan.workingMediaBudget.toLocaleString()}\n`;
+      markdown += `- **Flight Length**: ${mediaPlan.flightDays ? `${mediaPlan.flightDays} days` : 'Not supplied'}\n`;
+      markdown += `- **Normalized 30-Day Budget**: $${mediaPlan.normalized30DayBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}\n`;
+      markdown += `- **Media-Type Cap / Selected**: ${mediaPlan.maxMediaTypes} / ${mediaPlan.selectedMediaTypeCount}\n`;
+      markdown += `- **Planning Mode**: ${mediaPlan.planningMode}\n`;
+      markdown += `- **Catalog / Settings Version**: ${mediaPlan.catalogVersion} / ${mediaPlan.settingsVersion}\n\n`;
+      markdown += `### Validated Channel Allocations\n`;
+      mediaPlan.channels.forEach(channel => {
+        const displayedStatus = String(channel.status) === 'CONDITIONAL' ? 'TEST' : channel.status;
+        markdown += `- **${channel.channelName}** — ${channel.allocationPercent.toFixed(0)}% ($${channel.allocationDollars.toLocaleString()}); ${displayedStatus}, score ${channel.recommendationScore}/100, ${channel.confidence} confidence\n`;
+        markdown += `  - **Role / Gap**: ${channel.role}; ${channel.gapAddressed}\n`;
+        markdown += `  - **Activation**: ${channel.targetingTactics.map(item => item.displayName).join(', ') || 'Confirm compatible targeting'}\n`;
+        markdown += `  - **Measurement**: ${channel.measurementCapabilities.map(item => item.displayName).join(', ') || 'Confirm eligible measurement'}\n`;
+        markdown += `  - **Allocation Rationale**: ${channel.allocationRationale}\n`;
+        markdown += `  - **Scale / Stop Rule**: ${channel.decisionRule}\n`;
+        if (channel.prerequisites.length > 0) markdown += `  - **Prerequisites**: ${channel.prerequisites.join('; ')}\n`;
+      });
+      markdown += `\n`;
+    }
     if (profile.channelStrategy.rfpChannels?.length > 0) {
       markdown += `### RFP & Evaluation Media Channels\n`;
       profile.channelStrategy.rfpChannels.forEach(c => {

@@ -41,11 +41,12 @@ import {
   Plus,
   X,
   Building2,
-  DollarSign
+  DollarSign,
+  Menu
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, SavedProfile, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis } from "./types";
+import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, SavedProfile, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData } from "./types";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import {
@@ -62,8 +63,25 @@ import { MediaPlanSelector } from "./components/MediaPlanSelector";
 import { TaxonomyVerificationBadge } from "./components/TaxonomyVerificationBadge";
 import { ChannelStrategySection } from "./components/ChannelStrategySection";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
+import { SettingsDrawer } from "./components/SettingsDrawer";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
 import { normalizeRawChannel } from "./utils/mediaTaxonomy";
+import {
+  findBudgetChannelTier,
+  loadPlanningSettings,
+  normalizeCampaignBudget,
+  parseCurrencyInput,
+  type PlanningSettings,
+  savePlanningSettings,
+} from "./planning/settings";
+import {
+  addMediaTypeAndRebalance,
+  allocationBasisPoints,
+  allocationsEqual,
+  applyBasisPointAllocations,
+  removeMediaTypeAndRebalance,
+  type AllocationBasisPoints,
+} from "./planning/manualAllocations";
 
 const getPublisherLogo = (name: string): string => {
   const normalized = name.toLowerCase().trim();
@@ -369,6 +387,40 @@ export default function App() {
   const [geography, setGeography] = useState("United States");
   const [campaignFocus, setCampaignFocus] = useState("CTV-first digital media plan");
   const [additionalContext, setAdditionalContext] = useState("");
+  const [planningSettings, setPlanningSettings] = useState<PlanningSettings>(() =>
+    loadPlanningSettings(typeof window === "undefined" ? null : window.localStorage),
+  );
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+
+  const budgetNormalization = React.useMemo(
+    () => normalizeCampaignBudget(parseCurrencyInput(budget), Number(campaignLength)),
+    [budget, campaignLength],
+  );
+  const appliedBudgetTier = React.useMemo(
+    () => findBudgetChannelTier(budgetNormalization.normalized30DayBudget, planningSettings),
+    [budgetNormalization.normalized30DayBudget, planningSettings],
+  );
+  const availableGeographies = React.useMemo(
+    () => {
+      const configured = Array.from(new Set(
+        planningSettings.products
+          .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live")
+          .flatMap((product) => product.supportedGeographies),
+      )).sort();
+      return configured.length > 0 ? configured : ["United States"];
+    },
+    [planningSettings],
+  );
+
+  React.useEffect(() => {
+    if (!availableGeographies.includes(geography)) setGeography(availableGeographies[0]);
+  }, [availableGeographies, geography]);
+
+  const handleSavePlanningSettings = (nextSettings: PlanningSettings) => {
+    const result = savePlanningSettings(window.localStorage, nextSettings);
+    if (result.valid && result.settings) setPlanningSettings(result.settings);
+  };
 
   const handleAddKpi = () => {
     setKpis((prev) => [...prev, ""]);
@@ -486,12 +538,25 @@ export default function App() {
   const [taxonomyMappings, setTaxonomyMappings] = useState<TaxonomyMapping[]>([]);
   const [isTaxonomyModalOpen, setIsTaxonomyModalOpen] = useState<boolean>(false);
   const [budgetStrategyMode, setBudgetStrategyMode] = useState<'reallocation' | 'incremental'>('reallocation');
+  const [channelStrategyUndo, setChannelStrategyUndo] = useState<ChannelStrategyData | null>(null);
 
   // Sync planOptions & taxonomyMappings whenever extractedPlacements update
   React.useEffect(() => {
     if (extractedPlacements && extractedPlacements.length > 0) {
       const options = groupPlacementsIntoPlanOptions(extractedPlacements);
       setPlanOptions(options);
+      const initiallySelected = options.filter((option) => option.selected);
+      const selectedBudget = initiallySelected.reduce((sum, option) => sum + (Number(option.budget) || 0), 0);
+      if (selectedBudget > 0) setBudget(`$${selectedBudget.toLocaleString()}`);
+      const starts = initiallySelected.map((option) => option.flightDates?.start).filter(Boolean) as string[];
+      const ends = initiallySelected.map((option) => option.flightDates?.end).filter(Boolean) as string[];
+      if (starts.length > 0 && ends.length > 0) {
+        const start = new Date([...starts].sort()[0]);
+        const end = new Date([...ends].sort().at(-1)!);
+        if (Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && end >= start) {
+          setCampaignLength(String(Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1));
+        }
+      }
 
       const uniqueRaw = Array.from(
         new Set(
@@ -500,7 +565,7 @@ export default function App() {
             .filter(Boolean)
         )
       );
-      const mappings = uniqueRaw.map(raw => normalizeRawChannel(raw));
+      const mappings = uniqueRaw.map(raw => normalizeRawChannel(String(raw)));
       setTaxonomyMappings(mappings);
     } else {
       setPlanOptions([]);
@@ -828,6 +893,9 @@ export default function App() {
               geography,
               campaignFocus,
               additionalContext,
+              budget,
+              campaignLength,
+              planningSettings,
               profile: profileData,
               groundingSources: groundingSources || undefined,
               savedAt: new Date().toLocaleString(),
@@ -852,6 +920,9 @@ export default function App() {
       geography,
       campaignFocus,
       additionalContext,
+      budget,
+      campaignLength,
+      planningSettings,
       profile: profileData,
       groundingSources: groundingSources || undefined,
     };
@@ -870,6 +941,8 @@ export default function App() {
     setGeography(saved.geography);
     setCampaignFocus(saved.campaignFocus);
     setAdditionalContext(saved.additionalContext);
+    setBudget(saved.budget || "$10,000");
+    setCampaignLength(saved.campaignLength || "30");
     setProfileData(saved.profile);
     setGroundingSources(saved.groundingSources || null);
     setActiveSavedId(saved.id);
@@ -1337,7 +1410,10 @@ export default function App() {
           regenerateType: typeOverride,
           selectedPlanOptions: selectedOpts,
           budgetStrategyMode,
-          rfpAnalysis
+          rfpAnalysis,
+          workingMediaBudget: budgetNormalization.workingMediaBudget,
+          campaignFlightDays: budgetNormalization.campaignFlightDays,
+          planningSettings,
         })
       });
 
@@ -1435,6 +1511,18 @@ export default function App() {
 
     const selectedOpts = planOptions.filter(p => p.selected);
     if (selectedOpts.length === 0) return;
+    const currentStrategy = profileData.channelStrategy;
+    const candidateSignals = currentStrategy?.mediaPlan?.evaluatedCandidates.map((candidate) => ({
+      channelId: candidate.product.id,
+      components: candidate.components,
+      gapAddressed: candidate.gapAddressed,
+      evidence: candidate.evidence,
+      activationGuidance: candidate.activationGuidance,
+      measurementApproach: candidate.measurementApproach,
+      tradeoffs: candidate.tradeoffs,
+      allocationRationale: candidate.allocationRationale,
+      decisionRule: candidate.decisionRule,
+    })) || [];
 
     try {
       const res = await fetch("/api/analyze-media-plan", {
@@ -1444,6 +1532,17 @@ export default function App() {
           audienceProfile: profileData,
           selectedPlanOptions: selectedOpts,
           budgetStrategyMode: mode,
+          advertiserName,
+          advertiserUrl: url,
+          kpis: kpis.filter((k) => k.trim().length > 0),
+          campaignFocus,
+          geography,
+          workingMediaBudget: budgetNormalization.workingMediaBudget,
+          campaignFlightDays: budgetNormalization.campaignFlightDays,
+          planningSettings,
+          requiredChannelIds: currentStrategy?.manualIncludedChannelIds || [],
+          excludedChannelIds: currentStrategy?.manualExcludedChannelIds || [],
+          candidateSignals,
         })
       });
       const data = await res.json();
@@ -1453,6 +1552,88 @@ export default function App() {
     } catch (err) {
       console.error("Failed to re-analyze channel strategy for budget mode toggle:", err);
     }
+  };
+
+  const handleManualMediaTypeChange = async (channelId: string, action: 'add' | 'remove') => {
+    const currentStrategy = profileData?.channelStrategy;
+    if (!profileData || !currentStrategy?.mediaPlan) throw new Error("No active media plan is available to update.");
+
+    const included = new Set(currentStrategy.manualIncludedChannelIds || []);
+    const excluded = new Set(currentStrategy.manualExcludedChannelIds || []);
+    const lockedChannelIds = currentStrategy.lockedAllocationChannelIds || [];
+    const nextPlan = action === 'add'
+      ? addMediaTypeAndRebalance(currentStrategy.mediaPlan, channelId, lockedChannelIds)
+      : removeMediaTypeAndRebalance(currentStrategy.mediaPlan, channelId, lockedChannelIds);
+
+    if (action === 'add') {
+      included.add(channelId);
+      excluded.delete(channelId);
+    } else {
+      included.delete(channelId);
+      excluded.add(channelId);
+    }
+
+    const nextStrategy: ChannelStrategyData = {
+      ...currentStrategy,
+      generatedAt: new Date().toISOString(),
+      manualIncludedChannelIds: Array.from(included),
+      manualExcludedChannelIds: Array.from(excluded),
+      allocationBaselineBasisPoints: allocationBasisPoints(nextPlan),
+      lockedAllocationChannelIds: lockedChannelIds.filter((id) => nextPlan.channels.some((channel) => channel.channelId === id)),
+      hasManualAllocationChanges: false,
+      mediaPlan: nextPlan,
+    };
+    setChannelStrategyUndo(currentStrategy);
+    setProfileData((previous) => previous ? { ...previous, channelStrategy: nextStrategy } : null);
+  };
+
+  const handleSaveManualAllocations = async (basisPoints: AllocationBasisPoints, lockedChannelIds: string[]) => {
+    const currentStrategy = profileData?.channelStrategy;
+    if (!profileData || !currentStrategy?.mediaPlan) throw new Error("No active media plan is available to update.");
+    const baseline = currentStrategy.allocationBaselineBasisPoints || allocationBasisPoints(currentStrategy.mediaPlan);
+    const nextPlan = applyBasisPointAllocations(
+      currentStrategy.mediaPlan,
+      basisPoints,
+      "Planner saved manual allocation changes; unlocked media types were proportionally rebalanced within the fixed working-media budget.",
+    );
+    const nextStrategy: ChannelStrategyData = {
+      ...currentStrategy,
+      generatedAt: new Date().toISOString(),
+      allocationBaselineBasisPoints: baseline,
+      lockedAllocationChannelIds: lockedChannelIds.filter((id) => nextPlan.channels.some((channel) => channel.channelId === id)),
+      hasManualAllocationChanges: !allocationsEqual(baseline, basisPoints),
+      mediaPlan: nextPlan,
+    };
+    setChannelStrategyUndo(currentStrategy);
+    setProfileData((previous) => previous ? { ...previous, channelStrategy: nextStrategy } : null);
+  };
+
+  const handleResetManualAllocations = async () => {
+    const currentStrategy = profileData?.channelStrategy;
+    if (!profileData || !currentStrategy?.mediaPlan) throw new Error("No active media plan is available to reset.");
+    const baseline = currentStrategy.allocationBaselineBasisPoints;
+    if (!baseline) return;
+    const nextPlan = applyBasisPointAllocations(
+      currentStrategy.mediaPlan,
+      baseline,
+      "Planner reset allocations to the ScoutAI recommendation for the current selected portfolio.",
+    );
+    const nextStrategy: ChannelStrategyData = {
+      ...currentStrategy,
+      generatedAt: new Date().toISOString(),
+      lockedAllocationChannelIds: [],
+      hasManualAllocationChanges: false,
+      mediaPlan: nextPlan,
+    };
+    setChannelStrategyUndo(currentStrategy);
+    setProfileData((previous) => previous ? { ...previous, channelStrategy: nextStrategy } : null);
+  };
+
+  const handleUndoChannelStrategyChange = () => {
+    if (!channelStrategyUndo) return;
+    const strategyToRestore = channelStrategyUndo;
+    setChannelStrategyUndo(null);
+    setProfileData((previous) => previous ? { ...previous, channelStrategy: strategyToRestore } : null);
   };
 
   // Download Profile Markdown file
@@ -1828,8 +2009,40 @@ export default function App() {
               <h1 className="text-xl font-display font-bold text-slate-900 tracking-tight">AI Plan Agent</h1>
             </div>
           </div>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsHeaderMenuOpen((open) => !open)}
+              className="rounded-xl border border-slate-200 bg-white p-2.5 text-slate-600 shadow-xs transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+              aria-label="Open application menu"
+              aria-expanded={isHeaderMenuOpen}
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            {isHeaderMenuOpen && (
+              <>
+                <button className="fixed inset-0 z-0 cursor-default" aria-label="Close application menu" onClick={() => setIsHeaderMenuOpen(false)} />
+                <div className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => { setIsHeaderMenuOpen(false); setIsSettingsOpen(true); }}
+                    className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                  >
+                    Settings
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
+
+      <SettingsDrawer
+        open={isSettingsOpen}
+        settings={planningSettings}
+        onClose={() => setIsSettingsOpen(false)}
+        onSave={handleSavePlanningSettings}
+      />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-[1500px] w-full mx-auto p-4 md:p-6 flex flex-col lg:flex-row gap-6 items-start">
@@ -2277,6 +2490,21 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div>
+                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">30-day normalized</span>
+                      <span className="font-bold text-slate-900">${budgetNormalization.normalized30DayBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                    </div>
+                    <div>
+                      <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Media-type cap</span>
+                      <span className="font-bold text-indigo-700">{appliedBudgetTier.maxChannels}</span>
+                    </div>
+                  </div>
+                  {budgetNormalization.assumptions.map((assumption) => (
+                    <p key={assumption} className="mt-2 text-[10px] leading-4 text-amber-700">{assumption}</p>
+                  ))}
+                </div>
 
                 {/* Input 2.5: KPI (Goal) Inputs */}
                 <div>
@@ -2339,10 +2567,7 @@ export default function App() {
                       onChange={(e) => setGeography(e.target.value)}
                       className="w-full text-xs px-2 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 cursor-pointer"
                     >
-                      <option value="United States">United States</option>
-                      <option value="Canada">Canada</option>
-                      <option value="United Kingdom">United Kingdom</option>
-                      <option value="Global (Multi-market)">Global</option>
+                      {availableGeographies.map((market) => <option key={market} value={market}>{market}</option>)}
                     </select>
                   </div>
 
@@ -2567,6 +2792,7 @@ export default function App() {
                 planOptions={planOptions}
                 rfpAnalysis={rfpAnalysis}
                 profileData={profileData}
+                metricSettings={planningSettings.overviewMetrics}
               />
             </div>
           ) : null}
@@ -3549,6 +3775,11 @@ export default function App() {
                   <ChannelStrategySection
                     data={profileData.channelStrategy}
                     onToggleBudgetMode={handleToggleBudgetMode}
+                    onManualMediaTypeChange={handleManualMediaTypeChange}
+                    onSaveAllocations={handleSaveManualAllocations}
+                    onResetAllocations={handleResetManualAllocations}
+                    onUndoPlanChange={handleUndoChannelStrategyChange}
+                    canUndoPlanChange={Boolean(channelStrategyUndo)}
                   />
                 )}
 
