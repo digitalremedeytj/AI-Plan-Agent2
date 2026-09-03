@@ -7,6 +7,7 @@ import {
   addMediaTypeAndRebalance,
   allocationBasisPoints,
   applyBasisPointAllocations,
+  rebalanceBasisPoints,
   rebalanceEditedAllocation,
   type AllocationBasisPoints,
 } from '../planning/manualAllocations';
@@ -15,7 +16,7 @@ interface ChannelStrategySectionProps {
   data: ChannelStrategyData;
   onToggleBudgetMode?: (mode: 'reallocation' | 'incremental') => void;
   onManualMediaTypeChange?: (channelId: string, action: 'add' | 'remove') => Promise<void>;
-  onSaveAllocations?: (basisPoints: AllocationBasisPoints, lockedChannelIds: string[]) => Promise<void>;
+  onSaveAllocations?: (basisPoints: AllocationBasisPoints, lockedChannelIds: string[], newBudget?: number) => Promise<void>;
   onResetAllocations?: () => Promise<void>;
   onUndoPlanChange?: () => void;
   canUndoPlanChange?: boolean;
@@ -174,6 +175,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   const [manualUpdateError, setManualUpdateError] = useState('');
   const [manualUpdateMessage, setManualUpdateMessage] = useState('');
   const [isEditingAllocations, setIsEditingAllocations] = useState(false);
+  const [draftBudget, setDraftBudget] = useState<number>(0);
+  const [draftBudgetInput, setDraftBudgetInput] = useState<string>('');
   const [draftBasisPoints, setDraftBasisPoints] = useState<AllocationBasisPoints>({});
   const [draftInputs, setDraftInputs] = useState<Record<string, AllocationInputValue>>({});
   const [draftLockedChannelIds, setDraftLockedChannelIds] = useState<string[]>([]);
@@ -184,6 +187,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     setExpandedChannels(new Set());
     setManualUpdateError('');
     setIsEditingAllocations(false);
+    setDraftBudget(0);
+    setDraftBudgetInput('');
     setAllocationEditorError('');
   }, [data?.generatedAt]);
 
@@ -249,6 +254,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     if (!mediaPlan) return;
     const current = allocationBasisPoints(mediaPlan);
     setDraftBasisPoints(current);
+    setDraftBudget(mediaPlan.workingMediaBudget);
+    setDraftBudgetInput(mediaPlan.workingMediaBudget.toLocaleString());
     setDraftInputs(allocationInputs(current, mediaPlan.workingMediaBudget));
     setDraftLockedChannelIds((data.lockedAllocationChannelIds || []).filter((id) => current[id] !== undefined));
     setAllocationEditorError('');
@@ -258,38 +265,74 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   const cancelAllocationEditor = () => {
     setIsEditingAllocations(false);
     setAllocationEditorError('');
+    setDraftBudget(0);
+    setDraftBudgetInput('');
+  };
+
+  const commitBudgetInput = (rawInput?: string) => {
+    if (!mediaPlan) return;
+    const input = rawInput ?? draftBudgetInput;
+    const parsed = parseAllocationNumber(input);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setAllocationEditorError('Please enter a valid positive budget amount.');
+      setDraftBudgetInput((draftBudget > 0 ? draftBudget : mediaPlan.workingMediaBudget).toLocaleString());
+      return;
+    }
+    const cleanBudget = Math.round(parsed);
+    const sumMinSpends = mediaPlan.channels.reduce((sum, c) => sum + c.minimumTotalSpend, 0);
+    if (cleanBudget < sumMinSpends) {
+      setAllocationEditorError(`Budget of $${cleanBudget.toLocaleString()} is too low for the selected media mix. Minimum required is $${sumMinSpends.toLocaleString()} based on channel minimums.`);
+      setDraftBudget(cleanBudget);
+      setDraftBudgetInput(cleanBudget.toLocaleString());
+      setDraftInputs(allocationInputs(draftBasisPoints, cleanBudget));
+      return;
+    }
+    try {
+      const next = rebalanceBasisPoints(mediaPlan, draftBasisPoints, cleanBudget);
+      setDraftBudget(cleanBudget);
+      setDraftBudgetInput(cleanBudget.toLocaleString());
+      setDraftBasisPoints(next);
+      setDraftInputs(allocationInputs(next, cleanBudget));
+      setAllocationEditorError('');
+    } catch (error) {
+      setDraftBudget(cleanBudget);
+      setDraftBudgetInput(cleanBudget.toLocaleString());
+      setDraftInputs(allocationInputs(draftBasisPoints, cleanBudget));
+      setAllocationEditorError(error instanceof Error ? error.message : 'Allocations could not be balanced for this budget.');
+    }
   };
 
   const commitAllocationInput = (channelId: string, unit: 'percent' | 'dollars', rawInput?: string) => {
     if (!mediaPlan) return;
+    const activeBudget = draftBudget > 0 ? draftBudget : mediaPlan.workingMediaBudget;
     const input = rawInput ?? draftInputs[channelId]?.[unit] ?? '';
     const parsed = parseAllocationNumber(input);
     if (!Number.isFinite(parsed)) {
       setAllocationEditorError('Enter a valid allocation amount.');
-      setDraftInputs(allocationInputs(draftBasisPoints, mediaPlan.workingMediaBudget));
+      setDraftInputs(allocationInputs(draftBasisPoints, activeBudget));
       return;
     }
     const requestedPercent = unit === 'percent'
       ? parsed
-      : (parsed / mediaPlan.workingMediaBudget) * 100;
+      : (parsed / activeBudget) * 100;
     if (Math.abs(requestedPercent - Math.round(requestedPercent)) > 0.000001) {
-      const dollarIncrement = mediaPlan.workingMediaBudget / 100;
+      const dollarIncrement = activeBudget / 100;
       setAllocationEditorError(unit === 'percent'
         ? 'Allocation percentages must be whole numbers.'
         : `Dollar allocations must equal a whole percentage of the budget (increments of $${dollarIncrement.toLocaleString(undefined, { maximumFractionDigits: 2 })}).`);
-      setDraftInputs(allocationInputs(draftBasisPoints, mediaPlan.workingMediaBudget));
+      setDraftInputs(allocationInputs(draftBasisPoints, activeBudget));
       return;
     }
     const targetBasisPoints = Math.round(requestedPercent) * 100;
     try {
-      const draftPlan = applyBasisPointAllocations(mediaPlan, draftBasisPoints, 'Draft allocation preview.');
-      const next = rebalanceEditedAllocation(draftPlan, channelId, targetBasisPoints, draftLockedChannelIds);
+      const draftPlan = applyBasisPointAllocations(mediaPlan, draftBasisPoints, 'Draft allocation preview.', activeBudget);
+      const next = rebalanceEditedAllocation(draftPlan, channelId, targetBasisPoints, draftLockedChannelIds, activeBudget);
       setDraftBasisPoints(next);
-      setDraftInputs(allocationInputs(next, mediaPlan.workingMediaBudget));
+      setDraftInputs(allocationInputs(next, activeBudget));
       setAllocationEditorError('');
     } catch (error) {
       setAllocationEditorError(error instanceof Error ? error.message : 'That allocation cannot be balanced.');
-      setDraftInputs(allocationInputs(draftBasisPoints, mediaPlan.workingMediaBudget));
+      setDraftInputs(allocationInputs(draftBasisPoints, activeBudget));
     }
   };
 
@@ -301,11 +344,16 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
   const saveAllocationEditor = async () => {
     if (!onSaveAllocations || isSavingAllocations) return;
+    const activeBudget = draftBudget > 0 ? draftBudget : mediaPlan.workingMediaBudget;
     setIsSavingAllocations(true);
     setAllocationEditorError('');
     try {
-      await onSaveAllocations(draftBasisPoints, draftLockedChannelIds);
-      setManualUpdateMessage('Allocation changes were saved. The total remains 100% of the fixed working-media budget.');
+      await onSaveAllocations(draftBasisPoints, draftLockedChannelIds, activeBudget);
+      setManualUpdateMessage(
+        activeBudget !== mediaPlan.workingMediaBudget
+          ? `Allocation and budget changes ($${activeBudget.toLocaleString()}) were saved.`
+          : 'Allocation changes were saved. The total remains 100% of the working-media budget.'
+      );
       setIsEditingAllocations(false);
     } catch (error) {
       setAllocationEditorError(error instanceof Error ? error.message : 'The allocation changes could not be saved.');
@@ -377,7 +425,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
         <div>
           <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
             <Layers className="w-4 h-4" />
-            <span>10. Channel Strategy & Activation Plan</span>
+            <span>Channel Strategy & Activation Plan</span>
           </div>
           <div className="flex items-center gap-2">
             <h2 className="font-display font-bold text-2xl md:text-3xl text-slate-900 tracking-tight">
@@ -458,19 +506,45 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
           <div className="overflow-hidden rounded-2xl border-2 border-indigo-500 bg-white shadow-md">
             <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-800 px-4 py-2 text-xs font-bold uppercase tracking-widest text-white">
-              <ShieldCheck className="h-4 w-4 text-indigo-200" /> Validated channel allocation
+              <ShieldCheck className="h-4 w-4 text-indigo-200" /> Channel Allocation
             </div>
             {mediaPlan.channels.length > 0 && (
               <div className="border-b border-indigo-100 bg-indigo-50/60 px-4 py-3 md:px-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs font-extrabold text-indigo-800">
-                        <Lock className="h-3.5 w-3.5" /> Fixed budget: ${mediaPlan.workingMediaBudget.toLocaleString()}
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700"><Check className="h-3.5 w-3.5" /> 100% allocated</span>
-                    </div>
-                    <p className="mt-1 text-[11px] text-slate-600">Edit either dollars or whole-number percentages. Every change is balanced across unlocked media types without changing the budget.</p>
+                    {isEditingAllocations ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="inline-flex items-center gap-1.5 rounded-full border border-indigo-300 bg-white px-2.5 py-1 text-xs shadow-xs">
+                          <label htmlFor="edit-working-media-budget" className="flex items-center gap-1 font-bold text-indigo-900">
+                            <DollarSign className="h-3.5 w-3.5 text-indigo-600" />
+                            <span>Budget:</span>
+                          </label>
+                          <div className="relative flex items-center">
+                            <span className="pointer-events-none text-xs font-extrabold text-slate-400">$</span>
+                            <input
+                              id="edit-working-media-budget"
+                              type="text"
+                              inputMode="decimal"
+                              value={draftBudgetInput}
+                              onChange={(event) => setDraftBudgetInput(event.target.value)}
+                              onBlur={(event) => commitBudgetInput(event.currentTarget.value)}
+                              onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+                              className="w-24 border-b border-indigo-300 bg-transparent py-0.5 pl-0.5 pr-1 text-xs font-extrabold text-slate-900 outline-none focus:border-indigo-600 focus:ring-0"
+                              placeholder="10,000"
+                            />
+                          </div>
+                        </div>
+                        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700"><Check className="h-3.5 w-3.5" /> 100% allocated</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs font-extrabold text-indigo-800">
+                          <Lock className="h-3.5 w-3.5" /> Fixed budget: ${mediaPlan.workingMediaBudget.toLocaleString()}
+                        </span>
+                        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700"><Check className="h-3.5 w-3.5" /> 100% allocated</span>
+                      </div>
+                    )}
+                    <p className="mt-1 text-[11px] text-slate-600">Edit budget, dollars, or whole-number percentages. Every change is balanced across unlocked media types.</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     {canUndoPlanChange && onUndoPlanChange && (
@@ -508,9 +582,10 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                     <div className="divide-y divide-slate-100">
                       {mediaPlan.channels.map((channel) => {
                         const locked = draftLockedChannelIds.includes(channel.channelId);
+                        const activeBudget = draftBudget > 0 ? draftBudget : mediaPlan.workingMediaBudget;
                         const effectiveMinimum = Math.ceil(Math.max(
                           channel.minimumAllocationPercent,
-                          mediaPlan.workingMediaBudget > 0 ? (channel.minimumTotalSpend / mediaPlan.workingMediaBudget) * 100 : 100,
+                          activeBudget > 0 ? (channel.minimumTotalSpend / activeBudget) * 100 : 100,
                         ));
                         const effectiveMaximum = Math.floor(channel.maximumAllocationPercent);
                         return (
@@ -579,9 +654,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                           <div className="text-xs font-extrabold text-slate-900">
-                            Total {((Object.values(draftBasisPoints) as number[]).reduce((sum, value) => sum + value, 0) / 100).toFixed(0)}% · ${mediaPlan.workingMediaBudget.toLocaleString()}
+                            Total {((Object.values(draftBasisPoints) as number[]).reduce((sum, value) => sum + value, 0) / 100).toFixed(0)}% · ${(draftBudget > 0 ? draftBudget : mediaPlan.workingMediaBudget).toLocaleString()}
                           </div>
-                          <div className="mt-0.5 text-[10px] font-semibold text-emerald-700">Budget remains fixed while unlocked rows rebalance proportionally.</div>
+                          <div className="mt-0.5 text-[10px] font-semibold text-emerald-700">Allocations balance proportionally to 100% of the working media budget.</div>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           {data.hasManualAllocationChanges && onResetAllocations && (
@@ -793,9 +868,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                                 <p className="mt-1 text-xs leading-5 text-slate-600">{reason}</p>
                               </div>
                               <div className="flex shrink-0 items-center gap-3">
-                                <div className={`min-w-[82px] rounded-lg border px-3 py-1.5 text-right ${getRecommendationScoreBg(candidate.recommendationScore)}`}>
-                                  <div className="text-[10px] font-bold uppercase tracking-wide opacity-70">Score</div>
-                                  <div className="font-extrabold">{candidate.recommendationScore}<span className="text-[10px]">/100</span></div>
+                                <div className={`min-w-[72px] rounded-lg border px-2.5 py-1.5 text-center ${getRecommendationScoreBg(candidate.recommendationScore)}`}>
+                                  <div className="text-[10px] font-bold uppercase tracking-wider opacity-75">Score</div>
+                                  <div className="font-extrabold leading-tight">{candidate.recommendationScore}<span className="text-[10px] font-semibold opacity-90">/100</span></div>
                                 </div>
                                 <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${expandedChannels.has(candidate.product.id) ? 'rotate-180' : ''}`} />
                               </div>
@@ -860,64 +935,124 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
         </div>
       )}
 
-      {/* Intro Context Callout */}
-      <div className="mt-6 text-slate-700 text-sm md:text-base font-medium leading-relaxed bg-slate-50/80 p-4 rounded-xl border border-slate-200/60">
-        Your brief includes <span className="font-semibold text-slate-900">{rfpChannelNames || 'existing RFP channels'}</span>.{' '}
-        <span className="text-indigo-700 font-bold">ScoutAI</span> identified{' '}
-        <span className="font-semibold text-slate-900">{data.scoutAiRecommendedChannels.length} additional programmatic channel(s)</span>{' '}
-        that complement your plan based on total budget tier (${data.totalRfpBudget?.toLocaleString() || 0}).
-      </div>
+      {/* Intro Context Callout (Shown when RFP channels exist) */}
+      {data.rfpChannels && data.rfpChannels.length > 0 && (
+        <div className="mt-6 text-slate-700 text-sm md:text-base font-medium leading-relaxed bg-slate-50/80 p-4 rounded-xl border border-slate-200/60">
+          Your brief includes <span className="font-semibold text-slate-900">{rfpChannelNames || 'existing RFP channels'}</span>.{' '}
+          <span className="text-indigo-700 font-bold">ScoutAI</span> identified{' '}
+          <span className="font-semibold text-slate-900">{data.scoutAiRecommendedChannels.length} additional programmatic channel(s)</span>{' '}
+          that complement your plan based on total budget tier (${data.totalRfpBudget?.toLocaleString() || 0}).
+        </div>
+      )}
 
       {/* SECTION 1: RFP CHANNELS CARD */}
-      <div className="mt-8 relative border-2 border-slate-800 rounded-2xl overflow-hidden bg-white shadow-sm">
-        {/* RFP Badge Header */}
-        <div className="bg-slate-900 text-white text-xs font-bold font-mono tracking-widest uppercase py-1.5 px-4 text-center flex items-center justify-center gap-2">
-          <span className="bg-slate-800 px-2 py-0.5 rounded border border-slate-700">RFP</span>
-          <span>Baseline RFP Channels</span>
-        </div>
+      {data.rfpChannels && data.rfpChannels.length > 0 && (
+        <div className="mt-8 relative border-2 border-slate-800 rounded-2xl overflow-hidden bg-white shadow-sm">
+          {/* RFP Badge Header */}
+          <div className="bg-slate-900 text-white text-xs font-bold font-mono tracking-widest uppercase py-1.5 px-4 text-center flex items-center justify-center gap-2">
+            <span className="bg-slate-800 px-2 py-0.5 rounded border border-slate-700">RFP</span>
+            <span>Baseline RFP Channels</span>
+          </div>
 
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs md:text-sm border-collapse">
-            <thead>
-              <tr className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
-                <th className="py-3 px-4 w-[18%]">Channel</th>
-                <th className="py-3 px-3 w-[10%] text-center">Score</th>
-                <th className="py-3 px-3 w-[10%] text-center">Audience Fit</th>
-                <th className="py-3 px-3 w-[10%] text-center">Goal Match</th>
-                <th className="py-3 px-4 w-[28%]">Media Consumption Evidence</th>
-                <th className="py-3 px-4 w-[24%]">Why It Earns A Spot</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 font-sans">
-              {data.rfpChannels.map((item, idx) => {
-                const nonMedia = isNonMediaItem(item.canonicalId) || isNonMediaItem(item.channelName) || item.score === 0;
-                return (
-                  <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
-                    <td className="py-3.5 px-4 font-semibold text-slate-900">
-                      <div>{item.channelName}</div>
-                      {nonMedia && (
-                        <div className="inline-block text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 mt-1">
-                          Added Value / Non-Media
-                        </div>
-                      )}
+          {/* Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs md:text-sm border-collapse">
+              <thead>
+                <tr className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
+                  <th className="py-3 px-4 w-[18%]">Channel</th>
+                  <th className="py-3 px-3 w-[10%] text-center">Score</th>
+                  <th className="py-3 px-3 w-[10%] text-center">Audience Fit</th>
+                  <th className="py-3 px-3 w-[10%] text-center">Goal Match</th>
+                  <th className="py-3 px-4 w-[28%]">Media Consumption Evidence</th>
+                  <th className="py-3 px-4 w-[24%]">Why It Earns A Spot</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-sans">
+                {data.rfpChannels.map((item, idx) => {
+                  const nonMedia = isNonMediaItem(item.canonicalId) || isNonMediaItem(item.channelName) || item.score === 0;
+                  return (
+                    <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-3.5 px-4 font-semibold text-slate-900">
+                        <div>{item.channelName}</div>
+                        {nonMedia && (
+                          <div className="inline-block text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 mt-1">
+                            Added Value / Non-Media
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-3 text-center">
+                        {nonMedia ? (
+                          <span className="inline-block text-xs font-semibold text-slate-600 bg-slate-100 px-2 py-1 rounded border border-slate-200">
+                            N/A
+                          </span>
+                        ) : (
+                          <span className={`text-base font-extrabold ${getScoreColor(item.score)}`}>
+                            {item.score.toFixed(1)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
+                        {nonMedia ? <span className="text-slate-400 font-normal">N/A</span> : `${item.audienceFit}/10`}
+                      </td>
+                      <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
+                        {nonMedia ? <span className="text-slate-400 font-normal">N/A</span> : `${item.goalMatch}/10`}
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
+                        {item.mediaConsumptionEvidence}
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
+                        {item.whyItEarnsASpot}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 2: SCOUTAI RECOMMENDED CHANNELS CARD (Shown when RFP channels baseline exists) */}
+      {data.rfpChannels && data.rfpChannels.length > 0 && data.scoutAiRecommendedChannels && data.scoutAiRecommendedChannels.length > 0 && (
+        <div className="mt-8 relative border-2 border-indigo-500 rounded-2xl overflow-hidden bg-white shadow-md">
+          {/* ScoutAI Badge Header */}
+          <div className="bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-800 text-white text-xs font-bold font-mono tracking-widest uppercase py-1.5 px-4 text-center flex items-center justify-center gap-2">
+            <Sparkles className="w-4 h-4 text-indigo-200" />
+            <span>ScoutAI Recommended Additional Channels</span>
+          </div>
+
+          {/* Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs md:text-sm border-collapse">
+              <thead>
+                <tr className="bg-indigo-50/60 text-indigo-950 font-semibold border-b border-indigo-100">
+                  <th className="py-3 px-4 w-[18%]">Channel</th>
+                  <th className="py-3 px-3 w-[10%] text-center">Score</th>
+                  <th className="py-3 px-3 w-[10%] text-center">Audience Fit</th>
+                  <th className="py-3 px-3 w-[10%] text-center">Goal Match</th>
+                  <th className="py-3 px-4 w-[28%]">Media Consumption Evidence</th>
+                  <th className="py-3 px-4 w-[24%]">Why It Earns A Spot</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-indigo-50 font-sans">
+                {data.scoutAiRecommendedChannels.map((item, idx) => (
+                  <tr key={idx} className="hover:bg-indigo-50/30 transition-colors">
+                    <td className="py-3.5 px-4">
+                      <div className="font-bold text-slate-900 text-sm">{item.channelName}</div>
+                      <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mt-1">
+                        + Recommended
+                      </div>
                     </td>
                     <td className="py-3.5 px-3 text-center">
-                      {nonMedia ? (
-                        <span className="inline-block text-xs font-semibold text-slate-600 bg-slate-100 px-2 py-1 rounded border border-slate-200">
-                          N/A
-                        </span>
-                      ) : (
-                        <span className={`text-base font-extrabold ${getScoreColor(item.score)}`}>
-                          {item.score.toFixed(1)}
-                        </span>
-                      )}
+                      <span className={`text-base font-extrabold ${getScoreColor(item.score)}`}>
+                        {item.score.toFixed(1)}
+                      </span>
                     </td>
                     <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
-                      {nonMedia ? <span className="text-slate-400 font-normal">N/A</span> : `${item.audienceFit}/10`}
+                      {item.audienceFit}/10
                     </td>
                     <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
-                      {nonMedia ? <span className="text-slate-400 font-normal">N/A</span> : `${item.goalMatch}/10`}
+                      {item.goalMatch}/10
                     </td>
                     <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
                       {item.mediaConsumptionEvidence}
@@ -926,66 +1061,12 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                       {item.whyItEarnsASpot}
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
-
-      {/* SECTION 2: SCOUTAI RECOMMENDED CHANNELS CARD */}
-      <div className="mt-8 relative border-2 border-indigo-500 rounded-2xl overflow-hidden bg-white shadow-md">
-        {/* ScoutAI Badge Header */}
-        <div className="bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-800 text-white text-xs font-bold font-mono tracking-widest uppercase py-1.5 px-4 text-center flex items-center justify-center gap-2">
-          <Sparkles className="w-4 h-4 text-indigo-200" />
-          <span>ScoutAI Recommended Additional Channels</span>
-        </div>
-
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs md:text-sm border-collapse">
-            <thead>
-              <tr className="bg-indigo-50/60 text-indigo-950 font-semibold border-b border-indigo-100">
-                <th className="py-3 px-4 w-[18%]">Channel</th>
-                <th className="py-3 px-3 w-[10%] text-center">Score</th>
-                <th className="py-3 px-3 w-[10%] text-center">Audience Fit</th>
-                <th className="py-3 px-3 w-[10%] text-center">Goal Match</th>
-                <th className="py-3 px-4 w-[28%]">Media Consumption Evidence</th>
-                <th className="py-3 px-4 w-[24%]">Why It Earns A Spot</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-indigo-50 font-sans">
-              {data.scoutAiRecommendedChannels.map((item, idx) => (
-                <tr key={idx} className="hover:bg-indigo-50/30 transition-colors">
-                  <td className="py-3.5 px-4">
-                    <div className="font-bold text-slate-900 text-sm">{item.channelName}</div>
-                    <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mt-1">
-                      + Recommended
-                    </div>
-                  </td>
-                  <td className="py-3.5 px-3 text-center">
-                    <span className={`text-base font-extrabold ${getScoreColor(item.score)}`}>
-                      {item.score.toFixed(1)}
-                    </span>
-                  </td>
-                  <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
-                    {item.audienceFit}/10
-                  </td>
-                  <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
-                    {item.goalMatch}/10
-                  </td>
-                  <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
-                    {item.mediaConsumptionEvidence}
-                  </td>
-                  <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
-                    {item.whyItEarnsASpot}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      )}
 
       {/* BOTTOM EXECUTIVE INSIGHT BANNER */}
       <div className="mt-6 bg-gradient-to-r from-slate-900 to-indigo-950 text-white p-4 md:p-5 rounded-xl shadow-sm flex items-start gap-3 border border-indigo-500/30">

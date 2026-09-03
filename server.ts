@@ -13,6 +13,14 @@ import { buildCampaignFacts, buildMediaRecommendationPlan, profileSignals } from
 import { DIGITAL_REMEDY_PRODUCT_REGISTRY, validateProductRegistry } from "./src/planning/knowledge/registry";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
+import {
+  loadPersistentPlanningSettings,
+  savePersistentPlanningSettings,
+  loadPersistentCtvPublishers,
+  savePersistentCtvPublishers,
+  saveCustomPublisherLogo
+} from "./src/planning/knowledge/serverStorage";
+import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
 import {
   companyOverview,
@@ -1557,6 +1565,102 @@ app.post("/api/analyze-media-plan", async (req, res) => {
   }
 });
 
+// API: Get persistent Planning Settings from disk
+app.get("/api/settings", (req, res) => {
+  try {
+    const settings = loadPersistentPlanningSettings();
+    res.json({ success: true, settings });
+  } catch (err: any) {
+    console.error("Error loading settings:", err);
+    res.status(500).json({ error: "Failed to load planning settings", details: err.message });
+  }
+});
+
+// API: Save persistent Planning Settings to disk
+app.put("/api/settings", (req, res) => {
+  try {
+    const result = savePersistentPlanningSettings(req.body);
+    if (!result.valid) {
+      res.status(400).json({ error: "Invalid planning settings", details: result.errors });
+      return;
+    }
+    res.json({ success: true, settings: result.settings });
+  } catch (err: any) {
+    console.error("Error saving settings:", err);
+    res.status(500).json({ error: "Failed to save planning settings", details: err.message });
+  }
+});
+
+// API: Reset Planning Settings to defaults
+app.post("/api/settings/reset", (req, res) => {
+  try {
+    const result = savePersistentPlanningSettings(DEFAULT_PLANNING_SETTINGS);
+    res.json({ success: true, settings: result.settings });
+  } catch (err: any) {
+    console.error("Error resetting settings:", err);
+    res.status(500).json({ error: "Failed to reset settings", details: err.message });
+  }
+});
+
+// API: Get persistent CTV Publishers from disk
+app.get("/api/ctv-publishers", (req, res) => {
+  try {
+    const publishers = loadPersistentCtvPublishers();
+    res.json({ success: true, publishers });
+  } catch (err: any) {
+    console.error("Error loading CTV publishers:", err);
+    res.status(500).json({ error: "Failed to load CTV publishers", details: err.message });
+  }
+});
+
+// API: Save persistent CTV Publishers to disk
+app.put("/api/ctv-publishers", (req, res) => {
+  try {
+    const result = savePersistentCtvPublishers(req.body?.publishers || req.body);
+    if (!result.valid) {
+      res.status(400).json({ error: "Invalid CTV publishers", details: result.errors });
+      return;
+    }
+    res.json({ success: true, publishers: result.publishers });
+  } catch (err: any) {
+    console.error("Error saving CTV publishers:", err);
+    res.status(500).json({ error: "Failed to save CTV publishers", details: err.message });
+  }
+});
+
+// API: Reset CTV Publishers to CSV defaults
+app.post("/api/ctv-publishers/reset", (req, res) => {
+  try {
+    const result = savePersistentCtvPublishers(DEFAULT_CTV_PUBLISHERS);
+    res.json({ success: true, publishers: result.publishers });
+  } catch (err: any) {
+    console.error("Error resetting CTV publishers:", err);
+    res.status(500).json({ error: "Failed to reset CTV publishers", details: err.message });
+  }
+});
+
+// API: Upload custom publisher logo to disk (/assets/pub-logos/)
+app.post("/api/ctv-publishers/upload-logo", upload.single("logo"), (req, res) => {
+  try {
+    if (req.file) {
+      const logoUrl = saveCustomPublisherLogo(req.file.originalname, req.file.buffer);
+      res.json({ success: true, logoUrl });
+      return;
+    }
+    if (req.body?.base64 && req.body?.filename) {
+      const rawBase64 = req.body.base64.replace(/^data:image\/\w+;base64,/, "");
+      const buffer = Buffer.from(rawBase64, "base64");
+      const logoUrl = saveCustomPublisherLogo(req.body.filename, buffer);
+      res.json({ success: true, logoUrl });
+      return;
+    }
+    res.status(400).json({ error: "No image file or base64 provided." });
+  } catch (err: any) {
+    console.error("Error uploading logo:", err);
+    res.status(500).json({ error: "Failed to upload logo", details: err.message });
+  }
+});
+
 // API: Secure Authentication Login Endpoint
 app.post("/api/auth/login", (req, res) => {
   try {
@@ -1687,6 +1791,7 @@ app.post("/api/generate-profile", async (req, res) => {
     workingMediaBudget,
     campaignFlightDays,
     planningSettings,
+    ctvPublishers,
   } = req.body;
 
   // SSE Setup Headers
@@ -1947,6 +2052,37 @@ INSTRUCTIONS:
     const deduplicatedSources = Array.from(uniqueSourcesMap.values());
     console.log(`Consolidated all parallel search sources. Deduplicated count: ${deduplicatedSources.length}`);
 
+    // Build dynamic CTV Publisher guidance based on active enabled publishers and their targeting rules
+    const effectivePublishers = (Array.isArray(ctvPublishers) && ctvPublishers.length > 0)
+      ? ctvPublishers
+      : loadPersistentCtvPublishers();
+    
+    const enabledPublishers = effectivePublishers.filter((p: any) => p && p.enabled !== false && p.name);
+    const pubApps = enabledPublishers.filter((p: any) => p.category === "App");
+    const pubNetworks = enabledPublishers.filter((p: any) => p.category === "Network");
+    const pubOsFast = enabledPublishers.filter((p: any) => p.category === "OS");
+
+    const formatPublisherLine = (p: any) => `      - '${p.name}' (Category: '${p.category}'${p.notes ? ` | Targeting Rules / When to Include: "${p.notes}"` : ''})`;
+
+    const ctvPublishersSection = `9. CTV PUBLISHER RECOMMENDATIONS (MANDATORY & TARGETING RULE GROUNDED):
+   You MUST select between 6 and 8 highly relevant CTV publishers STRICTLY from this approved pool of currently enabled publishers based on the audience's personas, demographic profile, content affinities, and campaign objectives.
+   You MUST leverage the provided Targeting Rules & Notes to guide your selection (e.g. prioritize female-skewed networks for female audiences, news/finance networks for B2B/high-HHI, sports networks for active/male skews, FAST/OS for broad reach / cable replacement, etc.):
+
+   --- APPROVED ENABLED APPS (Category 'App') ---
+${pubApps.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
+
+   --- APPROVED ENABLED NETWORKS (Category 'Network') ---
+${pubNetworks.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
+
+   --- APPROVED ENABLED OPERATING SYSTEMS & FAST (Category 'OS') ---
+${pubOsFast.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
+
+   For each selected publisher, provide:
+   * 'publisher': The exact publisher name as listed in the approved pool.
+   * 'category': The publisher category ('App' | 'Network' | 'OS').
+   * 'why': A highly specific, evidence-grounded justification explaining why this publisher's programming, viewer demographics, or platform environment fits the persona and fulfills its targeting rule.
+   Also, write a professional, cohesive paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign.`;
+
     // Synthesis & Strategy 2 (Authority Filtering)
     const synthesisSystemInstruction = `You are a senior digital media director, veteran audience research partner, and master data synthesizer.
 Your task is to integrate separate research dossiers into a single, cohesive, highly authoritative digital advertising audience profile.
@@ -1980,13 +2116,7 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
      * Search Ad Conversion Rate: 2% - 5%.
      * General Digital Video Completion Rate (VCR): 70% - 85% for standard non-skip skippable digital video.
 
-9. CTV PUBLISHER RECOMMENDATIONS (MANDATORY):
-   You MUST select between 6 and 8 highly relevant CTV publishers from this exact approved pool based on the audience's personas and interests. Do NOT suggest publishers outside this list:
-   - Apps (Category 'App'): 'Crackle', 'DirecTV Stream', 'Disney+', 'Fubo', 'Hulu', 'Max', 'Netflix', 'Prime Video', 'Peacock', 'Philo', 'Plex', 'Pluto TV', 'Sling TV', 'Tubi', 'Vevo', 'Xumo Play'
-   - Networks (Category 'Network'): 'A&E', 'ABC', 'AMC', 'Bloomberg', 'CBS', 'Paramount+', 'Cheddar', 'CNN', 'CNBC', 'Discovery', 'Discovery+', 'ESPN', 'Fox', 'Freeform', 'Fuse', 'FX', 'Hallmark', 'Moonbug Kids', 'NBC', 'Newsy', 'NewsON', 'NFL Network', 'Outside TV', 'Science Channel', 'Scripps Networks', 'Travel Channel', 'Turner'
-   - Operating Systems & FAST (Category 'OS'): 'LG Channels', 'The Roku Channel', 'Samsung TV Plus', 'Vizio WatchFree+'
-   For each selected publisher, provide its precise category and a highly specific, custom 'why' reason showing how the publisher's content matches the persona.
-   Also, write a professional, cohesive paragraph for 'publisherInsights' explaining why the recommended publishers align with the audience, their media consumption behavior, and how this fits the overall campaign.
+${ctvPublishersSection}
 
 10. EXACTLY 4 PERSONAS (MANDATORY & ORIGIN SPECIFICATION):
    You MUST generate EXACTLY 4 distinct consumer personas in the 'personas' array (never 3 or 5).
@@ -2002,6 +2132,11 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 11. UPLOADED MEDIA PLAN AUDIENCE ANALYSIS (MANDATORY WHEN MEDIA PLAN CONTAINS AUDIENCES):
     If an uploaded media plan is provided and includes audience target specifications (e.g. listed audience segments in plan placements), you MUST populate 'audienceAnalysis' with a detailed, professional paragraph evaluating how well the listed audiences in the plan align with the advertiser, their brand positioning, product offering, and campaign goals.
     If NO media plan was uploaded OR if the uploaded plan contains no audience target definitions, set 'audienceAnalysis' to empty string ("").
+
+12. EXECUTIVE SUMMARY BLUEPRINT (MANDATORY):
+    Write an executive-ready, highly actionable strategic synthesis for 'executiveSummary'. You MUST explicitly emphasize:
+    - Why the cross-screen channel strategy effectively reaches this audience where they actually are (e.g. living room Connected TV co-viewing, mobile digital companion screens, and high-affinity contextual domains during peak activity dayparts).
+    - Why this media mix and tactical allocation is specifically engineered to hit the campaign's target KPIs (e.g., brand lift, view-through rates, incremental household reach, or direct conversion goals).
 
 STRATEGY 2: AUTHORITY FILTERING & CITATION LOGIC:
 You are provided with a pool of real URLs discovered during search research. You MUST evaluate, filter, and structure these sources into the 'sources' array of the JSON response following these authority guidelines:
@@ -2482,6 +2617,9 @@ app.use((err: any, req: any, res: any, next: any) => {
     details: err.message || String(err)
   });
 });
+
+// Static assets serving (logos, icons, etc.)
+app.use("/assets", express.static(path.join(process.cwd(), "assets")));
 
 // Setup development or production build pipeline
 async function init() {

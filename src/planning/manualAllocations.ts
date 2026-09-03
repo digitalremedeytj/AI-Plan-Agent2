@@ -61,8 +61,10 @@ function formatPercent(basisPoints: number): string {
 export function rebalanceBasisPoints(
   plan: MediaRecommendationPlan,
   fixedBasisPoints: AllocationBasisPoints,
+  budgetOverride?: number,
 ): AllocationBasisPoints {
   if (plan.channels.length === 0) return {};
+  const budget = budgetOverride ?? plan.workingMediaBudget;
   const channelsById = new Map(plan.channels.map((channel) => [channel.channelId, channel]));
   const current = rawAllocationBasisPoints(plan);
   const next: AllocationBasisPoints = {};
@@ -71,7 +73,7 @@ export function rebalanceBasisPoints(
     const channel = channelsById.get(channelId);
     if (!channel) throw new Error("That media type is no longer part of the selected plan.");
     const value = roundBasisPoints(rawValue);
-    const bounds = effectiveBounds(channel, plan.workingMediaBudget);
+    const bounds = effectiveBounds(channel, budget);
     if (value < bounds.minimum || value > bounds.maximum) {
       throw new Error(
         `${channel.channelName} must stay between ${formatPercent(bounds.minimum)} and ${formatPercent(bounds.maximum)} for this budget.`,
@@ -82,16 +84,16 @@ export function rebalanceBasisPoints(
 
   const adjustable = plan.channels.filter((channel) => fixedBasisPoints[channel.channelId] === undefined);
   adjustable.forEach((channel) => {
-    next[channel.channelId] = effectiveBounds(channel, plan.workingMediaBudget).minimum;
+    next[channel.channelId] = effectiveBounds(channel, budget).minimum;
   });
 
   let remaining = TOTAL_BASIS_POINTS - Object.values(next).reduce((sum, value) => sum + value, 0);
   if (remaining < 0) {
-    throw new Error("The locked and minimum allocations exceed 100%. Unlock or reduce another media type.");
+    throw new Error("The locked and minimum allocations exceed 100%. Unlock or reduce another media type, or increase the budget.");
   }
 
   const maximumCapacity = adjustable.reduce((sum, channel) => {
-    const bounds = effectiveBounds(channel, plan.workingMediaBudget);
+    const bounds = effectiveBounds(channel, budget);
     return sum + Math.max(0, bounds.maximum - next[channel.channelId]);
   }, 0);
   if (remaining > maximumCapacity) {
@@ -100,7 +102,7 @@ export function rebalanceBasisPoints(
 
   while (remaining > 0) {
     const active = adjustable
-      .filter((channel) => next[channel.channelId] < effectiveBounds(channel, plan.workingMediaBudget).maximum)
+      .filter((channel) => next[channel.channelId] < effectiveBounds(channel, budget).maximum)
       .sort((a, b) => a.channelId.localeCompare(b.channelId));
     if (active.length === 0) throw new Error("No unlocked media type can absorb the remaining budget.");
     const totalWeight = active.reduce((sum, channel) => sum + Math.max(1, current[channel.channelId] || 1), 0);
@@ -109,7 +111,7 @@ export function rebalanceBasisPoints(
 
     active.forEach((channel) => {
       if (remaining <= 0) return;
-      const maximum = effectiveBounds(channel, plan.workingMediaBudget).maximum;
+      const maximum = effectiveBounds(channel, budget).maximum;
       const capacity = maximum - next[channel.channelId];
       const proportional = Math.floor(((startingRemainder * Math.max(1, current[channel.channelId] || 1)) / totalWeight) / 100) * 100;
       const addition = Math.min(capacity, remaining, Math.max(0, proportional));
@@ -135,19 +137,21 @@ export function rebalanceEditedAllocation(
   channelId: string,
   targetBasisPoints: number,
   lockedChannelIds: string[] = [],
+  budgetOverride?: number,
 ): AllocationBasisPoints {
   const current = allocationBasisPoints(plan);
   const fixed: AllocationBasisPoints = { [channelId]: roundBasisPoints(targetBasisPoints) };
   lockedChannelIds.forEach((lockedId) => {
     if (lockedId !== channelId && current[lockedId] !== undefined) fixed[lockedId] = current[lockedId];
   });
-  return rebalanceBasisPoints(plan, fixed);
+  return rebalanceBasisPoints(plan, fixed, budgetOverride);
 }
 
 export function applyBasisPointAllocations(
   plan: MediaRecommendationPlan,
   basisPoints: AllocationBasisPoints,
   auditDetail: string,
+  budgetOverride?: number,
 ): MediaRecommendationPlan {
   const channelIds = new Set(plan.channels.map((channel) => channel.channelId));
   if (Object.keys(basisPoints).length !== channelIds.size || Object.keys(basisPoints).some((id) => !channelIds.has(id))) {
@@ -160,12 +164,13 @@ export function applyBasisPointAllocations(
     throw new Error("Allocations must equal exactly 100%.");
   }
 
-  const dollars = allocateDollars(plan.workingMediaBudget, basisPoints);
+  const budget = budgetOverride ?? plan.workingMediaBudget;
+  const dollars = allocateDollars(budget, basisPoints);
   const channels = plan.channels.map((channel) => {
     const value = roundBasisPoints(basisPoints[channel.channelId]);
-    const bounds = effectiveBounds(channel, plan.workingMediaBudget);
+    const bounds = effectiveBounds(channel, budget);
     if (value < bounds.minimum || value > bounds.maximum) {
-      throw new Error(`${channel.channelName} is outside its allowed allocation range.`);
+      throw new Error(`${channel.channelName} is outside its allowed allocation range for a $${budget.toLocaleString()} budget.`);
     }
     const allocationDollars = dollars[channel.channelId];
     return {
@@ -175,12 +180,16 @@ export function applyBasisPointAllocations(
       monthlyEquivalentSpend: plan.flightDays
         ? Math.round((allocationDollars / plan.flightDays) * 30 * 100) / 100
         : allocationDollars,
-      fundingSource: "Rebalanced within the fixed working media budget",
+      fundingSource: "Rebalanced within the working media budget",
     };
   });
 
   return {
     ...plan,
+    workingMediaBudget: budget,
+    normalized30DayBudget: plan.flightDays
+      ? Math.round((budget / plan.flightDays) * 30 * 100) / 100
+      : budget,
     channels,
     selectedMediaTypeCount: channels.length,
     allocationAudit: [

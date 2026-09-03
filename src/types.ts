@@ -1,5 +1,6 @@
 import type { PlanningSettings } from "./planning/settings";
 import type { MediaRecommendationPlan, RecommendationStatus, ConfidenceLevel } from "./planning/types";
+export type { CtvPublisherSetting } from "./planning/knowledge/ctvPublishers";
 
 export interface Persona {
   name: string;

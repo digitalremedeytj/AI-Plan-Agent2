@@ -29,6 +29,7 @@ import {
   Smartphone,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   Bookmark,
   Save,
   Trash2,
@@ -42,7 +43,11 @@ import {
   X,
   Building2,
   DollarSign,
-  Menu
+  Menu,
+  Monitor,
+  Tablet,
+  Users,
+  UserCheck
 } from "lucide-react";
 import Markdown from "react-markdown";
 
@@ -82,62 +87,219 @@ import {
   removeMediaTypeAndRebalance,
   type AllocationBasisPoints,
 } from "./planning/manualAllocations";
+import {
+  type CtvPublisherSetting,
+  DEFAULT_CTV_PUBLISHERS,
+  resolvePublisherLogo,
+} from "./planning/knowledge/ctvPublishers";
 
-const getPublisherLogo = (name: string): string => {
-  const normalized = name.toLowerCase().trim();
-  
-  if (normalized.includes("a&e")) return "/assets/pub-logos/a&e_80x80.png";
-  if (normalized.includes("abc")) return "/assets/pub-logos/abc_80x80.png";
-  if (normalized.includes("amazon") || normalized.includes("prime video") || normalized.includes("primevideo")) return "/assets/pub-logos/amazon-prime-video_80x80.png";
-  if (normalized.includes("amc")) return "/assets/pub-logos/amc_80x80.png";
-  if (normalized.includes("apple") || normalized.includes("apple tv")) return "/assets/pub-logos/apple-tv-plus_80x80.png";
-  if (normalized.includes("bloomberg")) return "/assets/pub-logos/bloomberg_80x80.png";
-  if (normalized.includes("cbs")) return "/assets/pub-logos/cbs_80x80.png";
-  if (normalized.includes("cheddar")) return "/assets/pub-logos/cheddar_80x80.png";
-  if (normalized.includes("cnbc")) return "/assets/pub-logos/cnbc_80x80.png";
-  if (normalized.includes("cnn")) return "/assets/pub-logos/cnn_80x80.png";
-  if (normalized.includes("crackle")) return "/assets/pub-logos/crackle_80x80.png";
-  if (normalized.includes("directv")) return "/assets/pub-logos/directv_80x80.png";
-  if (normalized.includes("discovery+")) return "/assets/pub-logos/discovery+_80x80.png";
-  if (normalized.includes("discovery")) return "/assets/pub-logos/discovery_80x80.png";
-  if (normalized.includes("disney")) return "/assets/pub-logos/disney_80x80.png";
-  if (normalized.includes("espn")) return "/assets/pub-logos/espn_80x80.png";
-  if (normalized.includes("fox")) return "/assets/pub-logos/fox_80x80.png";
-  if (normalized.includes("freeform")) return "/assets/pub-logos/freeform_80x80.png";
-  if (normalized.includes("fubo")) return "/assets/pub-logos/fubo_80x80.png";
-  if (normalized.includes("fuse")) return "/assets/pub-logos/fuse+_80x80.png";
-  if (normalized.includes("fx")) return "/assets/pub-logos/fx_80x80.png";
-  if (normalized.includes("hallmark")) return "/assets/pub-logos/hallmark_80x80.png";
-  if (normalized.includes("hulu")) return "/assets/pub-logos/hulu_80x80.png";
-  if (normalized.includes("lg")) return "/assets/pub-logos/lg_80x80.png";
-  if (normalized.includes("max") || normalized.includes("hbo")) return "/assets/pub-logos/max_80x80.png";
-  if (normalized.includes("moonbug")) return "/assets/pub-logos/moonbug_80x80.png";
-  if (normalized.includes("nbc")) return "/assets/pub-logos/nbc_80x80.png";
-  if (normalized.includes("netflix")) return "/assets/pub-logos/netflix_80x80.png";
-  if (normalized.includes("newson")) return "/assets/pub-logos/newson_80x80.png";
-  if (normalized.includes("newsy")) return "/assets/pub-logos/newsy_80x80.png";
-  if (normalized.includes("nfl")) return "/assets/pub-logos/nfl_80x80.png";
-  if (normalized.includes("outside")) return "/assets/pub-logos/outside_80x80.png";
-  if (normalized.includes("paramount")) return "/assets/pub-logos/paramount_80x80.png";
-  if (normalized.includes("peacock")) return "/assets/pub-logos/peacock_80x80.png";
-  if (normalized.includes("philo")) return "/assets/pub-logos/philo_80x80.png";
-  if (normalized.includes("plex")) return "/assets/pub-logos/plex_80x80.png";
-  if (normalized.includes("pluto")) return "/assets/pub-logos/pluto_80x80.png";
-  if (normalized.includes("roku")) return "/assets/pub-logos/roku_80x80.png";
-  if (normalized.includes("samsung")) return "/assets/pub-logos/samsung_80x80.png";
-  if (normalized.includes("sci") || normalized.includes("science")) return "/assets/pub-logos/sci_80x80.png";
-  if (normalized.includes("scripps")) return "/assets/pub-logos/scripps_80x80.png";
-  if (normalized.includes("showtime")) return "/assets/pub-logos/showtime_80x80.png";
-  if (normalized.includes("sling")) return "/assets/pub-logos/sling_80x80.png";
-  if (normalized.includes("travel")) return "/assets/pub-logos/travel_80x80.png";
-  if (normalized.includes("tubi")) return "/assets/pub-logos/tubi_80x80.png";
-  if (normalized.includes("turner")) return "/assets/pub-logos/turner_80x80.png";
-  if (normalized.includes("vevo")) return "/assets/pub-logos/vevo_80x80.png";
-  if (normalized.includes("vizio")) return "/assets/pub-logos/vizio_80x80.png";
-  if (normalized.includes("xumo")) return "/assets/pub-logos/xumo_80x80.png";
-  
-  return "/assets/pub-logos/placeholder_80x80.png";
+const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
+  return resolvePublisherLogo(name, customPublishers);
 };
+
+// Summary highlight extractor for Device Share (Option C: Tag + Metric Chips)
+function getDeviceShareSummary(deviceData?: any[]) {
+  if (!deviceData || deviceData.length === 0) {
+    return {
+      tag: "Multi-Device Mix",
+      chips: [
+        { label: "CTV", value: "45%", icon: "tv" },
+        { label: "Mobile", value: "35%", icon: "mobile" },
+        { label: "Desktop", value: "20%", icon: "desktop" },
+      ]
+    };
+  }
+
+  const sorted = [...deviceData].sort((a, b) => (b.value || 0) - (a.value || 0));
+  const total = sorted.reduce((sum, d) => sum + (d.value || 0), 0) || 100;
+  
+  const ctvItem = sorted.find(d => d.device?.toLowerCase().includes("ctv") || d.device?.toLowerCase().includes("tv") || d.device?.toLowerCase().includes("connected"));
+  const mobileItem = sorted.find(d => d.device?.toLowerCase().includes("mobile") || d.device?.toLowerCase().includes("phone") || d.device?.toLowerCase().includes("smart"));
+  
+  const ctvShare = ctvItem ? (ctvItem.value / total) : 0;
+  const mobileShare = mobileItem ? (mobileItem.value / total) : 0;
+  
+  let tag = "Multi-Screen Balanced";
+  if (ctvShare >= 0.35 && mobileShare >= 0.25) tag = "CTV & Mobile Led";
+  else if (ctvShare >= 0.45) tag = "CTV Dominant";
+  else if (mobileShare >= 0.45) tag = "Mobile First";
+  else if (sorted[0]?.device) tag = `${sorted[0].device.split("/")[0].trim()} Led`;
+
+  const chips = sorted.slice(0, 3).map(d => {
+    const rawDev = (d.device || "").toLowerCase();
+    let shortName = d.device || "Device";
+    let iconType: "tv" | "mobile" | "desktop" | "tablet" | "device" = "device";
+
+    if (rawDev.includes("ctv") || rawDev.includes("tv") || rawDev.includes("connected")) {
+      shortName = "CTV";
+      iconType = "tv";
+    } else if (rawDev.includes("mobile") || rawDev.includes("smart") || rawDev.includes("phone")) {
+      shortName = "Mobile";
+      iconType = "mobile";
+    } else if (rawDev.includes("desktop") || rawDev.includes("pc") || rawDev.includes("laptop")) {
+      shortName = "Desktop";
+      iconType = "desktop";
+    } else if (rawDev.includes("tablet") || rawDev.includes("ipad")) {
+      shortName = "Tablet";
+      iconType = "tablet";
+    }
+
+    const valStr = typeof d.value === "number" ? `${Math.round(d.value)}%` : String(d.value);
+    return { label: shortName, value: valStr, icon: iconType };
+  });
+
+  return { tag, chips };
+}
+
+// Summary highlight extractor for Demographics (Option C: Tag + Metric Chips)
+function getDemographicsSummary(demo?: any) {
+  if (!demo) {
+    return {
+      tag: "Core Target Cohort",
+      chips: [
+        { label: "Age 25–44", value: "62%", icon: "users" },
+        { label: "Gender", value: "54% F / 46% M", icon: "gender" },
+        { label: "HHI $100k+", value: "58%", icon: "income" },
+      ]
+    };
+  }
+
+  // Age calculation
+  let ageTag = "25–54 Core";
+  let ageChipVal = "";
+  if (demo.ageChartData && demo.ageChartData.length > 0) {
+    const sortedAge = [...demo.ageChartData].sort((a, b) => (b.value || 0) - (a.value || 0));
+    const a25_34 = demo.ageChartData.find((a: any) => a.range?.includes("25-34") || a.range?.includes("25–34"))?.value || 0;
+    const a35_44 = demo.ageChartData.find((a: any) => a.range?.includes("35-44") || a.range?.includes("35–44"))?.value || 0;
+    const combined25_44 = a25_34 + a35_44;
+
+    if (combined25_44 >= 38) {
+      ageTag = "Primary 25–44 Cohort";
+      ageChipVal = `25–44: ${Math.round(combined25_44)}%`;
+    } else if (sortedAge[0]) {
+      ageTag = `Primary ${sortedAge[0].range}`;
+      ageChipVal = `${sortedAge[0].range}: ${Math.round(sortedAge[0].value)}%`;
+    }
+  }
+
+  // Gender calculation
+  let genderChipVal = "";
+  if (demo.genderChartData && demo.genderChartData.length > 0) {
+    const f = demo.genderChartData.find((g: any) => g.gender?.toLowerCase().startsWith("f"))?.value || 0;
+    const m = demo.genderChartData.find((g: any) => g.gender?.toLowerCase().startsWith("m"))?.value || 0;
+    if (f > 0 && m > 0) {
+      genderChipVal = `${Math.round(f)}% F / ${Math.round(m)}% M`;
+    } else if (f > 0) {
+      genderChipVal = `${Math.round(f)}% Female`;
+    } else if (m > 0) {
+      genderChipVal = `${Math.round(m)}% Male`;
+    } else if (demo.genderChartData[0]) {
+      genderChipVal = `${demo.genderChartData[0].gender}: ${Math.round(demo.genderChartData[0].value)}%`;
+    }
+  }
+
+  // Income calculation
+  let incomeChipVal = "";
+  let isAffluent = false;
+  if (demo.incomeChartData && demo.incomeChartData.length > 0) {
+    const highIncome = demo.incomeChartData
+      .filter((i: any) => i.bracket?.includes("100k") || i.bracket?.includes("125k") || i.bracket?.includes("150k") || i.bracket?.includes("200k") || i.bracket?.includes("$100k+"))
+      .reduce((sum: number, i: any) => sum + (i.value || 0), 0);
+    
+    if (highIncome >= 38) {
+      isAffluent = true;
+      incomeChipVal = `$100k+: ${Math.round(highIncome)}%`;
+    } else {
+      const topInc = [...demo.incomeChartData].sort((a, b) => (b.value || 0) - (a.value || 0))[0];
+      if (topInc) {
+        incomeChipVal = `${topInc.bracket}: ${Math.round(topInc.value)}%`;
+      }
+    }
+  }
+
+  const tag = isAffluent ? "Affluent Core Audience" : ageTag;
+
+  const chips = [
+    { label: "Age", value: ageChipVal || "25–44 Focus", icon: "users" },
+    ...(genderChipVal ? [{ label: "Gender", value: genderChipVal, icon: "gender" }] : []),
+    ...(incomeChipVal ? [{ label: "Income", value: incomeChipVal, icon: "income" }] : []),
+  ];
+
+  return { tag, chips };
+}
+
+// Summary highlight extractor for Temporal Patterns (Option C: Tag + Metric Chips)
+function getTemporalSummary(temp?: any) {
+  if (!temp) {
+    return {
+      tag: "Primetime & Weekend Peak",
+      chips: [
+        { label: "Peak Days", value: "Thu–Sun (Avg Idx 128)", icon: "calendar" },
+        { label: "Top Hours", value: "7 PM–11 PM (Idx 136)", icon: "clock" },
+      ]
+    };
+  }
+
+  // Peak Days calculation
+  let daysVal = "Thu–Sun (High Index)";
+  if (temp.dayOfWeekChartData && temp.dayOfWeekChartData.length > 0) {
+    const sortedDays = [...temp.dayOfWeekChartData].sort((a: any, b: any) => (b.index || 0) - (a.index || 0));
+    const topDays = sortedDays.slice(0, 3).map((d: any) => d.day);
+    const topAvgIdx = Math.round(sortedDays.slice(0, 3).reduce((sum: number, d: any) => sum + (d.index || 0), 0) / Math.max(1, Math.min(3, sortedDays.length)));
+    
+    daysVal = `Peak: ${topDays.join(", ")} (Idx ${topAvgIdx})`;
+  }
+
+  // Peak Hours calculation
+  let hoursVal = "7 PM–11 PM (Primetime)";
+  if (temp.hourOfDayChartData && temp.hourOfDayChartData.length > 0) {
+    const sortedHours = [...temp.hourOfDayChartData].sort((a: any, b: any) => (b.index || 0) - (a.index || 0));
+    const topHour = sortedHours[0];
+    if (topHour) {
+      hoursVal = `Top: ${topHour.hour} (Idx ${topHour.index})`;
+    }
+  }
+
+  return {
+    tag: "Primetime & High-Index Windows",
+    chips: [
+      { label: "Days", value: daysVal, icon: "calendar" },
+      { label: "Hours", value: hoursVal, icon: "clock" },
+    ]
+  };
+}
+
+// Summary highlight extractor for Domain Affinity (Top 3 Domains + Index values)
+function getDomainAffinitySummary(browserAndReach?: any) {
+  if (!browserAndReach || !browserAndReach.chartData || browserAndReach.chartData.length === 0) {
+    return {
+      tag: "Top Domains",
+      chips: [
+        { label: "example.com", value: "Idx 145" },
+        { label: "domain2.com", value: "Idx 138" },
+        { label: "domain3.com", value: "Idx 132" },
+      ],
+      top3: []
+    };
+  }
+
+  const sorted = [...browserAndReach.chartData].sort((a: any, b: any) => (b.index || 0) - (a.index || 0));
+  const top3 = sorted.slice(0, 3);
+  
+  const chips = top3.map((d: any) => {
+    const cleanDomain = (d.domain || "").replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/.*$/, "");
+    return {
+      label: cleanDomain || "Domain",
+      value: `Idx ${Math.round(d.index || 0)}`,
+      domain: d.domain,
+      index: d.index
+    };
+  });
+
+  const tag = "Top 3 Affinity Domains";
+
+  return { tag, chips, top3 };
+}
 
 function getColumnLetter(colIndex: number): string {
   let temp = colIndex;
@@ -385,13 +547,53 @@ export default function App() {
   const [audienceDescription, setAudienceDescription] = useState("");
   const [url, setUrl] = useState("");
   const [geography, setGeography] = useState("United States");
-  const [campaignFocus, setCampaignFocus] = useState("CTV-first digital media plan");
+  const [campaignFocus, setCampaignFocus] = useState("Full-funnel digital media plan");
   const [additionalContext, setAdditionalContext] = useState("");
+  const [isInsightsExpanded, setIsInsightsExpanded] = useState(false);
+  const [isCitationsExpanded, setIsCitationsExpanded] = useState(false);
+  const [isAuditExpanded, setIsAuditExpanded] = useState(false);
   const [planningSettings, setPlanningSettings] = useState<PlanningSettings>(() =>
     loadPlanningSettings(typeof window === "undefined" ? null : window.localStorage),
   );
+  const [ctvPublishers, setCtvPublishers] = useState<CtvPublisherSetting[]>(() => {
+    try {
+      const stored = typeof window !== "undefined" ? window.localStorage.getItem("audience_builder_ctv_publishers") : null;
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {
+      console.warn("Failed to read local CTV publishers:", e);
+    }
+    return DEFAULT_CTV_PUBLISHERS;
+  });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+
+  // Load persistent settings and CTV publishers from server disk on initial mount
+  React.useEffect(() => {
+    fetch("/api/settings")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.settings) {
+          setPlanningSettings(data.settings);
+          savePlanningSettings(window.localStorage, data.settings);
+        }
+      })
+      .catch((err) => console.warn("Could not load persistent settings from server:", err));
+
+    fetch("/api/ctv-publishers")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && Array.isArray(data.publishers) && data.publishers.length > 0) {
+          setCtvPublishers(data.publishers);
+          try {
+            window.localStorage.setItem("audience_builder_ctv_publishers", JSON.stringify(data.publishers));
+          } catch (e) {}
+        }
+      })
+      .catch((err) => console.warn("Could not load persistent CTV publishers from server:", err));
+  }, []);
 
   const budgetNormalization = React.useMemo(
     () => normalizeCampaignBudget(parseCurrencyInput(budget), Number(campaignLength)),
@@ -417,9 +619,35 @@ export default function App() {
     if (!availableGeographies.includes(geography)) setGeography(availableGeographies[0]);
   }, [availableGeographies, geography]);
 
-  const handleSavePlanningSettings = (nextSettings: PlanningSettings) => {
+  const handleSavePlanningSettings = async (nextSettings: PlanningSettings, nextPublishers?: CtvPublisherSetting[]) => {
     const result = savePlanningSettings(window.localStorage, nextSettings);
     if (result.valid && result.settings) setPlanningSettings(result.settings);
+
+    if (nextPublishers && Array.isArray(nextPublishers)) {
+      setCtvPublishers(nextPublishers);
+      try {
+        window.localStorage.setItem("audience_builder_ctv_publishers", JSON.stringify(nextPublishers));
+      } catch (e) {}
+    }
+
+    // Persist to server disk storage
+    try {
+      await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextSettings),
+      });
+
+      if (nextPublishers && Array.isArray(nextPublishers)) {
+        await fetch("/api/ctv-publishers", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextPublishers),
+        });
+      }
+    } catch (err) {
+      console.error("Failed to sync settings to server storage:", err);
+    }
   };
 
   const handleAddKpi = () => {
@@ -618,6 +846,15 @@ export default function App() {
   const [groundingSources, setGroundingSources] = useState<Array<{ title: string; uri: string }> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [personaPage, setPersonaPage] = useState<number>(0);
+  const [arePersonasExpanded, setArePersonasExpanded] = useState<boolean>(false);
+  const [isDeviceShareExpanded, setIsDeviceShareExpanded] = useState<boolean>(false);
+  const [isDemographicsExpanded, setIsDemographicsExpanded] = useState<boolean>(false);
+  const [isTemporalExpanded, setIsTemporalExpanded] = useState<boolean>(false);
+  const [isDomainAffinityExpanded, setIsDomainAffinityExpanded] = useState<boolean>(false);
+
+  const toggleAllPersonasExpanded = () => {
+    setArePersonasExpanded((prev) => !prev);
+  };
   
   // Real-time research stream console logs
   const [researchLogs, setResearchLogs] = useState<Array<{
@@ -722,6 +959,7 @@ export default function App() {
         }
         setGroundingSources(serverCompleteData.groundingSources);
         setPersonaPage(0);
+        setArePersonasExpanded(false);
         setLoading(false);
         setRegenType(null);
         setServerCompleteData(null);
@@ -948,6 +1186,8 @@ export default function App() {
     setActiveSavedId(saved.id);
     setError(null);
     setPersonaPage(0);
+    setArePersonasExpanded(false);
+    setIsDomainAffinityExpanded(false);
 
     // Auto-generate missing headshots in background if saved profile lacks them
     if (saved.profile && saved.profile.personas) {
@@ -1370,6 +1610,8 @@ export default function App() {
     setError(null);
     setRegenType(typeOverride || null);
     setPersonaPage(0);
+    setArePersonasExpanded(false);
+    setIsDomainAffinityExpanded(false);
     
     // Reset the queue reference and server completion state
     pendingLogsRef.current = [];
@@ -1414,6 +1656,7 @@ export default function App() {
           workingMediaBudget: budgetNormalization.workingMediaBudget,
           campaignFlightDays: budgetNormalization.campaignFlightDays,
           planningSettings,
+          ctvPublishers,
         })
       });
 
@@ -1587,25 +1830,31 @@ export default function App() {
     setProfileData((previous) => previous ? { ...previous, channelStrategy: nextStrategy } : null);
   };
 
-  const handleSaveManualAllocations = async (basisPoints: AllocationBasisPoints, lockedChannelIds: string[]) => {
+  const handleSaveManualAllocations = async (basisPoints: AllocationBasisPoints, lockedChannelIds: string[], newBudget?: number) => {
     const currentStrategy = profileData?.channelStrategy;
     if (!profileData || !currentStrategy?.mediaPlan) throw new Error("No active media plan is available to update.");
+    const budgetToApply = newBudget ?? currentStrategy.mediaPlan.workingMediaBudget;
     const baseline = currentStrategy.allocationBaselineBasisPoints || allocationBasisPoints(currentStrategy.mediaPlan);
     const nextPlan = applyBasisPointAllocations(
       currentStrategy.mediaPlan,
       basisPoints,
-      "Planner saved manual allocation changes; unlocked media types were proportionally rebalanced within the fixed working-media budget.",
+      `Planner saved manual allocation changes${newBudget && newBudget !== currentStrategy.mediaPlan.workingMediaBudget ? ` with budget $${newBudget.toLocaleString()}` : ''}; unlocked media types were proportionally rebalanced within the working-media budget.`,
+      budgetToApply,
     );
+    const budgetChanged = budgetToApply !== currentStrategy.mediaPlan.workingMediaBudget;
     const nextStrategy: ChannelStrategyData = {
       ...currentStrategy,
       generatedAt: new Date().toISOString(),
       allocationBaselineBasisPoints: baseline,
       lockedAllocationChannelIds: lockedChannelIds.filter((id) => nextPlan.channels.some((channel) => channel.channelId === id)),
-      hasManualAllocationChanges: !allocationsEqual(baseline, basisPoints),
+      hasManualAllocationChanges: !allocationsEqual(baseline, basisPoints) || budgetChanged,
       mediaPlan: nextPlan,
     };
     setChannelStrategyUndo(currentStrategy);
     setProfileData((previous) => previous ? { ...previous, channelStrategy: nextStrategy } : null);
+    if (budgetChanged) {
+      setBudget(`$${budgetToApply.toLocaleString()}`);
+    }
   };
 
   const handleResetManualAllocations = async () => {
@@ -2040,6 +2289,7 @@ export default function App() {
       <SettingsDrawer
         open={isSettingsOpen}
         settings={planningSettings}
+        ctvPublishers={ctvPublishers}
         onClose={() => setIsSettingsOpen(false)}
         onSave={handleSavePlanningSettings}
       />
@@ -2646,7 +2896,7 @@ export default function App() {
                       <span>
                         {briefMode === "upload" || extractedPlacements.length > 0
                           ? "Run Analysis"
-                          : "Generate Audience Profile"}
+                          : "Generate Plan"}
                       </span>
                     </>
                   )}
@@ -3226,11 +3476,11 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 1. Introduction Summary */}
+                {/* Introduction Summary */}
                 <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
                   <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
                     <Tv className="w-4 h-4" />
-                    <span>1. Strategic Introduction</span>
+                    <span>Strategic Introduction</span>
                   </div>
                   <h3 className="text-lg font-display font-bold text-slate-900 leading-snug mb-3">Audience Overview</h3>
                   <p className="text-slate-600 text-sm leading-relaxed font-medium">
@@ -3247,13 +3497,32 @@ export default function App() {
                   )}
                 </div>
 
-                {/* 2. Key Personas (Grid of cards) */}
+                {/* Key Personas (Grid of cards) */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
                       <User className="w-4 h-4" />
-                      <span>2. Consumer Segments & Personas</span>
+                      <span>Consumer Segments & Personas</span>
                     </div>
+                    {profileData.personas && profileData.personas.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={toggleAllPersonasExpanded}
+                        className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        {arePersonasExpanded ? (
+                          <>
+                            <span>Collapse All</span>
+                            <ChevronUp className="w-3.5 h-3.5" />
+                          </>
+                        ) : (
+                          <>
+                            <span>Expand All</span>
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          </>
+                        )}
+                      </button>
+                    )}
                   </div>
 
                   {(() => {
@@ -3280,6 +3549,7 @@ export default function App() {
                             const isRegeneratingThis = generatingAvatarIndex === globalIndex;
                             const hasValidAvatar = Boolean(persona.avatarUrl && !persona.avatarUrl.includes("example.com"));
                             const isRfp = persona.sourceType === 'RFP';
+                            const isExpanded = arePersonasExpanded;
 
                             return (
                               <div key={globalIndex} className="bg-white rounded-2xl border border-slate-100 p-5 shadow-xs flex flex-col justify-between hover:shadow-md transition-all duration-200">
@@ -3350,7 +3620,7 @@ export default function App() {
                                   </div>
                                   
                                   {/* Age, Gender & Household Income Demographics */}
-                                  <div className="mb-4 bg-slate-50/80 p-3 rounded-xl border border-slate-100 space-y-2">
+                                  <div className="bg-slate-50/80 p-3 rounded-xl border border-slate-100 space-y-2">
                                     <div className="grid grid-cols-2 gap-2 text-[11px]">
                                       <div>
                                         <span className="text-slate-400 block font-medium text-[10px] uppercase tracking-wider">Age Group</span>
@@ -3367,26 +3637,51 @@ export default function App() {
                                     </div>
                                   </div>
 
-                                  {/* Media & Shopping Habits */}
-                                  <div className="space-y-2.5 text-xs mb-4">
-                                    <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
-                                      <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">📺 Watch Profile:</strong>
-                                      <span className="text-slate-600">{persona.watch}</span>
+                                  {/* Media & Shopping Habits and Narrative (Collapsible) */}
+                                  {isExpanded && (
+                                    <div className="mt-4 space-y-4 pt-3 border-t border-slate-100">
+                                      <div className="space-y-2.5 text-xs">
+                                        <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
+                                          <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">📺 Watch Profile:</strong>
+                                          <span className="text-slate-600">{persona.watch}</span>
+                                        </div>
+                                        <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
+                                          <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">🌐 Digital Browsing:</strong>
+                                          <span className="text-slate-600">{persona.browse}</span>
+                                        </div>
+                                        <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
+                                          <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">🛒 Purchasing Focus:</strong>
+                                          <span className="text-slate-600">{persona.buy}</span>
+                                        </div>
+                                      </div>
+
+                                      {/* Narrative Quote */}
+                                      <div className="text-xs text-slate-600 italic bg-slate-50/40 -mx-5 p-4 rounded-b-xl border-t border-slate-100">
+                                        "{persona.narrative}"
+                                      </div>
                                     </div>
-                                    <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
-                                      <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">🌐 Digital Browsing:</strong>
-                                      <span className="text-slate-600">{persona.browse}</span>
-                                    </div>
-                                    <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
-                                      <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">🛒 Purchasing Focus:</strong>
-                                      <span className="text-slate-600">{persona.buy}</span>
-                                    </div>
-                                  </div>
+                                  )}
                                 </div>
 
-                                {/* Narrative Quote */}
-                                <div className="pt-3 border-t border-slate-100 text-xs text-slate-600 italic bg-slate-50/40 -mx-5 -mb-5 p-4 rounded-b-2xl">
-                                  "{persona.narrative}"
+                                {/* Expand / Collapse Button */}
+                                <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                                  <button
+                                    type="button"
+                                    onClick={toggleAllPersonasExpanded}
+                                    className="w-full py-1.5 px-3 rounded-lg text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50/70 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                                  >
+                                    {isExpanded ? (
+                                      <>
+                                        <span>Hide Details</span>
+                                        <ChevronUp className="w-3.5 h-3.5" />
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span>View Habits & Narrative</span>
+                                        <ChevronDown className="w-3.5 h-3.5" />
+                                      </>
+                                    )}
+                                  </button>
                                 </div>
                               </div>
                             );
@@ -3397,63 +3692,100 @@ export default function App() {
                   })()}
                 </div>
 
-                {/* 3. Core Takeaways */}
-                <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
-                  <div className="flex items-center gap-2 text-emerald-600 text-xs font-bold uppercase tracking-wider mb-2">
-                    <CheckCircle className="w-4 h-4" />
-                    <span>3. Core Takeaways</span>
-                  </div>
-                  <h3 className="text-base font-display font-bold text-slate-800 mb-3">Key Consumer Facts</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {profileData.takeaways.map((takeaway, idx) => (
-                      <div key={idx} className="flex gap-2.5 items-start bg-slate-50/50 border border-slate-100/50 p-3.5 rounded-xl">
-                        <span className="w-5.5 h-5.5 rounded-full bg-emerald-50 text-emerald-700 font-bold font-mono text-[10px] flex items-center justify-center shrink-0 mt-0.5">
-                          0{idx + 1}
-                        </span>
-                        <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                          {takeaway}
-                        </p>
+                {/* 3. Key Insights & Recommendations (Combined & Collapsible) */}
+                <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setIsInsightsExpanded(prev => !prev)}
+                    className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
+                    aria-expanded={isInsightsExpanded}
+                  >
+                    <div className="flex items-center gap-3 shrink-0">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                        <Sparkles className="w-4 h-4" />
                       </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 4. Recommendations */}
-                <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
-                  <div>
-                    <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                      <Layers className="w-4 h-4" />
-                      <span>4. Recommendations</span>
-                    </div>
-                    <h3 className="text-base font-display font-bold text-slate-800 mb-3">Tactical Media Guide</h3>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {profileData.recommendations.map((rec, idx) => (
-                        <div key={idx} className="bg-slate-50/40 border border-slate-100 p-3.5 rounded-xl space-y-1.5 hover:bg-indigo-50/10 transition-colors flex flex-col justify-between">
-                          <div className="space-y-1.5">
-                            <div className="flex items-start justify-between gap-2">
-                              <h4 className="text-xs font-bold text-slate-800">{rec.title}</h4>
-                              <span className="text-[9px] font-mono font-bold uppercase bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded shrink-0">
-                                Rec {idx + 1}
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-slate-600 leading-relaxed">
-                              <strong className="text-slate-700">Action: </strong> {rec.action}
-                            </p>
-                            <p className="text-[11px] text-slate-500 leading-normal">
-                              <strong className="text-slate-600">Justification: </strong> {rec.why}
-                            </p>
-                          </div>
-                          <div className="text-[9px] font-mono text-slate-400 mt-2 pt-2 border-t border-slate-100 uppercase tracking-wider">
-                            Channels: {rec.channels}
-                          </div>
+                      <div>
+                        <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                          <span>Key Insights & Recommendations</span>
                         </div>
-                      ))}
+                        <h3 className="text-base font-display font-bold text-slate-800">Consumer Facts & Tactical Media Guide</h3>
+                      </div>
                     </div>
-                  </div>
+
+                    {/* Badge Style Highlights in 1 Row */}
+                    <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200/80 rounded-lg">
+                        <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>Takeaways ({profileData.takeaways.length})</span>
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/80 rounded-lg">
+                        <Layers className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span>Recommendations ({profileData.recommendations.length})</span>
+                      </span>
+                    </div>
+
+                    <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
+                      {isInsightsExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                    </div>
+                  </button>
+
+                  {isInsightsExpanded && (
+                    <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30 space-y-6">
+                      {/* Core Takeaways Subsection */}
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2 text-emerald-600 text-xs font-bold uppercase tracking-wider">
+                          <CheckCircle className="w-4 h-4" />
+                          <span>Core Takeaways & Consumer Facts</span>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                          {profileData.takeaways.map((takeaway, idx) => (
+                            <div key={idx} className="flex gap-2.5 items-start bg-white border border-slate-100 p-3.5 rounded-xl shadow-xs">
+                              <span className="w-5.5 h-5.5 rounded-full bg-emerald-50 text-emerald-700 font-bold font-mono text-[10px] flex items-center justify-center shrink-0 mt-0.5">
+                                0{idx + 1}
+                              </span>
+                              <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                                {takeaway}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Strategic Recommendations Subsection */}
+                      <div className="space-y-3 pt-4 border-t border-slate-100">
+                        <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
+                          <Layers className="w-4 h-4" />
+                          <span>Tactical Media Guide & Recommendations</span>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                          {profileData.recommendations.map((rec, idx) => (
+                            <div key={idx} className="bg-white border border-slate-100 p-3.5 rounded-xl space-y-1.5 shadow-xs hover:border-indigo-200 transition-colors flex flex-col justify-between">
+                              <div className="space-y-1.5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <h4 className="text-xs font-bold text-slate-800">{rec.title}</h4>
+                                  <span className="text-[9px] font-mono font-bold uppercase bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded shrink-0">
+                                    Rec {idx + 1}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-slate-600 leading-relaxed">
+                                  <strong className="text-slate-700">Action: </strong> {rec.action}
+                                </p>
+                                <p className="text-[11px] text-slate-500 leading-normal">
+                                  <strong className="text-slate-600">Justification: </strong> {rec.why}
+                                </p>
+                              </div>
+                              <div className="text-[9px] font-mono text-slate-400 mt-2 pt-2 border-t border-slate-100 uppercase tracking-wider">
+                                Channels: {rec.channels}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* Dynamic 5. Domain Affinity & CTV Publishers Bento Rows */}
+                {/* Dynamic Domain Affinity & CTV Publishers Bento Rows */}
                 {/* Case 1: CTV-First - SHOW CTV Publishers and REPLACE Domains */}
                 {campaignFocus === "CTV-first digital media plan" && (
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -3461,7 +3793,7 @@ export default function App() {
                     <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
                       <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
                         <Tv className="w-4 h-4" />
-                        <span>5. Recommended CTV Publishers</span>
+                        <span>Recommended CTV Publishers</span>
                       </div>
                       <h3 className="text-base font-display font-bold text-slate-800">CTV Publishers to Target</h3>
                       
@@ -3502,7 +3834,7 @@ export default function App() {
                       <div>
                         <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
                           <TrendingUp className="w-4 h-4" />
-                          <span>5. Publisher Insights</span>
+                          <span>Publisher Insights</span>
                         </div>
                         <h3 className="text-base font-display font-bold text-slate-800 mb-3">Publisher Alignment</h3>
                         <p className="text-xs text-slate-600 leading-relaxed mb-4">
@@ -3517,40 +3849,93 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Case 2: Full-Funnel - SHOW BOTH Domain Affinity AND CTV Publishers */}
+                {/* Case 2: Full-Funnel - SHOW BOTH Domain Affinity (Collapsible) AND CTV Publishers */}
                 {campaignFocus === "Full-funnel digital media plan" && (
                   <div className="space-y-6">
-                    {/* Domain Affinity Grid */}
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                      <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
-                        <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                          <TrendingUp className="w-4 h-4" />
-                          <span>5a. Domain Affinity Index</span>
-                        </div>
-                        <h3 className="text-base font-display font-bold text-slate-800 mb-3">Top Domain Affinity Index</h3>
-                        <DomainsChart
-                          data={profileData.browserAndReach.chartData}
-                          source={profileData.browserAndReach.chartSource}
-                        />
-                      </div>
+                    {/* Collapsible Domain Affinity Index */}
+                    {(() => {
+                      const domainSummary = getDomainAffinitySummary(profileData.browserAndReach);
+                      return (
+                        <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
+                          <button
+                            type="button"
+                            onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
+                            className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
+                            aria-expanded={isDomainAffinityExpanded}
+                          >
+                            <div className="flex items-center gap-3 shrink-0">
+                              <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                                <Globe className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                                  <span>Domain Affinity Index</span>
+                                </div>
+                                <h3 className="text-base font-display font-bold text-slate-800">Top High-Affinity Web Environments</h3>
+                              </div>
+                            </div>
 
-                      <div className="lg:col-span-1 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
-                        <div>
-                          <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                            <TrendingUp className="w-4 h-4" />
-                            <span>5a. Domain Insights</span>
-                          </div>
-                          <h3 className="text-base font-display font-bold text-slate-800 mb-3">Domain Affinity Insights</h3>
-                          <p className="text-xs text-slate-600 leading-relaxed mb-4">
-                            {profileData.browserAndReach.overview}
-                          </p>
+                            {/* Option C Highlight: Tag + Top 3 Domains */}
+                            <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
+                              <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
+                                {domainSummary.tag}
+                              </span>
+                              {domainSummary.chips.map((chip, idx) => (
+                                <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
+                                  <Globe className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                                  <span className="font-semibold text-slate-900">{chip.label}</span>
+                                  <span className="text-indigo-600 font-mono text-[11px] font-bold bg-indigo-50/80 px-1.5 py-0.5 rounded">
+                                    {chip.value}
+                                  </span>
+                                </span>
+                              ))}
+                            </div>
+
+                            <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
+                              {isDomainAffinityExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                            </div>
+                          </button>
+
+                          {isDomainAffinityExpanded && (
+                            <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
+                              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 p-5 shadow-xs">
+                                  <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
+                                    <TrendingUp className="w-4 h-4" />
+                                    <span>Top Domain Affinity Index</span>
+                                  </div>
+                                  <h3 className="text-base font-display font-bold text-slate-800 mb-3">Syndicated Web Reach & Contextual Affinity</h3>
+                                  <DomainsChart
+                                    data={profileData.browserAndReach.chartData}
+                                    source={profileData.browserAndReach.chartSource}
+                                  />
+                                </div>
+
+                                <div className="lg:col-span-1 bg-white rounded-xl border border-slate-100 p-5 shadow-xs flex flex-col justify-between">
+                                  <div>
+                                    <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
+                                      <TrendingUp className="w-4 h-4" />
+                                      <span>Domain Insights</span>
+                                    </div>
+                                    <h3 className="text-base font-display font-bold text-slate-800 mb-3">Contextual Alignment</h3>
+                                    <p className="text-xs text-slate-600 leading-relaxed mb-4">
+                                      {profileData.browserAndReach.overview}
+                                    </p>
+                                  </div>
+                                  <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
+                                    <span className="flex items-center gap-1.5 font-bold text-slate-700 mb-1">
+                                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                                      <span>Media Planning Tip</span>
+                                    </span>
+                                    Contextual web alignments on these index affinity domains can serve as direct lower-funnel retargeting environments.
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
-                          <span className="font-bold text-slate-700 block mb-1">💡 Media Planning Tip</span>
-                          Contextual web alignments on these index affinity domains can serve as direct lower-funnel retargeting environments.
-                        </div>
-                      </div>
-                    </div>
+                      );
+                    })()}
 
                     {/* CTV Publishers Grid */}
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -3558,7 +3943,7 @@ export default function App() {
                       <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
                         <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
                           <Tv className="w-4 h-4" />
-                          <span>5b. Recommended CTV Publishers</span>
+                          <span>Recommended CTV Publishers</span>
                         </div>
                         <h3 className="text-base font-display font-bold text-slate-800">CTV Publishers to Target</h3>
                         
@@ -3567,7 +3952,7 @@ export default function App() {
                             <div key={idx} className="bg-slate-50/50 border border-slate-100 p-4 rounded-xl flex items-start gap-3 hover:bg-indigo-50/10 transition-colors">
                               <div className="w-12 h-12 rounded-full border border-slate-100 bg-white shadow-xs flex items-center justify-center p-[2px] overflow-hidden shrink-0">
                                 <img
-                                  src={getPublisherLogo(pub.publisher)}
+                                  src={getPublisherLogo(pub.publisher, ctvPublishers)}
                                   alt={pub.publisher}
                                   className="w-full h-full object-cover rounded-full"
                                   referrerPolicy="no-referrer"
@@ -3599,7 +3984,7 @@ export default function App() {
                         <div>
                           <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
                             <TrendingUp className="w-4 h-4" />
-                            <span>5b. Publisher Insights</span>
+                            <span>Publisher Insights</span>
                           </div>
                           <h3 className="text-base font-display font-bold text-slate-800 mb-3">Publisher Alignment</h3>
                           <p className="text-xs text-slate-600 leading-relaxed mb-4">
@@ -3607,7 +3992,10 @@ export default function App() {
                           </p>
                         </div>
                         <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
-                          <span className="font-bold text-slate-700 block mb-1">💡 Media Planning Tip</span>
+                          <span className="flex items-center gap-1.5 font-bold text-slate-700 mb-1">
+                            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>Media Planning Tip</span>
+                          </span>
                           Maximize reach by distributing spots evenly across SVOD apps, FAST channels, and high-impact smart TV OS home banners.
                         </div>
                       </div>
@@ -3615,162 +4003,338 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Case 3: Display & Social - SHOW ONLY Domain Affinity */}
+                {/* Case 3: Display & Social - SHOW ONLY Domain Affinity (Collapsible) */}
                 {campaignFocus === "Display/social/video plan" && (
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
-                      <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                        <TrendingUp className="w-4 h-4" />
-                        <span>5. Domain Affinity Index</span>
-                      </div>
-                      <h3 className="text-base font-display font-bold text-slate-800 mb-3">Top Domain Affinity Index</h3>
-                      <DomainsChart
-                        data={profileData.browserAndReach.chartData}
-                        source={profileData.browserAndReach.chartSource}
-                      />
-                    </div>
+                  (() => {
+                    const domainSummary = getDomainAffinitySummary(profileData.browserAndReach);
+                    return (
+                      <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
+                        <button
+                          type="button"
+                          onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
+                          className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
+                          aria-expanded={isDomainAffinityExpanded}
+                        >
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                              <Globe className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                                <span>Domain Affinity Index</span>
+                              </div>
+                              <h3 className="text-base font-display font-bold text-slate-800">Top High-Affinity Web Environments</h3>
+                            </div>
+                          </div>
 
-                    <div className="lg:col-span-1 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
-                      <div>
-                        <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                          <TrendingUp className="w-4 h-4" />
-                          <span>5. Domain Insights</span>
-                        </div>
-                        <h3 className="text-base font-display font-bold text-slate-800 mb-3">Domain Affinity Insights</h3>
-                        <p className="text-xs text-slate-600 leading-relaxed mb-4">
-                          {profileData.browserAndReach.overview}
-                        </p>
+                          {/* Option C Highlight: Tag + Top 3 Domains */}
+                          <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
+                            <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
+                              {domainSummary.tag}
+                            </span>
+                            {domainSummary.chips.map((chip, idx) => (
+                              <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
+                                <Globe className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                                <span className="font-semibold text-slate-900">{chip.label}</span>
+                                <span className="text-indigo-600 font-mono text-[11px] font-bold bg-indigo-50/80 px-1.5 py-0.5 rounded">
+                                  {chip.value}
+                                </span>
+                              </span>
+                            ))}
+                          </div>
+
+                          <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
+                            {isDomainAffinityExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                          </div>
+                        </button>
+
+                        {isDomainAffinityExpanded && (
+                          <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                              <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 p-5 shadow-xs">
+                                <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
+                                  <TrendingUp className="w-4 h-4" />
+                                  <span>Top Domain Affinity Index</span>
+                                </div>
+                                <h3 className="text-base font-display font-bold text-slate-800 mb-3">Syndicated Web Reach & Contextual Affinity</h3>
+                                <DomainsChart
+                                  data={profileData.browserAndReach.chartData}
+                                  source={profileData.browserAndReach.chartSource}
+                                />
+                              </div>
+
+                              <div className="lg:col-span-1 bg-white rounded-xl border border-slate-100 p-5 shadow-xs flex flex-col justify-between">
+                                <div>
+                                  <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
+                                    <TrendingUp className="w-4 h-4" />
+                                    <span>Domain Insights</span>
+                                  </div>
+                                  <h3 className="text-base font-display font-bold text-slate-800 mb-3">Contextual Alignment</h3>
+                                  <p className="text-xs text-slate-600 leading-relaxed mb-4">
+                                    {profileData.browserAndReach.overview}
+                                  </p>
+                                </div>
+                                <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
+                                  <span className="flex items-center gap-1.5 font-bold text-slate-700 mb-1">
+                                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                                    <span>Media Planning Tip</span>
+                                  </span>
+                                  Contextual web alignments on these index affinity domains can serve as direct lower-funnel retargeting environments.
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
-                        <span className="font-bold text-slate-700 block mb-1">💡 Media Planning Tip</span>
-                        Contextual web alignments on these index affinity domains can serve as direct lower-funnel retargeting environments.
-                      </div>
-                    </div>
-                  </div>
+                    );
+                  })()
                 )}
 
-                {/* 6. Device Share - Full Width 2 Column 50/50 Layout */}
-                <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
-                  <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                    <Smartphone className="w-4 h-4" />
-                    <span>6. Device Share</span>
-                  </div>
-                  <h3 className="text-base font-display font-bold text-slate-800 mb-3">Multi-Screen Habits</h3>
-                  
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-                    {/* Left Column: Device Chart */}
-                    <div className="w-full">
-                      <DeviceChart
-                        data={profileData.deviceTypeIndex.chartData}
-                        source={profileData.deviceTypeIndex.chartSource}
-                      />
+                {/* 5. Device Share - Collapsible Panel with Option C Highlights */}
+                {(() => {
+                  const deviceSummary = getDeviceShareSummary(profileData.deviceTypeIndex?.chartData);
+                  return (
+                    <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setIsDeviceShareExpanded(prev => !prev)}
+                        className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
+                        aria-expanded={isDeviceShareExpanded}
+                      >
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                            <Smartphone className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                              <span>Device Share</span>
+                            </div>
+                            <h3 className="text-base font-display font-bold text-slate-800">Multi-Screen Habits</h3>
+                          </div>
+                        </div>
+
+                        {/* Option C Highlight: Tag + Key Metric Chips */}
+                        <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
+                          <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
+                            {deviceSummary.tag}
+                          </span>
+                          {deviceSummary.chips.map((chip, idx) => (
+                            <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
+                              {chip.icon === "tv" && <Tv className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              {chip.icon === "mobile" && <Smartphone className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              {chip.icon === "desktop" && <Monitor className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              {chip.icon === "tablet" && <Tablet className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              {chip.icon === "device" && <Layers className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              <span className="font-semibold text-slate-900">{chip.label}:</span>
+                              <span>{chip.value}</span>
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
+                          {isDeviceShareExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                        </div>
+                      </button>
+
+                      {isDeviceShareExpanded && (
+                        <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                            {/* Left Column: Device Chart */}
+                            <div className="w-full">
+                              <DeviceChart
+                                data={profileData.deviceTypeIndex.chartData}
+                                source={profileData.deviceTypeIndex.chartSource}
+                              />
+                            </div>
+                            {/* Right Column: Text content */}
+                            <div className="space-y-4 flex flex-col justify-between h-full">
+                              <p className="text-xs text-slate-600 leading-relaxed">
+                                {profileData.deviceTypeIndex.overview}
+                              </p>
+                              <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 text-[11px] text-slate-600 flex items-start gap-2.5">
+                                <Tv className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                                <div>
+                                  <span className="font-bold text-slate-800 block mb-1">Multi-Screen Activation</span>
+                                  Coordinate CTV spots with simultaneous, real-time mobile app push/display placements on related publishers for elevated purchase recall.
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    {/* Right Column: Text content */}
-                    <div className="space-y-4 flex flex-col justify-between h-full">
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        {profileData.deviceTypeIndex.overview}
-                      </p>
-                      <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
-                        <span className="font-bold text-slate-700 block mb-1">📺 Multi-Screen Activation</span>
-                        Coordinate CTV spots with simultaneous, real-time mobile app push/display placements on related publishers for elevated purchase recall.
-                      </div>
+                  );
+                })()}
+
+                {/* 6. Demographics - Collapsible Panel with Option C Highlights */}
+                {(() => {
+                  const demoSummary = getDemographicsSummary(profileData.demographics);
+                  return (
+                    <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setIsDemographicsExpanded(prev => !prev)}
+                        className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
+                        aria-expanded={isDemographicsExpanded}
+                      >
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                            <Users className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                              <span>Demographics</span>
+                            </div>
+                            <h3 className="text-base font-display font-bold text-slate-800">Strategic Demographic Overview</h3>
+                          </div>
+                        </div>
+
+                        {/* Option C Highlight: Tag + Key Metric Chips */}
+                        <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
+                          <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
+                            {demoSummary.tag}
+                          </span>
+                          {demoSummary.chips.map((chip, idx) => (
+                            <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
+                              {chip.icon === "users" && <Users className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              {chip.icon === "gender" && <UserCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              {chip.icon === "income" && <DollarSign className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              <span className="font-semibold text-slate-900">{chip.label}:</span>
+                              <span>{chip.value}</span>
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
+                          {isDemographicsExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                        </div>
+                      </button>
+
+                      {isDemographicsExpanded && (
+                        <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
+                          {/* Strategic Demographic Overview Text - Full Width */}
+                          <p className="text-xs text-slate-600 leading-relaxed mb-6">
+                            {profileData.demographics.overview}
+                          </p>
+
+                          {/* 3 Columns with 3 Charts */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
+                            <AgeChart
+                              data={profileData.demographics.ageChartData}
+                              source={profileData.demographics.ageChartData[0]?.source || "Syndicated Sources"}
+                            />
+                            <GenderChart
+                              data={profileData.demographics.genderChartData}
+                              source={profileData.demographics.genderChartData[0]?.source || "Syndicated Sources"}
+                            />
+                            <IncomeChart
+                              data={profileData.demographics.incomeChartData}
+                              source={profileData.demographics.incomeChartData[0]?.source || "Syndicated Sources"}
+                            />
+                          </div>
+
+                          {/* Geographic Concentration Notes - Full Width under charts */}
+                          {profileData.demographics.geographyNotes && (
+                            <div className="bg-slate-50 rounded-xl border border-slate-100/80 p-4 text-[11px] text-slate-500">
+                              <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-1">Geographic Concentration Notes</span>
+                              <p className="leading-relaxed">
+                                {profileData.demographics.geographyNotes}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                </div>
+                  );
+                })()}
 
-                {/* 7. Demographics - Full Width Panel */}
-                <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
-                  <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                    <User className="w-4 h-4" />
-                    <span>7. Demographics</span>
-                  </div>
-                  <h3 className="text-base font-display font-bold text-slate-800 mb-2">Strategic Demographic Overview</h3>
-                  
-                  {/* Strategic Demographic Overview Text - Full Width */}
-                  <p className="text-xs text-slate-600 leading-relaxed mb-6">
-                    {profileData.demographics.overview}
-                  </p>
+                {/* 7. Temporal Activity Patterns - Collapsible Panel with Option C Highlights */}
+                {(() => {
+                  const temporalSummary = getTemporalSummary(profileData.temporalPatterns);
+                  return (
+                    <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setIsTemporalExpanded(prev => !prev)}
+                        className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
+                        aria-expanded={isTemporalExpanded}
+                      >
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                            <Clock className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                              <span>Temporal Activity Patterns</span>
+                            </div>
+                            <h3 className="text-base font-display font-bold text-slate-800">Daypart Scheduling & Activity Indices</h3>
+                          </div>
+                        </div>
 
-                  {/* 3 Columns with 3 Charts */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
-                    <AgeChart
-                      data={profileData.demographics.ageChartData}
-                      source={profileData.demographics.ageChartData[0]?.source || "Syndicated Sources"}
-                    />
-                    <GenderChart
-                      data={profileData.demographics.genderChartData}
-                      source={profileData.demographics.genderChartData[0]?.source || "Syndicated Sources"}
-                    />
-                    <IncomeChart
-                      data={profileData.demographics.incomeChartData}
-                      source={profileData.demographics.incomeChartData[0]?.source || "Syndicated Sources"}
-                    />
-                  </div>
+                        {/* Option C Highlight: Tag + Key Metric Chips */}
+                        <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
+                          <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
+                            {temporalSummary.tag}
+                          </span>
+                          {temporalSummary.chips.map((chip, idx) => (
+                            <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
+                              {chip.icon === "calendar" && <Calendar className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              {chip.icon === "clock" && <Clock className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                              <span className="font-semibold text-slate-900">{chip.label}:</span>
+                              <span>{chip.value}</span>
+                            </span>
+                          ))}
+                        </div>
 
-                  {/* Geographic Concentration Notes - Full Width under charts */}
-                  {profileData.demographics.geographyNotes && (
-                    <div className="bg-slate-50 rounded-xl border border-slate-100/50 p-4 text-[11px] text-slate-500">
-                      <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-1">Geographic Concentration Notes</span>
-                      <p className="leading-relaxed">
-                        {profileData.demographics.geographyNotes}
-                      </p>
+                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
+                          {isTemporalExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                        </div>
+                      </button>
+
+                      {isTemporalExpanded && (
+                        <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
+                          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            {/* Daypart Guidance & Activation Notes */}
+                            <div className="lg:col-span-1 bg-white rounded-xl border border-slate-100 p-5 flex flex-col justify-between shadow-xs">
+                              <div>
+                                <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-2">Daypart Guidance</span>
+                                <h4 className="text-sm font-display font-bold text-slate-800 mb-2">Scheduling Strategy</h4>
+                                <p className="text-xs text-slate-600 leading-relaxed mb-4">
+                                  {profileData.temporalPatterns.overview}
+                                </p>
+                              </div>
+                              <div className="bg-slate-50 rounded-xl border border-slate-100 p-3.5 text-[11px] text-slate-500">
+                                <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-1">Persona Activation Notes</span>
+                                <p className="leading-relaxed">
+                                  {profileData.temporalPatterns.activationNotes}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Temporal Activity Charts */}
+                            <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 p-5 shadow-xs flex flex-col justify-between">
+                              <div>
+                                <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-3">Temporal Activity Indices</span>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                  <DayOfWeekChart
+                                    data={profileData.temporalPatterns.dayOfWeekChartData}
+                                    source={profileData.temporalPatterns.dayOfWeekChartData[0]?.source || "Modeled planning indices"}
+                                  />
+                                  <HourOfDayChart
+                                    data={profileData.temporalPatterns.hourOfDayChartData}
+                                    source={profileData.temporalPatterns.hourOfDayChartData[0]?.source || "Modeled planning indices"}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  );
+                })()}
 
-                {/* 8. Temporal Activity Patterns Bento Row */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                  {/* Daypart Guidance & Activation Notes */}
-                  <div className="lg:col-span-1 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                        <Clock className="w-4 h-4" />
-                        <span>8. Temporal Activity Patterns</span>
-                      </div>
-                      <h3 className="text-base font-display font-bold text-slate-800 mb-2">Daypart Scheduling Guidance</h3>
-                      <p className="text-xs text-slate-600 leading-relaxed mb-4">
-                        {profileData.temporalPatterns.overview}
-                      </p>
-                    </div>
-                    <div className="bg-slate-50 rounded-xl border border-slate-100/50 p-4 text-[11px] text-slate-500">
-                      <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-1">Persona Activation Notes</span>
-                      <p className="leading-relaxed">
-                        {profileData.temporalPatterns.activationNotes}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Temporal Activity Charts */}
-                  <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
-                    <div>
-                      <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-3">Temporal Activity Indices</span>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <DayOfWeekChart
-                          data={profileData.temporalPatterns.dayOfWeekChartData}
-                          source={profileData.temporalPatterns.dayOfWeekChartData[0]?.source || "Modeled planning indices"}
-                        />
-                        <HourOfDayChart
-                          data={profileData.temporalPatterns.hourOfDayChartData}
-                          source={profileData.temporalPatterns.hourOfDayChartData[0]?.source || "Modeled planning indices"}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 9. Executive summary */}
-                <div className="bg-indigo-50/50 border border-indigo-100/80 rounded-2xl p-5 md:p-6 shadow-xs">
-                  <div className="flex items-center gap-2 text-indigo-700 text-xs font-bold uppercase tracking-wider mb-2">
-                    <Award className="w-4 h-4" />
-                    <span>9. Executive Summary Blueprint</span>
-                  </div>
-                  <h3 className="text-base font-display font-bold text-indigo-900 mb-2">Audience Opportunity & Core Alignment</h3>
-                  <p className="text-xs text-indigo-950 leading-relaxed font-medium">
-                    {profileData.executiveSummary}
-                  </p>
-                </div>
-
-                {/* 10. Channel Strategy & Activation Plan (when Media Plan Analysis is present) */}
+                {/* Channel Strategy & Activation Plan (when Media Plan Analysis is present) */}
                 {profileData.channelStrategy && (
                   <ChannelStrategySection
                     data={profileData.channelStrategy}
@@ -3783,248 +4347,335 @@ export default function App() {
                   />
                 )}
 
-              {/* Sourcing and Grounding List */}
-              <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
-                    <BookOpen className="w-4 h-4" />
-                    <span>{profileData.channelStrategy ? "11" : "10"}. Citations & Media Sourcing Registry</span>
+                {/* Executive Summary Blueprint (placed after Channel Strategy) */}
+                <div className="bg-gradient-to-br from-indigo-50/70 via-white to-slate-50 border border-indigo-100/90 rounded-2xl p-6 md:p-8 shadow-xs space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-indigo-100/60 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2 text-indigo-700 text-xs font-bold uppercase tracking-wider mb-1.5">
+                        <Award className="w-4 h-4 text-indigo-600" />
+                        <span>Executive Summary Blueprint</span>
+                      </div>
+                      <h3 className="text-xl font-display font-bold text-slate-900">
+                        Audience Opportunity & Strategic Media Alignment
+                      </h3>
+                    </div>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-semibold border border-indigo-200/60 self-start sm:self-auto">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                      Executive Synthesis
+                    </span>
                   </div>
-                  <button
-                    onClick={handleCopySources}
-                    className="inline-flex items-center gap-1.5 text-xs text-slate-500 bg-slate-50 hover:bg-slate-100 border border-slate-100 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
-                  >
-                    {copySourcesCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copySourcesCopied ? "Copied!" : "Copy Sources"}</span>
-                  </button>
+
+                  <p className="text-sm text-slate-700 leading-relaxed font-normal">
+                    {profileData.executiveSummary}
+                  </p>
+
+                  {/* Strategic Value Pillars: Where the Audience Is & Why it Hits KPIs */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                    <div className="bg-white/80 border border-indigo-100/70 rounded-xl p-4 space-y-1.5 shadow-2xs">
+                      <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs uppercase tracking-wider">
+                        <Target className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span>Reaching Consumers Where They Actually Are</span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Activates across multi-screen behaviors (Connected TV living room co-viewing, mobile digital companion screens, and high-affinity contextual domains) during peak active dayparts.
+                      </p>
+                    </div>
+
+                    <div className="bg-white/80 border border-indigo-100/70 rounded-xl p-4 space-y-1.5 shadow-2xs">
+                      <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs uppercase tracking-wider">
+                        <TrendingUp className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span>Engineered to Maximize Campaign KPIs</span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Combines high-impact unskippable premium inventory with precision intent targeting and retargeting to maximize reach, engagement, and conversion efficiency.
+                      </p>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="space-y-3.5">
-                  {profileData.sources.map((source, index) => (
-                    <div key={index} className="border-b border-slate-50 pb-3.5 last:border-0 last:pb-0">
-                      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                        <div className="flex items-center gap-2">
-                          <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold flex items-center justify-center font-mono">
-                            {index + 1}
-                          </span>
-                          {source.url ? (
+              {/* Sourcing and Grounding List */}
+              <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs transition-all">
+                <button
+                  type="button"
+                  onClick={() => setIsCitationsExpanded((prev) => !prev)}
+                  aria-expanded={isCitationsExpanded}
+                  className="w-full flex items-center justify-between text-left cursor-pointer group"
+                >
+                  <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
+                    <BookOpen className="w-4 h-4 text-indigo-600" />
+                    <span className="text-slate-900 group-hover:text-indigo-600 transition-colors">
+                      Citations & Media Sourcing Registry
+                    </span>
+                  </div>
+                  <ChevronDown
+                    className={`w-5 h-5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
+                      isCitationsExpanded ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+
+                {isCitationsExpanded && (
+                  <div className="mt-4 pt-4 border-t border-slate-100 space-y-4">
+                    <div className="space-y-3.5">
+                      {profileData.sources.map((source, index) => (
+                        <div key={index} className="border-b border-slate-50 pb-3.5 last:border-0 last:pb-0">
+                          <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                            <div className="flex items-center gap-2">
+                              <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold flex items-center justify-center font-mono">
+                                {index + 1}
+                              </span>
+                              {source.url ? (
+                                <a
+                                  href={source.url}
+                                  target="_blank"
+                                  referrerPolicy="no-referrer"
+                                  rel="noopener noreferrer"
+                                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline inline-flex items-center gap-1"
+                                >
+                                  <span>{source.name}</span>
+                                  <ExternalLink className="w-3 h-3 shrink-0 text-indigo-400" />
+                                </a>
+                              ) : (
+                                <span className="text-xs font-bold text-slate-800">{source.name}</span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold border border-indigo-100/30">
+                                {source.tier}
+                              </span>
+                              <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-slate-50 text-slate-600 font-semibold border border-slate-100">
+                                {source.usageType}
+                              </span>
+                            </div>
+                          </div>
+                          <p className="text-[11px] text-slate-600 leading-relaxed pl-7">
+                            <strong className="text-slate-700">Supported:</strong> {source.supportedClaims}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Grounding Sources (from Search metadata) */}
+                    {groundingSources && groundingSources.length > 0 && (
+                      <div className="mt-5 pt-4 border-t border-slate-100/80">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-500 mb-2">
+                          <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                          <span>Google Search Grounding Verifications</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mb-3 leading-normal">
+                          The following web URLs were dynamically queried and analyzed during this session to confirm claim precision:
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {groundingSources.slice(0, 5).map((source, idx) => (
                             <a
-                              href={source.url}
+                              key={idx}
+                              href={source.uri}
                               target="_blank"
                               referrerPolicy="no-referrer"
                               rel="noopener noreferrer"
-                              className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline inline-flex items-center gap-1"
+                              className="inline-flex items-center gap-1 bg-slate-50 hover:bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md text-[10px] border border-slate-100 font-mono transition-colors"
                             >
-                              <span>{source.name}</span>
-                              <ExternalLink className="w-3 h-3 shrink-0 text-indigo-400" />
+                              <span className="max-w-[120px] truncate">{source.title || "Search Verification"}</span>
+                              <ExternalLink className="w-2.5 h-2.5 text-slate-400" />
                             </a>
-                          ) : (
-                            <span className="text-xs font-bold text-slate-800">{source.name}</span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold border border-indigo-100/30">
-                            {source.tier}
-                          </span>
-                          <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-slate-50 text-slate-600 font-semibold border border-slate-100">
-                            {source.usageType}
-                          </span>
+                          ))}
                         </div>
                       </div>
-                      <p className="text-[11px] text-slate-600 leading-relaxed pl-7">
-                        <strong className="text-slate-700">Supported:</strong> {source.supportedClaims}
-                      </p>
-                    </div>
-                  ))}
-                </div>
+                    )}
 
-                {/* Grounding Sources (from Search metadata) */}
-                {groundingSources && groundingSources.length > 0 && (
-                  <div className="mt-5 pt-4 border-t border-slate-100/80">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-500 mb-2">
-                      <ShieldCheck className="w-4 h-4 text-emerald-500" />
-                      <span>Google Search Grounding Verifications</span>
-                    </div>
-                    <p className="text-[10px] text-slate-400 mb-3 leading-normal">
-                      The following web URLs were dynamically queried and analyzed during this session to confirm claim precision:
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {groundingSources.slice(0, 5).map((source, idx) => (
-                        <a
-                          key={idx}
-                          href={source.uri}
-                          target="_blank"
-                          referrerPolicy="no-referrer"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 bg-slate-50 hover:bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md text-[10px] border border-slate-100 font-mono transition-colors"
-                        >
-                          <span className="max-w-[120px] truncate">{source.title || "Search Verification"}</span>
-                          <ExternalLink className="w-2.5 h-2.5 text-slate-400" />
-                        </a>
-                      ))}
+                    {/* Footer: Copy Sources button */}
+                    <div className="pt-3 border-t border-slate-100 flex items-center justify-end">
+                      <button
+                        type="button"
+                        onClick={handleCopySources}
+                        className="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors cursor-pointer font-medium"
+                      >
+                        {copySourcesCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copySourcesCopied ? "Copied!" : "Copy Sources"}</span>
+                      </button>
                     </div>
                   </div>
                 )}
-
               </div>
 
               {/* AI QA Audit & Scoring Center */}
               {profileData.auditResult && (
-                <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-6">
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-4">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <ShieldCheck className="w-5 h-5 text-emerald-500" />
-                        <h3 className="text-sm font-display font-bold text-slate-800 uppercase tracking-wider">
-                          {profileData.channelStrategy ? "12" : "11"}. Programmatic Media Buyer QA Audit
-                        </h3>
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-0.5">
-                        Independent scoring and automated compliance check for client presentation readiness.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {profileData.auditResult.autoFixes && profileData.auditResult.autoFixes.length > 0 ? (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200">
-                          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                          Auto-Corrected
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-200">
-                          <Check className="w-3.5 h-3.5 shrink-0" />
-                          Verified Client-Ready
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Executive Summary */}
-                  <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
-                    <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                      Executive QA Summary
-                    </h4>
-                    <p className="text-xs text-slate-600 leading-relaxed italic">
-                      "{profileData.auditResult.executiveSummary}"
-                    </p>
-                  </div>
-
-                  {/* Scorecard Layout */}
-                  <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
-                    {/* Big Score Circle */}
-                    <div className="md:col-span-4 flex flex-col items-center justify-center bg-slate-900 text-white rounded-xl p-5 border border-slate-800 text-center space-y-2">
-                      <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-indigo-300">
-                        Overall Media Score
+                <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs transition-all">
+                  <button
+                    type="button"
+                    onClick={() => setIsAuditExpanded((prev) => !prev)}
+                    aria-expanded={isAuditExpanded}
+                    className="w-full flex items-center justify-between text-left cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span className="text-slate-900 group-hover:text-indigo-600 transition-colors">
+                        Programmatic Media Buyer QA Audit
                       </span>
-                      <div className="relative flex items-center justify-center">
-                        <div className="w-24 h-24 rounded-full border-4 border-indigo-500/20 flex flex-col items-center justify-center">
-                          <span className="text-3xl font-mono font-extrabold text-indigo-400">
-                            {profileData.auditResult.finalScore}
-                          </span>
-                          <span className="text-[9px] font-mono text-indigo-300 tracking-wider">
-                            / 100
-                          </span>
+                    </div>
+                    <ChevronDown
+                      className={`w-5 h-5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
+                        isAuditExpanded ? "rotate-180" : ""
+                      }`}
+                    />
+                  </button>
+
+                  {isAuditExpanded && (
+                    <div className="mt-4 pt-4 border-t border-slate-100 space-y-6">
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-4">
+                        <div>
+                          <p className="text-[11px] text-slate-500">
+                            Independent scoring and automated compliance check for client presentation readiness.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {profileData.auditResult.autoFixes && profileData.auditResult.autoFixes.length > 0 ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200">
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                              Auto-Corrected
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-200">
+                              <Check className="w-3.5 h-3.5 shrink-0" />
+                              Verified Client-Ready
+                            </span>
+                          )}
                         </div>
                       </div>
-                      {profileData.auditResult.originalScore !== profileData.auditResult.finalScore && (
-                        <p className="text-[10px] text-indigo-300/80 font-mono">
-                          Auto-remediated from {profileData.auditResult.originalScore}/100
+
+                      {/* Executive Summary */}
+                      <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
+                        <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                          Executive QA Summary
+                        </h4>
+                        <p className="text-xs text-slate-600 leading-relaxed italic">
+                          "{profileData.auditResult.executiveSummary}"
                         </p>
-                      )}
-                      <p className="text-[11px] text-slate-300 leading-relaxed px-2 font-medium">
-                        {profileData.auditResult.finalScore >= 95 ? "Excellent (Presentation Approved)" : "Pass (Review Flag Details)"}
-                      </p>
-                    </div>
+                      </div>
 
-                    {/* Categories list */}
-                    <div className="md:col-span-8 space-y-3.5">
-                      <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                        Evaluation Scorecard
-                      </h4>
-                      <div className="space-y-3">
-                        {profileData.auditResult.scorecard.map((item, idx) => {
-                          const scorePct = (item.score / 20) * 100;
-                          // Dynamic bar color
-                          let barColor = "bg-emerald-500";
-                          if (item.score < 15) barColor = "bg-amber-500";
-                          if (item.score < 10) barColor = "bg-rose-500";
-
-                          return (
-                            <div key={idx} className="space-y-1">
-                              <div className="flex justify-between items-center text-xs">
-                                <span className="font-bold text-slate-700">{item.category}</span>
-                                <span className="font-mono font-bold text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded">
-                                  {item.score} / 20
-                                </span>
-                              </div>
-                              <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-                                <div className={`h-full ${barColor} transition-all duration-500`} style={{ width: `${scorePct}%` }}></div>
-                              </div>
-                              <p className="text-[10px] text-slate-500 pl-1 leading-normal">
-                                {item.notes}
-                              </p>
+                      {/* Scorecard Layout */}
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
+                        {/* Big Score Circle */}
+                        <div className="md:col-span-4 flex flex-col items-center justify-center bg-slate-900 text-white rounded-xl p-5 border border-slate-800 text-center space-y-2">
+                          <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-indigo-300">
+                            Overall Media Score
+                          </span>
+                          <div className="relative flex items-center justify-center">
+                            <div className="w-24 h-24 rounded-full border-4 border-indigo-500/20 flex flex-col items-center justify-center">
+                              <span className="text-3xl font-mono font-extrabold text-indigo-400">
+                                {profileData.auditResult.finalScore}
+                              </span>
+                              <span className="text-[9px] font-mono text-indigo-300 tracking-wider">
+                                / 100
+                              </span>
                             </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Highlights & Flags */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    {/* Strategic Highlights */}
-                    <div className="border border-emerald-100 bg-emerald-50/20 rounded-xl p-4 space-y-3">
-                      <div className="flex items-center gap-1.5 text-emerald-800 border-b border-emerald-100 pb-2">
-                        <Check className="w-4 h-4 text-emerald-600" />
-                        <h4 className="text-xs font-bold uppercase tracking-wider">
-                          🏆 Strategic Highlights
-                        </h4>
-                      </div>
-                      <ul className="space-y-2">
-                        {profileData.auditResult.strategicHighlights.map((hl, i) => (
-                          <li key={i} className="text-xs text-slate-600 leading-relaxed flex items-start gap-2">
-                            <span className="text-emerald-500 shrink-0 mt-0.5">✔</span>
-                            <span>{hl}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    {/* Red Flags & Auto-Fixes */}
-                    <div className="border border-indigo-100 bg-indigo-50/10 rounded-xl p-4 space-y-3">
-                      <div className="flex items-center gap-1.5 text-indigo-800 border-b border-indigo-100 pb-2">
-                        <AlertTriangle className="w-4 h-4 text-indigo-500" />
-                        <h4 className="text-xs font-bold uppercase tracking-wider">
-                          🚨 Critical Red Flags & Auto-Fixes
-                        </h4>
-                      </div>
-                      <div className="space-y-3">
-                        {profileData.auditResult.autoFixes && profileData.auditResult.autoFixes.length > 0 ? (
-                          <div className="space-y-2.5 max-h-[160px] overflow-y-auto custom-scrollbar">
-                            {profileData.auditResult.autoFixes.map((fix, i) => (
-                              <div key={i} className="text-xs border-b border-indigo-100/30 pb-2.5 last:border-0 last:pb-0 space-y-1">
-                                <p className="text-indigo-900 font-bold flex items-start gap-1">
-                                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0 mt-1"></span>
-                                  <span><strong>Issue:</strong> {fix.issue}</span>
-                                </p>
-                                <p className="text-slate-600 pl-3 leading-normal italic">
-                                  <strong>AI Fix:</strong> {fix.resolution}
-                                </p>
-                              </div>
-                            ))}
                           </div>
-                        ) : (
-                          <p className="text-xs text-slate-500 italic pl-1">
-                            Clean - No major data hallucinations or metric contradictions detected. Verified perfect alignment.
+                          {profileData.auditResult.originalScore !== profileData.auditResult.finalScore && (
+                            <p className="text-[10px] text-indigo-300/80 font-mono">
+                              Auto-remediated from {profileData.auditResult.originalScore}/100
+                            </p>
+                          )}
+                          <p className="text-[11px] text-slate-300 leading-relaxed px-2 font-medium">
+                            {profileData.auditResult.finalScore >= 95 ? "Excellent (Presentation Approved)" : "Pass (Review Flag Details)"}
                           </p>
-                        )}
+                        </div>
+
+                        {/* Categories list */}
+                        <div className="md:col-span-8 space-y-3.5">
+                          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                            Evaluation Scorecard
+                          </h4>
+                          <div className="space-y-3">
+                            {profileData.auditResult.scorecard.map((item, idx) => {
+                              const scorePct = (item.score / 20) * 100;
+                              let barColor = "bg-emerald-500";
+                              if (item.score < 15) barColor = "bg-amber-500";
+                              if (item.score < 10) barColor = "bg-rose-500";
+
+                              return (
+                                <div key={idx} className="space-y-1">
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="font-bold text-slate-700">{item.category}</span>
+                                    <span className="font-mono font-bold text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded">
+                                      {item.score} / 20
+                                    </span>
+                                  </div>
+                                  <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                                    <div className={`h-full ${barColor} transition-all duration-500`} style={{ width: `${scorePct}%` }}></div>
+                                  </div>
+                                  <p className="text-[10px] text-slate-500 pl-1 leading-normal">
+                                    {item.notes}
+                                  </p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Highlights & Flags */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        {/* Strategic Highlights */}
+                        <div className="border border-emerald-100 bg-emerald-50/20 rounded-xl p-4 space-y-3">
+                          <div className="flex items-center gap-1.5 text-emerald-800 border-b border-emerald-100 pb-2">
+                            <Check className="w-4 h-4 text-emerald-600" />
+                            <h4 className="text-xs font-bold uppercase tracking-wider">
+                              🏆 Strategic Highlights
+                            </h4>
+                          </div>
+                          <ul className="space-y-2">
+                            {profileData.auditResult.strategicHighlights.map((hl, i) => (
+                              <li key={i} className="text-xs text-slate-600 leading-relaxed flex items-start gap-2">
+                                <span className="text-emerald-500 shrink-0 mt-0.5">✔</span>
+                                <span>{hl}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+
+                        {/* Red Flags & Auto-Fixes */}
+                        <div className="border border-indigo-100 bg-indigo-50/10 rounded-xl p-4 space-y-3">
+                          <div className="flex items-center gap-1.5 text-indigo-800 border-b border-indigo-100 pb-2">
+                            <AlertTriangle className="w-4 h-4 text-indigo-500" />
+                            <h4 className="text-xs font-bold uppercase tracking-wider">
+                              🚨 Critical Red Flags & Auto-Fixes
+                            </h4>
+                          </div>
+                          <div className="space-y-3">
+                            {profileData.auditResult.autoFixes && profileData.auditResult.autoFixes.length > 0 ? (
+                              <div className="space-y-2.5 max-h-[160px] overflow-y-auto custom-scrollbar">
+                                {profileData.auditResult.autoFixes.map((fix, i) => (
+                                  <div key={i} className="text-xs border-b border-indigo-100/30 pb-2.5 last:border-0 last:pb-0 space-y-1">
+                                    <p className="text-indigo-900 font-bold flex items-start gap-1">
+                                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0 mt-1"></span>
+                                      <span><strong>Issue:</strong> {fix.issue}</span>
+                                    </p>
+                                    <p className="text-slate-600 pl-3 leading-normal italic">
+                                      <strong>AI Fix:</strong> {fix.resolution}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-500 italic pl-1">
+                                Clean - No major data hallucinations or metric contradictions detected. Verified perfect alignment.
+                              </p>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
 
               {/* Additional RFP Requirements & Agency Capability Responses */}
-              {profileData.additionalRfpRequirements && (
+              {profileData.additionalRfpRequirements && 
+               (profileData.additionalRfpRequirements.isRfpDocument ||
+                (profileData.additionalRfpRequirements.rfpAsksAndQuestions && profileData.additionalRfpRequirements.rfpAsksAndQuestions.length > 0) ||
+                (profileData.additionalRfpRequirements.digitalRemedyCapabilityMatches && profileData.additionalRfpRequirements.digitalRemedyCapabilityMatches.length > 0) ||
+                profileData.additionalRfpRequirements.rfpSummary ||
+                profileData.additionalRfpRequirements.additionalNotes) && (
                 <div className="bg-white rounded-2xl border border-indigo-100 p-5 md:p-6 shadow-xs space-y-6">
                   {/* Section Header */}
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-indigo-100/60 pb-4">
@@ -4032,7 +4683,7 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <FileText className="w-5 h-5 text-indigo-600" />
                         <h3 className="text-sm font-display font-bold text-slate-800 uppercase tracking-wider">
-                          {(profileData.channelStrategy ? 1 : 0) + (profileData.auditResult ? 1 : 0) + 11}. RFP Requirements & Agency Capability Responses
+                          RFP Requirements & Agency Capability Responses
                         </h3>
                       </div>
                       <p className="text-[11px] text-slate-500 mt-0.5">
