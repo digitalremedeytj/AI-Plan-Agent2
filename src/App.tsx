@@ -437,6 +437,10 @@ const defaultCtvPublishers = [
 
 const defaultPublisherInsights = "The recommended CTV publisher mix targets high-impact, ad-supported environments where our audience actively streams content. By combining premium subscription video-on-demand (SVOD) apps, free ad-supported streaming TV (FAST) platforms, and native Smart TV OS display banners, the campaign secures maximum reach and frequency while maintaining brand safety.";
 
+// Hard client-side deadline for a generation run. The server heartbeats every 4s, so the
+// socket never idles out on its own; without this an interrupted run spins indefinitely.
+const CLIENT_GENERATION_TIMEOUT_MS = 600000; // 10 minutes
+
 // Helper to compress base64 avatar images using Canvas with object-cover center cropping
 async function compressAvatarUrl(url?: string, maxDim = 120, quality = 0.65): Promise<string | undefined> {
   if (!url || !url.startsWith("data:image/")) return url;
@@ -894,6 +898,34 @@ export default function App() {
     }
   }, [researchLogs]);
 
+  // Persona portraits are generated off the critical path. The server returns the profile
+  // as soon as it is ready and the client fills in headshots as they arrive, in parallel,
+  // so up to 4 x 45s of image generation no longer gates the run.
+  const hydratePersonaAvatars = React.useCallback((personas: any[]) => {
+    if (!Array.isArray(personas)) return;
+    personas.forEach((persona, index) => {
+      if (persona?.avatarUrl && persona.avatarUrl.startsWith("data:image/")) return;
+      fetch("/api/generate-persona-avatar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ persona })
+      })
+        .then((res) => res.json())
+        .then(async (data) => {
+          if (!data?.success || !data.avatarUrl) return;
+          const compressed = await compressAvatarUrl(data.avatarUrl);
+          const finalAvatar = compressed || data.avatarUrl;
+          setProfileData((prev) => {
+            if (!prev || !prev.personas || !prev.personas[index]) return prev;
+            const updated = [...prev.personas];
+            updated[index] = { ...updated[index], avatarUrl: finalAvatar };
+            return { ...prev, personas: updated };
+          });
+        })
+        .catch((err) => console.error("Error generating persona headshot:", err));
+    });
+  }, []);
+
   // Queue and simulated thought ticker Effect
   React.useEffect(() => {
     if (!loading) return;
@@ -953,6 +985,11 @@ export default function App() {
             }))
           ).then((compressedPersonas) => {
             setProfileData({ ...rawProfile, personas: compressedPersonas });
+            hydratePersonaAvatars(compressedPersonas);
+          }).catch((err) => {
+            console.error("Avatar compression failed, rendering profile uncompressed:", err);
+            setProfileData(rawProfile);
+            hydratePersonaAvatars(rawProfile.personas);
           });
         } else {
           setProfileData(rawProfile);
@@ -989,7 +1026,7 @@ export default function App() {
     }, 1800); // Stagger every 1.8 seconds
 
     return () => clearInterval(interval);
-  }, [loading, serverCompleteData, audienceDescription, url, geography, campaignFocus, planOptions]);
+  }, [loading, serverCompleteData, audienceDescription, url, geography, campaignFocus, planOptions, hydratePersonaAvatars]);
   
   // Feedback states for buttons
   const [copyProfileCopied, setCopyProfileCopied] = useState(false);
@@ -1636,11 +1673,17 @@ export default function App() {
       setActiveSavedId(null);
     }
 
+    // Bound the run from the client side. The server's 4s SSE heartbeat means a stalled
+    // pipeline would otherwise hold the socket open forever with no way to recover.
+    const abortController = new AbortController();
+    const hardTimeout = setTimeout(() => abortController.abort(), CLIENT_GENERATION_TIMEOUT_MS);
+
     try {
       const selectedOpts = (planOptions && planOptions.length > 0) ? planOptions.filter(p => p.selected) : undefined;
       const response = await fetch("/api/generate-profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
         body: JSON.stringify({
           advertiserName,
           kpis: kpis.filter((k) => k.trim().length > 0),
@@ -1676,6 +1719,8 @@ export default function App() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
+      let sawComplete = false;
+      let serverError: string | null = null;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -1688,45 +1733,69 @@ export default function App() {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
+          if (!trimmed.startsWith("data: ")) continue; // ":" heartbeat comments
 
-          if (trimmed.startsWith("data: ")) {
-            const rawJson = trimmed.slice(6).trim();
-            if (!rawJson) continue;
+          const rawJson = trimmed.slice(6).trim();
+          if (!rawJson) continue;
 
-            try {
-              const event = JSON.parse(rawJson);
+          // Only the parse itself is recoverable. A malformed line can be skipped, but a
+          // server-reported failure must not be — it is recorded and rethrown after the
+          // loop so it reaches the outer catch instead of being swallowed here.
+          let event: any;
+          try {
+            event = JSON.parse(rawJson);
+          } catch (parseErr) {
+            console.error("Malformed SSE line, skipping:", parseErr, rawJson.slice(0, 200));
+            continue;
+          }
 
-              if (event.type === "status") {
-                pendingLogsRef.current.push({
-                  type: "status",
-                  message: event.message
-                });
-              } else if (event.type === "research_result") {
-                pendingLogsRef.current.push({
-                  type: "research_result",
-                  label: event.label,
-                  sources: event.sources,
-                  blurb: event.blurb
-                });
-              } else if (event.type === "complete") {
-                setServerCompleteData({
-                  profile: event.profile,
-                  groundingSources: event.groundingSources || null
-                });
-              } else if (event.type === "error") {
-                throw new Error(event.details || event.error || "An error occurred during profile generation.");
-              }
-            } catch (err) {
-              console.error("Error parsing streaming chunk:", err);
-            }
+          if (event.type === "status") {
+            pendingLogsRef.current.push({
+              type: "status",
+              message: event.message
+            });
+          } else if (event.type === "research_result") {
+            pendingLogsRef.current.push({
+              type: "research_result",
+              label: event.label,
+              sources: event.sources,
+              blurb: event.blurb
+            });
+          } else if (event.type === "complete") {
+            sawComplete = true;
+            setServerCompleteData({
+              profile: event.profile,
+              groundingSources: event.groundingSources || null
+            });
+          } else if (event.type === "error") {
+            serverError = event.details || event.error || "An error occurred during profile generation.";
+          } else {
+            console.warn("Unknown SSE event type, ignoring:", event.type);
           }
         }
       }
+
+      // The stream is over. Surface a server-reported failure, and treat a stream that ended
+      // without a completion event as a failure too (Cloud Run deadline, proxy cut, restart).
+      // Without these, the loop simply falls through, `loading` stays true, and the thought
+      // ticker keeps inventing progress forever.
+      if (serverError) throw new Error(serverError);
+      if (!sawComplete) {
+        throw new Error("The research stream ended before a profile was returned. The server may have timed out or restarted. Please try again.");
+      }
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "An unexpected error occurred during profile generation.");
+      const message = err?.name === "AbortError"
+        ? `Generation exceeded ${Math.round(CLIENT_GENERATION_TIMEOUT_MS / 60000)} minutes and was cancelled. Please try again, or simplify the brief.`
+        : (err.message || "An unexpected error occurred during profile generation.");
+      setError(message);
       setLoading(false);
       setRegenType(null);
+    } finally {
+      // Only clears the deadline timer. Deliberately does NOT touch `loading`: on the happy
+      // path the run stays "loading" until the ticker drains its queue and runs the
+      // completion branch, which is what actually sets the profile data.
+      clearTimeout(hardTimeout);
     }
   };
 
@@ -4561,22 +4630,34 @@ export default function App() {
                             Overall Media Score
                           </span>
                           <div className="relative flex items-center justify-center">
-                            <div className="w-24 h-24 rounded-full border-4 border-indigo-500/20 flex flex-col items-center justify-center">
-                              <span className="text-3xl font-mono font-extrabold text-indigo-400">
-                                {profileData.auditResult.finalScore}
-                              </span>
-                              <span className="text-[9px] font-mono text-indigo-300 tracking-wider">
-                                / 100
-                              </span>
+                            <div className={`w-24 h-24 rounded-full border-4 flex flex-col items-center justify-center ${profileData.auditResult.qaBypassed ? "border-amber-500/30" : "border-indigo-500/20"}`}>
+                              {profileData.auditResult.qaBypassed ? (
+                                <span className="text-[11px] font-mono font-bold text-amber-300 leading-tight px-2">
+                                  Not
+                                  <br />
+                                  scored
+                                </span>
+                              ) : (
+                                <>
+                                  <span className="text-3xl font-mono font-extrabold text-indigo-400">
+                                    {profileData.auditResult.finalScore}
+                                  </span>
+                                  <span className="text-[9px] font-mono text-indigo-300 tracking-wider">
+                                    / 100
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
-                          {profileData.auditResult.originalScore !== profileData.auditResult.finalScore && (
+                          {!profileData.auditResult.qaBypassed && profileData.auditResult.originalScore !== profileData.auditResult.finalScore && (
                             <p className="text-[10px] text-indigo-300/80 font-mono">
                               Auto-remediated from {profileData.auditResult.originalScore}/100
                             </p>
                           )}
-                          <p className="text-[11px] text-slate-300 leading-relaxed px-2 font-medium">
-                            {profileData.auditResult.finalScore >= 95 ? "Excellent (Presentation Approved)" : "Pass (Review Flag Details)"}
+                          <p className={`text-[11px] leading-relaxed px-2 font-medium ${profileData.auditResult.qaBypassed ? "text-amber-300" : "text-slate-300"}`}>
+                            {profileData.auditResult.qaBypassed
+                              ? "QA agent unavailable — profile is unverified. Review before presenting."
+                              : (profileData.auditResult.finalScore >= 95 ? "Excellent (Presentation Approved)" : "Pass (Review Flag Details)")}
                           </p>
                         </div>
 
@@ -4587,17 +4668,21 @@ export default function App() {
                           </h4>
                           <div className="space-y-3">
                             {profileData.auditResult.scorecard.map((item, idx) => {
-                              const scorePct = (item.score / 20) * 100;
+                              // A bypassed audit has no scores. Render it as absent rather than
+                              // as a row of zeroes, which would read as a failed evaluation.
+                              const bypassed = Boolean(profileData.auditResult?.qaBypassed);
+                              const scorePct = bypassed ? 0 : (item.score / 20) * 100;
                               let barColor = "bg-emerald-500";
                               if (item.score < 15) barColor = "bg-amber-500";
                               if (item.score < 10) barColor = "bg-rose-500";
+                              if (bypassed) barColor = "bg-slate-300";
 
                               return (
                                 <div key={idx} className="space-y-1">
                                   <div className="flex justify-between items-center text-xs">
                                     <span className="font-bold text-slate-700">{item.category}</span>
                                     <span className="font-mono font-bold text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded">
-                                      {item.score} / 20
+                                      {bypassed ? "— / 20" : `${item.score} / 20`}
                                     </span>
                                   </div>
                                   <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">

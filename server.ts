@@ -120,6 +120,12 @@ const TIMEOUT_SYNTHESIS_MS = 120000;          // 120 seconds for the main synthe
 const TIMEOUT_SCORING_MS = 60000;            // 60 seconds for QA scorecard evaluation (Option B)
 const TIMEOUT_CORRECTION_MS = 90000;         // 90 seconds for auto-remediation rewrite (Option B)
 
+// Thinking budget for the main synthesis call. gemini-2.5-flash defaults to DYNAMIC thinking,
+// which can add tens of thousands of invisible output tokens and is the largest single source
+// of variance in synthesis latency. Bounded here so the stage fits inside TIMEOUT_SYNTHESIS_MS.
+// Raise toward 24576 (or set to -1 for dynamic) if synthesis quality regresses; 0 disables thinking.
+const SYNTHESIS_THINKING_BUDGET = 4096;
+
 // Generic Promise Timeout Helper
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T): Promise<T> {
   let timeoutId: NodeJS.Timeout;
@@ -139,7 +145,9 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T
 }
 
 const app = express();
-const PORT = 3000;
+// Cloud Run (and most PaaS hosts) inject the port to listen on via $PORT and will fail the
+// health check if the container binds anything else. 3000 stays the local default.
+const PORT = Number(process.env.PORT) || 3000;
 
 // Enable JSON parsing with a generous limit for additional context if needed
 app.use(express.json({ limit: "10mb" }));
@@ -1643,8 +1651,15 @@ app.post("/api/ctv-publishers/reset", (req, res) => {
 app.post("/api/ctv-publishers/upload-logo", upload.single("logo"), (req, res) => {
   try {
     if (req.file) {
-      const logoUrl = saveCustomPublisherLogo(req.file.originalname, req.file.buffer);
-      res.json({ success: true, logoUrl });
+      // multer is configured with disk storage (dest: os.tmpdir()), so req.file.buffer is
+      // always undefined here - the upload has to be read back from req.file.path.
+      try {
+        const buffer = fs.readFileSync(req.file.path);
+        const logoUrl = saveCustomPublisherLogo(req.file.originalname, buffer);
+        res.json({ success: true, logoUrl });
+      } finally {
+        fs.unlink(req.file.path, () => {});
+      }
       return;
     }
     if (req.body?.base64 && req.body?.filename) {
@@ -2236,6 +2251,7 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
         responseMimeType: "application/json",
         responseSchema: audienceProfileSchema,
         temperature: 0.1,
+        thinkingConfig: { thinkingBudget: SYNTHESIS_THINKING_BUDGET },
       }
     });
 
@@ -2309,6 +2325,48 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       originalData.audienceAnalysis = "";
     }
 
+    // 1. Scoring Agent Evaluation
+    // Kicked off here rather than after the channel strategy: scoring only reads originalData,
+    // so the two stages are independent and run concurrently. The await stays below, so the
+    // TIMEOUT_SCORING_MS race still measures from the point we actually need the result.
+    const scoringSystemInstruction = `You are an elite Media Planning Director and Data QA Specialist at a top-tier digital advertising agency.
+Your task is to ruthlessly evaluate AI-generated "Audience Profiles" for Connected TV (CTV) and digital media campaigns and score them out of 100 points.
+
+You MUST score across these five categories (0 to 20 points each):
+1. Data Integrity & Mathematical Logic: check for statistical hallucinations (e.g. overinflated HHI, double-digit CTV QR scan rates or purchase rates). CTV QR scan rates MUST hover between 0.01% and 0.5% in reality.
+2. Strategic Viability & Media Actionability: programmatic DSP platforms, specific CTV hardware, or retail media target options mentioned instead of vague concepts.
+3. Platform & Device Context: Smart TV hardware vs mobile browsing hardware, dual-screening behaviors.
+4. Audience Segmentation & Persona Quality: mutual exclusivity of personas, logical ecommerce purchasing behaviors.
+5. Structural Formatting & Clarity: clear table labels, no contradictions between narrative text and charts (e.g. narrative says weekends peak, but Sunday index is low).
+
+Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
+
+    console.log("Launching OpenAI Scoring Agent Call (gpt-5.6-terra), concurrent with channel strategy...");
+    const openai = getOpenaiClient();
+    // The .catch is required, not optional: this promise is now created before it is awaited,
+    // so an early rejection would otherwise surface as an unhandled rejection. Resolving to null
+    // also routes API failures into the same bypass path that timeouts already use.
+    const scoringPromise = openai.responses.create({
+      model: "gpt-5.6-terra",
+      reasoning: { effort: "medium" },
+      input: [
+        {
+          role: "system",
+          content: `${scoringSystemInstruction}\n\nYou must return a valid JSON object matching this schema:\n${JSON.stringify(auditResultSchema, null, 2)}`
+        },
+        {
+          role: "user",
+          content: `Please ruthlessly evaluate and score this audience profile:\n${JSON.stringify(originalData, null, 2)}`
+        }
+      ],
+      text: {
+        format: { type: "json_object" }
+      }
+    }).catch((err: any) => {
+      console.error("OpenAI QA Scoring Agent call failed:", err?.message || err);
+      return null;
+    });
+
     // Stage 2: Deterministic media recommendation and allocation for greenfield or uploaded plans
     if (Number(workingMediaBudget) > 0 || (selectedPlanOptions && selectedPlanOptions.length > 0)) {
       sendEvent("status", { message: "Evaluating Digital Remedy product eligibility, portfolio constraints, and deterministic allocations..." });
@@ -2336,39 +2394,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       }
     }
 
-    // 1. Scoring Agent Evaluation
-    const scoringSystemInstruction = `You are an elite Media Planning Director and Data QA Specialist at a top-tier digital advertising agency.
-Your task is to ruthlessly evaluate AI-generated "Audience Profiles" for Connected TV (CTV) and digital media campaigns and score them out of 100 points.
-
-You MUST score across these five categories (0 to 20 points each):
-1. Data Integrity & Mathematical Logic: check for statistical hallucinations (e.g. overinflated HHI, double-digit CTV QR scan rates or purchase rates). CTV QR scan rates MUST hover between 0.01% and 0.5% in reality.
-2. Strategic Viability & Media Actionability: programmatic DSP platforms, specific CTV hardware, or retail media target options mentioned instead of vague concepts.
-3. Platform & Device Context: Smart TV hardware vs mobile browsing hardware, dual-screening behaviors.
-4. Audience Segmentation & Persona Quality: mutual exclusivity of personas, logical ecommerce purchasing behaviors.
-5. Structural Formatting & Clarity: clear table labels, no contradictions between narrative text and charts (e.g. narrative says weekends peak, but Sunday index is low).
-
-Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
-
-    console.log("Launching OpenAI Scoring Agent Call (gpt-5.6-sol)...");
-    const openai = getOpenaiClient();
-    const scoringPromise = openai.responses.create({
-      model: "gpt-5.6-sol",
-      reasoning: { effort: "medium" },
-      input: [
-        {
-          role: "system",
-          content: `${scoringSystemInstruction}\n\nYou must return a valid JSON object matching this schema:\n${JSON.stringify(auditResultSchema, null, 2)}`
-        },
-        {
-          role: "user",
-          content: `Please ruthlessly evaluate and score this audience profile:\n${JSON.stringify(originalData, null, 2)}`
-        }
-      ],
-      text: {
-        format: { type: "json_object" }
-      }
-    });
-
+    // Await the QA scorecard that was kicked off before the channel strategy above.
     const scoringResult = await withTimeout(
       scoringPromise,
       TIMEOUT_SCORING_MS,
@@ -2384,31 +2410,43 @@ Your output must be a perfectly formatted JSON matching the required schema. Ens
       }
     }
 
+    // When the QA agent does not answer, the profile is UNVERIFIED. It previously reported a
+    // fabricated 100/100 "Passed automatically" scorecard, which both hid the outage and
+    // suppressed remediation. Represent it honestly instead and flag it for the UI.
+    let qaBypassed = false;
     if (!auditResult) {
-      console.warn(`[TIMEOUT/FAIL] OpenAI QA Scoring Agent call timed out or failed. Bypassing scorecard and using original profile.`);
+      qaBypassed = true;
+      console.warn(`[QA BYPASS] OpenAI QA Scoring Agent timed out or failed. This profile was NOT independently scored.`);
+      const notEvaluated = "Not evaluated - QA scoring agent unavailable";
       auditResult = {
-        executiveSummary: "Passed initial automatic verification process. Profile properties within accepted digital benchmarks.",
+        executiveSummary: "The independent QA scoring agent was unavailable, so this profile has not been externally verified. The figures below are the synthesis output as generated - review them before client presentation.",
         scorecard: [
-          { category: "Data Integrity", score: 20, notes: "Passed automatically" },
-          { category: "Strategic Viability", score: 20, notes: "Passed automatically" },
-          { category: "Platform Context", score: 20, notes: "Passed automatically" },
-          { category: "Audience Segmentation", score: 20, notes: "Passed automatically" },
-          { category: "Structural Clarity", score: 20, notes: "Passed automatically" }
+          { category: "Data Integrity", score: 0, notes: notEvaluated },
+          { category: "Strategic Viability", score: 0, notes: notEvaluated },
+          { category: "Platform Context", score: 0, notes: notEvaluated },
+          { category: "Audience Segmentation", score: 0, notes: notEvaluated },
+          { category: "Structural Clarity", score: 0, notes: notEvaluated }
         ],
-        totalScore: 100,
+        totalScore: 0,
         criticalRedFlags: [],
-        strategicHighlights: ["Delivered directly with robust initial parameters"],
+        strategicHighlights: [],
         fixItChecklist: []
       };
     }
 
-    console.log(`Scoring Agent evaluation complete. Score: ${auditResult.totalScore}/100. Red Flags Count: ${auditResult.criticalRedFlags?.length || 0}`);
+    console.log(qaBypassed
+      ? "Scoring Agent bypassed - profile delivered unverified."
+      : `Scoring Agent evaluation complete. Score: ${auditResult.totalScore}/100. Red Flags Count: ${auditResult.criticalRedFlags?.length || 0}`);
 
     let finalProfile = originalData;
     let autoFixesList: Array<{ issue: string; resolution: string }> = [];
 
     // 2. Auto-Fix Remediation Call (Triggered if score < 100 or red flags found)
-    if (((auditResult.criticalRedFlags && auditResult.criticalRedFlags.length > 0) || auditResult.totalScore < 95) && auditResult.totalScore < 100) {
+    // Skipped entirely when scoring was bypassed: there is no scorecard to remediate against,
+    // and the zeroed placeholder score would otherwise trigger a pointless 90s rewrite.
+    if (qaBypassed) {
+      sendEvent("status", { message: "QA scoring agent unavailable - delivering the profile unverified. Please review before presenting." });
+    } else if (((auditResult.criticalRedFlags && auditResult.criticalRedFlags.length > 0) || auditResult.totalScore < 95) && auditResult.totalScore < 100) {
       sendEvent("status", { message: `QA Scorecard Issued: ${auditResult.totalScore}/100. Initializing Auto-Remediation agent to resolve red flags...` });
 
       const correctionSystemInstruction = `You are an expert digital media planner and senior audience profile QA rewriter.
@@ -2424,9 +2462,9 @@ You must return a JSON matching the profile correction schema. It contains:
 2. 'autoFixes': an array of { issue, resolution } describing what you corrected.
 Return ONLY the JSON. No markdown wraps.`;
 
-      console.log("Launching OpenAI AI Auto-Remediation Call (gpt-5.6-sol)...");
+      console.log("Launching OpenAI AI Auto-Remediation Call (gpt-5.6-terra)...");
       const correctionPromise = openai.responses.create({
-        model: "gpt-5.6-sol",
+        model: "gpt-5.6-terra",
         reasoning: { effort: "medium" },
         input: [
           {
@@ -2461,9 +2499,17 @@ Please correct the profile to resolve all issues.`
       if (correctionResult && correctionResult.output_text) {
         try {
           const correctionData = JSON.parse(correctionResult.output_text);
-          finalProfile = correctionData.correctedProfile;
+          // Validate BEFORE reassigning. Assigning first meant a correction that parsed but
+          // omitted 'correctedProfile' left finalProfile undefined, and the catch below could
+          // no longer honour its promise to keep the original - the run then died later on
+          // `finalProfile.auditResult = ...` with a TypeError.
+          const corrected = correctionData?.correctedProfile;
+          if (!corrected || typeof corrected !== "object" || Array.isArray(corrected)) {
+            throw new Error("Correction response did not contain a usable 'correctedProfile' object.");
+          }
+          finalProfile = corrected;
           if (originalData.channelStrategy) finalProfile.channelStrategy = originalData.channelStrategy;
-          autoFixesList = correctionData.autoFixes || [];
+          autoFixesList = Array.isArray(correctionData.autoFixes) ? correctionData.autoFixes : [];
           console.log(`AI Auto-Remediation complete. Applied ${autoFixesList.length} patches.`);
         } catch (e) {
           console.error("Failed to parse correction data, keeping original profile:", e);
@@ -2497,10 +2543,17 @@ Please correct the profile to resolve all issues.`
       executiveSummary: auditResult.executiveSummary,
       scorecard: auditResult.scorecard,
       originalScore: auditResult.totalScore,
-      finalScore: autoFixesList.length > 0 ? 100 : auditResult.totalScore,
-      criticalRedFlags: auditResult.criticalRedFlags && auditResult.criticalRedFlags.length > 0 ? auditResult.criticalRedFlags : ["Clean - No major data hallucinations detected."],
+      // A bypassed run has no score to report - do not let programmatic sanity fixes
+      // promote it to a 100, and do not claim the profile came back clean.
+      finalScore: qaBypassed ? 0 : (autoFixesList.length > 0 ? 100 : auditResult.totalScore),
+      criticalRedFlags: auditResult.criticalRedFlags && auditResult.criticalRedFlags.length > 0
+        ? auditResult.criticalRedFlags
+        : (qaBypassed
+          ? ["QA scoring did not run - this profile has not been independently verified."]
+          : ["Clean - No major data hallucinations detected."]),
       strategicHighlights: auditResult.strategicHighlights || [],
-      autoFixes: autoFixesList
+      autoFixes: autoFixesList,
+      qaBypassed
     };
 
     // Embed the audit results into the final profile
@@ -2561,24 +2614,12 @@ Please correct the profile to resolve all issues.`
       finalProfile.expansionReachPercent = undefined;
     }
 
-    // Generate profile photo headshots for all 4 personas
-    sendEvent("status", { message: "Generating studio profile headshots for target personas..." });
-    try {
-      for (let i = 0; i < finalProfile.personas.length; i++) {
-        const persona = finalProfile.personas[i];
-        if (!persona.avatarUrl || !persona.avatarUrl.startsWith("data:image/")) {
-          sendEvent("status", { message: `Generating studio portrait for Persona ${i + 1} of 4: ${persona.name}...` });
-          const avatarUrl = await generatePersonaHeadshot(persona);
-          if (avatarUrl) {
-            persona.avatarUrl = avatarUrl;
-          }
-        }
-      }
-      sendEvent("status", { message: "Profile photo headshots generated for all 4 personas." });
-    } catch (imgErr) {
-      console.error("Error generating persona headshots:", imgErr);
-      sendEvent("status", { message: "Note: Persona headshot generation encountered an issue. Safe defaults applied." });
-    }
+    // Persona headshots are deliberately NOT generated here. Four sequential image calls
+    // (45s timeout plus one retry each) could add up to 360s to a request the browser is
+    // already blocked on, which on its own overruns Cloud Run's default 300s deadline.
+    // The client requests each portrait from /api/generate-persona-avatar in parallel once
+    // the profile has rendered, so image latency no longer gates the result.
+    sendEvent("status", { message: "Profile complete. Studio persona portraits will render as they finish generating..." });
 
     // Stream logs for applied fixes so the live terminal console receives and prints them
     if (autoFixesList.length > 0) {
@@ -2623,7 +2664,22 @@ app.use("/assets", express.static(path.join(process.cwd(), "assets")));
 
 // Setup development or production build pipeline
 async function init() {
-  if (process.env.NODE_ENV !== "production") {
+  // Booting the Vite dev server in a deployed container is a real hazard: it is far heavier
+  // than static serving, and the memory it eats makes an OOM-kill mid-request much more
+  // likely - which severs the SSE stream with no error at all. Both npm scripts now set
+  // NODE_ENV explicitly; if it is somehow unset we fall back to production whenever a built
+  // bundle is present, so `node dist/server.cjs` can never accidentally start Vite.
+  const distPath = path.join(process.cwd(), "dist");
+  const hasBuiltBundle = fs.existsSync(path.join(distPath, "index.html"));
+  const isProduction = process.env.NODE_ENV
+    ? process.env.NODE_ENV === "production"
+    : hasBuiltBundle;
+
+  if (!process.env.NODE_ENV) {
+    console.warn(`[STARTUP] NODE_ENV is not set; inferring ${isProduction ? "production" : "development"} from ${hasBuiltBundle ? "the built bundle in dist/" : "the absence of a built bundle"}.`);
+  }
+
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -2631,7 +2687,6 @@ async function init() {
     app.use(vite.middlewares);
     console.log("Vite dev server middleware mounted.");
   } else {
-    const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

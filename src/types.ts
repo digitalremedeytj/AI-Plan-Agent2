@@ -121,6 +121,8 @@ export interface AuditResult {
   criticalRedFlags: string[];
   strategicHighlights: string[];
   autoFixes: AutoFix[];
+  /** True when the QA scoring agent was unavailable and the profile went out unverified. */
+  qaBypassed?: boolean;
 }
 
 export interface CtvPublisherRecommendation {
