@@ -898,11 +898,26 @@ export default function App() {
     }
   }, [researchLogs]);
 
+  // Track indices of persona avatars actively generating portraits in the background or on demand
+  const [generatingAvatarIndices, setGeneratingAvatarIndices] = useState<number[]>([]);
+
   // Persona portraits are generated off the critical path. The server returns the profile
   // as soon as it is ready and the client fills in headshots as they arrive, in parallel,
   // so up to 4 x 45s of image generation no longer gates the run.
   const hydratePersonaAvatars = React.useCallback((personas: any[]) => {
     if (!Array.isArray(personas)) return;
+
+    // Immediately mark all personas without an image as actively generating
+    const pendingIndices: number[] = [];
+    personas.forEach((persona, index) => {
+      if (!persona?.avatarUrl || !persona.avatarUrl.startsWith("data:image/")) {
+        pendingIndices.push(index);
+      }
+    });
+    if (pendingIndices.length > 0) {
+      setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, ...pendingIndices])));
+    }
+
     personas.forEach((persona, index) => {
       if (persona?.avatarUrl && persona.avatarUrl.startsWith("data:image/")) return;
       fetch("/api/generate-persona-avatar", {
@@ -922,7 +937,10 @@ export default function App() {
             return { ...prev, personas: updated };
           });
         })
-        .catch((err) => console.error("Error generating persona headshot:", err));
+        .catch((err) => console.error("Error generating persona headshot:", err))
+        .finally(() => {
+          setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index));
+        });
     });
   }, []);
 
@@ -1034,11 +1052,10 @@ export default function App() {
   const [regenType, setRegenType] = useState<string | null>(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [pdfGenerating, setPdfGenerating] = useState(false);
-  const [generatingAvatarIndex, setGeneratingAvatarIndex] = useState<number | null>(null);
 
   const handleRegenerateAvatar = async (personaIndex: number) => {
     if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return;
-    setGeneratingAvatarIndex(personaIndex);
+    setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, personaIndex])));
     try {
       const targetPersona = profileData.personas[personaIndex];
       const res = await fetch("/api/generate-persona-avatar", {
@@ -1069,7 +1086,7 @@ export default function App() {
     } catch (err) {
       console.error("Failed to regenerate persona headshot photo:", err);
     } finally {
-      setGeneratingAvatarIndex(null);
+      setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== personaIndex));
     }
   };
 
@@ -1228,6 +1245,16 @@ export default function App() {
 
     // Auto-generate missing headshots in background if saved profile lacks them
     if (saved.profile && saved.profile.personas) {
+      const pendingIndices: number[] = [];
+      saved.profile.personas.forEach((persona, index) => {
+        if (!persona.avatarUrl || persona.avatarUrl.includes("example.com")) {
+          pendingIndices.push(index);
+        }
+      });
+      if (pendingIndices.length > 0) {
+        setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, ...pendingIndices])));
+      }
+
       saved.profile.personas.forEach((persona, index) => {
         if (!persona.avatarUrl || persona.avatarUrl.includes("example.com")) {
           fetch("/api/generate-persona-avatar", {
@@ -1260,7 +1287,10 @@ export default function App() {
                 }));
               }
             })
-            .catch(err => console.error("Error generating missing persona headshot:", err));
+            .catch(err => console.error("Error generating missing persona headshot:", err))
+            .finally(() => {
+              setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index));
+            });
         }
       });
     }
@@ -1649,6 +1679,7 @@ export default function App() {
     setPersonaPage(0);
     setArePersonasExpanded(false);
     setIsDomainAffinityExpanded(false);
+    setGeneratingAvatarIndices([]);
     
     // Reset the queue reference and server completion state
     pendingLogsRef.current = [];
@@ -3615,7 +3646,7 @@ export default function App() {
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                           {personas.map((persona, globalIndex) => {
-                            const isRegeneratingThis = generatingAvatarIndex === globalIndex;
+                            const isGeneratingThis = generatingAvatarIndices.includes(globalIndex);
                             const hasValidAvatar = Boolean(persona.avatarUrl && !persona.avatarUrl.includes("example.com"));
                             const isRfp = persona.sourceType === 'RFP';
                             const isExpanded = arePersonasExpanded;
@@ -3627,11 +3658,11 @@ export default function App() {
                                   <div className="flex items-center gap-3.5 mb-4">
                                     {/* Round Headshot Frame */}
                                     <div className="relative group shrink-0">
-                                      <div className="w-16 h-16 md:w-20 md:h-20 rounded-full overflow-hidden bg-slate-100 ring-2 ring-indigo-100 border border-slate-200/80 shadow-xs flex items-center justify-center relative shrink-0 aspect-square">
-                                        {isRegeneratingThis ? (
-                                          <div className="flex flex-col items-center justify-center text-center p-1 text-indigo-600 bg-white/90 absolute inset-0">
+                                      <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full overflow-hidden bg-slate-100 ring-2 ${isGeneratingThis ? 'ring-indigo-300 ring-offset-2 animate-pulse bg-indigo-50/50' : 'ring-indigo-100'} border border-slate-200/80 shadow-xs flex items-center justify-center relative shrink-0 aspect-square`}>
+                                        {isGeneratingThis ? (
+                                          <div className="flex flex-col items-center justify-center text-center p-1 text-indigo-600 bg-white/95 absolute inset-0">
                                             <Loader2 className="w-5 h-5 animate-spin mb-1 text-indigo-600" />
-                                            <span className="text-[9px] font-bold">Creating...</span>
+                                            <span className="text-[9px] font-bold tracking-tight text-indigo-700">Creating...</span>
                                           </div>
                                         ) : hasValidAvatar ? (
                                           <img
@@ -3655,7 +3686,7 @@ export default function App() {
                                         )}
                                       </div>
 
-                                      {!isRegeneratingThis && hasValidAvatar && (
+                                      {!isGeneratingThis && hasValidAvatar && (
                                         <button
                                           onClick={() => handleRegenerateAvatar(globalIndex)}
                                           title="Regenerate headshot"
