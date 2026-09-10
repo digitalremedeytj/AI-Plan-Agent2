@@ -73,6 +73,30 @@ npm run start
 
 ---
 
+## Shared Plans and Settings
+
+Saved plans and global planning settings are stored **server-side in Firestore**, so every
+user sees the same plans from any machine, and settings survive a redeploy. Local
+development needs no cloud credentials - the storage layer falls back to an on-disk
+driver under `data/store/` automatically.
+
+Sign-in asks for a display name alongside the shared credentials, so plans record who
+created and last edited them. Editing global settings requires the `ADMIN_PASSWORD`.
+
+Verify a deployment with:
+
+```bash
+curl -s https://<your-service-url>/api/health
+```
+
+`storageDriver` must report `firestore`. If it reports `local-file`, plans are not being
+shared and will be lost on the next redeploy.
+
+See [documentation/SHARED_PLANS_AND_SETTINGS.md](documentation/SHARED_PLANS_AND_SETTINGS.md)
+for the architecture, the API, and the one-time GCP setup steps.
+
+---
+
 ## Sourcing & Grounding Notes
 
 1. **Syndicated vs. Modeled Data**: If public quantitative figures are unavailable, the model is instructed to output standard, rounded "Modeled Planning Proxies" (e.g., for daypart indexes) to prevent hallucinating exact figures, while labeling them clearly in accordance with real-world agency practices.

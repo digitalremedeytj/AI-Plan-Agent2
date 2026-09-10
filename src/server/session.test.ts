@@ -1,0 +1,88 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  createSessionToken,
+  isAdminRequestAllowed,
+  parseCookies,
+  sanitizeDisplayName,
+  verifySessionToken,
+} from "./session";
+
+// The signing key is derived from these when SESSION_SECRET is unset.
+process.env.TEST_USER = "demo";
+process.env.TEST_PASSWORD = "demo-password";
+
+const now = () => Date.now();
+
+test("a signed session round-trips", () => {
+  const token = createSessionToken({ name: "TJ Pascal", isAdmin: false, issuedAt: now() });
+  const user = verifySessionToken(token);
+  assert.equal(user?.name, "TJ Pascal");
+  assert.equal(user?.isAdmin, false);
+});
+
+test("a tampered payload is rejected", () => {
+  const token = createSessionToken({ name: "TJ", isAdmin: false, issuedAt: now() });
+  const [payload, signature] = token.split(".");
+
+  // Re-encode the payload with isAdmin flipped, keeping the original signature.
+  const forgedPayload = Buffer.from(JSON.stringify({ name: "TJ", isAdmin: true, issuedAt: now() }), "utf-8").toString(
+    "base64url",
+  );
+  assert.equal(verifySessionToken(`${forgedPayload}.${signature}`), null);
+  assert.ok(payload, "sanity: token had a payload segment");
+});
+
+test("a session signed with a different key is rejected", () => {
+  const token = createSessionToken({ name: "TJ", isAdmin: true, issuedAt: now() });
+  const original = process.env.TEST_PASSWORD;
+  process.env.TEST_PASSWORD = "rotated-password";
+  try {
+    assert.equal(verifySessionToken(token), null);
+  } finally {
+    process.env.TEST_PASSWORD = original;
+  }
+});
+
+test("an expired session is rejected", () => {
+  const twentyFiveHoursAgo = Date.now() - 25 * 60 * 60 * 1000;
+  const token = createSessionToken({ name: "TJ", isAdmin: false, issuedAt: twentyFiveHoursAgo });
+  assert.equal(verifySessionToken(token), null);
+});
+
+test("malformed tokens are rejected without throwing", () => {
+  for (const bad of [undefined, "", "no-dot", "a.b", "....", "!!!.???"]) {
+    assert.equal(verifySessionToken(bad as any), null, `failed for ${JSON.stringify(bad)}`);
+  }
+});
+
+test("display names are trimmed, truncated and stripped of control characters", () => {
+  assert.equal(sanitizeDisplayName("  TJ Pascal  "), "TJ Pascal");
+  assert.equal(sanitizeDisplayName("TJ\u0007\u001BPascal"), "TJPascal");
+  assert.equal(sanitizeDisplayName("x".repeat(200)).length, 60);
+  assert.equal(sanitizeDisplayName(42), "");
+  assert.equal(sanitizeDisplayName(undefined), "");
+});
+
+test("cookie parsing handles spacing, encoding and junk segments", () => {
+  const jar = parseCookies("apa_session=abc.def; other=1; malformed; name=TJ%20Pascal");
+  assert.equal(jar.apa_session, "abc.def");
+  assert.equal(jar.other, "1");
+  assert.equal(jar.name, "TJ Pascal");
+  assert.equal(parseCookies(undefined).apa_session, undefined);
+});
+
+test("settings stay writable by everyone until ADMIN_PASSWORD is configured", () => {
+  const user = { name: "TJ", isAdmin: false, issuedAt: now() };
+  delete process.env.ADMIN_PASSWORD;
+  assert.equal(isAdminRequestAllowed(user), true, "no regression before an admin password exists");
+
+  process.env.ADMIN_PASSWORD = "s3cret";
+  try {
+    assert.equal(isAdminRequestAllowed(user), false, "non-admins are locked out once configured");
+    assert.equal(isAdminRequestAllowed({ ...user, isAdmin: true }), true);
+    assert.equal(isAdminRequestAllowed(null), false);
+  } finally {
+    delete process.env.ADMIN_PASSWORD;
+  }
+});

@@ -51,7 +51,7 @@ import {
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, SavedProfile, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData } from "./types";
+import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData } from "./types";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import {
@@ -73,11 +73,9 @@ import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
 import { normalizeRawChannel } from "./utils/mediaTaxonomy";
 import {
   findBudgetChannelTier,
-  loadPlanningSettings,
   normalizeCampaignBudget,
   parseCurrencyInput,
   type PlanningSettings,
-  savePlanningSettings,
 } from "./planning/settings";
 import {
   addMediaTypeAndRebalance,
@@ -92,6 +90,10 @@ import {
   DEFAULT_CTV_PUBLISHERS,
   resolvePublisherLogo,
 } from "./planning/knowledge/ctvPublishers";
+import * as api from "./api/client";
+import { ApiError, type PlanSummary, type SessionUser } from "./api/client";
+import { migrateLocalPlans } from "./api/migrateLocalPlans";
+import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
 const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
   return resolvePublisherLogo(name, customPublishers);
@@ -477,31 +479,32 @@ async function compressAvatarUrl(url?: string, maxDim = 120, quality = 0.65): Pr
 }
 
 export default function App() {
-  // Authentication State
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    try {
-      const loginTime = localStorage.getItem("audience_builder_login_time");
-      if (!loginTime) return false;
-      const parsedTime = parseInt(loginTime, 10);
-      if (isNaN(parsedTime)) return false;
-      
-      // 24 hours in milliseconds = 86,400,000
-      const isExpired = Date.now() - parsedTime > 24 * 60 * 60 * 1000;
-      if (isExpired) {
-        localStorage.removeItem("audience_builder_login_time");
-        return false;
-      }
-      return true;
-    } catch (e) {
-      return false;
-    }
-  });
+  // --- AUTHENTICATION -------------------------------------------------------
+  // The session lives in a signed, HTTP-only cookie the server issues. The client
+  // cannot mint or extend it, so editing browser storage no longer grants access -
+  // the previous localStorage timestamp was a UI gate only.
+  const [session, setSession] = useState<SessionUser | null>(null);
+  const [isSessionChecked, setIsSessionChecked] = useState(false);
+  const isAuthenticated = session !== null;
+  const canEditSettings = session?.canEditSettings === true;
 
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
+  const [displayNameInput, setDisplayNameInput] = useState("");
+  const [adminPasswordInput, setAdminPasswordInput] = useState("");
+  const [showAdminField, setShowAdminField] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Ask the server who we are on load, rather than trusting anything client-side.
+  React.useEffect(() => {
+    api
+      .fetchSession()
+      .then(setSession)
+      .catch((err) => console.warn("Could not check session:", err))
+      .finally(() => setIsSessionChecked(true));
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -509,38 +512,41 @@ export default function App() {
       setLoginError("Please enter both username and password.");
       return;
     }
+    if (!displayNameInput.trim()) {
+      setLoginError("Please enter your name so saved plans show who created them.");
+      return;
+    }
 
     setIsLoggingIn(true);
     setLoginError(null);
 
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: usernameInput,
-          password: passwordInput,
-        }),
+      const user = await api.login({
+        username: usernameInput,
+        password: passwordInput,
+        displayName: displayNameInput,
+        adminPassword: adminPasswordInput || undefined,
       });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        try {
-          localStorage.setItem("audience_builder_login_time", Date.now().toString());
-        } catch (err) {
-          console.error("Failed to save login session:", err);
-        }
-        setIsAuthenticated(true);
-        setLoginError(null);
-      } else {
-        setLoginError(data.error || "Invalid username or password");
-      }
+      setSession(user);
+      setLoginError(null);
+      setPasswordInput("");
+      setAdminPasswordInput("");
     } catch (err: any) {
       console.error("Login request failed:", err);
-      setLoginError("Connection error. Please try again.");
+      setLoginError(err instanceof ApiError ? err.message : "Connection error. Please try again.");
     } finally {
       setIsLoggingIn(false);
     }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch (err) {
+      console.warn("Logout request failed:", err);
+    }
+    setSession(null);
+    setIsHeaderMenuOpen(false);
   };
 
   // Input fields state
@@ -556,48 +562,38 @@ export default function App() {
   const [isInsightsExpanded, setIsInsightsExpanded] = useState(false);
   const [isCitationsExpanded, setIsCitationsExpanded] = useState(false);
   const [isAuditExpanded, setIsAuditExpanded] = useState(false);
-  const [planningSettings, setPlanningSettings] = useState<PlanningSettings>(() =>
-    loadPlanningSettings(typeof window === "undefined" ? null : window.localStorage),
-  );
-  const [ctvPublishers, setCtvPublishers] = useState<CtvPublisherSetting[]>(() => {
-    try {
-      const stored = typeof window !== "undefined" ? window.localStorage.getItem("audience_builder_ctv_publishers") : null;
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch (e) {
-      console.warn("Failed to read local CTV publishers:", e);
-    }
-    return DEFAULT_CTV_PUBLISHERS;
-  });
+  // Settings come from the server and only from the server. They used to be seeded from
+  // localStorage first, which meant a fresh container answering with defaults could
+  // overwrite good settings in a live tab - and the next save pushed those defaults back
+  // up as the shared truth. Defaults here are a first-paint placeholder, nothing more.
+  const [planningSettings, setPlanningSettings] = useState<PlanningSettings>(DEFAULT_PLANNING_SETTINGS);
+  const [settingsRevision, setSettingsRevision] = useState<number | null>(null);
+  const [ctvPublishers, setCtvPublishers] = useState<CtvPublisherSetting[]>(DEFAULT_CTV_PUBLISHERS);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
 
-  // Load persistent settings and CTV publishers from server disk on initial mount
+  // Load the shared settings and publisher list once signed in.
   React.useEffect(() => {
-    fetch("/api/settings")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success && data.settings) {
-          setPlanningSettings(data.settings);
-          savePlanningSettings(window.localStorage, data.settings);
-        }
-      })
-      .catch((err) => console.warn("Could not load persistent settings from server:", err));
+    if (!isAuthenticated) return;
 
-    fetch("/api/ctv-publishers")
-      .then((res) => res.json())
+    api
+      .fetchSettings()
       .then((data) => {
-        if (data.success && Array.isArray(data.publishers) && data.publishers.length > 0) {
+        setPlanningSettings(data.settings);
+        setSettingsRevision(data.revision);
+      })
+      .catch((err) => console.warn("Could not load shared settings from the server:", err));
+
+    api
+      .fetchPublishers()
+      .then((data) => {
+        if (Array.isArray(data.publishers) && data.publishers.length > 0) {
           setCtvPublishers(data.publishers);
-          try {
-            window.localStorage.setItem("audience_builder_ctv_publishers", JSON.stringify(data.publishers));
-          } catch (e) {}
         }
       })
-      .catch((err) => console.warn("Could not load persistent CTV publishers from server:", err));
-  }, []);
+      .catch((err) => console.warn("Could not load shared CTV publishers from the server:", err));
+  }, [isAuthenticated]);
 
   const budgetNormalization = React.useMemo(
     () => normalizeCampaignBudget(parseCurrencyInput(budget), Number(campaignLength)),
@@ -623,34 +619,38 @@ export default function App() {
     if (!availableGeographies.includes(geography)) setGeography(availableGeographies[0]);
   }, [availableGeographies, geography]);
 
+  /**
+   * Settings are global and shared, so the server decides whether the write is allowed
+   * and what the resulting state is. Local state is updated from the server's response,
+   * never optimistically - otherwise a rejected write would leave this tab showing
+   * settings nobody else has.
+   */
   const handleSavePlanningSettings = async (nextSettings: PlanningSettings, nextPublishers?: CtvPublisherSetting[]) => {
-    const result = savePlanningSettings(window.localStorage, nextSettings);
-    if (result.valid && result.settings) setPlanningSettings(result.settings);
-
-    if (nextPublishers && Array.isArray(nextPublishers)) {
-      setCtvPublishers(nextPublishers);
-      try {
-        window.localStorage.setItem("audience_builder_ctv_publishers", JSON.stringify(nextPublishers));
-      } catch (e) {}
-    }
-
-    // Persist to server disk storage
+    setSettingsError(null);
     try {
-      await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(nextSettings),
-      });
+      const saved = await api.saveSettings(nextSettings);
+      setPlanningSettings(saved.settings);
+      setSettingsRevision(saved.revision);
 
       if (nextPublishers && Array.isArray(nextPublishers)) {
-        await fetch("/api/ctv-publishers", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(nextPublishers),
-        });
+        const savedPublishers = await api.savePublishers(nextPublishers);
+        setCtvPublishers(savedPublishers.publishers);
       }
-    } catch (err) {
-      console.error("Failed to sync settings to server storage:", err);
+    } catch (err: any) {
+      console.error("Failed to save shared settings:", err);
+      if (err instanceof ApiError && err.isForbidden) {
+        setSettingsError("Only administrators can change global planning settings.");
+      } else {
+        setSettingsError(err?.message || "Could not save settings. Please try again.");
+      }
+      // Re-read so this tab shows what is actually stored, not the rejected edit.
+      try {
+        const current = await api.fetchSettings();
+        setPlanningSettings(current.settings);
+        setSettingsRevision(current.revision);
+      } catch {
+        // Leave the current view alone if even the re-read fails.
+      }
     }
   };
 
@@ -1077,11 +1077,9 @@ export default function App() {
           personas: updatedPersonas
         };
         setProfileData(updatedProfile);
-
-        // Also update saved profile if active
-        if (activeSavedId) {
-          setSavedProfiles(prev => prev.map(p => p.id === activeSavedId ? { ...p, profile: updatedProfile } : p));
-        }
+        // Deliberately not written back to the shared plan. Regenerating a headshot is a
+        // local, exploratory action; pushing it straight to the server would change a
+        // shared plan for everyone without anyone choosing to save.
       }
     } catch (err) {
       console.error("Failed to regenerate persona headshot photo:", err);
@@ -1090,44 +1088,70 @@ export default function App() {
     }
   };
 
-  // Saved profiles state initialized from localStorage
-  const [savedProfiles, setSavedProfiles] = useState<SavedProfile[]>(() => {
-    try {
-      const stored = localStorage.getItem("audience_builder_saved_profiles");
-      return stored ? JSON.parse(stored) : [];
-    } catch (e) {
-      console.error("Error reading saved profiles from localStorage:", e);
-      return [];
-    }
-  });
+  // --- SHARED PLANS ---------------------------------------------------------
+  // Plans live on the server, so everyone sees the same list from any machine. The
+  // browser holds no authoritative copy: this list is refreshed from the server and
+  // never written back to localStorage.
+  const [planSummaries, setPlanSummaries] = useState<PlanSummary[]>([]);
+  const [isLoadingPlans, setIsLoadingPlans] = useState(false);
+  const [plansError, setPlansError] = useState<string | null>(null);
+  const [migrationNotice, setMigrationNotice] = useState<string | null>(null);
 
-  // Sync savedProfiles to localStorage whenever it changes
+  /** Revision of the plan currently open, needed to detect a conflicting save. */
+  const [activePlanRevision, setActivePlanRevision] = useState<number | null>(null);
+
+  const refreshPlans = React.useCallback(async () => {
+    setIsLoadingPlans(true);
+    setPlansError(null);
+    try {
+      setPlanSummaries(await api.listPlans());
+    } catch (err: any) {
+      console.error("Could not load shared plans:", err);
+      setPlansError(err?.message || "Could not load saved plans.");
+    } finally {
+      setIsLoadingPlans(false);
+    }
+  }, []);
+
+  // Load the shared plan list as soon as we are signed in.
   React.useEffect(() => {
-    try {
-      const lightweightProfiles = savedProfiles.map(p => ({
-        ...p,
-        profile: {
-          ...p.profile,
-          personas: p.profile.personas ? p.profile.personas.map(persona => ({
-            ...persona,
-            // Omit uncompressed raw base64 avatars (>100KB) if quota is constrained
-            avatarUrl: persona.avatarUrl && persona.avatarUrl.startsWith("data:image/") && persona.avatarUrl.length > 100000
-              ? undefined
-              : persona.avatarUrl
-          })) : []
-        }
-      }));
+    if (!isAuthenticated) return;
+    void refreshPlans();
+  }, [isAuthenticated, refreshPlans]);
 
+  /**
+   * Guards the one-time import below. A ref rather than state because the import must
+   * fire exactly once per page load: StrictMode double-invokes effects in development,
+   * and this effect legitimately re-runs when the settings revision resolves.
+   */
+  const migrationStartedRef = React.useRef(false);
+
+  // On first sign-in, import any plans this browser saved before plans were shared.
+  // The local copy is backed up rather than deleted, so a failed import loses nothing.
+  // Waits for the settings revision so imported plans are pinned to a real revision.
+  React.useEffect(() => {
+    if (!isAuthenticated || settingsRevision === null) return;
+    if (migrationStartedRef.current) return;
+    migrationStartedRef.current = true;
+
+    (async () => {
       try {
-        localStorage.setItem("audience_builder_saved_profiles", JSON.stringify(savedProfiles));
-      } catch (quotaErr) {
-        // Fallback to lightweight profiles if full profiles exceed browser quota
-        localStorage.setItem("audience_builder_saved_profiles", JSON.stringify(lightweightProfiles));
+        const result = await migrateLocalPlans(window.localStorage, api.createPlan, settingsRevision);
+        if (result.migrated > 0) {
+          setMigrationNotice(
+            result.failed > 0
+              ? `Imported ${result.migrated} of ${result.attempted} local plans. ${result.failed} failed and will be retried next time you sign in.`
+              : `Imported ${result.migrated} plan${result.migrated === 1 ? "" : "s"} from this browser into the shared workspace.`,
+          );
+          await refreshPlans();
+        }
+      } catch (err) {
+        console.error("Local plan import failed:", err);
+        // Allow another attempt on the next sign-in rather than wedging the flag.
+        migrationStartedRef.current = false;
       }
-    } catch (e) {
-      console.error("Error writing saved profiles to localStorage:", e);
-    }
-  }, [savedProfiles]);
+    })();
+  }, [isAuthenticated, refreshPlans, settingsRevision]);
 
   // Saved profiles interaction states
   const [leftTab, setLeftTab] = useState<"brief" | "saved" | "overview">("brief");
@@ -1146,6 +1170,11 @@ export default function App() {
   }, [profileData]);
   const [isSaving, setIsSaving] = useState(false);
   const [saveTitle, setSaveTitle] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  /** True while a create/update request is in flight, to disable the confirm button. */
+  const [isPersistingPlan, setIsPersistingPlan] = useState(false);
+  /** Id of the plan currently being fetched, so the list can show a spinner on that row. */
+  const [loadingPlanId, setLoadingPlanId] = useState<string | null>(null);
   const [activeSavedId, setActiveSavedId] = useState<string | null>(null);
   
   // Renaming state
@@ -1156,97 +1185,135 @@ export default function App() {
   const handleOpenSaveDialog = () => {
     if (!profileData) return;
     const desc = audienceDescription.trim();
-    const defaultTitle = desc 
+    const defaultTitle = desc
       ? (desc.length > 50 ? desc.slice(0, 50) + "..." : desc)
-      : uploadedFileName 
-        ? uploadedFileName.replace(/\.[^/.]+$/, "") 
+      : uploadedFileName
+        ? uploadedFileName.replace(/\.[^/.]+$/, "")
         : "Audience Profile";
     setSaveTitle(defaultTitle);
+    setSaveError(null);
     setIsSaving(true);
   };
 
-  // Handler to save the profile to history
-  const handleSaveProfile = () => {
+  /** Everything about the current workspace that belongs in a saved plan. */
+  const buildPlanPayload = (): api.PlanPayload => ({
+    kpis: kpis.filter((k) => k.trim().length > 0),
+    audienceDescription,
+    url,
+    geography,
+    campaignFocus,
+    additionalContext,
+    budget,
+    campaignLength,
+    planningSettings,
+    profile: profileData!,
+    groundingSources: groundingSources || undefined,
+  });
+
+  /**
+   * Save to the shared store. An existing plan is updated against the revision we last
+   * read; if somebody else saved in the meantime the server refuses with a conflict and
+   * we say so rather than overwriting their work.
+   */
+  const handleSaveProfile = async () => {
     if (!profileData) return;
     const titleToSave = saveTitle.trim() || "Untitled Audience Profile";
-    
-    // Check if we are updating an existing active profile
-    if (activeSavedId) {
-      setSavedProfiles((prev) =>
-        prev.map((p) => {
-          if (p.id === activeSavedId) {
-            return {
-              ...p,
-              title: titleToSave,
-              advertiserName,
-              kpis: kpis.filter((k) => k.trim().length > 0),
-              audienceDescription,
-              url,
-              geography,
-              campaignFocus,
-              additionalContext,
-              budget,
-              campaignLength,
-              planningSettings,
-              profile: profileData,
-              groundingSources: groundingSources || undefined,
-              savedAt: new Date().toLocaleString(),
-            };
-          }
-          return p;
-        })
-      );
+
+    setIsPersistingPlan(true);
+    setSaveError(null);
+
+    try {
+      const input = {
+        title: titleToSave,
+        advertiserName: advertiserName || undefined,
+        settingsRevision,
+        payload: buildPlanPayload(),
+      };
+
+      if (activeSavedId && activePlanRevision !== null) {
+        const updated = await api.updatePlan(activeSavedId, activePlanRevision, input);
+        setActivePlanRevision(updated.revision);
+      } else {
+        const created = await api.createPlan(input);
+        setActiveSavedId(created.id);
+        setActivePlanRevision(created.revision);
+      }
+
+      await refreshPlans();
       setIsSaving(false);
+    } catch (err: any) {
+      console.error("Could not save plan:", err);
+      if (err instanceof ApiError && err.isConflict) {
+        setSaveError(
+          "Someone else saved changes to this plan while you were working. Reload it from the list, then reapply your changes.",
+        );
+      } else {
+        setSaveError(err?.message || "Could not save the plan. Please try again.");
+      }
+    } finally {
+      setIsPersistingPlan(false);
+    }
+  };
+
+  /**
+   * Open a shared plan. The settings revision the plan was generated against is restored
+   * alongside it, so the numbers render the way they did when it was saved even if the
+   * global settings have moved on since.
+   */
+  const handleLoadSavedProfile = async (summary: PlanSummary) => {
+    setPlansError(null);
+    setLoadingPlanId(summary.id);
+
+    let saved: api.StoredPlan;
+    try {
+      saved = await api.getPlan(summary.id);
+    } catch (err: any) {
+      console.error("Could not open plan:", err);
+      setPlansError(err?.message || "Could not open that plan.");
+      setLoadingPlanId(null);
       return;
     }
 
-    // Create a new saved profile entry
-    const newEntry: SavedProfile = {
-      id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 9) + Date.now().toString(36),
-      savedAt: new Date().toLocaleString(),
-      title: titleToSave,
-      advertiserName,
-      kpis: kpis.filter((k) => k.trim().length > 0),
-      audienceDescription,
-      url,
-      geography,
-      campaignFocus,
-      additionalContext,
-      budget,
-      campaignLength,
-      planningSettings,
-      profile: profileData,
-      groundingSources: groundingSources || undefined,
-    };
-
-    setSavedProfiles((prev) => [newEntry, ...prev]);
-    setActiveSavedId(newEntry.id);
-    setIsSaving(false);
-  };
-
-  // Handler to load a saved profile
-  const handleLoadSavedProfile = (saved: SavedProfile) => {
+    const body = saved.payload as any;
     setAdvertiserName(saved.advertiserName || "");
-    setKpis(saved.kpis && saved.kpis.length > 0 ? saved.kpis : [""]);
-    setAudienceDescription(saved.audienceDescription);
-    setUrl(saved.url);
-    setGeography(saved.geography);
-    setCampaignFocus(saved.campaignFocus);
-    setAdditionalContext(saved.additionalContext);
-    setBudget(saved.budget || "$10,000");
-    setCampaignLength(saved.campaignLength || "30");
-    setProfileData(saved.profile);
-    setGroundingSources(saved.groundingSources || null);
+    setKpis(body.kpis && body.kpis.length > 0 ? body.kpis : [""]);
+    setAudienceDescription(body.audienceDescription || "");
+    setUrl(body.url || "");
+    setGeography(body.geography || "United States");
+    setCampaignFocus(body.campaignFocus || "Full-funnel digital media plan");
+    setAdditionalContext(body.additionalContext || "");
+    setBudget(body.budget || "$10,000");
+    setCampaignLength(body.campaignLength || "30");
+    setProfileData(body.profile);
+    setGroundingSources(body.groundingSources || null);
     setActiveSavedId(saved.id);
+    setActivePlanRevision(saved.revision);
     setError(null);
     setPersonaPage(0);
     setArePersonasExpanded(false);
     setIsDomainAffinityExpanded(false);
+    setLoadingPlanId(null);
 
-    // Auto-generate missing headshots in background if saved profile lacks them
-    if (saved.profile && saved.profile.personas) {
+    // Restore the settings this plan was generated against. Falling back to the plan's
+    // own embedded snapshot covers plans imported from before revisions existed.
+    if (saved.settingsRevision !== null) {
+      api
+        .fetchSettingsRevision(saved.settingsRevision)
+        .then((record) => {
+          if (record) setPlanningSettings(record.settings);
+          else if (body.planningSettings) setPlanningSettings(body.planningSettings);
+        })
+        .catch(() => {
+          if (body.planningSettings) setPlanningSettings(body.planningSettings);
+        });
+    } else if (body.planningSettings) {
+      setPlanningSettings(body.planningSettings);
+    }
+
+    // Auto-generate missing headshots in background if the saved plan lacks them.
+    if (body.profile && body.profile.personas) {
       const pendingIndices: number[] = [];
-      saved.profile.personas.forEach((persona, index) => {
+      body.profile.personas.forEach((persona: any, index: number) => {
         if (!persona.avatarUrl || persona.avatarUrl.includes("example.com")) {
           pendingIndices.push(index);
         }
@@ -1255,7 +1322,7 @@ export default function App() {
         setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, ...pendingIndices])));
       }
 
-      saved.profile.personas.forEach((persona, index) => {
+      body.profile.personas.forEach((persona: any, index: number) => {
         if (!persona.avatarUrl || persona.avatarUrl.includes("example.com")) {
           fetch("/api/generate-persona-avatar", {
             method: "POST",
@@ -1275,16 +1342,6 @@ export default function App() {
                   }
                   return { ...prev, personas: updated };
                 });
-                setSavedProfiles(prevList => prevList.map(sp => {
-                  if (sp.id === saved.id && sp.profile && sp.profile.personas) {
-                    const updatedPersonas = [...sp.profile.personas];
-                    if (updatedPersonas[index]) {
-                      updatedPersonas[index] = { ...updatedPersonas[index], avatarUrl: finalAvatar };
-                    }
-                    return { ...sp, profile: { ...sp.profile, personas: updatedPersonas } };
-                  }
-                  return sp;
-                }));
               }
             })
             .catch(err => console.error("Error generating missing persona headshot:", err))
@@ -1302,14 +1359,21 @@ export default function App() {
     }
   };
 
-  // Delete handler
-  const handleDeleteSavedProfile = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation(); // Avoid loading it
-    if (confirm("Are you sure you want to delete this saved profile?")) {
-      setSavedProfiles(prev => prev.filter(p => p.id !== id));
+  /** Archive is a soft delete on the server - the record stays recoverable. */
+  const handleDeleteSavedProfile = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("Remove this plan from the shared list? It is archived, not permanently deleted.")) return;
+
+    try {
+      await api.archivePlan(id);
       if (activeSavedId === id) {
         setActiveSavedId(null);
+        setActivePlanRevision(null);
       }
+      await refreshPlans();
+    } catch (err: any) {
+      console.error("Could not archive plan:", err);
+      setPlansError(err?.message || "Could not remove that plan.");
     }
   };
 
@@ -1320,17 +1384,31 @@ export default function App() {
     setEditingTitle(currentTitle);
   };
 
-  // Save renamed title
-  const handleSaveRename = (id: string, e: React.MouseEvent) => {
+  /** Rename round-trips the payload so the title change is a normal, versioned edit. */
+  const handleSaveRename = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!editingTitle.trim()) return;
-    setSavedProfiles(prev => prev.map(p => {
-      if (p.id === id) {
-        return { ...p, title: editingTitle.trim() };
-      }
-      return p;
-    }));
+    const nextTitle = editingTitle.trim();
+    if (!nextTitle) return;
     setEditingId(null);
+
+    try {
+      const existing = await api.getPlan(id);
+      const updated = await api.updatePlan(id, existing.revision, {
+        title: nextTitle,
+        advertiserName: existing.advertiserName,
+        settingsRevision: existing.settingsRevision,
+        payload: existing.payload,
+      });
+      if (activeSavedId === id) setActivePlanRevision(updated.revision);
+      await refreshPlans();
+    } catch (err: any) {
+      console.error("Could not rename plan:", err);
+      setPlansError(
+        err instanceof ApiError && err.isConflict
+          ? "Someone else changed this plan just now. Reload the list and try renaming again."
+          : err?.message || "Could not rename that plan.",
+      );
+    }
   };
 
   // File upload and parsing handler using SheetJS (XLSX) with smart client & server caching
@@ -2243,6 +2321,15 @@ export default function App() {
     }
   };
 
+  // Avoid flashing the login screen while the session cookie is being verified.
+  if (!isSessionChecked) {
+    return (
+      <div className="min-h-screen bg-[#fafbfc] flex items-center justify-center p-4 font-sans">
+        <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
+      </div>
+    );
+  }
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-[#fafbfc] flex items-center justify-center p-4 md:p-6 font-sans">
@@ -2262,6 +2349,29 @@ export default function App() {
                 <span>{loginError}</span>
               </div>
             )}
+
+            <div className="space-y-1.5">
+              <label htmlFor="displayName" className="text-xs font-bold text-slate-700 block">
+                Your Name
+              </label>
+              <div className="relative">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 pointer-events-none text-slate-400">
+                  <UserCheck className="w-4 h-4" />
+                </span>
+                <input
+                  id="displayName"
+                  type="text"
+                  required
+                  value={displayNameInput}
+                  onChange={(e) => setDisplayNameInput(e.target.value)}
+                  placeholder="e.g. TJ Pascal"
+                  className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-indigo-600/10 focus:border-indigo-600 transition-all text-slate-800"
+                />
+              </div>
+              <p className="text-[10px] text-slate-400 leading-snug">
+                Shown on the plans you save, so the team knows who created them.
+              </p>
+            </div>
 
             <div className="space-y-1.5">
               <label htmlFor="username" className="text-xs font-bold text-slate-700 block">
@@ -2313,6 +2423,35 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {showAdminField ? (
+              <div className="space-y-1.5">
+                <label htmlFor="adminPassword" className="text-xs font-bold text-slate-700 block">
+                  Administrator Password <span className="font-normal text-slate-400">(optional)</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 pointer-events-none text-slate-400">
+                    <ShieldCheck className="w-4 h-4" />
+                  </span>
+                  <input
+                    id="adminPassword"
+                    type="password"
+                    value={adminPasswordInput}
+                    onChange={(e) => setAdminPasswordInput(e.target.value)}
+                    placeholder="Only needed to change global settings"
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-indigo-600/10 focus:border-indigo-600 transition-all text-slate-800"
+                  />
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowAdminField(true)}
+                className="text-[11px] font-semibold text-slate-400 hover:text-indigo-600 hover:underline cursor-pointer"
+              >
+                Sign in as an administrator
+              </button>
+            )}
 
             <div className="text-right text-[11px] text-slate-400 font-mono">
               Session duration: 24 hours
@@ -2371,13 +2510,26 @@ export default function App() {
             {isHeaderMenuOpen && (
               <>
                 <button className="fixed inset-0 z-0 cursor-default" aria-label="Close application menu" onClick={() => setIsHeaderMenuOpen(false)} />
-                <div className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                <div className="absolute right-0 z-10 mt-2 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <div className="px-3 py-2 border-b border-slate-100 mb-1">
+                    <p className="text-xs font-bold text-slate-800 truncate">{session?.name}</p>
+                    <p className="text-[10px] text-slate-400">
+                      {canEditSettings ? "Can edit global settings" : "Settings are read-only"}
+                    </p>
+                  </div>
                   <button
                     type="button"
                     onClick={() => { setIsHeaderMenuOpen(false); setIsSettingsOpen(true); }}
                     className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
                   >
-                    Settings
+                    {canEditSettings ? "Settings" : "View Settings"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-700"
+                  >
+                    Sign Out
                   </button>
                 </div>
               </>
@@ -2390,8 +2542,10 @@ export default function App() {
         open={isSettingsOpen}
         settings={planningSettings}
         ctvPublishers={ctvPublishers}
-        onClose={() => setIsSettingsOpen(false)}
+        onClose={() => { setIsSettingsOpen(false); setSettingsError(null); }}
         onSave={handleSavePlanningSettings}
+        readOnly={!canEditSettings}
+        saveError={settingsError}
       />
 
       {/* Main Content Area */}
@@ -3006,28 +3160,49 @@ export default function App() {
           ) : leftTab === "saved" ? (
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Previously Done Profiles</h3>
-                {savedProfiles.length > 0 && (
-                  <button
-                    onClick={() => {
-                      if (confirm("Clear all saved profiles?")) {
-                        setSavedProfiles([]);
-                        setActiveSavedId(null);
-                      }
-                    }}
-                    className="text-[10px] text-rose-600 hover:text-rose-800 font-medium hover:underline cursor-pointer"
-                  >
-                    Clear All
-                  </button>
-                )}
+                <div>
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Shared Plans</h3>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Visible to everyone on the team</p>
+                </div>
+                <button
+                  onClick={() => refreshPlans()}
+                  disabled={isLoadingPlans}
+                  className="text-[10px] text-slate-500 hover:text-indigo-600 font-medium hover:underline cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                  title="Reload the shared plan list"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isLoadingPlans ? "animate-spin" : ""}`} />
+                  Refresh
+                </button>
               </div>
 
-              {savedProfiles.length === 0 ? (
+              {migrationNotice && (
+                <div className="bg-emerald-50 border border-emerald-100 text-emerald-800 p-2.5 rounded-xl text-[11px] font-medium flex items-start gap-2">
+                  <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  <span className="flex-1">{migrationNotice}</span>
+                  <button onClick={() => setMigrationNotice(null)} className="text-emerald-600 hover:text-emerald-900 shrink-0">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+
+              {plansError && (
+                <div className="bg-rose-50 border border-rose-100 text-rose-700 p-2.5 rounded-xl text-[11px] font-medium flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  <span>{plansError}</span>
+                </div>
+              )}
+
+              {isLoadingPlans && planSummaries.length === 0 ? (
+                <div className="text-center py-8 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  <Loader2 className="w-6 h-6 text-slate-300 mx-auto mb-2 animate-spin" />
+                  <p className="text-xs font-semibold text-slate-500">Loading shared plans...</p>
+                </div>
+              ) : planSummaries.length === 0 ? (
                 <div className="text-center py-8 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
                   <Bookmark className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                  <p className="text-xs font-semibold text-slate-600">No Saved Profiles Yet</p>
+                  <p className="text-xs font-semibold text-slate-600">No Shared Plans Yet</p>
                   <p className="text-[11px] text-slate-400 mt-1 max-w-[200px] mx-auto leading-normal">
-                    Generate an audience profile, then click <strong className="text-indigo-600 font-semibold">Save Profile</strong> in the actions bar.
+                    Generate an audience profile, then click <strong className="text-indigo-600 font-semibold">Save Profile</strong> in the actions bar. Everyone on the team will see it.
                   </p>
                   <button
                     onClick={() => setLeftTab("brief")}
@@ -3038,10 +3213,10 @@ export default function App() {
                 </div>
               ) : (
                 <div className="space-y-3 pr-1">
-                  {savedProfiles.map((saved) => (
+                  {planSummaries.map((saved) => (
                     <div
                       key={saved.id}
-                      onClick={() => handleLoadSavedProfile(saved)}
+                      onClick={() => loadingPlanId === null && handleLoadSavedProfile(saved)}
                       className={`group p-3.5 rounded-xl border transition-all cursor-pointer text-left relative ${
                         activeSavedId === saved.id
                           ? "bg-indigo-50/40 border-indigo-200 ring-2 ring-indigo-50"
@@ -3107,12 +3282,16 @@ export default function App() {
 
                       {/* Metadata badges */}
                       <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-semibold text-slate-500">
-                        <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded uppercase font-mono">
-                          {saved.geography}
-                        </span>
-                        <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded truncate max-w-[110px]">
-                          {saved.campaignFocus.split(" ")[0]}
-                        </span>
+                        {saved.geography && (
+                          <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded uppercase font-mono">
+                            {saved.geography}
+                          </span>
+                        )}
+                        {saved.campaignFocus && (
+                          <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded truncate max-w-[110px]">
+                            {saved.campaignFocus.split(" ")[0]}
+                          </span>
+                        )}
                         {saved.url && (
                           <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded truncate max-w-[100px]" title={saved.url}>
                             {saved.url.replace(/^https?:\/\/(www\.)?/, "")}
@@ -3121,14 +3300,18 @@ export default function App() {
                       </div>
 
                       {/* Saved Timestamp */}
-                      <div className="mt-2 pt-2 border-t border-slate-50 flex items-center justify-between text-[8px] text-slate-400 font-mono">
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-2.5 h-2.5" />
-                          {saved.savedAt}
+                      <div className="mt-2 pt-2 border-t border-slate-50 flex items-center justify-between gap-2 text-[8px] text-slate-400 font-mono">
+                        <span className="flex items-center gap-1 truncate" title={`Created by ${saved.createdBy} - last saved by ${saved.updatedBy}`}>
+                          <Calendar className="w-2.5 h-2.5 shrink-0" />
+                          <span className="truncate">
+                            {new Date(saved.updatedAt).toLocaleString()} &middot; {saved.updatedBy}
+                          </span>
                         </span>
-                        {activeSavedId === saved.id && (
-                          <span className="text-indigo-600 font-bold uppercase tracking-wider">Active</span>
-                        )}
+                        {loadingPlanId === saved.id ? (
+                          <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-600 shrink-0" />
+                        ) : activeSavedId === saved.id ? (
+                          <span className="text-indigo-600 font-bold uppercase tracking-wider shrink-0">Active</span>
+                        ) : null}
                       </div>
                     </div>
                   ))}
@@ -3520,24 +3703,35 @@ export default function App() {
                         placeholder="e.g. US Gamers Profile"
                         className="w-full text-xs text-slate-100 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 focus:outline-hidden focus:border-indigo-500 placeholder:text-slate-500"
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") handleSaveProfile();
-                          if (e.key === "Escape") setIsSaving(false);
+                          if (e.key === "Enter" && !isPersistingPlan) handleSaveProfile();
+                          if (e.key === "Escape") { setIsSaving(false); setSaveError(null); }
                         }}
                         autoFocus
                       />
+                      <p className="text-[10px] text-slate-500 mt-1.5">
+                        Saved plans are shared with everyone on the team.
+                      </p>
+                      {saveError && (
+                        <div className="mt-2 flex items-start gap-1.5 text-[10px] font-medium text-rose-300 bg-rose-950/40 border border-rose-900/60 rounded-lg p-2">
+                          <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                          <span>{saveError}</span>
+                        </div>
+                      )}
                     </div>
                     <div className="flex gap-2 w-full sm:w-auto justify-end shrink-0">
                       <button
-                        onClick={() => setIsSaving(false)}
+                        onClick={() => { setIsSaving(false); setSaveError(null); }}
                         className="text-xs text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded-lg"
                       >
                         Cancel
                       </button>
                       <button
                         onClick={handleSaveProfile}
-                        className="text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-lg transition-colors cursor-pointer"
+                        disabled={isPersistingPlan}
+                        className="text-xs font-bold bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-600/50 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
                       >
-                        {activeSavedId ? "Save Changes" : "Confirm Save"}
+                        {isPersistingPlan && <Loader2 className="w-3 h-3 animate-spin" />}
+                        {isPersistingPlan ? "Saving..." : activeSavedId ? "Save Changes" : "Confirm Save"}
                       </button>
                     </div>
                   </div>

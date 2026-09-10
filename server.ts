@@ -13,13 +13,18 @@ import { buildCampaignFacts, buildMediaRecommendationPlan, profileSignals } from
 import { DIGITAL_REMEDY_PRODUCT_REGISTRY, validateProductRegistry } from "./src/planning/knowledge/registry";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
+import { createStorage, PlanNotFoundError, RevisionConflictError, type StorageAdapter } from "./src/storage";
 import {
-  loadPersistentPlanningSettings,
-  savePersistentPlanningSettings,
-  loadPersistentCtvPublishers,
-  savePersistentCtvPublishers,
-  saveCustomPublisherLogo
-} from "./src/planning/knowledge/serverStorage";
+  actorName,
+  clearSessionCookie,
+  getSession,
+  isAdminPasswordConfigured,
+  isAdminRequestAllowed,
+  requireAdmin,
+  requireAuth,
+  sanitizeDisplayName,
+  setSessionCookie,
+} from "./src/server/session";
 import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
 import {
@@ -151,6 +156,61 @@ const PORT = Number(process.env.PORT) || 3000;
 
 // Enable JSON parsing with a generous limit for additional context if needed
 app.use(express.json({ limit: "10mb" }));
+
+// --- SHARED, SERVER-AUTHORITATIVE STORAGE ---------------------------------------
+// Plans and settings live in Firestore when deployed and on disk in local development.
+// The container filesystem is never the production store: Cloud Run runs this service
+// with minScale 0 / maxScale 100, so anything written to disk is invisible to the next
+// instance and gone after a redeploy.
+let storageAdapter: StorageAdapter | null = null;
+let storageInitPromise: Promise<StorageAdapter> | null = null;
+
+async function getStorage(): Promise<StorageAdapter> {
+  if (storageAdapter) return storageAdapter;
+  if (!storageInitPromise) {
+    storageInitPromise = createStorage()
+      .then((adapter) => {
+        storageAdapter = adapter;
+        return adapter;
+      })
+      .catch((err) => {
+        // Clear the memo so a transient credential problem does not poison every later request.
+        storageInitPromise = null;
+        throw err;
+      });
+  }
+  return storageInitPromise;
+}
+
+// Unauthenticated endpoints. Everything else under /api requires a session cookie -
+// the previous login was a client-side gate only, which left these routes open to the
+// internet on a service deployed with invoker-iam-disabled.
+const PUBLIC_API_PATHS = new Set(["/api/health", "/api/auth/login", "/api/auth/me", "/api/auth/logout"]);
+
+app.use("/api", (req, res, next) => {
+  // req.path is relative to the "/api" mount point.
+  if (PUBLIC_API_PATHS.has(`/api${req.path}`)) {
+    next();
+    return;
+  }
+  requireAuth(req, res, next);
+});
+
+// Deploy verification: shows which storage driver actually came up. If this reports
+// "local-file" on Cloud Run, plans are NOT being shared and NOT surviving restarts.
+app.get("/api/health", async (_req, res) => {
+  try {
+    const storage = await getStorage();
+    res.json({
+      ok: true,
+      storageDriver: storage.name,
+      shared: storage.name !== "local-file",
+      adminPasswordConfigured: isAdminPasswordConfigured(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
 
 // Serve the assets folder containing publisher logos
 app.use("/assets", express.static(path.join(process.cwd(), "assets")));
@@ -630,7 +690,7 @@ async function generateCandidateSignals(audienceProfile: any, facts: any): Promi
     }));
   const prompt = `You are ScoutAI's media-strategy reasoning layer. Evaluate only the supplied, Digital Remedy-executable product candidates.
 
-Code—not you—owns eligibility, availability, budget tiers, product minimums, family overlap, portfolio selection, and allocation arithmetic. Do not add products, change IDs, or claim a prerequisite is present when it is unknown.
+Code—not you—owns eligibility, availability, budget tiers, product minimums, portfolio selection, and allocation arithmetic. Do not add products, change IDs, or claim a prerequisite is present when it is unknown.
 
 Score each component from 0 to 100 using campaign-specific evidence. Keep confidence separate from fit by citing evidence source types. Provide concise activation, measurement, tradeoff, allocation-rationale, and scale/stop explanations. Do not calculate final allocations.
 
@@ -1573,90 +1633,137 @@ app.post("/api/analyze-media-plan", async (req, res) => {
   }
 });
 
-// API: Get persistent Planning Settings from disk
-app.get("/api/settings", (req, res) => {
+// API: Read the live global Planning Settings. Any signed-in user may read.
+app.get("/api/settings", async (_req, res) => {
   try {
-    const settings = loadPersistentPlanningSettings();
-    res.json({ success: true, settings });
+    const record = await (await getStorage()).getCurrentSettings();
+    res.json({ success: true, settings: record.settings, revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy });
   } catch (err: any) {
     console.error("Error loading settings:", err);
     res.status(500).json({ error: "Failed to load planning settings", details: err.message });
   }
 });
 
-// API: Save persistent Planning Settings to disk
-app.put("/api/settings", (req, res) => {
+// API: Read a specific historical settings revision.
+// Opening a saved plan loads the revision it was generated against, so a later settings
+// change cannot quietly move the numbers under a plan somebody already saved.
+app.get("/api/settings/revisions/:revision", async (req, res) => {
   try {
-    const result = savePersistentPlanningSettings(req.body);
-    if (!result.valid) {
-      res.status(400).json({ error: "Invalid planning settings", details: result.errors });
+    const revision = Number(req.params.revision);
+    if (!Number.isInteger(revision) || revision < 1) {
+      res.status(400).json({ error: "Revision must be a positive integer." });
       return;
     }
-    res.json({ success: true, settings: result.settings });
+    const record = await (await getStorage()).getSettingsRevision(revision);
+    if (!record) {
+      res.status(404).json({ error: `Settings revision ${revision} was not found.` });
+      return;
+    }
+    res.json({ success: true, settings: record.settings, revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy });
   } catch (err: any) {
-    console.error("Error saving settings:", err);
-    res.status(500).json({ error: "Failed to save planning settings", details: err.message });
+    console.error("Error loading settings revision:", err);
+    res.status(500).json({ error: "Failed to load settings revision", details: err.message });
   }
 });
 
-// API: Reset Planning Settings to defaults
-app.post("/api/settings/reset", (req, res) => {
+// API: Write the global Planning Settings. Admin-only once ADMIN_PASSWORD is configured.
+app.put("/api/settings", requireAdmin, async (req, res) => {
   try {
-    const result = savePersistentPlanningSettings(DEFAULT_PLANNING_SETTINGS);
-    res.json({ success: true, settings: result.settings });
+    const record = await (await getStorage()).saveSettings(req.body, actorName(req));
+    res.json({ success: true, settings: record.settings, revision: record.revision });
+  } catch (err: any) {
+    console.error("Error saving settings:", err);
+    // Validation failures are the caller's fault, not the server's.
+    const status = /^Invalid planning settings/.test(err.message || "") ? 400 : 500;
+    res.status(status).json({ error: "Failed to save planning settings", details: err.message });
+  }
+});
+
+// API: Reset Planning Settings to defaults (recorded as a new revision, not a rollback).
+app.post("/api/settings/reset", requireAdmin, async (req, res) => {
+  try {
+    const record = await (await getStorage()).saveSettings(DEFAULT_PLANNING_SETTINGS, actorName(req));
+    res.json({ success: true, settings: record.settings, revision: record.revision });
   } catch (err: any) {
     console.error("Error resetting settings:", err);
     res.status(500).json({ error: "Failed to reset settings", details: err.message });
   }
 });
 
-// API: Get persistent CTV Publishers from disk
-app.get("/api/ctv-publishers", (req, res) => {
+// API: Read the live CTV publisher list.
+app.get("/api/ctv-publishers", async (_req, res) => {
   try {
-    const publishers = loadPersistentCtvPublishers();
-    res.json({ success: true, publishers });
+    const record = await (await getStorage()).getCurrentPublishers();
+    res.json({ success: true, publishers: record.publishers, revision: record.revision });
   } catch (err: any) {
     console.error("Error loading CTV publishers:", err);
     res.status(500).json({ error: "Failed to load CTV publishers", details: err.message });
   }
 });
 
-// API: Save persistent CTV Publishers to disk
-app.put("/api/ctv-publishers", (req, res) => {
+// API: Write the CTV publisher list. Admin-only once ADMIN_PASSWORD is configured.
+app.put("/api/ctv-publishers", requireAdmin, async (req, res) => {
   try {
-    const result = savePersistentCtvPublishers(req.body?.publishers || req.body);
-    if (!result.valid) {
-      res.status(400).json({ error: "Invalid CTV publishers", details: result.errors });
-      return;
-    }
-    res.json({ success: true, publishers: result.publishers });
+    const record = await (await getStorage()).savePublishers(req.body?.publishers || req.body, actorName(req));
+    res.json({ success: true, publishers: record.publishers, revision: record.revision });
   } catch (err: any) {
     console.error("Error saving CTV publishers:", err);
-    res.status(500).json({ error: "Failed to save CTV publishers", details: err.message });
+    const status = /^Invalid CTV publishers/.test(err.message || "") ? 400 : 500;
+    res.status(status).json({ error: "Failed to save CTV publishers", details: err.message });
   }
 });
 
-// API: Reset CTV Publishers to CSV defaults
-app.post("/api/ctv-publishers/reset", (req, res) => {
+// API: Reset CTV Publishers to CSV defaults.
+app.post("/api/ctv-publishers/reset", requireAdmin, async (req, res) => {
   try {
-    const result = savePersistentCtvPublishers(DEFAULT_CTV_PUBLISHERS);
-    res.json({ success: true, publishers: result.publishers });
+    const record = await (await getStorage()).savePublishers(DEFAULT_CTV_PUBLISHERS, actorName(req));
+    res.json({ success: true, publishers: record.publishers, revision: record.revision });
   } catch (err: any) {
     console.error("Error resetting CTV publishers:", err);
     res.status(500).json({ error: "Failed to reset CTV publishers", details: err.message });
   }
 });
 
-// API: Upload custom publisher logo to disk (/assets/pub-logos/)
-app.post("/api/ctv-publishers/upload-logo", upload.single("logo"), (req, res) => {
+// Custom logos are returned as data URLs rather than written to /assets/pub-logos/.
+// A file written to the container disk disappears on the next redeploy and is invisible
+// to other instances, so a logo uploaded that way would silently vanish for everyone else.
+// The data URL travels inside the publishers record, which is genuinely shared.
+const MAX_LOGO_BYTES = 64 * 1024;
+
+function logoMimeFromFilename(filename: string): string {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  if (ext === "png") return "image/png";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "svg") return "image/svg+xml";
+  if (ext === "webp") return "image/webp";
+  if (ext === "gif") return "image/gif";
+  return "application/octet-stream";
+}
+
+function buildLogoDataUrl(filename: string, buffer: Buffer): { logoUrl?: string; error?: string } {
+  const mime = logoMimeFromFilename(filename);
+  if (!mime.startsWith("image/")) {
+    return { error: "Unsupported image type. Use PNG, JPG, SVG, WEBP or GIF." };
+  }
+  if (buffer.length > MAX_LOGO_BYTES) {
+    return { error: `Logo is ${Math.round(buffer.length / 1024)}KB; please upload an image under ${MAX_LOGO_BYTES / 1024}KB.` };
+  }
+  return { logoUrl: `data:${mime};base64,${buffer.toString("base64")}` };
+}
+
+app.post("/api/ctv-publishers/upload-logo", requireAdmin, upload.single("logo"), (req, res) => {
   try {
     if (req.file) {
-      // multer is configured with disk storage (dest: os.tmpdir()), so req.file.buffer is
-      // always undefined here - the upload has to be read back from req.file.path.
+      // multer uses disk storage (dest: os.tmpdir()), so req.file.buffer is always
+      // undefined here - the upload has to be read back from req.file.path.
       try {
         const buffer = fs.readFileSync(req.file.path);
-        const logoUrl = saveCustomPublisherLogo(req.file.originalname, buffer);
-        res.json({ success: true, logoUrl });
+        const result = buildLogoDataUrl(req.file.originalname, buffer);
+        if (result.error) {
+          res.status(400).json({ error: result.error });
+          return;
+        }
+        res.json({ success: true, logoUrl: result.logoUrl });
       } finally {
         fs.unlink(req.file.path, () => {});
       }
@@ -1664,9 +1771,12 @@ app.post("/api/ctv-publishers/upload-logo", upload.single("logo"), (req, res) =>
     }
     if (req.body?.base64 && req.body?.filename) {
       const rawBase64 = req.body.base64.replace(/^data:image\/\w+;base64,/, "");
-      const buffer = Buffer.from(rawBase64, "base64");
-      const logoUrl = saveCustomPublisherLogo(req.body.filename, buffer);
-      res.json({ success: true, logoUrl });
+      const result = buildLogoDataUrl(req.body.filename, Buffer.from(rawBase64, "base64"));
+      if (result.error) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      res.json({ success: true, logoUrl: result.logoUrl });
       return;
     }
     res.status(400).json({ error: "No image file or base64 provided." });
@@ -1676,10 +1786,12 @@ app.post("/api/ctv-publishers/upload-logo", upload.single("logo"), (req, res) =>
   }
 });
 
-// API: Secure Authentication Login Endpoint
+// API: Login. The app is still behind one shared credential, but each person supplies
+// a display name so plan writes can be attributed. The name is returned to the client
+// inside a signed, HTTP-only cookie - never trusted from a request body.
 app.post("/api/auth/login", (req, res) => {
   try {
-    const { username, password } = req.body || {};
+    const { username, password, displayName, adminPassword } = req.body || {};
     const configuredUser = (process.env.TEST_USER || "").trim();
     const configuredPassword = (process.env.TEST_PASSWORD || "").trim();
 
@@ -1689,14 +1801,172 @@ app.post("/api/auth/login", (req, res) => {
       return;
     }
 
-    if (username && password && username.trim() === configuredUser && password.trim() === configuredPassword) {
-      res.json({ success: true });
-    } else {
-      res.status(401).json({ success: false, error: "Invalid username or password." });
+    const name = sanitizeDisplayName(displayName);
+    if (!name) {
+      res.status(400).json({ success: false, error: "Please enter your name so saved plans can be attributed." });
+      return;
     }
+
+    if (!username || !password || username.trim() !== configuredUser || password.trim() !== configuredPassword) {
+      res.status(401).json({ success: false, error: "Invalid username or password." });
+      return;
+    }
+
+    const configuredAdminPassword = (process.env.ADMIN_PASSWORD || "").trim();
+    const suppliedAdminPassword = typeof adminPassword === "string" ? adminPassword.trim() : "";
+    if (configuredAdminPassword && suppliedAdminPassword && suppliedAdminPassword !== configuredAdminPassword) {
+      res.status(401).json({ success: false, error: "Invalid administrator password." });
+      return;
+    }
+    const isAdmin = Boolean(configuredAdminPassword) && suppliedAdminPassword === configuredAdminPassword;
+
+    const user = { name, isAdmin, issuedAt: Date.now() };
+    setSessionCookie(res, user);
+    console.log(`[AUTH] '${name}' signed in${isAdmin ? " as an administrator" : ""}.`);
+    res.json({ success: true, user: { name, isAdmin, canEditSettings: isAdminRequestAllowed(user) } });
   } catch (err: any) {
     console.error("[AUTH ERROR] Error processing login:", err);
     res.status(500).json({ success: false, error: "Internal authentication error." });
+  }
+});
+
+// API: Who am I? The client uses this instead of a localStorage timestamp, so a session
+// cannot be resurrected by editing browser storage.
+app.get("/api/auth/me", (req, res) => {
+  const user = getSession(req);
+  if (!user) {
+    res.status(401).json({ authenticated: false });
+    return;
+  }
+  res.json({
+    authenticated: true,
+    user: { name: user.name, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user) },
+    adminPasswordConfigured: isAdminPasswordConfigured(),
+  });
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  clearSessionCookie(res);
+  res.json({ success: true });
+});
+
+// --- SHARED PLANS API ----------------------------------------------------------
+// Every plan is visible to every signed-in user. Writes are versioned and attributed:
+// each save bumps a revision, and a save against a stale revision is refused with 409
+// rather than silently overwriting whatever somebody else just did.
+
+function trimmedOrUndefined(value: unknown, maxLength: number): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, maxLength) : undefined;
+}
+
+function planPayloadFromBody(body: any) {
+  const { title, advertiserName, settingsRevision, payload } = body || {};
+  const cleanPayload = payload && typeof payload === "object" ? payload : {};
+  return {
+    title: trimmedOrUndefined(title, 200) || "Untitled Plan",
+    advertiserName: trimmedOrUndefined(advertiserName, 200),
+    settingsRevision: Number.isInteger(settingsRevision) ? settingsRevision : null,
+    // Preview fields are derived here rather than trusted from the client, so the list
+    // view can never disagree with the payload it claims to summarize.
+    audienceDescription: trimmedOrUndefined((cleanPayload as any).audienceDescription, 500),
+    geography: trimmedOrUndefined((cleanPayload as any).geography, 100),
+    campaignFocus: trimmedOrUndefined((cleanPayload as any).campaignFocus, 100),
+    url: trimmedOrUndefined((cleanPayload as any).url, 500),
+    payload: cleanPayload,
+  };
+}
+
+function respondToStorageError(res: any, err: any, context: string) {
+  if (err instanceof RevisionConflictError) {
+    res.status(409).json({
+      error: "This plan was changed by someone else while you were editing. Reload it and reapply your changes.",
+      code: "REVISION_CONFLICT",
+      currentRevision: err.currentRevision,
+    });
+    return;
+  }
+  if (err instanceof PlanNotFoundError) {
+    res.status(404).json({ error: err.message, code: "NOT_FOUND" });
+    return;
+  }
+  console.error(`Error in ${context}:`, err);
+  res.status(500).json({ error: `Failed to ${context}`, details: err?.message || String(err) });
+}
+
+// List every saved plan. Returns metadata only - payloads are fetched on open, so the
+// sidebar stays fast no matter how many plans accumulate.
+app.get("/api/plans", async (req, res) => {
+  try {
+    const includeArchived = req.query.includeArchived === "true";
+    const plans = await (await getStorage()).listPlans({ includeArchived });
+    res.json({ success: true, plans });
+  } catch (err: any) {
+    respondToStorageError(res, err, "list plans");
+  }
+});
+
+app.get("/api/plans/:id", async (req, res) => {
+  try {
+    const plan = await (await getStorage()).getPlan(req.params.id);
+    if (!plan) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    res.json({ success: true, plan });
+  } catch (err: any) {
+    respondToStorageError(res, err, "load plan");
+  }
+});
+
+app.post("/api/plans", async (req, res) => {
+  try {
+    const input = planPayloadFromBody(req.body);
+    const plan = await (await getStorage()).createPlan({ ...input, actor: actorName(req) });
+    res.status(201).json({ success: true, plan });
+  } catch (err: any) {
+    respondToStorageError(res, err, "save plan");
+  }
+});
+
+// Update requires the revision the client last read, supplied via If-Match or the body.
+app.put("/api/plans/:id", async (req, res) => {
+  try {
+    const headerRevision = Number(req.get("If-Match"));
+    const bodyRevision = Number(req.body?.expectedRevision);
+    const expectedRevision = Number.isInteger(headerRevision) ? headerRevision : bodyRevision;
+
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({
+        error: "An If-Match revision is required to update a plan.",
+        code: "REVISION_REQUIRED",
+      });
+      return;
+    }
+
+    const input = planPayloadFromBody(req.body);
+    const plan = await (await getStorage()).updatePlan(req.params.id, { ...input, actor: actorName(req) }, expectedRevision);
+    res.json({ success: true, plan });
+  } catch (err: any) {
+    respondToStorageError(res, err, "update plan");
+  }
+});
+
+// Soft delete. Plans are never destroyed, so a mis-click is always recoverable.
+app.delete("/api/plans/:id", async (req, res) => {
+  try {
+    await (await getStorage()).archivePlan(req.params.id, actorName(req));
+    res.json({ success: true });
+  } catch (err: any) {
+    respondToStorageError(res, err, "archive plan");
+  }
+});
+
+app.post("/api/plans/:id/restore", async (req, res) => {
+  try {
+    await (await getStorage()).restorePlan(req.params.id, actorName(req));
+    res.json({ success: true });
+  } catch (err: any) {
+    respondToStorageError(res, err, "restore plan");
   }
 });
 
@@ -2070,7 +2340,7 @@ INSTRUCTIONS:
     // Build dynamic CTV Publisher guidance based on active enabled publishers and their targeting rules
     const effectivePublishers = (Array.isArray(ctvPublishers) && ctvPublishers.length > 0)
       ? ctvPublishers
-      : loadPersistentCtvPublishers();
+      : (await (await getStorage()).getCurrentPublishers()).publishers;
     
     const enabledPublishers = effectivePublishers.filter((p: any) => p && p.enabled !== false && p.name);
     const pubApps = enabledPublishers.filter((p: any) => p.category === "App");
@@ -2692,6 +2962,29 @@ async function init() {
       res.sendFile(path.join(distPath, "index.html"));
     });
     console.log("Static production assets serving from dist.");
+  }
+
+  // Warm the shared store during boot so a credential or IAM problem appears in the
+  // deploy logs immediately, instead of surfacing as a failed save for the first user.
+  try {
+    const storage = await getStorage();
+    console.log(`[STARTUP] Shared storage ready via the '${storage.name}' driver.`);
+    if (storage.name === "local-file" && isProduction) {
+      console.error(
+        "[STARTUP] WARNING: running in production on the local-file driver. Saved plans will " +
+          "NOT be shared between users and will be lost on the next redeploy. Check that Firestore " +
+          "is enabled and that the runtime service account has roles/datastore.user.",
+      );
+    }
+  } catch (err) {
+    console.error("[STARTUP] Shared storage failed to initialize:", err);
+  }
+
+  if (!isAdminPasswordConfigured()) {
+    console.warn(
+      "[STARTUP] ADMIN_PASSWORD is not set, so every signed-in user can change global planning " +
+        "settings. Set it to restrict settings edits to administrators.",
+    );
   }
 
   app.listen(PORT, "0.0.0.0", () => {

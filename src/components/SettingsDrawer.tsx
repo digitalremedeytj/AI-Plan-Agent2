@@ -15,6 +15,7 @@ import {
   HelpCircle,
   Image as ImageIcon,
   Info,
+  Lock,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -50,6 +51,14 @@ interface SettingsDrawerProps {
   ctvPublishers: CtvPublisherSetting[];
   onClose: () => void;
   onSave: (settings: PlanningSettings, ctvPublishers: CtvPublisherSetting[]) => void;
+  /**
+   * True when the signed-in user may not write global settings. These settings are
+   * shared by everyone, so non-admins get a fully read-only view rather than an editor
+   * whose changes would be rejected on save.
+   */
+  readOnly?: boolean;
+  /** Error text from the last rejected save attempt, surfaced above the footer. */
+  saveError?: string | null;
 }
 
 type SettingsTab = "overview" | "budgets" | "products" | "publishers" | "enhancements";
@@ -85,7 +94,7 @@ function ShowToggle({ checked, onChange, label }: { checked: boolean; onChange: 
   );
 }
 
-export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave, readOnly = false, saveError = null }: SettingsDrawerProps) {
   const [draftSettings, setDraftSettings] = React.useState<PlanningSettings>(() => clonePlanningSettings(settings));
   const [draftPublishers, setDraftPublishers] = React.useState<CtvPublisherSetting[]>(() =>
     Array.isArray(ctvPublishers) && ctvPublishers.length > 0
@@ -396,6 +405,10 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave 
   };
 
   const handleSave = () => {
+    // Belt and braces: the server also refuses this, but there is no reason to send a
+    // write we already know will be rejected.
+    if (readOnly) return;
+
     const settingsValidation = validatePlanningSettings(draftSettings);
     const pubValidation = validateCtvPublishers(draftPublishers);
 
@@ -472,7 +485,11 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave 
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-900">Planning &amp; Publisher Settings</h2>
-              <p className="text-xs text-slate-500">Persistent configuration · Saved to disk &amp; synchronized across sessions</p>
+              <p className="text-xs text-slate-500">
+                {readOnly
+                  ? "Shared configuration · Read-only for your account"
+                  : "Shared configuration · Applies to everyone on the team"}
+              </p>
             </div>
           </div>
           <button
@@ -512,6 +529,19 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave 
 
         {/* Tab Content Body */}
         <div className="flex-1 overflow-y-auto px-5 py-5 md:px-7 bg-slate-50/30">
+          {readOnly && (
+            <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-900">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-bold">These settings are shared and read-only for you.</p>
+                <p className="text-xs text-amber-800 mt-0.5">
+                  They apply to every user and every plan, so only administrators can change them.
+                  Sign in with the administrator password to edit.
+                </p>
+              </div>
+            </div>
+          )}
+          <fieldset disabled={readOnly} className={readOnly ? "opacity-90" : undefined}>
           
           {/* TAB 1: RECOMMENDED CTV PUBLISHERS */}
           {activeTab === "publishers" && (
@@ -1173,38 +1203,50 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave 
               </ul>
             </div>
           )}
+          </fieldset>
         </div>
 
         {/* Footer actions */}
-        <footer className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between md:px-7">
-          <button
-            type="button"
-            onClick={() => {
-              if (confirm("Reset planning settings to defaults?")) {
-                setDraftSettings(clonePlanningSettings(DEFAULT_PLANNING_SETTINGS));
-                setErrors([]);
-              }
-            }}
-            className="inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100"
-          >
-            <RotateCcw className="h-4 w-4" /> Reset provisional defaults
-          </button>
-          
-          <div className="flex gap-2">
+        <footer className="border-t border-slate-200 bg-white px-5 py-4 md:px-7">
+          {saveError && (
+            <div className="mb-3 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-2.5 text-xs font-medium text-rose-800">
+              <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+              <span>{saveError}</span>
+            </div>
+          )}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
-              onClick={handleCancel}
-              className="flex-1 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:flex-none"
+              disabled={readOnly}
+              onClick={() => {
+                if (confirm("Reset planning settings to defaults?")) {
+                  setDraftSettings(clonePlanningSettings(DEFAULT_PLANNING_SETTINGS));
+                  setErrors([]);
+                }
+              }}
+              className="inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
             >
-              Cancel
+              <RotateCcw className="h-4 w-4" /> Reset provisional defaults
             </button>
-            <button
-              type="button"
-              onClick={handleSave}
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-bold text-white hover:bg-indigo-700 shadow-sm sm:flex-none"
-            >
-              <Save className="h-4 w-4" /> Save all settings
-            </button>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleCancel}
+                className="flex-1 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:flex-none"
+              >
+                {readOnly ? "Close" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={readOnly}
+                title={readOnly ? "Only administrators can change global settings." : undefined}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-bold text-white hover:bg-indigo-700 shadow-sm sm:flex-none disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                <Save className="h-4 w-4" /> Save all settings
+              </button>
+            </div>
           </div>
         </footer>
       </aside>
