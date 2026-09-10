@@ -80,8 +80,23 @@ user sees the same plans from any machine, and settings survive a redeploy. Loca
 development needs no cloud credentials - the storage layer falls back to an on-disk
 driver under `data/store/` automatically.
 
-Sign-in asks for a display name alongside the shared credentials, so plans record who
-created and last edited them. Editing global settings requires the `ADMIN_PASSWORD`.
+### Signing in
+
+There is no separate admin account. Everyone uses the same shared credentials and adds
+their own name, which is what gets stamped on the plans they save:
+
+| Field | Value |
+| --- | --- |
+| Your Name | your real name |
+| Username / Password | the shared `TEST_USER` / `TEST_PASSWORD` |
+| Administrator Password | `ADMIN_PASSWORD`, only if you need to edit global settings |
+
+The administrator field is hidden until you click **"Sign in as an administrator"**.
+Leave it blank for a normal session, which gets a read-only settings view.
+
+If you have plans saved in a browser from before plans were shared, sign in once on that
+machine - they import into the shared workspace automatically, and the local copy is
+backed up rather than deleted.
 
 Verify a deployment with:
 

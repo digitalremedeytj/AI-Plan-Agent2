@@ -131,6 +131,35 @@ what gets recorded on plan writes - it is never trusted from a request body.
 Supplying `ADMIN_PASSWORD` at login grants the right to edit global settings. Non-admins
 get a fully read-only settings drawer.
 
+#### How to sign in
+
+**There is no separate admin account.** Admin is a flag on your session, not a different
+identity, so everyone uses the same credentials:
+
+| Field | What to enter |
+| --- | --- |
+| Your Name | your real name, e.g. `TJ Pascal` - this is stamped on every plan you save |
+| Username | the shared `TEST_USER` |
+| Password | the shared `TEST_PASSWORD` |
+| Administrator Password | `ADMIN_PASSWORD` - only if you need to edit global settings |
+
+The administrator field is hidden until you click **"Sign in as an administrator"** below
+the password box. Leave it blank for a normal session.
+
+This is the point of the split: the regular credentials can go to the whole team, while
+`ADMIN_PASSWORD` stays with whoever owns the planning configuration.
+
+Notes:
+
+- A wrong administrator password rejects the **entire** login with a 401, rather than
+  quietly downgrading you to a normal session. If you see "Invalid administrator
+  password", the rest of your credentials were fine.
+- Sessions last 24 hours, admin status included.
+- Anyone with plans saved in a browser from before this change should **sign in once on
+  that machine**. Their local plans import into the shared workspace automatically on
+  first sign-in. Until they do, those plans stay stranded in that browser. The original
+  localStorage entry is backed up, not deleted.
+
 > If `ADMIN_PASSWORD` is not configured, every signed-in user can still edit settings.
 > That is exactly the previous behaviour, so adding sessions cannot brick settings
 > editing on first deploy. **Setting `ADMIN_PASSWORD` is what actually locks it down.**
@@ -141,11 +170,31 @@ changing only how a `SessionUser` is produced at login. Every route keeps callin
 
 ---
 
-## Deployment steps
+## Deployment
 
-Everything below happens in the `ai-api-project` GCP console (display name
-`ai-api-project`, project ID `ai-api-project-465519`, project number `119508685311` -
-the ID is what APIs want). The code needs no further
+> **Status: deployed and verified in production on 2026-09-10.**
+> `/api/health` returns `{"ok":true,"storageDriver":"firestore","shared":true,
+> "adminPasswordConfigured":true}`, and cross-device plan sharing was confirmed on two
+> machines. **The steps below are already done** - they are recorded so the setup can be
+> audited, reproduced in another environment, or repaired if something is changed.
+
+### As-deployed configuration
+
+| Item | Value |
+| --- | --- |
+| GCP project | display name `ai-api-project`, ID `ai-api-project-465519`, number `119508685311` |
+| Cloud Run service | `ai-plan-agent`, region `us-east1` |
+| Runtime service account | `ai-plan-agent-runner@ai-api-project-465519.iam.gserviceaccount.com` |
+| IAM role granted | `roles/datastore.user` (Cloud Datastore User) |
+| Firestore database | `(default)`, Standard edition, Native mode, `us-east1`, restrictive rules |
+| Secrets set in AI Studio | `STORAGE_DRIVER=firestore`, `ADMIN_PASSWORD`, `SESSION_SECRET` |
+
+Note the project **ID** (`ai-api-project-465519`) differs from the display name
+(`ai-api-project`). APIs want the ID.
+
+### Setup steps (already completed)
+
+All of this happens in the `ai-api-project` GCP console. The code needs no further
 changes; it picks the Firestore driver up automatically.
 
 ### 1. Create the Firestore database
@@ -210,7 +259,11 @@ The app prefers this key over the metadata server when present.
 
 ### 4. Deploy and verify
 
-Pull master into AI Studio and publish to Cloud Run as usual, then check:
+The deploy path is: push to `main` on GitHub, pull in AI Studio's GitHub panel, then
+Publish to Cloud Run. AI Studio reporting "in sync" only means it matches GitHub - if the
+work has not been pushed, there is nothing to pull and publishing ships the old code.
+
+After publishing, check:
 
 ```bash
 curl -s https://ai-plan-agent.ai.studio/api/health
