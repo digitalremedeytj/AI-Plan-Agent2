@@ -4883,15 +4883,21 @@ export default function App() {
                               )}
                             </div>
                           </div>
-                          {!profileData.auditResult.qaBypassed && profileData.auditResult.originalScore !== profileData.auditResult.finalScore && (
+                          {/* The score is the audit as issued; the profile is not re-scored after
+                              remediation, so this says what was fixed rather than implying a new score. */}
+                          {!profileData.auditResult.qaBypassed && profileData.auditResult.remediationApplied && (
                             <p className="text-[10px] text-indigo-300/80 font-mono">
-                              Auto-remediated from {profileData.auditResult.originalScore}/100
+                              {profileData.auditResult.autoFixes.length} fix{profileData.auditResult.autoFixes.length === 1 ? "" : "es"} applied after audit
                             </p>
                           )}
                           <p className={`text-[11px] leading-relaxed px-2 font-medium ${profileData.auditResult.qaBypassed ? "text-amber-300" : "text-slate-300"}`}>
                             {profileData.auditResult.qaBypassed
                               ? "QA agent unavailable — profile is unverified. Review before presenting."
-                              : (profileData.auditResult.finalScore >= 95 ? "Excellent (Presentation Approved)" : "Pass (Review Flag Details)")}
+                              : (profileData.auditResult.finalScore >= 95
+                                ? "Excellent (Presentation Approved)"
+                                : profileData.auditResult.finalScore >= 70
+                                  ? "Pass (Review Flag Details)"
+                                  : "Below Standard (Review Before Presenting)")}
                           </p>
                         </div>
 

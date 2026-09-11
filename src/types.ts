@@ -121,6 +121,9 @@ export interface AuditResult {
   criticalRedFlags: string[];
   strategicHighlights: string[];
   autoFixes: AutoFix[];
+  /** True when at least one auto-fix was applied after scoring. The profile is not re-scored,
+   *  so finalScore still reflects the pre-remediation audit. */
+  remediationApplied?: boolean;
   /** True when the QA scoring agent was unavailable and the profile went out unverified. */
   qaBypassed?: boolean;
 }

@@ -27,6 +27,7 @@ import {
   setSessionCookie,
 } from "./src/server/session";
 import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
+import { applyProgrammaticSanityChecks } from "./src/qa/chartSanity";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
 import {
   companyOverview,
@@ -381,12 +382,12 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Short explanation of device/platform behavior distinguishing CTV, console, desktop/PC, mobile, tablet." },
         chartData: {
           type: Type.ARRAY,
-          description: "Device/platform split percentage data. Must sum to 100 or represent reach index. 4 to 6 items.",
+          description: "Device/platform composition share. Values are percentages of one denominator - this audience's device usage occasions - and MUST sum to 100. Never index values: this chart renders as a pie and an index would be redrawn as a share. 4 to 6 items.",
           items: {
             type: Type.OBJECT,
             properties: {
               device: { type: Type.STRING, description: "e.g., CTV, Mobile, Desktop/PC, Tablet, Game Console" },
-              value: { type: Type.NUMBER, description: "The percentage or index value" },
+              value: { type: Type.NUMBER, description: "Share of this audience's device usage occasions, as a percentage. All items must sum to 100." },
               isModeled: { type: Type.BOOLEAN, description: "Whether this is modeled planning proxy" },
               source: { type: Type.STRING, description: "e.g. 'MRI-Simmons 2025' or 'eMarketer 2025'" }
             },
@@ -895,141 +896,6 @@ function extractFindingBlurb(text: string, label: string): string {
   
   // Fallback to first non-empty line
   return lines[0] || `Completed deep-dive search for ${label}`;
-}
-
-// Helper: Programmatically audit and correct audience demographics and reach metrics
-function applyProgrammaticSanityChecks(data: any, reqBody: any): string[] {
-  const programmaticCorrections: string[] = [];
-
-  // 1. Percentage-based chart normalizations helper
-  const normalizePercentages = (arr: any[], valueKey: string, chartName: string) => {
-    if (!arr || arr.length === 0) return;
-    const sum = arr.reduce((acc, item) => acc + (Number(item[valueKey]) || 0), 0);
-    if (sum === 0) return;
-    if (Math.abs(sum - 100) > 0.05) {
-      let runningSum = 0;
-      arr.forEach((item, idx) => {
-        if (idx === arr.length - 1) {
-          item[valueKey] = Math.round((100 - runningSum) * 10) / 10;
-        } else {
-          const val = Math.round(((Number(item[valueKey]) || 0) / sum) * 1000) / 10;
-          item[valueKey] = val;
-          runningSum += val;
-        }
-      });
-      programmaticCorrections.push(`Programmatically normalized ${chartName} percentage split to sum to exactly 100% (was ${sum.toFixed(1)}%).`);
-    }
-  };
-
-  // Run normalizations
-  if (data.demographics) {
-    if (data.demographics.ageChartData) {
-      normalizePercentages(data.demographics.ageChartData, "value", "Age Demographic");
-    }
-    if (data.demographics.genderChartData) {
-      normalizePercentages(data.demographics.genderChartData, "value", "Gender Demographic");
-    }
-    if (data.demographics.incomeChartData) {
-      normalizePercentages(data.demographics.incomeChartData, "value", "Household Income");
-    }
-  }
-  if (data.deviceTypeIndex && data.deviceTypeIndex.chartData) {
-    normalizePercentages(data.deviceTypeIndex.chartData, "value", "Device Type Split");
-  }
-
-  // 2. Domain non-mutually exclusive label matching
-  if (data.browserAndReach && data.browserAndReach.chartData) {
-    const domainSum = data.browserAndReach.chartData.reduce((acc: number, item: any) => acc + (Number(item.value) || 0), 0);
-    if (domainSum > 110) {
-      let changed = false;
-      data.browserAndReach.chartData.forEach((item: any) => {
-        if (item.metricType !== "Audience Reach Penetration") {
-          item.metricType = "Audience Reach Penetration";
-          changed = true;
-        }
-      });
-      if (changed) {
-        programmaticCorrections.push(`Recalibrated Top Domain Share metrics to "Audience Reach Penetration" to avoid media buyer confusion as domain penetration levels represent overlapping reach adding up to ${domainSum}%.`);
-      }
-    }
-  }
-
-  // 3. Broad/General Audience Demographics Skew Prevention (Income)
-  const luxuryKeywords = [
-    "luxury", "affluent", "wealthy", "rich", "high income", "high hhi", "executive", 
-    "investor", "accredited", "premium hardware buyer", "high-end", "bespoke", "boutique", 
-    "exclusive", "upper class", "venture", "director", "manager", "hhi over", "hhi 100k",
-    "earning over $100", "earning over 100", "over 100k", "over $100k", "above $100k", "above 100k"
-  ];
-
-  const searchStr = [
-    reqBody.audienceDescription || "",
-    reqBody.campaignFocus || "",
-    reqBody.additionalContext || "",
-    data.intro || "",
-    data.executiveSummary || ""
-  ].join(" ").toLowerCase();
-
-  const isLuxuryAudience = luxuryKeywords.some(keyword => searchStr.includes(keyword));
-
-  if (!isLuxuryAudience && data.demographics && data.demographics.incomeChartData) {
-    const incomeData = data.demographics.incomeChartData;
-    // Identify brackets representing $100k+
-    const highIncomeIndexes: number[] = [];
-    const lowIncomeIndexes: number[] = [];
-    let highIncomeSum = 0;
-
-    incomeData.forEach((item: any, idx: number) => {
-      const bracketName = (item.bracket || "").toLowerCase();
-      const isHigh = bracketName.includes("100k") || bracketName.includes("150k") || bracketName.includes("200k") || bracketName.includes("100,000") || bracketName.includes("150,000");
-      if (isHigh) {
-        highIncomeIndexes.push(idx);
-        highIncomeSum += Number(item.value) || 0;
-      } else {
-        lowIncomeIndexes.push(idx);
-      }
-    });
-
-    // If no luxury keywords exist, but generated $100k+ total exceeds 40%, it is a demographic skew hallucination
-    if (highIncomeSum > 40 && highIncomeIndexes.length > 0) {
-      const targetHighSum = 34.0;
-      const targetLowSum = 66.0;
-      const currentLowSum = 100 - highIncomeSum;
-
-      if (currentLowSum > 0) {
-        const highScale = targetHighSum / highIncomeSum;
-        const lowScale = targetLowSum / currentLowSum;
-
-        highIncomeIndexes.forEach(idx => {
-          incomeData[idx].value = Math.round((Number(incomeData[idx].value) || 0) * highScale * 10) / 10;
-        });
-
-        lowIncomeIndexes.forEach(idx => {
-          incomeData[idx].value = Math.round((Number(incomeData[idx].value) || 0) * lowScale * 10) / 10;
-        });
-
-        // Run final normalization to ensure they sum to exactly 100%
-        let finalSum = 0;
-        incomeData.forEach((item: any) => finalSum += Number(item.value) || 0);
-        if (Math.abs(finalSum - 100) > 0.01) {
-          let runningSum = 0;
-          incomeData.forEach((item: any, idx: number) => {
-            if (idx === incomeData.length - 1) {
-              item.value = Math.round((100 - runningSum) * 10) / 10;
-            } else {
-              const val = Math.round((Number(item.value) / finalSum * 100) * 10) / 10;
-              item.value = val;
-              runningSum += val;
-            }
-          });
-        }
-
-        programmaticCorrections.push(`Detected general mass-market audience HHI skew (previously ${highIncomeSum.toFixed(0)}% earning >$100k). Reverted Household Income distribution back to realistic national benchmarks (totaling ~34% over $100k HHI) to avoid sub-segment skew hallucinations.`);
-      }
-    }
-  }
-
-  return programmaticCorrections;
 }
 
 // API: Parse media plan spreadsheet using OpenAI Code Interpreter (gpt-5.6)
@@ -2614,49 +2480,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       originalData.audienceAnalysis = "";
     }
 
-    // 1. Scoring Agent Evaluation
-    // Kicked off here rather than after the channel strategy: scoring only reads originalData,
-    // so the two stages are independent and run concurrently. The await stays below, so the
-    // TIMEOUT_SCORING_MS race still measures from the point we actually need the result.
-    const scoringSystemInstruction = `You are an elite Media Planning Director and Data QA Specialist at a top-tier digital advertising agency.
-Your task is to ruthlessly evaluate AI-generated "Audience Profiles" for Connected TV (CTV) and digital media campaigns and score them out of 100 points.
-
-You MUST score across these five categories (0 to 20 points each):
-1. Data Integrity & Mathematical Logic: check for statistical hallucinations (e.g. overinflated HHI, double-digit CTV QR scan rates or purchase rates). CTV QR scan rates MUST hover between 0.01% and 0.5% in reality.
-2. Strategic Viability & Media Actionability: programmatic DSP platforms, specific CTV hardware, or retail media target options mentioned instead of vague concepts.
-3. Platform & Device Context: Smart TV hardware vs mobile browsing hardware, dual-screening behaviors.
-4. Audience Segmentation & Persona Quality: mutual exclusivity of personas, logical ecommerce purchasing behaviors.
-5. Structural Formatting & Clarity: clear table labels, no contradictions between narrative text and charts (e.g. narrative says weekends peak, but Sunday index is low).
-
-Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
-
-    console.log("Launching OpenAI Scoring Agent Call (gpt-5.6-terra), concurrent with channel strategy...");
-    const openai = getOpenaiClient();
-    // The .catch is required, not optional: this promise is now created before it is awaited,
-    // so an early rejection would otherwise surface as an unhandled rejection. Resolving to null
-    // also routes API failures into the same bypass path that timeouts already use.
-    const scoringPromise = openai.responses.create({
-      model: "gpt-5.6-terra",
-      reasoning: { effort: "medium" },
-      input: [
-        {
-          role: "system",
-          content: `${scoringSystemInstruction}\n\nYou must return a valid JSON object matching this schema:\n${JSON.stringify(auditResultSchema, null, 2)}`
-        },
-        {
-          role: "user",
-          content: `Please ruthlessly evaluate and score this audience profile:\n${JSON.stringify(originalData, null, 2)}`
-        }
-      ],
-      text: {
-        format: { type: "json_object" }
-      }
-    }).catch((err: any) => {
-      console.error("OpenAI QA Scoring Agent call failed:", err?.message || err);
-      return null;
-    });
-
-    // Stage 2: Deterministic media recommendation and allocation for greenfield or uploaded plans
+    // 1. Deterministic media recommendation and allocation for greenfield or uploaded plans
     if (Number(workingMediaBudget) > 0 || (selectedPlanOptions && selectedPlanOptions.length > 0)) {
       sendEvent("status", { message: "Evaluating Digital Remedy product eligibility, portfolio constraints, and deterministic allocations..." });
       try {
@@ -2683,7 +2507,69 @@ Your output must be a perfectly formatted JSON matching the required schema. Ens
       }
     }
 
-    // Await the QA scorecard that was kicked off before the channel strategy above.
+    // The scorer is a different model with a different training cutoff, so it has no idea what
+    // "now" is. Left unanchored it read current-year figures as future-dated fabrications and
+    // charged them to Data Integrity.
+    const scoringToday = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    // Only claim the engine owns the budget when it actually ran. A profile generated without a
+    // working-media budget has no channelStrategy, and pointing the scorer at an absent object
+    // would excuse the very gap it should be flagging.
+    const channelStrategyGuidance = originalData.channelStrategy
+      ? `- The 'channelStrategy' object is not a model output. It is produced by a deterministic planning engine from a validated Digital Remedy product catalog, and it owns budget allocation, media-type selection, product eligibility and prerequisites. Score the profile's actionability against what is in 'channelStrategy' - allocations, activation methods, measurement products, scale/stop rules and prerequisites all live there, not in the narrative recommendations. Never ask the narrative to restate or re-derive an allocation; two competing budget splits in one document is itself the defect.`
+      : `- This profile was generated without a working-media budget, so it carries no 'channelStrategy' and no allocation is expected. Score actionability on the specificity of the targeting, platform and measurement direction rather than on the absence of a budget split.`;
+
+    // 2. Scoring Agent Evaluation
+    // Deliberately sequenced after the channel strategy above. Running the two concurrently
+    // meant the QA agent's input was serialized before `originalData.channelStrategy` existed,
+    // so it scored a profile with no media plan in it and marked the profile down for omitting
+    // budget allocations, DSP routes and measurement design that the deterministic engine had
+    // in fact produced. Worse, the remediation agent then took that checklist at face value and
+    // invented a second, contradictory budget split alongside the engine's real one. The
+    // concurrency was worth roughly one buildChannelStrategy call; a scorecard that grades the
+    // document we actually ship is worth more.
+    const scoringSystemInstruction = `You are an elite Media Planning Director and Data QA Specialist at a top-tier digital advertising agency.
+Your task is to ruthlessly evaluate AI-generated "Audience Profiles" for Connected TV (CTV) and digital media campaigns and score them out of 100 points.
+
+You MUST score across these five categories (0 to 20 points each):
+1. Data Integrity & Mathematical Logic: check for statistical hallucinations (e.g. overinflated HHI, double-digit CTV QR scan rates or purchase rates). CTV QR scan rates MUST hover between 0.01% and 0.5% in reality.
+2. Strategic Viability & Media Actionability: programmatic DSP platforms, specific CTV hardware, or retail media target options mentioned instead of vague concepts.
+3. Platform & Device Context: Smart TV hardware vs mobile browsing hardware, dual-screening behaviors.
+4. Audience Segmentation & Persona Quality: mutual exclusivity of personas, logical ecommerce purchasing behaviors.
+5. Structural Formatting & Clarity: clear table labels, no contradictions between narrative text and charts (e.g. narrative says weekends peak, but Sunday index is low).
+
+CONTEXT YOU MUST APPLY BEFORE SCORING:
+- Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
+${channelStrategyGuidance}
+- 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
+
+Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
+
+    console.log("Launching OpenAI Scoring Agent Call (gpt-5.6-terra) over the profile including its channel strategy...");
+    const openai = getOpenaiClient();
+    // Resolving a rejection to null routes API failures into the same bypass path that
+    // timeouts already use, so a 429 degrades to an unverified profile rather than killing
+    // the run.
+    const scoringPromise = openai.responses.create({
+      model: "gpt-5.6-terra",
+      reasoning: { effort: "medium" },
+      input: [
+        {
+          role: "system",
+          content: `${scoringSystemInstruction}\n\nYou must return a valid JSON object matching this schema:\n${JSON.stringify(auditResultSchema, null, 2)}`
+        },
+        {
+          role: "user",
+          content: `Please ruthlessly evaluate and score this audience profile:\n${JSON.stringify(originalData, null, 2)}`
+        }
+      ],
+      text: {
+        format: { type: "json_object" }
+      }
+    }).catch((err: any) => {
+      console.error("OpenAI QA Scoring Agent call failed:", err?.message || err);
+      return null;
+    });
+
     const scoringResult = await withTimeout(
       scoringPromise,
       TIMEOUT_SCORING_MS,
@@ -2729,6 +2615,10 @@ Your output must be a perfectly formatted JSON matching the required schema. Ens
 
     let finalProfile = originalData;
     let autoFixesList: Array<{ issue: string; resolution: string }> = [];
+    // Tracked separately from autoFixesList because the correction agent can return a rewritten
+    // profile with an empty fix list. The profile we ship is then a rewrite with no audit trail,
+    // which is exactly the case the reader most needs told about.
+    let profileRewritten = false;
 
     // 2. Auto-Fix Remediation Call (Triggered if score < 100 or red flags found)
     // Skipped entirely when scoring was bypassed: there is no scorecard to remediate against,
@@ -2745,6 +2635,8 @@ Your task is to rewrite and update the audience profile to:
 2. Ensure all percentages sum to 100% and there are no mathematical or logical contradictions.
 3. Bring all CTR/QR/conversion rates within standard industry-accepted trade benchmarks.
 4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
+5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
+6. 'deviceTypeIndex.chartData' MUST stay a composition share summing to 100 - it renders as a pie chart and as a "Split Share %" table, so index values get redrawn as shares and contradict whatever the overview says. Fix a broken device chart by correcting the shares and their stated denominator, never by reframing it as an index. 'browserAndReach.chartData' stays an affinity index with metricType 'Affinity Index'.
 
 You must return a JSON matching the profile correction schema. It contains:
 1. 'correctedProfile': the updated AudienceProfile JSON.
@@ -2797,8 +2689,15 @@ Please correct the profile to resolve all issues.`
             throw new Error("Correction response did not contain a usable 'correctedProfile' object.");
           }
           finalProfile = corrected;
+          profileRewritten = true;
           if (originalData.channelStrategy) finalProfile.channelStrategy = originalData.channelStrategy;
           autoFixesList = Array.isArray(correctionData.autoFixes) ? correctionData.autoFixes : [];
+          if (autoFixesList.length === 0) {
+            autoFixesList.push({
+              issue: "Auto-remediation returned no itemized changes",
+              resolution: "The correction agent rewrote the profile against the QA checklist but did not describe what it changed. Compare against the red flags below before presenting."
+            });
+          }
           console.log(`AI Auto-Remediation complete. Applied ${autoFixesList.length} patches.`);
         } catch (e) {
           console.error("Failed to parse correction data, keeping original profile:", e);
@@ -2832,9 +2731,14 @@ Please correct the profile to resolve all issues.`
       executiveSummary: auditResult.executiveSummary,
       scorecard: auditResult.scorecard,
       originalScore: auditResult.totalScore,
-      // A bypassed run has no score to report - do not let programmatic sanity fixes
-      // promote it to a 100, and do not claim the profile came back clean.
-      finalScore: qaBypassed ? 0 : (autoFixesList.length > 0 ? 100 : auditResult.totalScore),
+      // The audited score, not a synthesized one. This used to report 100 whenever the
+      // auto-fix list was non-empty, and the domain-chart check guaranteed it was non-empty,
+      // so every run scored a perfect 100 while the per-category bars beside it still showed
+      // the real total. Nothing re-scores the profile after remediation, so there is no
+      // higher number we are entitled to claim: report what the QA agent actually gave and
+      // let `remediationApplied` carry the fact that the flagged issues were addressed.
+      finalScore: qaBypassed ? 0 : auditResult.totalScore,
+      remediationApplied: profileRewritten || autoFixesList.length > 0,
       criticalRedFlags: auditResult.criticalRedFlags && auditResult.criticalRedFlags.length > 0
         ? auditResult.criticalRedFlags
         : (qaBypassed
