@@ -174,7 +174,11 @@ export function exportProfileToMarkdown(
     markdown += `## Citations & Media Sourcing Registry\n\n`;
     profile.sources.forEach((source, idx) => {
       markdown += `### [Source ${idx + 1}] ${source.name}\n`;
-      markdown += `- **Verification URL**: [${source.url}](${source.url})\n`;
+      // A first-party source has no public URL to verify against, so the line is omitted
+      // rather than rendered as an empty link.
+      if (source.url) {
+        markdown += `- **Verification URL**: [${source.url}](${source.url})\n`;
+      }
       markdown += `- **Data Supported**: ${source.supportedClaims}\n`;
       markdown += `- **Authority Classification**: ${source.tier}\n`;
       markdown += `- **Media Plan Usage**: ${source.usageType}\n\n`;
@@ -261,7 +265,9 @@ export function exportSourcesToMarkdown(profile: AudienceProfile): string {
   let markdown = `# Citations & Sourcing Registry\n\n`;
   profile.sources.forEach((source, idx) => {
     markdown += `### [Source ${idx + 1}] ${source.name}\n`;
-    markdown += `- **URL**: ${source.url}\n`;
+    if (source.url) {
+      markdown += `- **URL**: ${source.url}\n`;
+    }
     markdown += `- **Supported Claim**: ${source.supportedClaims}\n`;
     markdown += `- **Tier**: ${source.tier}\n`;
     markdown += `- **Usage**: ${source.usageType}\n\n`;

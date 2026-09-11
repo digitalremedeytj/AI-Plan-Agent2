@@ -28,6 +28,7 @@ import {
 } from "./src/server/session";
 import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import { applyProgrammaticSanityChecks } from "./src/qa/chartSanity";
+import { resolveGroundingUrls } from "./src/research/groundingUrls";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
 import {
   companyOverview,
@@ -126,12 +127,25 @@ const TIMEOUT_PARALLEL_RESEARCH_MS = 90000; // 90 seconds per parallel research 
 const TIMEOUT_SYNTHESIS_MS = 120000;          // 120 seconds for the main synthesis call (Option B)
 const TIMEOUT_SCORING_MS = 60000;            // 60 seconds for QA scorecard evaluation (Option B)
 const TIMEOUT_CORRECTION_MS = 90000;         // 90 seconds for auto-remediation rewrite (Option B)
+// Per-redirect budget when turning grounding links back into publisher URLs. Deliberately short:
+// this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
+const TIMEOUT_URL_RESOLUTION_MS = 5000;
+const URL_RESOLUTION_CONCURRENCY = 12;
 
 // Thinking budget for the main synthesis call. gemini-2.5-flash defaults to DYNAMIC thinking,
 // which can add tens of thousands of invisible output tokens and is the largest single source
 // of variance in synthesis latency. Bounded here so the stage fits inside TIMEOUT_SYNTHESIS_MS.
 // Raise toward 24576 (or set to -1 for dynamic) if synthesis quality regresses; 0 disables thinking.
 const SYNTHESIS_THINKING_BUDGET = 4096;
+
+// First-party campaign evidence, listed ahead of the researched public sources.
+const DIGITAL_REMEDY_SOURCE = {
+  name: "Digital Remedy historical data",
+  url: "",
+  supportedClaims: "Audience strategy, Channel and Publisher recommendations",
+  tier: "Tier 1: First-Party",
+  usageType: "Primary Source",
+};
 
 // Generic Promise Timeout Helper
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T): Promise<T> {
@@ -490,7 +504,7 @@ const audienceProfileSchema = {
     },
     sources: {
       type: Type.ARRAY,
-      description: "Complete list of every reputable source used to ground this response. No fabricated sources.",
+      description: "Curated evidence registry: the 8-12 strongest sources actually used to ground this response, each drawn from the supplied pool of discovered URLs. Not a search log. No fabricated sources.",
       items: {
         type: Type.OBJECT,
         properties: {
@@ -2219,8 +2233,22 @@ INSTRUCTIONS:
         }
       }
     }
-    const deduplicatedSources = Array.from(uniqueSourcesMap.values());
-    console.log(`Consolidated all parallel search sources. Deduplicated count: ${deduplicatedSources.length}`);
+    const redirectSources = Array.from(uniqueSourcesMap.values());
+    console.log(`Consolidated all parallel search sources. Deduplicated count: ${redirectSources.length}`);
+
+    // Trade the grounding redirects for publisher deep links before anything downstream reads
+    // them. Synthesis cites from this pool, so leaving it full of vertexaisearch redirects gave
+    // the QA scorer an "opaque sourcing" red flag and the remediation agent an excuse to replace
+    // the citation registry with URLs it made up. Bounded and non-fatal: whatever does not
+    // resolve keeps its original link.
+    sendEvent("status", { message: "Resolving research citations to their original publisher URLs..." });
+    const resolveStartedAt = Date.now();
+    const deduplicatedSources = await resolveGroundingUrls(redirectSources, {
+      timeoutMs: TIMEOUT_URL_RESOLUTION_MS,
+      concurrency: URL_RESOLUTION_CONCURRENCY,
+    });
+    const resolvedCount = deduplicatedSources.filter((src, idx) => src.uri !== redirectSources[idx].uri).length;
+    console.log(`Resolved ${resolvedCount}/${deduplicatedSources.length} grounding redirects to publisher URLs in ${Date.now() - resolveStartedAt}ms.`);
 
     // Build dynamic CTV Publisher guidance based on active enabled publishers and their targeting rules
     const effectivePublishers = (Array.isArray(ctvPublishers) && ctvPublishers.length > 0)
@@ -2315,13 +2343,18 @@ You are provided with a pool of real URLs discovered during search research. You
   * 'Tier 2: Reputable Research/Analytics': Highly authoritative syndicated audience data and research firms. E.g., MRI-Simmons, Statista, GWI, Nielsen, eMarketer (Insider Intelligence), Similarweb, Comscore, Newzoo, Gartner, Forrester, McKinsey, PwC, Semrush.
   * 'Tier 3: Trade Press': Highly respected industry/tech trade journals, news outlets, and press agencies. E.g., TechRadar, Polygon, Business Wire, PRNewswire, TechSpot, Game Developer, Adweek, AdAge, Digiday, PocketGamer, WN Hub, App2Top.
   * 'Tier 4: Blog/Context': Company/brand blogs, Medium articles, generic news sites, or self-published content.
-- Filter out low-quality SEO-farming domains or personal blogs. Do not include them in the source list.
+- CURATE, DO NOT CATALOGUE. The pool is large and uneven; the registry is a client-facing evidence list, not a search log. Include 8 to 12 sources, chosen for authority and for how directly they support a claim you actually made.
+- Tier 1 and Tier 2 sources should make up the majority. A Tier 3 trade source is acceptable where it is the best available evidence for a specific claim. DO NOT include any source you would classify as 'Tier 4: Blog/Context' - if a claim rests only on Tier 4 evidence, soften or drop the claim rather than citing the blog.
+- Exclude outright: SEO-farm and listicle domains, personal and company blogs, social and forum domains (facebook.com, reddit.com, quora.com, medium.com, pinterest.com, stackoverflow.blog and similar), press-release reprints, and any source whose claim you did not use. A source you cannot tie to a specific figure or statement in this profile does not belong in the registry.
+- The source must be about THIS advertiser's category, audience, or the media landscape you are citing it for. Search pools routinely carry drift from unrelated verticals; a source about an unrelated industry is not evidence here no matter how reputable it is.
+- Where several pooled sources support the same claim, cite the single most authoritative one rather than listing them all.
+- Differentiate 'usageType' honestly. 'Primary Source' is for the source a figure came from; use 'Secondary Confirmation' where it corroborates a figure you took elsewhere, and 'Directional Context' where it informed judgement without supplying a number. Not every source is a Primary Source.
 - For every included source:
   * Provide the official, clean publisher name (e.g. 'Entertainment Software Association', 'Newzoo', 'Statista').
   * Provide the EXACT, fully-qualified deep-linked URL (e.g. 'https://www.statista.com/statistics/12345/article-slug' or 'https://www.pewresearch.org/social-trends/2026/02/14/some-study/') from the provided POOL OF REAL WEB SOURCE CITATIONS DISCOVERED. You are STRICKLY FORBIDDEN from truncating, simplifying, or shortening URLs to root domains (e.g., do NOT change a deep link to just 'https://www.statista.com/' or 'https://www.pewresearch.org/'). Always preserve the complete, precise deep link so the user can click directly to the underlying content.
   * In 'supportedClaims', write a highly detailed, quantitative sentence explaining exactly what this source validated in this profile (e.g., 'Validated that 3 in 4 women play games and have differing spending patterns').
   * Specify the 'usageType' as one of: 'Primary Source', 'Secondary Confirmation', 'Directional Context'.
-- Ensure you populate the 'sources' array of the JSON with as many of the provided real research sources as possible to maximize comprehensiveness (aim to list 10+ distinct high-quality sources!).
+- Every entry MUST come from the POOL OF REAL WEB SOURCE CITATIONS DISCOVERED below. Never introduce a URL from memory, and never invent a deep link: an unverifiable citation is worse than a missing one.
 
 STRATEGY 3: RFP REQUIREMENTS & AGENCY CAPABILITY RESPONSES:
 If an uploaded RFP document, RFP questions, or RFP analysis is provided in the user prompt:
@@ -2391,7 +2424,7 @@ ${JSON.stringify(rfpAnalysis.extractedMetadata || {}, null, 2)}
 --------------------------------------------------
 TASK:
 Synthesize these 4 dossiers into a single high-quality media strategy profile in JSON.
-Map the discovered real web source citations to the 'sources' field inside the JSON. Apply 'Strategy 2: Authority Filtering' to classify and label them. Make sure 'sources' is a comprehensive array of these actual URLs.
+Map the discovered real web source citations to the 'sources' field inside the JSON. Apply 'Strategy 2: Authority Filtering' to classify and label them, and curate down to the 8-12 strongest - every entry drawn from the pool above, each tied to a claim you actually made.
 ${rfpAnalysis ? "IMPORTANT: Populated the 'additionalRfpRequirements' object in the JSON to address all specific RFP questions, operational requirements, and capability matches." : ""}
 Ensure that all chart arrays are fully populated with exact numbers (percentages should be numbers like 45, not strings like "45%").
 Return ONLY the formatted JSON matching the schema. No markdown wrapping except a raw JSON string, or standard JSON formatting.`;
@@ -2691,6 +2724,12 @@ Please correct the profile to resolve all issues.`
           finalProfile = corrected;
           profileRewritten = true;
           if (originalData.channelStrategy) finalProfile.channelStrategy = originalData.channelStrategy;
+          // Citations are evidence, not prose. The correction agent used to answer a sourcing red
+          // flag by discarding the researched registry and substituting URLs from its own memory -
+          // none of which appeared in the grounding pool - so the profile ended up citing sources
+          // that had never been consulted. It may rewrite the analysis; it may not rewrite what
+          // the analysis was based on.
+          if (Array.isArray(originalData.sources)) finalProfile.sources = originalData.sources;
           autoFixesList = Array.isArray(correctionData.autoFixes) ? correctionData.autoFixes : [];
           if (autoFixesList.length === 0) {
             autoFixesList.push({
@@ -2751,6 +2790,13 @@ Please correct the profile to resolve all issues.`
 
     // Embed the audit results into the final profile
     finalProfile.auditResult = finalAuditResult;
+
+    // Digital Remedy's own historical campaign data heads the registry. It has no public URL, so
+    // it carries no link; the UI renders an unlinked entry in the same style as the rest.
+    if (!Array.isArray(finalProfile.sources)) finalProfile.sources = [];
+    if (!finalProfile.sources.some((src: any) => src?.name === DIGITAL_REMEDY_SOURCE.name)) {
+      finalProfile.sources.unshift({ ...DIGITAL_REMEDY_SOURCE });
+    }
 
     // Enforce EXACTLY 4 personas in finalProfile
     if (!Array.isArray(finalProfile.personas)) {

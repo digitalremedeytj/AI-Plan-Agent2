@@ -4744,7 +4744,9 @@ export default function App() {
                                   <ExternalLink className="w-3 h-3 shrink-0 text-indigo-400" />
                                 </a>
                               ) : (
-                                <span className="text-xs font-bold text-slate-800">{source.name}</span>
+                                // Same treatment as a linked source, minus the affordances that
+                                // would imply something to click.
+                                <span className="text-xs font-bold text-indigo-600">{source.name}</span>
                               )}
                             </div>
                             <div className="flex items-center gap-2">
