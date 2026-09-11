@@ -27,22 +27,32 @@ There is no watch mode for tests. Run a single file directly:
 npx tsx --test src/storage/localFileAdapter.test.ts
 ```
 
-### If `npm run build` fails locally
+### Local setup
 
-A `SyntaxError: Invalid or unexpected token` from `node_modules/.../esbuild/bin/esbuild`
-means the `.bin/esbuild` shim is broken: it does `exec node .../esbuild/bin/esbuild`, but
-that target is a native Mach-O binary, not JavaScript. It comes from three package
-managers layered on one tree (`bun.lock` + `package-lock.json` + a pnpm-structured
-`node_modules`, with two conflicting `@esbuild/darwin-arm64` versions).
+**Use Node 22** (`nvm use` — there is an `.nvmrc`). Node 18 does not satisfy this repo's
+own dependencies: `@vitejs/plugin-react` requires `^20.19.0 || >=22.12.0`. Production
+runs nodejs22, so Node 22 also keeps local and deployed behaviour aligned.
 
-Fix — **stop any running dev server first**, since this deletes the tree it is using:
+**Use npm**, not bun or pnpm, despite `bun.lock` being tracked alongside
+`package-lock.json`. Installing with another package manager is what produces the
+failures below.
+
+If the tree is broken, reinstall — **stop any running dev server first**, since this
+deletes the tree it is using:
 
 ```bash
+nvm use
 rm -rf node_modules && npm install
 ```
 
-npm then links `.bin/esbuild` straight to the binary instead of wrapping it in a
-node-invoking script. Use **npm**, not bun or pnpm, despite `bun.lock` being present.
+Three different-looking failures all trace back to an install done on the wrong Node
+version or package manager, and all three are fixed by that reinstall:
+
+| Symptom | Cause |
+| --- | --- |
+| `SyntaxError: Invalid or unexpected token` from `esbuild/bin/esbuild` | a pnpm-style `.bin` shim execs `node` against what is actually a native Mach-O binary |
+| `Cannot find native binding` from `@tailwindcss/oxide` | npm's optional-dependency bug skipped the platform package (older npm only) |
+| `ERR_INVALID_URL_SCHEME` from tsx loading `vite.config.ts` | tsx 4.22.4 resolving tsconfig `paths` on Node 18 |
 
 ## Architecture
 
@@ -138,8 +148,8 @@ test("a stale revision is rejected instead of clobbering the other writer", ...)
 
 ## Gotchas
 
-- **Node 18 locally, nodejs22 in production.** Do not rely on APIs newer than Node 18
-  without checking.
+- **Node 22 everywhere.** `.nvmrc` pins it and production runs nodejs22. Node 18
+  appears to work until the dev server or a build fails confusingly - see Local setup.
 - **Two dev servers in this folder collide** on Vite's HMR port 24678. Harmless, but the
   WebSocket errors in the console are a red herring.
 - **Never run the Vite dev server in production.** `init()` in `server.ts` guards this;
