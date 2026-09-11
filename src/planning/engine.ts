@@ -223,7 +223,6 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     assumptions: [
       ...normalization.assumptions,
       ...(input.planningMode === "incremental" ? ["Existing plan allocations are fixed; only the supplied incremental working media budget is allocated."] : []),
-      "The supplied budget is treated as working media; non-media fees are shown separately.",
     ],
     settings: input.planningSettings,
     appliedBudgetTier,

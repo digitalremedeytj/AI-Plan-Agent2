@@ -25,10 +25,14 @@ interface ChartCardProps {
   tableData: Array<Record<string, any>>;
   tableColumns: Array<{ header: string; key: string; format?: (val: any) => string }>;
   footerNote?: React.ReactNode;
+  /** Suppresses the amber modeled-data badge on client-facing cards. */
+  hideModeledBadge?: boolean;
+  /** Suppresses the whole source line under the chart. */
+  hideSourceFooter?: boolean;
 }
 
 // Reusable card with a toggleable raw data table underneath for transparency
-export function ChartCard({ title, source, isModeled, children, tableData, tableColumns, footerNote }: ChartCardProps) {
+export function ChartCard({ title, source, isModeled, children, tableData, tableColumns, footerNote, hideModeledBadge, hideSourceFooter }: ChartCardProps) {
   const [showTable, setShowTable] = useState(false);
 
   return (
@@ -36,7 +40,7 @@ export function ChartCard({ title, source, isModeled, children, tableData, table
       <div className="p-5 border-b border-slate-100 flex items-center justify-between">
         <div>
           <h4 className="font-display font-semibold text-slate-800 text-base">{title}</h4>
-          {isModeled && (
+          {isModeled && !hideModeledBadge && (
             <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-medium bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full border border-amber-100">
               <Info className="w-3 h-3" />
               Modeled Planning Proxy
@@ -58,10 +62,12 @@ export function ChartCard({ title, source, isModeled, children, tableData, table
         </div>
 
         {/* Source Footer */}
-        <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center text-[11px] text-slate-400 font-mono">
-          <span>Source: {source || "Syndicated media source"}</span>
-          {isModeled && <span>*Estimated for planning purposes</span>}
-        </div>
+        {!hideSourceFooter && (
+          <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center text-[11px] text-slate-400 font-mono">
+            <span>Source: {source || "Syndicated media source"}</span>
+            {isModeled && <span>*Estimated for planning purposes</span>}
+          </div>
+        )}
 
         {/* Optional Explanatory Footer Note */}
         {footerNote && (
@@ -182,6 +188,8 @@ export function DeviceChart({ data, source }: { data: DeviceMetric[]; source: st
       title="Device & Platform Share"
       source={source}
       isModeled={isModeled}
+      hideModeledBadge
+      hideSourceFooter
       tableData={data}
       tableColumns={tableColumns}
     >
@@ -236,6 +244,7 @@ export function AgeChart({ data, source }: { data: AgeMetric[]; source: string }
       title="Audience Composition by Age"
       source={source}
       isModeled={isModeled}
+      hideModeledBadge
       tableData={data}
       tableColumns={tableColumns}
     >
@@ -275,6 +284,7 @@ export function GenderChart({ data, source }: { data: GenderMetric[]; source: st
       title="Gender Breakdown"
       source={source}
       isModeled={isModeled}
+      hideModeledBadge
       tableData={data}
       tableColumns={tableColumns}
     >
@@ -322,6 +332,7 @@ export function IncomeChart({ data, source }: { data: IncomeMetric[]; source: st
       title="Household Income Distribution"
       source={source}
       isModeled={isModeled}
+      hideModeledBadge
       tableData={data}
       tableColumns={tableColumns}
     >
