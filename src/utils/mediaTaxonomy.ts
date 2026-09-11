@@ -5,7 +5,7 @@ export const CANONICAL_MEDIA_TAXONOMY: MediaTaxonomyItem[] = [
     id: 'ctv',
     displayName: 'CTV / OTT',
     category: 'Video/TV',
-    aliases: ['ctv', 'connected tv', 'ott', 'streaming tv', 'smart tv', 'pluto', 'tubi', 'roku', 'vizio', 'hulu', 'paramount+', 'max', 'peacock'],
+    aliases: ['ctv', 'connected tv', 'ott', 'streaming tv', 'smart tv', 'pluto', 'tubi', 'roku', 'vizio', 'hulu', 'paramount+', 'max', 'peacock', 'performance tv', 'performance ctv', 'attributable ctv', 'direct response ctv', 'mountain', 'tatari'],
     description: 'Connected TV premium long-form video inventory on television screens.',
   },
   {
@@ -21,13 +21,6 @@ export const CANONICAL_MEDIA_TAXONOMY: MediaTaxonomyItem[] = [
     category: 'Video/TV',
     aliases: ['sports ott', 'sports streaming', 'espn+', 'nfl+', 'live sports ott'],
     description: 'Live or on-demand sports video inventory delivered via OTT.',
-  },
-  {
-    id: 'performance_tv',
-    displayName: 'Performance TV',
-    category: 'Video/TV',
-    aliases: ['performance tv', 'attributable ctv', 'direct response ctv', 'mountain', 'tatari'],
-    description: 'TV inventory optimized for direct-response performance and conversions.',
   },
   {
     id: 'digital_video_blend',

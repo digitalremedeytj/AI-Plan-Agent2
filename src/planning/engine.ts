@@ -25,6 +25,37 @@ import type {
   TriState,
 } from "./types";
 
+/**
+ * Allocation floor, in whole percent, used for planner-required media types. A manual
+ * override always wins over the product allocation minimum, so a required media type is
+ * only ever held to 1% when checking whether a portfolio can be funded.
+ */
+const FORCED_FLOOR_PERCENT = 1;
+
+/**
+ * Whether a product can be sold at all. Planner overrides waive planning constraints
+ * (budget, flight, and readiness minimums) but never catalog availability: a retired or
+ * not-yet-launched product cannot be forced into a plan.
+ */
+function isSellable(product: MediaProductRecord): boolean {
+  return product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live";
+}
+
+/**
+ * Whole-percent allocation bounds for a product. Planner-required media types are exempt
+ * from both the product allocation minimum and the minimum-spend floor, and may absorb the
+ * whole budget, so a manual override can never be rejected as infeasible. Every feasibility
+ * check and the allocator itself must use this so they cannot disagree.
+ */
+function allocationBoundsPercent(product: MediaProductRecord, totalBudget: number, forced: boolean) {
+  if (forced) return { minimum: FORCED_FLOOR_PERCENT, maximum: 100 };
+  const spendPercent = totalBudget > 0 ? (product.minimumTotalSpend / totalBudget) * 100 : 100;
+  return {
+    minimum: Math.ceil(Math.max(product.minimumAllocationPercent, spendPercent)),
+    maximum: Math.floor(product.maximumAllocationPercent),
+  };
+}
+
 const SCORE_WEIGHTS: Record<keyof CandidateScoreComponents, number> = {
   kpiAndFunnelFit: 0.3,
   audienceAndPersonaFit: 0.25,
@@ -229,12 +260,12 @@ function fallbackComponents(product: MediaProductRecord, facts: CampaignFacts): 
   const context = triggerText(facts);
   const kpiHits = includesAny(context, [...product.supportedKpis, ...product.funnelRoles]);
   const audienceHits = includesAny(context, product.audienceSignals);
-  const existingFamily = facts.existingChannelIds.some((id) => findProductByAnyId(id)?.familyId === product.familyId);
+  const alreadyRunning = facts.existingChannelIds.some((id) => findProductByAnyId(id)?.id === product.id);
   const preferred = facts.preferredChannelIds.includes(product.id);
   return {
     kpiAndFunnelFit: Math.min(95, 48 + kpiHits * 12 + (product.defaultPriority === "core" ? 6 : 0)),
     audienceAndPersonaFit: Math.min(95, 48 + audienceHits * 12),
-    incrementalGapCoverage: existingFamily ? 25 : preferred ? 90 : 72,
+    incrementalGapCoverage: alreadyRunning ? 25 : preferred ? 90 : 72,
     dataReadiness: readinessScore(product.dataRequirements, facts.dataReadiness as unknown as Record<string, TriState>),
     creativeReadiness: readinessScore(product.creativeRequirements, facts.creativeReadiness as unknown as Record<string, TriState>),
     measurementFit: Math.min(95, 65 + kpiHits * 7),
@@ -372,7 +403,7 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
     .filter((candidate) =>
       candidate.status === "ADD" ||
       candidate.status === "TEST" ||
-      (required.has(candidate.product.id) && candidate.eligibilityFailures.length === 0),
+      (required.has(candidate.product.id) && isSellable(candidate.product)),
     )
     .sort((a, b) => {
       const aRequired = facts.requiredChannelIds.includes(a.product.id) ? 1 : 0;
@@ -391,25 +422,22 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
   let best: EvaluatedMediaCandidate[] = [];
   let bestObjective = Number.NEGATIVE_INFINITY;
 
-  const isCompatibleAddition = (portfolio: EvaluatedMediaCandidate[], candidate: EvaluatedMediaCandidate) =>
-    !portfolio.some((item) =>
-      item.product.familyId === candidate.product.familyId ||
-      item.product.overlapFamilyIds.includes(candidate.product.familyId) ||
-      candidate.product.overlapFamilyIds.includes(item.product.familyId),
-    );
-
   const evaluatePortfolio = (portfolio: EvaluatedMediaCandidate[]) => {
     if (portfolio.length === 0) return;
     if ([...required].some((id) => !portfolio.some((candidate) => candidate.product.id === id))) return;
-    const minimumSpend = portfolio.reduce((sum, candidate) => sum + candidate.product.minimumTotalSpend, 0);
+    const minimumSpend = portfolio.reduce(
+      (sum, candidate) => sum + (required.has(candidate.product.id) ? 0 : candidate.product.minimumTotalSpend),
+      0,
+    );
     if (minimumSpend > facts.totalWorkingMediaBudget) return;
-    const minimumPercent = portfolio.reduce((sum, candidate) => {
-      const spendPercent = facts.totalWorkingMediaBudget > 0
-        ? (candidate.product.minimumTotalSpend / facts.totalWorkingMediaBudget) * 100
-        : 100;
-      return sum + Math.ceil(Math.max(candidate.product.minimumAllocationPercent, spendPercent));
-    }, 0);
-    const maximumPercent = portfolio.reduce((sum, candidate) => sum + Math.floor(candidate.product.maximumAllocationPercent), 0);
+    const minimumPercent = portfolio.reduce(
+      (sum, candidate) => sum + allocationBoundsPercent(candidate.product, facts.totalWorkingMediaBudget, required.has(candidate.product.id)).minimum,
+      0,
+    );
+    const maximumPercent = portfolio.reduce(
+      (sum, candidate) => sum + allocationBoundsPercent(candidate.product, facts.totalWorkingMediaBudget, required.has(candidate.product.id)).maximum,
+      0,
+    );
     if (minimumPercent > 100 || maximumPercent < 100) return;
     const objective = portfolio.reduce((sum, candidate) => {
       const existingBonus = facts.existingChannelIds.includes(candidate.product.id) ? 12 : 0;
@@ -433,8 +461,10 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
     if (index >= selectable.length || portfolio.length >= cap) return;
     for (let candidateIndex = index; candidateIndex < selectable.length; candidateIndex += 1) {
       const candidate = selectable[candidateIndex];
-      if (!isCompatibleAddition(portfolio, candidate)) continue;
-      const minimumSpend = portfolio.reduce((sum, item) => sum + item.product.minimumTotalSpend, 0) + candidate.product.minimumTotalSpend;
+      const minimumSpend = portfolio.reduce(
+        (sum, item) => sum + (required.has(item.product.id) ? 0 : item.product.minimumTotalSpend),
+        0,
+      ) + (required.has(candidate.product.id) ? 0 : candidate.product.minimumTotalSpend);
       if (minimumSpend > facts.totalWorkingMediaBudget) continue;
       search(candidateIndex + 1, [...portfolio, candidate]);
     }
@@ -444,7 +474,7 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
   if (required.size > 0 && best.length === 0) {
     audit.push({
       type: "exclusion",
-      detail: "No feasible portfolio can satisfy every planner-required media type together. The required set may contain overlapping families or exceed spend and allocation bounds.",
+      detail: "No feasible portfolio can satisfy every planner-required media type together. The required set exceeds the spend and allocation bounds for this budget.",
     });
   }
 
@@ -457,28 +487,63 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
   selectable.filter((candidate) => !selectedIds.has(candidate.product.id)).forEach((candidate) => audit.push({
     type: "exclusion",
     channelId: candidate.product.id,
-    detail: "Excluded by portfolio optimization because it did not improve the highest-value feasible mix after spend, overlap, allocation, and fragmentation constraints.",
+    detail: "Excluded by portfolio optimization because it did not improve the highest-value feasible mix after spend, allocation, and fragmentation constraints.",
   }));
   return best;
 }
 
-function allocateBasisPoints(selected: EvaluatedMediaCandidate[], totalBudget: number, audit: AllocationAuditEntry[]): Map<string, number> {
+function allocateBasisPoints(selected: EvaluatedMediaCandidate[], totalBudget: number, audit: AllocationAuditEntry[], forcedIds: Set<string> = new Set()): Map<string, number> {
   const allocations = new Map<string, number>();
+  // Non-forced products hold a hard minimum. Whatever room is left over is offered to the
+  // planner-forced products at their own product minimum, and only squeezed toward the 1%
+  // override floor when the rest of the portfolio has already claimed the budget.
+  const hardMinimumPercent = selected.reduce((sum, candidate) => {
+    if (forcedIds.has(candidate.product.id)) return sum;
+    return sum + allocationBoundsPercent(candidate.product, totalBudget, false).minimum;
+  }, 0);
+  const forcedCandidates = selected.filter((candidate) => forcedIds.has(candidate.product.id));
+  let forcedRoomPercent = Math.max(0, 100 - hardMinimumPercent);
+  const forcedTargets = new Map<string, number>();
+  forcedCandidates
+    .slice()
+    .sort((a, b) => allocationBoundsPercent(a.product, totalBudget, false).minimum - allocationBoundsPercent(b.product, totalBudget, false).minimum)
+    .forEach((candidate, index) => {
+      const remainingForced = forcedCandidates.length - index;
+      // Even share of what is left, so two forced media types are squeezed equally rather
+      // than the first one taking the room. Anything a product does not need rolls forward.
+      const fairShare = Math.floor(forcedRoomPercent / remainingForced);
+      const wanted = Math.min(
+        allocationBoundsPercent(candidate.product, totalBudget, false).minimum,
+        Math.floor(candidate.product.maximumAllocationPercent),
+      );
+      const grant = Math.max(FORCED_FLOOR_PERCENT, Math.min(wanted, fairShare));
+      forcedTargets.set(candidate.product.id, grant);
+      forcedRoomPercent = Math.max(0, forcedRoomPercent - grant);
+    });
+
   selected.forEach((candidate) => {
-    const minimumSpendPercent = totalBudget > 0 ? (candidate.product.minimumTotalSpend / totalBudget) * 100 : 100;
-    const effectiveMinimumPercent = Math.max(candidate.product.minimumAllocationPercent, minimumSpendPercent);
-    const wholeMinimumPercent = Math.ceil(effectiveMinimumPercent);
+    const forced = forcedIds.has(candidate.product.id);
+    const bounds = allocationBoundsPercent(candidate.product, totalBudget, forced);
+    const productMinimum = allocationBoundsPercent(candidate.product, totalBudget, false).minimum;
+    const wholeMinimumPercent = forced
+      ? Math.min(bounds.maximum, forcedTargets.get(candidate.product.id) ?? bounds.minimum)
+      : Math.min(bounds.maximum, bounds.minimum);
     allocations.set(candidate.product.id, wholeMinimumPercent * 100);
     audit.push({
       type: "minimum",
       channelId: candidate.product.id,
-      detail: `Applied a whole-number effective minimum of ${wholeMinimumPercent}% from product percent and spend constraints.`,
+      detail: forced
+        ? wholeMinimumPercent >= productMinimum
+          ? `Applied the ${wholeMinimumPercent}% product minimum to this planner-required media type.`
+          : `Applied a ${wholeMinimumPercent}% planner-override floor; the ${productMinimum}% product allocation and spend minimums were waived to honour the manual request.`
+        : `Applied a whole-number effective minimum of ${wholeMinimumPercent}% from product percent and spend constraints.`,
     });
   });
   let remaining = 10_000 - Array.from(allocations.values()).reduce((sum, value) => sum + value, 0);
-  if (remaining < 0) throw new Error("Selected channel minimum allocation percentages exceed 100%.");
+  if (remaining < 0) throw new Error("Selected channel minimum allocation percentages exceed 100%. Remove a media type or increase the budget.");
 
-  let active = selected.filter((candidate) => (allocations.get(candidate.product.id) || 0) < Math.floor(candidate.product.maximumAllocationPercent) * 100);
+  const capOf = (candidate: EvaluatedMediaCandidate) => allocationBoundsPercent(candidate.product, totalBudget, forcedIds.has(candidate.product.id)).maximum * 100;
+  let active = selected.filter((candidate) => (allocations.get(candidate.product.id) || 0) < capOf(candidate));
   while (remaining > 0 && active.length > 0) {
     const totalWeight = active.reduce((sum, candidate) => sum + Math.max(1, candidate.recommendationScore), 0);
     let distributed = 0;
@@ -486,7 +551,7 @@ function allocateBasisPoints(selected: EvaluatedMediaCandidate[], totalBudget: n
       const available = remaining - distributed;
       if (available <= 0) return;
       const current = allocations.get(candidate.product.id) || 0;
-      const cap = Math.floor(candidate.product.maximumAllocationPercent) * 100;
+      const cap = capOf(candidate);
       const proportional = Math.max(100, Math.floor(((remaining * candidate.recommendationScore) / totalWeight) / 100) * 100);
       const addition = Math.min(cap - current, proportional, available);
       if (addition > 0) {
@@ -495,7 +560,7 @@ function allocateBasisPoints(selected: EvaluatedMediaCandidate[], totalBudget: n
       }
     });
     remaining -= distributed;
-    active = active.filter((candidate) => (allocations.get(candidate.product.id) || 0) < Math.floor(candidate.product.maximumAllocationPercent) * 100);
+    active = active.filter((candidate) => (allocations.get(candidate.product.id) || 0) < capOf(candidate));
     if (distributed === 0 && active.length > 0) {
       const candidate = active[0];
       allocations.set(candidate.product.id, (allocations.get(candidate.product.id) || 0) + 100);
@@ -637,13 +702,15 @@ export function buildMediaRecommendationPlan(
     }));
   const evaluatedCandidates = evaluateCandidates(facts, aiSignals);
   const selected = selectPortfolio(evaluatedCandidates, facts, allocationAudit);
-  const maximumCapacity = selected.reduce((sum, candidate) => sum + Math.floor(candidate.product.maximumAllocationPercent), 0);
-  const minimumRequirement = selected.reduce((sum, candidate) => {
-    const spendPercent = facts.totalWorkingMediaBudget > 0
-      ? (candidate.product.minimumTotalSpend / facts.totalWorkingMediaBudget) * 100
-      : 100;
-    return sum + Math.ceil(Math.max(candidate.product.minimumAllocationPercent, spendPercent));
-  }, 0);
+  const requiredIds = new Set(facts.requiredChannelIds);
+  const maximumCapacity = selected.reduce(
+    (sum, candidate) => sum + allocationBoundsPercent(candidate.product, facts.totalWorkingMediaBudget, requiredIds.has(candidate.product.id)).maximum,
+    0,
+  );
+  const minimumRequirement = selected.reduce(
+    (sum, candidate) => sum + allocationBoundsPercent(candidate.product, facts.totalWorkingMediaBudget, requiredIds.has(candidate.product.id)).minimum,
+    0,
+  );
   const portfolioFeasible = selected.length > 0 && maximumCapacity >= 100 && minimumRequirement <= 100;
   if (selected.length > 0 && !portfolioFeasible) {
     allocationAudit.push({
@@ -670,7 +737,7 @@ export function buildMediaRecommendationPlan(
     };
   }
 
-  const basisPoints = allocateBasisPoints(selected, facts.totalWorkingMediaBudget, allocationAudit);
+  const basisPoints = allocateBasisPoints(selected, facts.totalWorkingMediaBudget, allocationAudit, new Set(facts.requiredChannelIds));
   const dollars = dollarsFromBasisPoints(facts.totalWorkingMediaBudget, basisPoints);
   allocationAudit.push({ type: "rounding", detail: "Applied stable basis-point rounding and distributed final budget cents deterministically." });
 
@@ -682,6 +749,7 @@ export function buildMediaRecommendationPlan(
       canonicalId: candidate.product.legacyCanonicalId,
       channelName: candidate.product.displayName,
       familyId: candidate.product.familyId,
+      manuallyForced: facts.requiredChannelIds.includes(candidate.product.id),
       status: candidate.status === "ADD" ? "ADD" : "TEST",
       recommendationScore: candidate.recommendationScore,
       confidence: candidate.confidence,

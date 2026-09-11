@@ -29,14 +29,23 @@ function strategy(requiredChannelIds: string[] = []): ChannelStrategyData {
   };
 }
 
-test("an infeasible manual add keeps the last valid plan", () => {
+test("a recalculation that omits the requested media type keeps the last valid plan", () => {
   const previous = strategy();
-  const conflicting = strategy(["channel.ctv", "channel.performance_tv"]);
-  assert.equal(conflicting.mediaPlan?.channels.length, 0);
-  assert.equal(conflicting.mediaPlan?.evaluatedCandidates.length, 15);
-  const result = validateManualPlanTransition(previous, conflicting, "channel.performance_tv", "add");
+  const next: ChannelStrategyData = {
+    ...previous,
+    generatedAt: "next",
+    mediaPlan: { ...previous.mediaPlan!, channels: [], selectedMediaTypeCount: 0 },
+  };
+  const result = validateManualPlanTransition(previous, next, "channel.ctv", "add");
   assert.equal(result.valid, false);
   assert.match(result.error || "", /existing plan was kept unchanged/i);
+});
+
+test("a planner override is honoured below the product budget minimum", () => {
+  const forced = strategy(["channel.linear_tv"]);
+  assert.ok(forced.mediaPlan?.channels.some((channel) => channel.channelId === "channel.linear_tv"));
+  const result = validateManualPlanTransition(strategy(), forced, "channel.linear_tv", "add");
+  assert.equal(result.valid, true);
 });
 
 test("removing the final channel accepts an empty allocation when the candidate catalog remains", () => {

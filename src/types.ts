@@ -230,7 +230,6 @@ export type CanonicalMediaType =
   | 'ctv'
   | 'youtube_tv'
   | 'sports_ott'
-  | 'performance_tv'
   | 'digital_video_blend'
   | 'digital_audio'
   | 'geofence_video'

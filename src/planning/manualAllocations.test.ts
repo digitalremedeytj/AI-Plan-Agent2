@@ -116,3 +116,55 @@ test("manual allocation persistence rejects fractional percentages", () => {
     /whole numbers/i,
   );
 });
+
+test("a planner can add every sellable media type even when the plan is already saturated", () => {
+  let current = plan();
+  const startingCount = current.channels.length;
+  const sellable = current.evaluatedCandidates.filter((candidate) =>
+    candidate.product.digitalRemedyExecutable &&
+    candidate.product.recommendationEligible &&
+    candidate.product.status === "live" &&
+    !current.channels.some((channel) => channel.channelId === candidate.product.id),
+  );
+  assert.ok(sellable.length > 0);
+  sellable.forEach((candidate) => {
+    current = addMediaTypeAndRebalance(current, candidate.product.id, []);
+    const added = current.channels.find((channel) => channel.channelId === candidate.product.id);
+    assert.ok(added, `${candidate.product.id} should be addable regardless of budget`);
+    assert.equal(added?.manuallyForced, true);
+    assert.equal(
+      current.channels.reduce((sum, channel) => sum + channel.allocationPercent, 0),
+      100,
+      "allocations stay exact after every manual add",
+    );
+  });
+  assert.equal(current.channels.length, startingCount + sellable.length);
+});
+
+test("media types in the same family can be added alongside each other", () => {
+  let current = plan();
+  const social = current.evaluatedCandidates.filter((candidate) => candidate.product.familyId === "family.social");
+  assert.equal(social.length, 2, "Meta and YouTube share a family");
+  social.forEach((candidate) => {
+    if (!current.channels.some((channel) => channel.channelId === candidate.product.id)) {
+      current = addMediaTypeAndRebalance(current, candidate.product.id, []);
+    }
+  });
+  social.forEach((candidate) => {
+    assert.ok(current.channels.some((channel) => channel.channelId === candidate.product.id));
+  });
+});
+
+test("catalog availability is not overridable by a manual add", () => {
+  const current = plan();
+  const unavailable = current.evaluatedCandidates.find((candidate) =>
+    !candidate.product.digitalRemedyExecutable ||
+    !candidate.product.recommendationEligible ||
+    candidate.product.status !== "live",
+  );
+  assert.ok(unavailable, "the catalog contains a retired or unlaunched product");
+  assert.throws(
+    () => addMediaTypeAndRebalance(current, unavailable!.product.id, []),
+    /not currently available in the Digital Remedy catalog/,
+  );
+});

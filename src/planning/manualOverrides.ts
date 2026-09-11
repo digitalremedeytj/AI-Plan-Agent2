@@ -24,7 +24,7 @@ export function validateManualPlanTransition(
     const name = previous.mediaPlan?.evaluatedCandidates.find((candidate) => candidate.product.id === channelId)?.product.displayName || "That media type";
     return {
       valid: false,
-      error: `${name} could not be added because the requested mix conflicts with another selected media family or cannot satisfy the current spend and allocation constraints. Remove the conflicting media type or adjust its settings first. Your existing plan was kept unchanged.`,
+      error: `${name} could not be added to the recalculated plan. Your existing plan was kept unchanged.`,
     };
   }
   if (action === "remove" && selected) {

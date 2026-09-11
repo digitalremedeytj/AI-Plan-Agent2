@@ -8,19 +8,90 @@ export type AllocationBasisPoints = Record<string, number>;
 
 const TOTAL_BASIS_POINTS = 10_000;
 
+/**
+ * Smallest whole-number allocation a manually forced media type can hold. Planner overrides
+ * always win over the product allocation minimum, so a forced add can never be rejected for
+ * lack of room; it is funded down to 1% if that is all the portfolio can spare.
+ */
+const MANUAL_FLOOR_BASIS_POINTS = 100;
+
 function roundBasisPoints(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.round(value / 100) * 100;
 }
 
 function effectiveBounds(channel: ChannelPlanRecommendation, totalBudget: number) {
+  if (channel.manuallyForced) {
+    return { minimum: MANUAL_FLOOR_BASIS_POINTS, maximum: TOTAL_BASIS_POINTS };
+  }
+  const maximum = Math.floor(channel.maximumAllocationPercent) * 100;
   const spendMinimumPercent = totalBudget > 0
     ? (channel.minimumTotalSpend / totalBudget) * 100
     : 100;
   return {
     minimum: Math.ceil(Math.max(channel.minimumAllocationPercent, spendMinimumPercent)) * 100,
-    maximum: Math.floor(channel.maximumAllocationPercent) * 100,
+    maximum,
   };
+}
+
+/**
+ * Per-channel allocation floors for a portfolio. Normally these are each channel's effective
+ * minimum, but when those minimums cannot all fit inside 100% the unfixed floors are scaled
+ * down proportionally (never below 1%) so the portfolio stays feasible. This is what lets a
+ * planner force in a media type the budget tier would otherwise have no room for.
+ */
+function allocationFloors(
+  channels: ChannelPlanRecommendation[],
+  budget: number,
+  fixedBasisPoints: AllocationBasisPoints,
+): Map<string, number> {
+  const floors = new Map<string, number>();
+  const scalable: ChannelPlanRecommendation[] = [];
+  let fixedTotal = 0;
+  channels.forEach((channel) => {
+    const fixed = fixedBasisPoints[channel.channelId];
+    if (fixed !== undefined) {
+      fixedTotal += roundBasisPoints(fixed);
+      return;
+    }
+    floors.set(channel.channelId, effectiveBounds(channel, budget).minimum);
+    scalable.push(channel);
+  });
+
+  const available = TOTAL_BASIS_POINTS - fixedTotal;
+  const required = scalable.reduce((sum, channel) => sum + (floors.get(channel.channelId) || 0), 0);
+  if (required <= available || scalable.length === 0) return floors;
+
+  // Floors do not fit. Give every channel the 1% hard floor, then distribute what is left
+  // proportionally to how large each channel's original minimum was.
+  const hardFloorTotal = scalable.length * MANUAL_FLOOR_BASIS_POINTS;
+  let distributable = Math.max(0, available - hardFloorTotal);
+  const weights = scalable.map((channel) => Math.max(0, (floors.get(channel.channelId) || 0) - MANUAL_FLOOR_BASIS_POINTS));
+  const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+  scalable.forEach((channel, index) => {
+    const share = weightTotal > 0
+      ? Math.floor(((distributable * weights[index]) / weightTotal) / 100) * 100
+      : 0;
+    const capped = Math.min(share, weights[index]);
+    floors.set(channel.channelId, MANUAL_FLOOR_BASIS_POINTS + capped);
+  });
+  // Hand any rounding remainder back to the channels with the largest original minimums.
+  let remainder = available - scalable.reduce((sum, channel) => sum + (floors.get(channel.channelId) || 0), 0);
+  const byWeight = scalable
+    .map((channel, index) => ({ channel, weight: weights[index] }))
+    .sort((a, b) => b.weight - a.weight || a.channel.channelId.localeCompare(b.channel.channelId));
+  for (let index = 0; remainder >= 100 && byWeight.length > 0; index = (index + 1) % byWeight.length) {
+    const entry = byWeight[index];
+    const current = floors.get(entry.channel.channelId) || 0;
+    const ceiling = effectiveBounds(entry.channel, budget).minimum;
+    if (current + 100 <= ceiling) {
+      floors.set(entry.channel.channelId, current + 100);
+      remainder -= 100;
+    } else if (byWeight.every((item) => (floors.get(item.channel.channelId) || 0) >= effectiveBounds(item.channel, budget).minimum)) {
+      break;
+    }
+  }
+  return floors;
 }
 
 function rawAllocationBasisPoints(plan: MediaRecommendationPlan): AllocationBasisPoints {
@@ -74,7 +145,7 @@ export function rebalanceBasisPoints(
     if (!channel) throw new Error("That media type is no longer part of the selected plan.");
     const value = roundBasisPoints(rawValue);
     const bounds = effectiveBounds(channel, budget);
-    if (value < bounds.minimum || value > bounds.maximum) {
+    if (value < Math.min(bounds.minimum, MANUAL_FLOOR_BASIS_POINTS) || value > bounds.maximum) {
       throw new Error(
         `${channel.channelName} must stay between ${formatPercent(bounds.minimum)} and ${formatPercent(bounds.maximum)} for this budget.`,
       );
@@ -83,13 +154,14 @@ export function rebalanceBasisPoints(
   });
 
   const adjustable = plan.channels.filter((channel) => fixedBasisPoints[channel.channelId] === undefined);
+  const floors = allocationFloors(plan.channels, budget, fixedBasisPoints);
   adjustable.forEach((channel) => {
-    next[channel.channelId] = effectiveBounds(channel, budget).minimum;
+    next[channel.channelId] = floors.get(channel.channelId) ?? effectiveBounds(channel, budget).minimum;
   });
 
   let remaining = TOTAL_BASIS_POINTS - Object.values(next).reduce((sum, value) => sum + value, 0);
   if (remaining < 0) {
-    throw new Error("The locked and minimum allocations exceed 100%. Unlock or reduce another media type, or increase the budget.");
+    throw new Error("The locked allocations exceed 100%. Unlock or reduce another media type, or increase the budget.");
   }
 
   const maximumCapacity = adjustable.reduce((sum, channel) => {
@@ -166,10 +238,12 @@ export function applyBasisPointAllocations(
 
   const budget = budgetOverride ?? plan.workingMediaBudget;
   const dollars = allocateDollars(budget, basisPoints);
+  const floors = allocationFloors(plan.channels, budget, {});
   const channels = plan.channels.map((channel) => {
     const value = roundBasisPoints(basisPoints[channel.channelId]);
     const bounds = effectiveBounds(channel, budget);
-    if (value < bounds.minimum || value > bounds.maximum) {
+    const floor = Math.min(floors.get(channel.channelId) ?? bounds.minimum, bounds.minimum);
+    if (value < floor || value > bounds.maximum) {
       throw new Error(`${channel.channelName} is outside its allowed allocation range for a $${budget.toLocaleString()} budget.`);
     }
     const allocationDollars = dollars[channel.channelId];
@@ -245,19 +319,14 @@ export function addMediaTypeAndRebalance(
   if (plan.channels.some((channel) => channel.channelId === channelId)) return plan;
   const candidate = plan.evaluatedCandidates.find((item) => item.product.id === channelId);
   if (!candidate) throw new Error("That media type is not available in the current planning catalog.");
-  const blockingFailures = candidate.eligibilityFailures.filter((failure) => !failure.includes("explicitly excluded by the planner"));
-  if (blockingFailures.length > 0) throw new Error(blockingFailures[0]);
-  const conflict = plan.channels.find((channel) => {
-    const selectedCandidate = plan.evaluatedCandidates.find((item) => item.product.id === channel.channelId);
-    return selectedCandidate && (
-      selectedCandidate.product.familyId === candidate.product.familyId ||
-      selectedCandidate.product.overlapFamilyIds.includes(candidate.product.familyId) ||
-      candidate.product.overlapFamilyIds.includes(selectedCandidate.product.familyId)
-    );
-  });
-  if (conflict) throw new Error(`${candidate.product.displayName} overlaps with ${conflict.channelName}. Remove the conflicting media type first.`);
-
-  const addedChannel = recommendationFromCandidate(candidate, plan);
+  // A manual add is a planner override: eligibility failures (budget, flight, and readiness
+  // minimums) are recorded on the candidate for display but never block the add itself.
+  // Catalog availability is not overridable — a retired or unlaunched product cannot be sold.
+  const { product } = candidate;
+  if (!product.digitalRemedyExecutable || !product.recommendationEligible || product.status !== "live") {
+    throw new Error(`${product.displayName} is not currently available in the Digital Remedy catalog and cannot be added.`);
+  }
+  const addedChannel = { ...recommendationFromCandidate(candidate, plan), manuallyForced: true };
   const withCandidate: MediaRecommendationPlan = {
     ...plan,
     channels: [...plan.channels, addedChannel],
@@ -273,8 +342,9 @@ export function addMediaTypeAndRebalance(
   const weightedTarget = Math.round((Math.max(1, addedChannel.recommendationScore) / totalScore) * 100) * 100;
   const unlockedExisting = plan.channels.filter((channel) => lockedFixed[channel.channelId] === undefined);
   const lockedTotal = Object.values(lockedFixed).reduce((sum, value) => sum + value, 0);
+  const existingFloors = allocationFloors(withCandidate.channels, plan.workingMediaBudget, { ...lockedFixed, [channelId]: 0 });
   const otherMinimums = unlockedExisting.reduce(
-    (sum, channel) => sum + effectiveBounds(channel, plan.workingMediaBudget).minimum,
+    (sum, channel) => sum + (existingFloors.get(channel.channelId) ?? effectiveBounds(channel, plan.workingMediaBudget).minimum),
     0,
   );
   const otherMaximums = unlockedExisting.reduce(
@@ -282,10 +352,7 @@ export function addMediaTypeAndRebalance(
     0,
   );
   const feasibleMinimum = Math.max(bounds.minimum, TOTAL_BASIS_POINTS - lockedTotal - otherMaximums);
-  const feasibleMaximum = Math.min(bounds.maximum, TOTAL_BASIS_POINTS - lockedTotal - otherMinimums);
-  if (feasibleMinimum > feasibleMaximum) {
-    throw new Error(`${candidate.product.displayName} cannot be funded without violating the selected media types' minimums or locked allocations.`);
-  }
+  const feasibleMaximum = Math.max(bounds.minimum, Math.min(bounds.maximum, TOTAL_BASIS_POINTS - lockedTotal - otherMinimums));
   const target = Math.min(feasibleMaximum, Math.max(feasibleMinimum, weightedTarget));
   const next = rebalanceBasisPoints(withCandidate, { ...lockedFixed, [channelId]: target });
   const applied = applyBasisPointAllocations(

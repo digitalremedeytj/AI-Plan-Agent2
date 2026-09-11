@@ -96,7 +96,6 @@ export interface MediaProductRecord {
   minimumAllocationPercent: number;
   maximumAllocationPercent: number;
   scaleRating: number;
-  overlapFamilyIds: string[];
   complementaryChannelIds: string[];
   sourceMetadata: SourceMetadata;
 }
@@ -197,6 +196,12 @@ export interface ChannelPlanRecommendation {
   typicalCpmLow: number | null;
   typicalCpmHigh: number | null;
   fundingSource?: string;
+  /**
+   * Set when a planner manually forced this media type into the plan. Forced channels are
+   * exempt from their product allocation minimum so a manual add always succeeds, regardless
+   * of budget. The product minimums remain on the record for display and execution warnings.
+   */
+  manuallyForced?: boolean;
 }
 
 export interface AllocationAuditEntry {

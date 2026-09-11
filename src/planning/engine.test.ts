@@ -117,7 +117,7 @@ test("data prerequisites are advisory and do not block an eligible media type", 
   assert.ok(!plan.evaluatedCandidates.some((candidate) => String(candidate.status) === "CONDITIONAL"));
 });
 
-test("family overlap prevents multiple social variants from counting as diversification", () => {
+test("media types in the same family can be selected together", () => {
   const facts = buildCampaignFacts({
     kpis: ["awareness", "video reach", "engagement"],
     audienceDescriptions: ["Social, YouTube, video, visual audience"],
@@ -125,11 +125,36 @@ test("family overlap prevents multiple social variants from counting as diversif
     campaignFlightDays: 30,
     geography: "United States",
     creativeReadiness: { socialAssets: true, onlineVideoAssets: true },
+    requiredChannelIds: ["channel.social_meta", "channel.youtube"],
     planningSettings: settings(),
   });
   const plan = buildMediaRecommendationPlan(facts);
+  const selected = plan.channels.map((channel) => channel.channelId);
+  assert.ok(selected.includes("channel.social_meta"));
+  assert.ok(selected.includes("channel.youtube"));
   const families = plan.channels.map((channel) => channel.familyId);
-  assert.equal(new Set(families).size, families.length);
+  assert.ok(new Set(families).size < families.length, "same-family selection is no longer blocked");
+  assert.ok(!plan.allocationAudit.some((entry) => /overlap/i.test(entry.detail)));
+});
+
+test("a planner override funds a media type the budget could never afford on its own", () => {
+  const facts = buildCampaignFacts({
+    kpis: ["awareness"],
+    audienceDescriptions: ["Streaming television audience"],
+    workingMediaBudget: 3_000,
+    campaignFlightDays: 30,
+    geography: "United States",
+    requiredChannelIds: ["channel.ctv"],
+    planningSettings: settings(),
+  });
+  const plan = buildMediaRecommendationPlan(facts);
+  const ctv = plan.channels.find((channel) => channel.channelId === "channel.ctv");
+  assert.ok(ctv, "a required media type is funded even below its product minimums");
+  assert.equal(ctv?.manuallyForced, true);
+  // The product minimums are still reported so the planner sees what the override waived.
+  const candidate = plan.evaluatedCandidates.find((item) => item.product.id === "channel.ctv");
+  assert.ok(candidate!.eligibilityFailures.length > 0);
+  assert.equal(plan.channels.reduce((sum, channel) => sum + channel.allocationPercent, 0), 100);
 });
 
 test("planning mode changes the funding source and audit assumption", () => {

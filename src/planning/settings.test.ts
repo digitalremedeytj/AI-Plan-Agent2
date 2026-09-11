@@ -56,7 +56,7 @@ test("version 1 browser settings migrate budget edits into the usable catalog de
   const migrated = loadPlanningSettings(storage);
   assert.equal(migrated.version, 3);
   assert.equal(migrated.budgetChannelTiers[0].maxChannels, 2);
-  assert.equal(migrated.products.length, 15);
+  assert.equal(migrated.products.length, 14);
   assert.equal(migrated.publishers.length, 67);
   assert.ok(migrated.enhancements.length > 40);
   assert.equal(migrated.overviewMetrics.length, 7);

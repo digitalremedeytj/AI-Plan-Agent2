@@ -4,7 +4,6 @@ import { ChannelStrategyData } from '../types';
 import type { AttachedPlanningRecord, CandidateScoreComponents } from '../planning/types';
 import { isNonMediaItem } from '../utils/mediaTaxonomy';
 import {
-  addMediaTypeAndRebalance,
   allocationBasisPoints,
   applyBasisPointAllocations,
   rebalanceBasisPoints,
@@ -791,7 +790,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 md:px-5">
               <h3 className="text-sm font-extrabold text-slate-900">Media types not in plan</h3>
-              <p className="mt-1 text-xs text-slate-600">Expand any media type to preview its full planning stack. “Add &amp; rebalance” preserves the selected portfolio and fixed working-media budget while proportionally adjusting unlocked allocations. Hard execution, geography, spend, overlap, and allocation rules remain enforced.</p>
+              <p className="mt-1 text-xs text-slate-600">Expand any media type to preview its full planning stack. “Add &amp; rebalance” preserves the selected portfolio and fixed working-media budget while proportionally adjusting unlocked allocations. Catalog availability is still enforced; budget, flight, and readiness minimums are waived for manual additions and shown as warnings.</p>
             </div>
             <div>
               {candidateGroups.map((group) => (
@@ -806,35 +805,15 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                   <div className="divide-y divide-slate-100">
                     {group.candidates.map((candidate) => {
                       const manuallyRequested = manualIncludedIds.has(candidate.product.id);
-                      const blockingFailures = candidate.eligibilityFailures.filter((failure) => !failure.includes('explicitly excluded by the planner'));
-                      const overlappingSelected = mediaPlan.evaluatedCandidates.find((selectedCandidate) =>
-                        selectedChannelIds.has(selectedCandidate.product.id) &&
-                        (
-                          selectedCandidate.product.familyId === candidate.product.familyId ||
-                          selectedCandidate.product.overlapFamilyIds.includes(candidate.product.familyId) ||
-                          candidate.product.overlapFamilyIds.includes(selectedCandidate.product.familyId)
-                        ),
-                      );
-                      const passesHardAddRules = candidate.product.digitalRemedyExecutable && candidate.product.recommendationEligible && candidate.product.status === 'live' && blockingFailures.length === 0 && !overlappingSelected;
-                      let allocationConstraint = '';
-                      if (passesHardAddRules && !manuallyRequested) {
-                        try {
-                          addMediaTypeAndRebalance(mediaPlan, candidate.product.id, data.lockedAllocationChannelIds || []);
-                        } catch (error) {
-                          allocationConstraint = error instanceof Error ? error.message : 'The current allocation cannot fund this media type.';
-                        }
-                      }
-                      const canAdd = passesHardAddRules && !allocationConstraint;
+                      // Planner overrides win: any live, executable product can be added regardless of
+                      // budget, flight, or readiness minimums. Those stay visible as warnings below.
+                      const canAdd = candidate.product.digitalRemedyExecutable && candidate.product.recommendationEligible && candidate.product.status === 'live';
                       const displayedStatus = displayRecommendationStatus(candidate.status);
                       const detailsId = `media-type-details-${candidate.product.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
                       const constraintReason = [...candidate.eligibilityFailures, ...candidate.prerequisites].join(' • ');
                       const reason = manuallyRequested
-                        ? 'Manual inclusion is requested, but the current spend, overlap, or allocation constraints cannot form a feasible portfolio.'
-                        : overlappingSelected
-                          ? `Recommended as an alternative to ${overlappingSelected.product.displayName}; both cannot be included in the same portfolio.`
-                          : allocationConstraint
-                            ? allocationConstraint
-                          : constraintReason
+                        ? 'Manual inclusion is requested; the plan is being recalculated to fund it.'
+                        : constraintReason
                             ? constraintReason
                             : displayedStatus === 'ADD'
                               ? 'Qualified recommendation omitted because the optimizer favored a higher-value feasible mix within the current portfolio constraints.'
@@ -881,7 +860,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                               disabled={!onManualMediaTypeChange || pendingChannelId !== null || (!manuallyRequested && !canAdd)}
                               className={`mt-1 inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-35 ${manuallyRequested ? 'border-rose-200 text-rose-600 hover:bg-rose-50' : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}
                               aria-label={`${manuallyRequested ? 'Remove' : 'Add'} ${candidate.product.displayName} ${manuallyRequested ? 'from' : 'to'} plan`}
-                              title={manuallyRequested ? 'Cancel this manual inclusion' : canAdd ? 'Add this media type and rebalance the fixed budget' : allocationConstraint || 'Resolve the listed hard constraints before adding'}
+                              title={manuallyRequested ? 'Cancel this manual inclusion' : canAdd ? 'Add this media type and rebalance the fixed budget' : 'This product is not currently executable and cannot be added'}
                             >
                               {pendingChannelId === candidate.product.id ? <Loader2 className="h-4 w-4 animate-spin" /> : manuallyRequested ? <><Minus className="h-4 w-4" /><span>Cancel</span></> : <><Plus className="h-4 w-4" /><span className="hidden sm:inline">Add &amp; rebalance</span></>}
                             </button>
