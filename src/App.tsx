@@ -1189,15 +1189,20 @@ export default function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
 
-  // Handler to open Save Dialog with a suggested title based on user's brief or uploaded plan
+  // Handler to open Save Dialog with a suggested title based on user's brief or uploaded plan.
+  // The advertiser leads: it is what makes a row in the saved-plans list identifiable at a
+  // glance, where a truncated audience description or a generic "Audience Profile" is not.
   const handleOpenSaveDialog = () => {
     if (!profileData) return;
+    const advertiser = advertiserName.trim();
     const desc = audienceDescription.trim();
-    const defaultTitle = desc
-      ? (desc.length > 50 ? desc.slice(0, 50) + "..." : desc)
-      : uploadedFileName
-        ? uploadedFileName.replace(/\.[^/.]+$/, "")
-        : "Audience Profile";
+    const defaultTitle = advertiser
+      ? (/\bplans?\b/i.test(advertiser) ? advertiser : `${advertiser} Plan`)
+      : desc
+        ? (desc.length > 50 ? desc.slice(0, 50) + "..." : desc)
+        : uploadedFileName
+          ? uploadedFileName.replace(/\.[^/.]+$/, "")
+          : "Audience Profile";
     setSaveTitle(defaultTitle);
     setSaveError(null);
     setIsSaving(true);
