@@ -1,0 +1,211 @@
+rank,market_name,tv_hhs,%us,dma_code,state
+1,New York,"7,348,620",6.407,501,CT-NJ-NY-PA
+2,Los Angeles,"5,476,830",4.775,803,CA-NV
+3,Chicago,"3,463,060",3.019,602,IL-IN
+4,Philadelphia,"2,942,800",2.566,504,DE-NJ-PA
+5,Dallas-Fort Worth,"2,713,380",2.366,623,TX
+6,San Francisco-Oak-San Jose,"2,488,090",2.169,807,CA
+7,"Washington, Dc (Hagrstwn)","2,476,680",2.159,511,DC-MD-PA-VA-WV
+8,Houston,"2,450,800",2.137,618,TX
+9,Boston (Manchester),"2,424,240",2.114,506,MA-NH-VT
+10,Atlanta,"2,412,730",2.104,524,AL-GA-NC
+11,Tampa-St. Pete (Sarasota),"1,908,590",1.664,539,FL
+12,Phoenix,"1,890,100",1.648,753,AZ
+13,Detroit,"1,853,030",1.616,505,MI
+14,Seattle-Tacoma,"1,808,530",1.577,819,WA
+15,Minneapolis-St. Paul,"1,742,530",1.519,613,MN-WI
+16,Miami-Ft. Lauderdale,"1,696,330",1.479,528,FL
+17,Denver,"1,630,380",1.421,751,CO-NE-WY
+18,Orlando-Daytona Bch-Melbrn,"1,519,570",1.325,534,FL
+19,Cleveland-Akron (Canton),"1,498,960",1.307,510,OH
+20,Sacramnto-Stkton-Modesto,"1,379,770",1.203,862,CA
+21,St. Louis,"1,215,570",1.06,609,IL-MO
+22,Charlotte,"1,189,950",1.037,517,NC-SC
+23,Pittsburgh,"1,160,220",1.012,508,MD-PA-WV
+24,Raleigh-Durham (Fayetvlle),"1,153,580",1.006,560,NC-VA
+25,"Portland, Or","1,143,670",0.997,820,OR-WA
+26,Baltimore,"1,119,480",0.976,512,MD
+27,Indianapolis,"1,086,310",0.947,527,IN
+28,San Diego,"1,065,700",0.929,825,CA
+29,Nashville,"1,011,570",0.882,659,KY-TN
+30,Hartford & New Haven,"963,950",0.84,533,CT
+31,San Antonio,"938,660",0.818,641,TX
+32,"Columbus, Oh","920,740",0.803,535,OH
+33,Kansas City,"919,020",0.801,616,KS-MO
+34,Salt Lake City,"916,960",0.799,770,ID-NV-UT-WY
+35,Milwaukee,"895,700",0.781,617,WI
+36,Cincinnati,"863,800",0.753,515,IN-KY-OH
+37,Greenvll-Spart-Ashevll-And,"845,990",0.738,567,GA-NC-SC
+38,West Palm Beach-Ft. Pierce,"824,920",0.719,548,FL
+39,Austin,"771,210",0.672,635,TX
+40,Las Vegas,"757,840",0.661,839,NV
+41,Oklahoma City,"722,140",0.63,650,OK
+42,Norfolk-Portsmth-Newpt Nws,"717,170",0.625,544,NC-VA
+43,Harrisburg-Lncstr-Leb-York,"715,110",0.623,566,PA
+44,Grand Rapids-Kalmzoo-B.Crk,"709,670",0.619,563,MI
+45,"Birmingham (Ann, Tusc)","696,380",0.607,630,AL
+46,Greensboro-H.Point-W.Salem,"690,050",0.602,518,NC-VA
+47,Jacksonville,"688,500",0.6,561,FL-GA
+48,Albuquerque-Santa Fe,"677,590",0.591,790,AZ-CO-NM
+49,Louisville,"662,170",0.577,529,IN-KY
+50,New Orleans,"641,620",0.559,622,LA-MS
+51,Memphis,"633,930",0.553,640,AR-MS-TN
+52,Providence-New Bedford,"616,280",0.537,521,MA-RI
+53,Buffalo,"596,710",0.52,514,NY-PA
+54,Fresno-Visalia,"573,180",0.5,866,CA
+55,Richmond-Petersburg,"564,510",0.492,556,VA
+56,Wilkes Barre-Scranton,"554,660",0.484,577,PA
+57,Little Rock-Pine Bluff,"547,950",0.478,693,AR
+58,Tulsa,"531,230",0.463,671,KS-OK
+59,Albany-Schenectady-Troy,"529,120",0.461,532,MA-NY-VT
+60,Mobile-Pensacola (Ft Walt),"528,320",0.461,686,AL-FL-MS
+61,Ft. Myers-Naples,"518,730",0.452,571,FL
+62,Knoxville,"514,610",0.449,557,KY-TN
+63,Lexington,"479,420",0.418,541,KY
+64,Dayton,"466,040",0.406,542,IN-OH
+65,Honolulu,"442,820",0.386,744,HI
+66,Wichita-Hutchinson Plus,"439,760",0.383,678,KS-NE
+67,Roanoke-Lynchburg,"439,620",0.383,573,VA-WV
+68,Green Bay-Appleton,"438,070",0.382,658,MI-WI
+69,Des Moines-Ames,"433,950",0.378,679,IA
+70,Charleston-Huntington,"431,150",0.376,564,KY-OH-WV
+71,Tucson (Sierra Vista),"425,860",0.371,789,AZ
+72,Flint-Saginaw-Bay City,"423,010",0.369,513,MI
+73,Spokane,"422,550",0.368,881,ID-MT-OR-WA
+74,Omaha,"416,210",0.363,652,IA-MO-NE
+75,"Springfield, Mo","409,020",0.357,619,AR-MO
+76,"Rochester, Ny","404,170",0.352,611,IA-MN
+77,"Columbia, Sc","400,790",0.349,546,SC
+78,Toledo,"400,170",0.349,547,MI-OH
+79,Huntsville-Decatur (Flor),"385,470",0.336,691,AL-TN
+80,Madison,"384,830",0.336,669,WI
+81,Portland-Auburn,"383,700",0.335,500,ME-NH
+82,Shreveport,"371,760",0.324,612,AR-LA-OK-TX
+83,Paducah-C.Gird-Harbg-Mt Vn,"369,390",0.322,632,IL-KY-MO-TN
+84,Harlingen-Wslco-Brnsvl-Mca,"368,960",0.322,636,TX
+85,Syracuse,"368,950",0.322,555,NY
+86,Champaign&Sprngfld-Decatur,"364,050",0.317,648,IL-IN
+87,Waco-Temple-Bryan,"357,720",0.312,625,TX
+88,Colorado Springs-Pueblo,"354,190",0.309,752,CO
+89,Chattanooga,"351,220",0.306,575,GA-NC-TN
+90,Cedar Rapids-Wtrlo-Iwc&Dub,"343,000",0.299,637,IA
+91,Savannah,"340,050",0.296,507,GA-SC
+92,El Paso,"333,270",0.291,765,NM-TX
+93,Baton Rouge,"330,910",0.289,716,LA-MS
+94,"Charleston, Sc","327,040",0.285,519,SC
+95,"Jackson, Ms","321,830",0.281,718,MS
+96,South Bend-Elkhart,"313,210",0.273,588,IN-MI
+97,Burlington-Plattsburgh,"307,470",0.268,523,NH-NY-VT
+98,"Tri-Cities, Tn-Va","306,770",0.267,531,KY-TN-VA
+99,Ft. Smith-Fay-Sprngdl-Rgrs,"304,670",0.266,670,AR-OK
+100,Greenville-N.Bern-Washngtn,"301,990",0.263,545,NC
+101,Davenport-R.Island-Moline,"294,680",0.257,682,IL-IA
+102,Myrtle Beach-Florence,"291,680",0.254,570,NC-SC
+103,Evansville,"279,860",0.244,649,IL-IN-KY
+104,Johnstown-Altoona,"277,210",0.242,574,PA
+105,Lincoln & Hastings-Krny,"276,800",0.241,722,KS-NE
+106,Boise,"270,200",0.236,757,ID-OR
+107,Tallahassee-Thomasville,"268,390",0.234,530,FL-GA
+108,Tyler-Longview(Lfkn&Ncgd),"265,690",0.232,709,TX
+109,Sioux Falls(Mitchell),"263,000",0.229,725,IA-MN-NE-SD
+110,Ft. Wayne,"262,990",0.229,509,IN-OH
+111,Augusta,"260,840",0.227,520,GA-SC
+112,Reno,"260,630",0.227,811,CA-NV
+113,Lansing,"250,670",0.219,551,MI
+114,Springfield-Holyoke,"249,430",0.217,543,MA
+115,Youngstown,"249,230",0.217,536,OH-PA
+116,Fargo-Valley City,"249,010",0.217,724,MN-ND
+117,Eugene,"239,710",0.209,801,OR
+118,Peoria-Bloomington,"235,690",0.205,675,IL
+119,Traverse City-Cadillac,"235,400",0.205,540,MI
+120,"Lafayette, La","233,790",0.204,642,LA
+121,Macon,"232,910",0.203,503,GA
+122,Yakima-Pasco-Rchlnd-Knnwck,"230,950",0.201,810,OR-WA
+123,Montgomery-Selma,"230,420",0.201,698,AL
+124,Santabarbra-Sanmar-Sanluob,"226,940",0.198,855,CA
+125,Monterey-Salinas,"226,630",0.198,828,CA
+126,Bakersfield,"223,250",0.195,800,CA
+127,"Columbus, Ga","217,660",0.19,522,AL-GA
+128,Corpus Christi,"209,760",0.183,600,TX
+129,La Crosse-Eau Claire,"206,480",0.18,702,MN-WI
+130,Wilmington,"197,700",0.172,550,NC
+131,Amarillo,"190,240",0.166,634,NM-OK-TX
+132,Chico-Redding,"188,010",0.164,868,CA
+133,Columbus-Tupelo-West Point,"181,860",0.159,673,AL-MS
+134,Wausau-Rhinelander,"174,760",0.152,705,WI
+135,Topeka,"172,470",0.15,605,KS
+136,Columbia-Jefferson City,"171,330",0.149,604,MO
+137,Monroe-El Dorado,"170,890",0.149,628,AR-LA
+138,Rockford,"170,480",0.149,610,IL
+139,Medford-Klamath Falls,"168,710",0.147,813,CA-OR
+140,Minot-Bismarck-Dickinson,"167,010",0.146,687,MT-ND-SD
+141,Beaumont-Port Arthur,"165,120",0.144,692,TX
+142,Duluth-Superior,"164,380",0.143,676,MI-MN-WI
+143,Odessa-Midland,"163,450",0.143,633,NM-TX
+144,Salisbury,"162,050",0.141,576,DE-MD
+145,Lubbock,"160,440",0.14,651,TX
+146,Palm Springs,"158,010",0.138,804,CA
+147,Anchorage,"154,020",0.134,743,AK
+148,Wichita Falls & Lawton,"152,950",0.133,627,OK-TX
+149,Sioux City,"150,790",0.131,624,IA-NE-SD
+150,Erie,"148,880",0.13,516,PA
+151,Joplin-Pittsburg,"144,110",0.126,603,KS-MO-OK
+152,"Albany, Ga","142,800",0.125,525,GA
+153,Rochestr-Mason City-Austin,"141,920",0.124,538,NY
+154,Panama City,"141,740",0.124,656,FL
+155,Terre Haute,"133,780",0.117,581,IL-IN
+156,Bangor,"133,310",0.116,537,ME
+157,Biloxi-Gulfport,"130,030",0.113,746,MS
+158,Wheeling-Steubenville,"128,720",0.112,554,OH-WV
+159,Bluefield-Beckley-Oak Hill,"127,090",0.111,559,VA-WV
+160,Binghamton,"127,070",0.111,502,NY
+161,Gainesville,"126,400",0.11,592,FL
+162,Sherman-Ada,"126,050",0.11,657,OK-TX
+163,Idaho Falls-Pocatello,"123,170",0.107,758,ID-WY
+164,Missoula,"115,020",0.1,762,MT
+165,Abilene-Sweetwater,"113,080",0.099,662,TX
+166,Billings,"110,630",0.096,756,MT-WY
+167,Yuma-El Centro,"109,930",0.096,771,AZ-CA
+168,Hattiesburg-Laurel,"108,380",0.094,710,MS
+169,Clarksburg-Weston,"103,090",0.09,598,WV
+170,Quincy-Hannibal-Keokuk,"99,340",0.087,717,IL-IA-MO
+171,Utica,"99,190",0.086,526,NY
+172,Rapid City,"99,170",0.086,764,MT-NE-SD-WY
+173,Dothan,"97,960",0.085,606,AL-FL-GA
+174,Lake Charles,"95,740",0.083,643,LA
+175,Elmira,"90,550",0.079,565,NY-PA
+176,"Jackson, Tn","89,970",0.078,639,TN
+177,Harrisonburg,"89,730",0.078,569,VA-WV
+178,Watertown,"88,070",0.077,549,NY
+179,"Alexandria, La","85,560",0.075,644,LA
+180,Marquette,"82,740",0.072,553,MI-WI
+181,Bowling Green,"80,230",0.07,736,KY
+182,Jonesboro,"79,860",0.07,734,AR-MO
+183,Charlottesville,"74,990",0.065,584,VA
+184,Laredo,"74,330",0.065,749,TX
+185,Butte-Bozeman,"70,320",0.061,754,MT
+186,Grand Junction-Montrose,"69,820",0.061,773,CO
+187,"Lafayette, In","69,180",0.06,582,IN
+188,"Bend, Or","67,430",0.059,821,OR
+189,Lima,"66,570",0.058,558,OH
+190,Meridian,"65,300",0.057,711,AL-MS
+191,Twin Falls,"64,190",0.056,760,ID
+192,Great Falls,"63,720",0.056,755,MT
+193,Greenwood-Greenville,"62,690",0.055,647,AR-MS
+194,Parkersburg,"60,620",0.053,597,OH-WV
+195,Eureka,"58,640",0.051,802,CA
+196,San Angelo,"56,680",0.049,661,TX
+197,Casper-Riverton,"56,260",0.049,767,WY
+198,Cheyenne-Scottsbluf,"56,120",0.049,759,NE-WY
+199,Mankato,"51,820",0.045,737,IA-MN
+200,Ottumwa-Kirksville,"44,690",0.039,631,IA-MO
+201,St. Joseph,"44,460",0.039,638,KS-MO
+202,Fairbanks,"36,070",0.031,745,AK
+203,Victoria,"32,930",0.029,626,TX
+204,Zanesville,"32,450",0.028,596,OH
+205,Helena,"28,110",0.025,766,MT
+206,Presque Isle,"26,880",0.023,552,ME
+207,Juneau,"25,680",0.022,747,AK
+208,Alpena,"16,010",0.014,583,MI
+209,North Platte,"14,370",0.013,740,NE
+210,Glendive,"4,370",0.004,798,MT

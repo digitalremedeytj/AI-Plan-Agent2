@@ -1,0 +1,2251 @@
+{
+  "sourceLabel": "U.S. Census Bureau, 2025",
+  "sourceFile": "assets/dma-to-state.csv",
+  "marketCount": 210,
+  "totalTvHouseholds": 114695130,
+  "markets": [
+    {
+      "code": "501",
+      "name": "New York",
+      "rank": 1,
+      "tvHouseholds": 7348620,
+      "usSharePct": 6.407,
+      "states": [
+        "CT",
+        "NJ",
+        "NY",
+        "PA"
+      ]
+    },
+    {
+      "code": "803",
+      "name": "Los Angeles",
+      "rank": 2,
+      "tvHouseholds": 5476830,
+      "usSharePct": 4.775,
+      "states": [
+        "CA",
+        "NV"
+      ]
+    },
+    {
+      "code": "602",
+      "name": "Chicago",
+      "rank": 3,
+      "tvHouseholds": 3463060,
+      "usSharePct": 3.019,
+      "states": [
+        "IL",
+        "IN"
+      ]
+    },
+    {
+      "code": "504",
+      "name": "Philadelphia",
+      "rank": 4,
+      "tvHouseholds": 2942800,
+      "usSharePct": 2.566,
+      "states": [
+        "DE",
+        "NJ",
+        "PA"
+      ]
+    },
+    {
+      "code": "623",
+      "name": "Dallas-Fort Worth",
+      "rank": 5,
+      "tvHouseholds": 2713380,
+      "usSharePct": 2.366,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "807",
+      "name": "San Francisco-Oak-San Jose",
+      "rank": 6,
+      "tvHouseholds": 2488090,
+      "usSharePct": 2.169,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "511",
+      "name": "Washington, Dc (Hagrstwn)",
+      "rank": 7,
+      "tvHouseholds": 2476680,
+      "usSharePct": 2.159,
+      "states": [
+        "DC",
+        "MD",
+        "PA",
+        "VA",
+        "WV"
+      ]
+    },
+    {
+      "code": "618",
+      "name": "Houston",
+      "rank": 8,
+      "tvHouseholds": 2450800,
+      "usSharePct": 2.137,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "506",
+      "name": "Boston (Manchester)",
+      "rank": 9,
+      "tvHouseholds": 2424240,
+      "usSharePct": 2.114,
+      "states": [
+        "MA",
+        "NH",
+        "VT"
+      ]
+    },
+    {
+      "code": "524",
+      "name": "Atlanta",
+      "rank": 10,
+      "tvHouseholds": 2412730,
+      "usSharePct": 2.104,
+      "states": [
+        "AL",
+        "GA",
+        "NC"
+      ]
+    },
+    {
+      "code": "539",
+      "name": "Tampa-St. Pete (Sarasota)",
+      "rank": 11,
+      "tvHouseholds": 1908590,
+      "usSharePct": 1.664,
+      "states": [
+        "FL"
+      ]
+    },
+    {
+      "code": "753",
+      "name": "Phoenix",
+      "rank": 12,
+      "tvHouseholds": 1890100,
+      "usSharePct": 1.648,
+      "states": [
+        "AZ"
+      ]
+    },
+    {
+      "code": "505",
+      "name": "Detroit",
+      "rank": 13,
+      "tvHouseholds": 1853030,
+      "usSharePct": 1.616,
+      "states": [
+        "MI"
+      ]
+    },
+    {
+      "code": "819",
+      "name": "Seattle-Tacoma",
+      "rank": 14,
+      "tvHouseholds": 1808530,
+      "usSharePct": 1.577,
+      "states": [
+        "WA"
+      ]
+    },
+    {
+      "code": "613",
+      "name": "Minneapolis-St. Paul",
+      "rank": 15,
+      "tvHouseholds": 1742530,
+      "usSharePct": 1.519,
+      "states": [
+        "MN",
+        "WI"
+      ]
+    },
+    {
+      "code": "528",
+      "name": "Miami-Ft. Lauderdale",
+      "rank": 16,
+      "tvHouseholds": 1696330,
+      "usSharePct": 1.479,
+      "states": [
+        "FL"
+      ]
+    },
+    {
+      "code": "751",
+      "name": "Denver",
+      "rank": 17,
+      "tvHouseholds": 1630380,
+      "usSharePct": 1.421,
+      "states": [
+        "CO",
+        "NE",
+        "WY"
+      ]
+    },
+    {
+      "code": "534",
+      "name": "Orlando-Daytona Bch-Melbrn",
+      "rank": 18,
+      "tvHouseholds": 1519570,
+      "usSharePct": 1.325,
+      "states": [
+        "FL"
+      ]
+    },
+    {
+      "code": "510",
+      "name": "Cleveland-Akron (Canton)",
+      "rank": 19,
+      "tvHouseholds": 1498960,
+      "usSharePct": 1.307,
+      "states": [
+        "OH"
+      ]
+    },
+    {
+      "code": "862",
+      "name": "Sacramnto-Stkton-Modesto",
+      "rank": 20,
+      "tvHouseholds": 1379770,
+      "usSharePct": 1.203,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "609",
+      "name": "St. Louis",
+      "rank": 21,
+      "tvHouseholds": 1215570,
+      "usSharePct": 1.06,
+      "states": [
+        "IL",
+        "MO"
+      ]
+    },
+    {
+      "code": "517",
+      "name": "Charlotte",
+      "rank": 22,
+      "tvHouseholds": 1189950,
+      "usSharePct": 1.037,
+      "states": [
+        "NC",
+        "SC"
+      ]
+    },
+    {
+      "code": "508",
+      "name": "Pittsburgh",
+      "rank": 23,
+      "tvHouseholds": 1160220,
+      "usSharePct": 1.012,
+      "states": [
+        "MD",
+        "PA",
+        "WV"
+      ]
+    },
+    {
+      "code": "560",
+      "name": "Raleigh-Durham (Fayetvlle)",
+      "rank": 24,
+      "tvHouseholds": 1153580,
+      "usSharePct": 1.006,
+      "states": [
+        "NC",
+        "VA"
+      ]
+    },
+    {
+      "code": "820",
+      "name": "Portland, Or",
+      "rank": 25,
+      "tvHouseholds": 1143670,
+      "usSharePct": 0.997,
+      "states": [
+        "OR",
+        "WA"
+      ]
+    },
+    {
+      "code": "512",
+      "name": "Baltimore",
+      "rank": 26,
+      "tvHouseholds": 1119480,
+      "usSharePct": 0.976,
+      "states": [
+        "MD"
+      ]
+    },
+    {
+      "code": "527",
+      "name": "Indianapolis",
+      "rank": 27,
+      "tvHouseholds": 1086310,
+      "usSharePct": 0.947,
+      "states": [
+        "IN"
+      ]
+    },
+    {
+      "code": "825",
+      "name": "San Diego",
+      "rank": 28,
+      "tvHouseholds": 1065700,
+      "usSharePct": 0.929,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "659",
+      "name": "Nashville",
+      "rank": 29,
+      "tvHouseholds": 1011570,
+      "usSharePct": 0.882,
+      "states": [
+        "KY",
+        "TN"
+      ]
+    },
+    {
+      "code": "533",
+      "name": "Hartford & New Haven",
+      "rank": 30,
+      "tvHouseholds": 963950,
+      "usSharePct": 0.84,
+      "states": [
+        "CT"
+      ]
+    },
+    {
+      "code": "641",
+      "name": "San Antonio",
+      "rank": 31,
+      "tvHouseholds": 938660,
+      "usSharePct": 0.818,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "535",
+      "name": "Columbus, Oh",
+      "rank": 32,
+      "tvHouseholds": 920740,
+      "usSharePct": 0.803,
+      "states": [
+        "OH"
+      ]
+    },
+    {
+      "code": "616",
+      "name": "Kansas City",
+      "rank": 33,
+      "tvHouseholds": 919020,
+      "usSharePct": 0.801,
+      "states": [
+        "KS",
+        "MO"
+      ]
+    },
+    {
+      "code": "770",
+      "name": "Salt Lake City",
+      "rank": 34,
+      "tvHouseholds": 916960,
+      "usSharePct": 0.799,
+      "states": [
+        "ID",
+        "NV",
+        "UT",
+        "WY"
+      ]
+    },
+    {
+      "code": "617",
+      "name": "Milwaukee",
+      "rank": 35,
+      "tvHouseholds": 895700,
+      "usSharePct": 0.781,
+      "states": [
+        "WI"
+      ]
+    },
+    {
+      "code": "515",
+      "name": "Cincinnati",
+      "rank": 36,
+      "tvHouseholds": 863800,
+      "usSharePct": 0.753,
+      "states": [
+        "IN",
+        "KY",
+        "OH"
+      ]
+    },
+    {
+      "code": "567",
+      "name": "Greenvll-Spart-Ashevll-And",
+      "rank": 37,
+      "tvHouseholds": 845990,
+      "usSharePct": 0.738,
+      "states": [
+        "GA",
+        "NC",
+        "SC"
+      ]
+    },
+    {
+      "code": "548",
+      "name": "West Palm Beach-Ft. Pierce",
+      "rank": 38,
+      "tvHouseholds": 824920,
+      "usSharePct": 0.719,
+      "states": [
+        "FL"
+      ]
+    },
+    {
+      "code": "635",
+      "name": "Austin",
+      "rank": 39,
+      "tvHouseholds": 771210,
+      "usSharePct": 0.672,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "839",
+      "name": "Las Vegas",
+      "rank": 40,
+      "tvHouseholds": 757840,
+      "usSharePct": 0.661,
+      "states": [
+        "NV"
+      ]
+    },
+    {
+      "code": "650",
+      "name": "Oklahoma City",
+      "rank": 41,
+      "tvHouseholds": 722140,
+      "usSharePct": 0.63,
+      "states": [
+        "OK"
+      ]
+    },
+    {
+      "code": "544",
+      "name": "Norfolk-Portsmth-Newpt Nws",
+      "rank": 42,
+      "tvHouseholds": 717170,
+      "usSharePct": 0.625,
+      "states": [
+        "NC",
+        "VA"
+      ]
+    },
+    {
+      "code": "566",
+      "name": "Harrisburg-Lncstr-Leb-York",
+      "rank": 43,
+      "tvHouseholds": 715110,
+      "usSharePct": 0.623,
+      "states": [
+        "PA"
+      ]
+    },
+    {
+      "code": "563",
+      "name": "Grand Rapids-Kalmzoo-B.Crk",
+      "rank": 44,
+      "tvHouseholds": 709670,
+      "usSharePct": 0.619,
+      "states": [
+        "MI"
+      ]
+    },
+    {
+      "code": "630",
+      "name": "Birmingham (Ann, Tusc)",
+      "rank": 45,
+      "tvHouseholds": 696380,
+      "usSharePct": 0.607,
+      "states": [
+        "AL"
+      ]
+    },
+    {
+      "code": "518",
+      "name": "Greensboro-H.Point-W.Salem",
+      "rank": 46,
+      "tvHouseholds": 690050,
+      "usSharePct": 0.602,
+      "states": [
+        "NC",
+        "VA"
+      ]
+    },
+    {
+      "code": "561",
+      "name": "Jacksonville",
+      "rank": 47,
+      "tvHouseholds": 688500,
+      "usSharePct": 0.6,
+      "states": [
+        "FL",
+        "GA"
+      ]
+    },
+    {
+      "code": "790",
+      "name": "Albuquerque-Santa Fe",
+      "rank": 48,
+      "tvHouseholds": 677590,
+      "usSharePct": 0.591,
+      "states": [
+        "AZ",
+        "CO",
+        "NM"
+      ]
+    },
+    {
+      "code": "529",
+      "name": "Louisville",
+      "rank": 49,
+      "tvHouseholds": 662170,
+      "usSharePct": 0.577,
+      "states": [
+        "IN",
+        "KY"
+      ]
+    },
+    {
+      "code": "622",
+      "name": "New Orleans",
+      "rank": 50,
+      "tvHouseholds": 641620,
+      "usSharePct": 0.559,
+      "states": [
+        "LA",
+        "MS"
+      ]
+    },
+    {
+      "code": "640",
+      "name": "Memphis",
+      "rank": 51,
+      "tvHouseholds": 633930,
+      "usSharePct": 0.553,
+      "states": [
+        "AR",
+        "MS",
+        "TN"
+      ]
+    },
+    {
+      "code": "521",
+      "name": "Providence-New Bedford",
+      "rank": 52,
+      "tvHouseholds": 616280,
+      "usSharePct": 0.537,
+      "states": [
+        "MA",
+        "RI"
+      ]
+    },
+    {
+      "code": "514",
+      "name": "Buffalo",
+      "rank": 53,
+      "tvHouseholds": 596710,
+      "usSharePct": 0.52,
+      "states": [
+        "NY",
+        "PA"
+      ]
+    },
+    {
+      "code": "866",
+      "name": "Fresno-Visalia",
+      "rank": 54,
+      "tvHouseholds": 573180,
+      "usSharePct": 0.5,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "556",
+      "name": "Richmond-Petersburg",
+      "rank": 55,
+      "tvHouseholds": 564510,
+      "usSharePct": 0.492,
+      "states": [
+        "VA"
+      ]
+    },
+    {
+      "code": "577",
+      "name": "Wilkes Barre-Scranton",
+      "rank": 56,
+      "tvHouseholds": 554660,
+      "usSharePct": 0.484,
+      "states": [
+        "PA"
+      ]
+    },
+    {
+      "code": "693",
+      "name": "Little Rock-Pine Bluff",
+      "rank": 57,
+      "tvHouseholds": 547950,
+      "usSharePct": 0.478,
+      "states": [
+        "AR"
+      ]
+    },
+    {
+      "code": "671",
+      "name": "Tulsa",
+      "rank": 58,
+      "tvHouseholds": 531230,
+      "usSharePct": 0.463,
+      "states": [
+        "KS",
+        "OK"
+      ]
+    },
+    {
+      "code": "532",
+      "name": "Albany-Schenectady-Troy",
+      "rank": 59,
+      "tvHouseholds": 529120,
+      "usSharePct": 0.461,
+      "states": [
+        "MA",
+        "NY",
+        "VT"
+      ]
+    },
+    {
+      "code": "686",
+      "name": "Mobile-Pensacola (Ft Walt)",
+      "rank": 60,
+      "tvHouseholds": 528320,
+      "usSharePct": 0.461,
+      "states": [
+        "AL",
+        "FL",
+        "MS"
+      ]
+    },
+    {
+      "code": "571",
+      "name": "Ft. Myers-Naples",
+      "rank": 61,
+      "tvHouseholds": 518730,
+      "usSharePct": 0.452,
+      "states": [
+        "FL"
+      ]
+    },
+    {
+      "code": "557",
+      "name": "Knoxville",
+      "rank": 62,
+      "tvHouseholds": 514610,
+      "usSharePct": 0.449,
+      "states": [
+        "KY",
+        "TN"
+      ]
+    },
+    {
+      "code": "541",
+      "name": "Lexington",
+      "rank": 63,
+      "tvHouseholds": 479420,
+      "usSharePct": 0.418,
+      "states": [
+        "KY"
+      ]
+    },
+    {
+      "code": "542",
+      "name": "Dayton",
+      "rank": 64,
+      "tvHouseholds": 466040,
+      "usSharePct": 0.406,
+      "states": [
+        "IN",
+        "OH"
+      ]
+    },
+    {
+      "code": "744",
+      "name": "Honolulu",
+      "rank": 65,
+      "tvHouseholds": 442820,
+      "usSharePct": 0.386,
+      "states": [
+        "HI"
+      ]
+    },
+    {
+      "code": "678",
+      "name": "Wichita-Hutchinson Plus",
+      "rank": 66,
+      "tvHouseholds": 439760,
+      "usSharePct": 0.383,
+      "states": [
+        "KS",
+        "NE"
+      ]
+    },
+    {
+      "code": "573",
+      "name": "Roanoke-Lynchburg",
+      "rank": 67,
+      "tvHouseholds": 439620,
+      "usSharePct": 0.383,
+      "states": [
+        "VA",
+        "WV"
+      ]
+    },
+    {
+      "code": "658",
+      "name": "Green Bay-Appleton",
+      "rank": 68,
+      "tvHouseholds": 438070,
+      "usSharePct": 0.382,
+      "states": [
+        "MI",
+        "WI"
+      ]
+    },
+    {
+      "code": "679",
+      "name": "Des Moines-Ames",
+      "rank": 69,
+      "tvHouseholds": 433950,
+      "usSharePct": 0.378,
+      "states": [
+        "IA"
+      ]
+    },
+    {
+      "code": "564",
+      "name": "Charleston-Huntington",
+      "rank": 70,
+      "tvHouseholds": 431150,
+      "usSharePct": 0.376,
+      "states": [
+        "KY",
+        "OH",
+        "WV"
+      ]
+    },
+    {
+      "code": "789",
+      "name": "Tucson (Sierra Vista)",
+      "rank": 71,
+      "tvHouseholds": 425860,
+      "usSharePct": 0.371,
+      "states": [
+        "AZ"
+      ]
+    },
+    {
+      "code": "513",
+      "name": "Flint-Saginaw-Bay City",
+      "rank": 72,
+      "tvHouseholds": 423010,
+      "usSharePct": 0.369,
+      "states": [
+        "MI"
+      ]
+    },
+    {
+      "code": "881",
+      "name": "Spokane",
+      "rank": 73,
+      "tvHouseholds": 422550,
+      "usSharePct": 0.368,
+      "states": [
+        "ID",
+        "MT",
+        "OR",
+        "WA"
+      ]
+    },
+    {
+      "code": "652",
+      "name": "Omaha",
+      "rank": 74,
+      "tvHouseholds": 416210,
+      "usSharePct": 0.363,
+      "states": [
+        "IA",
+        "MO",
+        "NE"
+      ]
+    },
+    {
+      "code": "619",
+      "name": "Springfield, Mo",
+      "rank": 75,
+      "tvHouseholds": 409020,
+      "usSharePct": 0.357,
+      "states": [
+        "AR",
+        "MO"
+      ]
+    },
+    {
+      "code": "611",
+      "name": "Rochester, Ny",
+      "rank": 76,
+      "tvHouseholds": 404170,
+      "usSharePct": 0.352,
+      "states": [
+        "IA",
+        "MN"
+      ]
+    },
+    {
+      "code": "546",
+      "name": "Columbia, Sc",
+      "rank": 77,
+      "tvHouseholds": 400790,
+      "usSharePct": 0.349,
+      "states": [
+        "SC"
+      ]
+    },
+    {
+      "code": "547",
+      "name": "Toledo",
+      "rank": 78,
+      "tvHouseholds": 400170,
+      "usSharePct": 0.349,
+      "states": [
+        "MI",
+        "OH"
+      ]
+    },
+    {
+      "code": "691",
+      "name": "Huntsville-Decatur (Flor)",
+      "rank": 79,
+      "tvHouseholds": 385470,
+      "usSharePct": 0.336,
+      "states": [
+        "AL",
+        "TN"
+      ]
+    },
+    {
+      "code": "669",
+      "name": "Madison",
+      "rank": 80,
+      "tvHouseholds": 384830,
+      "usSharePct": 0.336,
+      "states": [
+        "WI"
+      ]
+    },
+    {
+      "code": "500",
+      "name": "Portland-Auburn",
+      "rank": 81,
+      "tvHouseholds": 383700,
+      "usSharePct": 0.335,
+      "states": [
+        "ME",
+        "NH"
+      ]
+    },
+    {
+      "code": "612",
+      "name": "Shreveport",
+      "rank": 82,
+      "tvHouseholds": 371760,
+      "usSharePct": 0.324,
+      "states": [
+        "AR",
+        "LA",
+        "OK",
+        "TX"
+      ]
+    },
+    {
+      "code": "632",
+      "name": "Paducah-C.Gird-Harbg-Mt Vn",
+      "rank": 83,
+      "tvHouseholds": 369390,
+      "usSharePct": 0.322,
+      "states": [
+        "IL",
+        "KY",
+        "MO",
+        "TN"
+      ]
+    },
+    {
+      "code": "636",
+      "name": "Harlingen-Wslco-Brnsvl-Mca",
+      "rank": 84,
+      "tvHouseholds": 368960,
+      "usSharePct": 0.322,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "555",
+      "name": "Syracuse",
+      "rank": 85,
+      "tvHouseholds": 368950,
+      "usSharePct": 0.322,
+      "states": [
+        "NY"
+      ]
+    },
+    {
+      "code": "648",
+      "name": "Champaign&Sprngfld-Decatur",
+      "rank": 86,
+      "tvHouseholds": 364050,
+      "usSharePct": 0.317,
+      "states": [
+        "IL",
+        "IN"
+      ]
+    },
+    {
+      "code": "625",
+      "name": "Waco-Temple-Bryan",
+      "rank": 87,
+      "tvHouseholds": 357720,
+      "usSharePct": 0.312,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "752",
+      "name": "Colorado Springs-Pueblo",
+      "rank": 88,
+      "tvHouseholds": 354190,
+      "usSharePct": 0.309,
+      "states": [
+        "CO"
+      ]
+    },
+    {
+      "code": "575",
+      "name": "Chattanooga",
+      "rank": 89,
+      "tvHouseholds": 351220,
+      "usSharePct": 0.306,
+      "states": [
+        "GA",
+        "NC",
+        "TN"
+      ]
+    },
+    {
+      "code": "637",
+      "name": "Cedar Rapids-Wtrlo-Iwc&Dub",
+      "rank": 90,
+      "tvHouseholds": 343000,
+      "usSharePct": 0.299,
+      "states": [
+        "IA"
+      ]
+    },
+    {
+      "code": "507",
+      "name": "Savannah",
+      "rank": 91,
+      "tvHouseholds": 340050,
+      "usSharePct": 0.296,
+      "states": [
+        "GA",
+        "SC"
+      ]
+    },
+    {
+      "code": "765",
+      "name": "El Paso",
+      "rank": 92,
+      "tvHouseholds": 333270,
+      "usSharePct": 0.291,
+      "states": [
+        "NM",
+        "TX"
+      ]
+    },
+    {
+      "code": "716",
+      "name": "Baton Rouge",
+      "rank": 93,
+      "tvHouseholds": 330910,
+      "usSharePct": 0.289,
+      "states": [
+        "LA",
+        "MS"
+      ]
+    },
+    {
+      "code": "519",
+      "name": "Charleston, Sc",
+      "rank": 94,
+      "tvHouseholds": 327040,
+      "usSharePct": 0.285,
+      "states": [
+        "SC"
+      ]
+    },
+    {
+      "code": "718",
+      "name": "Jackson, Ms",
+      "rank": 95,
+      "tvHouseholds": 321830,
+      "usSharePct": 0.281,
+      "states": [
+        "MS"
+      ]
+    },
+    {
+      "code": "588",
+      "name": "South Bend-Elkhart",
+      "rank": 96,
+      "tvHouseholds": 313210,
+      "usSharePct": 0.273,
+      "states": [
+        "IN",
+        "MI"
+      ]
+    },
+    {
+      "code": "523",
+      "name": "Burlington-Plattsburgh",
+      "rank": 97,
+      "tvHouseholds": 307470,
+      "usSharePct": 0.268,
+      "states": [
+        "NH",
+        "NY",
+        "VT"
+      ]
+    },
+    {
+      "code": "531",
+      "name": "Tri-Cities, Tn-Va",
+      "rank": 98,
+      "tvHouseholds": 306770,
+      "usSharePct": 0.267,
+      "states": [
+        "KY",
+        "TN",
+        "VA"
+      ]
+    },
+    {
+      "code": "670",
+      "name": "Ft. Smith-Fay-Sprngdl-Rgrs",
+      "rank": 99,
+      "tvHouseholds": 304670,
+      "usSharePct": 0.266,
+      "states": [
+        "AR",
+        "OK"
+      ]
+    },
+    {
+      "code": "545",
+      "name": "Greenville-N.Bern-Washngtn",
+      "rank": 100,
+      "tvHouseholds": 301990,
+      "usSharePct": 0.263,
+      "states": [
+        "NC"
+      ]
+    },
+    {
+      "code": "682",
+      "name": "Davenport-R.Island-Moline",
+      "rank": 101,
+      "tvHouseholds": 294680,
+      "usSharePct": 0.257,
+      "states": [
+        "IA",
+        "IL"
+      ]
+    },
+    {
+      "code": "570",
+      "name": "Myrtle Beach-Florence",
+      "rank": 102,
+      "tvHouseholds": 291680,
+      "usSharePct": 0.254,
+      "states": [
+        "NC",
+        "SC"
+      ]
+    },
+    {
+      "code": "649",
+      "name": "Evansville",
+      "rank": 103,
+      "tvHouseholds": 279860,
+      "usSharePct": 0.244,
+      "states": [
+        "IL",
+        "IN",
+        "KY"
+      ]
+    },
+    {
+      "code": "574",
+      "name": "Johnstown-Altoona",
+      "rank": 104,
+      "tvHouseholds": 277210,
+      "usSharePct": 0.242,
+      "states": [
+        "PA"
+      ]
+    },
+    {
+      "code": "722",
+      "name": "Lincoln & Hastings-Krny",
+      "rank": 105,
+      "tvHouseholds": 276800,
+      "usSharePct": 0.241,
+      "states": [
+        "KS",
+        "NE"
+      ]
+    },
+    {
+      "code": "757",
+      "name": "Boise",
+      "rank": 106,
+      "tvHouseholds": 270200,
+      "usSharePct": 0.236,
+      "states": [
+        "ID",
+        "OR"
+      ]
+    },
+    {
+      "code": "530",
+      "name": "Tallahassee-Thomasville",
+      "rank": 107,
+      "tvHouseholds": 268390,
+      "usSharePct": 0.234,
+      "states": [
+        "FL",
+        "GA"
+      ]
+    },
+    {
+      "code": "709",
+      "name": "Tyler-Longview(Lfkn&Ncgd)",
+      "rank": 108,
+      "tvHouseholds": 265690,
+      "usSharePct": 0.232,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "725",
+      "name": "Sioux Falls(Mitchell)",
+      "rank": 109,
+      "tvHouseholds": 263000,
+      "usSharePct": 0.229,
+      "states": [
+        "IA",
+        "MN",
+        "NE",
+        "SD"
+      ]
+    },
+    {
+      "code": "509",
+      "name": "Ft. Wayne",
+      "rank": 110,
+      "tvHouseholds": 262990,
+      "usSharePct": 0.229,
+      "states": [
+        "IN",
+        "OH"
+      ]
+    },
+    {
+      "code": "520",
+      "name": "Augusta",
+      "rank": 111,
+      "tvHouseholds": 260840,
+      "usSharePct": 0.227,
+      "states": [
+        "GA",
+        "SC"
+      ]
+    },
+    {
+      "code": "811",
+      "name": "Reno",
+      "rank": 112,
+      "tvHouseholds": 260630,
+      "usSharePct": 0.227,
+      "states": [
+        "CA",
+        "NV"
+      ]
+    },
+    {
+      "code": "551",
+      "name": "Lansing",
+      "rank": 113,
+      "tvHouseholds": 250670,
+      "usSharePct": 0.219,
+      "states": [
+        "MI"
+      ]
+    },
+    {
+      "code": "543",
+      "name": "Springfield-Holyoke",
+      "rank": 114,
+      "tvHouseholds": 249430,
+      "usSharePct": 0.217,
+      "states": [
+        "MA"
+      ]
+    },
+    {
+      "code": "536",
+      "name": "Youngstown",
+      "rank": 115,
+      "tvHouseholds": 249230,
+      "usSharePct": 0.217,
+      "states": [
+        "OH",
+        "PA"
+      ]
+    },
+    {
+      "code": "724",
+      "name": "Fargo-Valley City",
+      "rank": 116,
+      "tvHouseholds": 249010,
+      "usSharePct": 0.217,
+      "states": [
+        "MN",
+        "ND"
+      ]
+    },
+    {
+      "code": "801",
+      "name": "Eugene",
+      "rank": 117,
+      "tvHouseholds": 239710,
+      "usSharePct": 0.209,
+      "states": [
+        "OR"
+      ]
+    },
+    {
+      "code": "675",
+      "name": "Peoria-Bloomington",
+      "rank": 118,
+      "tvHouseholds": 235690,
+      "usSharePct": 0.205,
+      "states": [
+        "IL"
+      ]
+    },
+    {
+      "code": "540",
+      "name": "Traverse City-Cadillac",
+      "rank": 119,
+      "tvHouseholds": 235400,
+      "usSharePct": 0.205,
+      "states": [
+        "MI"
+      ]
+    },
+    {
+      "code": "642",
+      "name": "Lafayette, La",
+      "rank": 120,
+      "tvHouseholds": 233790,
+      "usSharePct": 0.204,
+      "states": [
+        "LA"
+      ]
+    },
+    {
+      "code": "503",
+      "name": "Macon",
+      "rank": 121,
+      "tvHouseholds": 232910,
+      "usSharePct": 0.203,
+      "states": [
+        "GA"
+      ]
+    },
+    {
+      "code": "810",
+      "name": "Yakima-Pasco-Rchlnd-Knnwck",
+      "rank": 122,
+      "tvHouseholds": 230950,
+      "usSharePct": 0.201,
+      "states": [
+        "OR",
+        "WA"
+      ]
+    },
+    {
+      "code": "698",
+      "name": "Montgomery-Selma",
+      "rank": 123,
+      "tvHouseholds": 230420,
+      "usSharePct": 0.201,
+      "states": [
+        "AL"
+      ]
+    },
+    {
+      "code": "855",
+      "name": "Santabarbra-Sanmar-Sanluob",
+      "rank": 124,
+      "tvHouseholds": 226940,
+      "usSharePct": 0.198,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "828",
+      "name": "Monterey-Salinas",
+      "rank": 125,
+      "tvHouseholds": 226630,
+      "usSharePct": 0.198,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "800",
+      "name": "Bakersfield",
+      "rank": 126,
+      "tvHouseholds": 223250,
+      "usSharePct": 0.195,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "522",
+      "name": "Columbus, Ga",
+      "rank": 127,
+      "tvHouseholds": 217660,
+      "usSharePct": 0.19,
+      "states": [
+        "AL",
+        "GA"
+      ]
+    },
+    {
+      "code": "600",
+      "name": "Corpus Christi",
+      "rank": 128,
+      "tvHouseholds": 209760,
+      "usSharePct": 0.183,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "702",
+      "name": "La Crosse-Eau Claire",
+      "rank": 129,
+      "tvHouseholds": 206480,
+      "usSharePct": 0.18,
+      "states": [
+        "MN",
+        "WI"
+      ]
+    },
+    {
+      "code": "550",
+      "name": "Wilmington",
+      "rank": 130,
+      "tvHouseholds": 197700,
+      "usSharePct": 0.172,
+      "states": [
+        "NC"
+      ]
+    },
+    {
+      "code": "634",
+      "name": "Amarillo",
+      "rank": 131,
+      "tvHouseholds": 190240,
+      "usSharePct": 0.166,
+      "states": [
+        "NM",
+        "OK",
+        "TX"
+      ]
+    },
+    {
+      "code": "868",
+      "name": "Chico-Redding",
+      "rank": 132,
+      "tvHouseholds": 188010,
+      "usSharePct": 0.164,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "673",
+      "name": "Columbus-Tupelo-West Point",
+      "rank": 133,
+      "tvHouseholds": 181860,
+      "usSharePct": 0.159,
+      "states": [
+        "AL",
+        "MS"
+      ]
+    },
+    {
+      "code": "705",
+      "name": "Wausau-Rhinelander",
+      "rank": 134,
+      "tvHouseholds": 174760,
+      "usSharePct": 0.152,
+      "states": [
+        "WI"
+      ]
+    },
+    {
+      "code": "605",
+      "name": "Topeka",
+      "rank": 135,
+      "tvHouseholds": 172470,
+      "usSharePct": 0.15,
+      "states": [
+        "KS"
+      ]
+    },
+    {
+      "code": "604",
+      "name": "Columbia-Jefferson City",
+      "rank": 136,
+      "tvHouseholds": 171330,
+      "usSharePct": 0.149,
+      "states": [
+        "MO"
+      ]
+    },
+    {
+      "code": "628",
+      "name": "Monroe-El Dorado",
+      "rank": 137,
+      "tvHouseholds": 170890,
+      "usSharePct": 0.149,
+      "states": [
+        "AR",
+        "LA"
+      ]
+    },
+    {
+      "code": "610",
+      "name": "Rockford",
+      "rank": 138,
+      "tvHouseholds": 170480,
+      "usSharePct": 0.149,
+      "states": [
+        "IL"
+      ]
+    },
+    {
+      "code": "813",
+      "name": "Medford-Klamath Falls",
+      "rank": 139,
+      "tvHouseholds": 168710,
+      "usSharePct": 0.147,
+      "states": [
+        "CA",
+        "OR"
+      ]
+    },
+    {
+      "code": "687",
+      "name": "Minot-Bismarck-Dickinson",
+      "rank": 140,
+      "tvHouseholds": 167010,
+      "usSharePct": 0.146,
+      "states": [
+        "MT",
+        "ND",
+        "SD"
+      ]
+    },
+    {
+      "code": "692",
+      "name": "Beaumont-Port Arthur",
+      "rank": 141,
+      "tvHouseholds": 165120,
+      "usSharePct": 0.144,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "676",
+      "name": "Duluth-Superior",
+      "rank": 142,
+      "tvHouseholds": 164380,
+      "usSharePct": 0.143,
+      "states": [
+        "MI",
+        "MN",
+        "WI"
+      ]
+    },
+    {
+      "code": "633",
+      "name": "Odessa-Midland",
+      "rank": 143,
+      "tvHouseholds": 163450,
+      "usSharePct": 0.143,
+      "states": [
+        "NM",
+        "TX"
+      ]
+    },
+    {
+      "code": "576",
+      "name": "Salisbury",
+      "rank": 144,
+      "tvHouseholds": 162050,
+      "usSharePct": 0.141,
+      "states": [
+        "DE",
+        "MD"
+      ]
+    },
+    {
+      "code": "651",
+      "name": "Lubbock",
+      "rank": 145,
+      "tvHouseholds": 160440,
+      "usSharePct": 0.14,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "804",
+      "name": "Palm Springs",
+      "rank": 146,
+      "tvHouseholds": 158010,
+      "usSharePct": 0.138,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "743",
+      "name": "Anchorage",
+      "rank": 147,
+      "tvHouseholds": 154020,
+      "usSharePct": 0.134,
+      "states": [
+        "AK"
+      ]
+    },
+    {
+      "code": "627",
+      "name": "Wichita Falls & Lawton",
+      "rank": 148,
+      "tvHouseholds": 152950,
+      "usSharePct": 0.133,
+      "states": [
+        "OK",
+        "TX"
+      ]
+    },
+    {
+      "code": "624",
+      "name": "Sioux City",
+      "rank": 149,
+      "tvHouseholds": 150790,
+      "usSharePct": 0.131,
+      "states": [
+        "IA",
+        "NE",
+        "SD"
+      ]
+    },
+    {
+      "code": "516",
+      "name": "Erie",
+      "rank": 150,
+      "tvHouseholds": 148880,
+      "usSharePct": 0.13,
+      "states": [
+        "PA"
+      ]
+    },
+    {
+      "code": "603",
+      "name": "Joplin-Pittsburg",
+      "rank": 151,
+      "tvHouseholds": 144110,
+      "usSharePct": 0.126,
+      "states": [
+        "KS",
+        "MO",
+        "OK"
+      ]
+    },
+    {
+      "code": "525",
+      "name": "Albany, Ga",
+      "rank": 152,
+      "tvHouseholds": 142800,
+      "usSharePct": 0.125,
+      "states": [
+        "GA"
+      ]
+    },
+    {
+      "code": "538",
+      "name": "Rochestr-Mason City-Austin",
+      "rank": 153,
+      "tvHouseholds": 141920,
+      "usSharePct": 0.124,
+      "states": [
+        "NY"
+      ]
+    },
+    {
+      "code": "656",
+      "name": "Panama City",
+      "rank": 154,
+      "tvHouseholds": 141740,
+      "usSharePct": 0.124,
+      "states": [
+        "FL"
+      ]
+    },
+    {
+      "code": "581",
+      "name": "Terre Haute",
+      "rank": 155,
+      "tvHouseholds": 133780,
+      "usSharePct": 0.117,
+      "states": [
+        "IL",
+        "IN"
+      ]
+    },
+    {
+      "code": "537",
+      "name": "Bangor",
+      "rank": 156,
+      "tvHouseholds": 133310,
+      "usSharePct": 0.116,
+      "states": [
+        "ME"
+      ]
+    },
+    {
+      "code": "746",
+      "name": "Biloxi-Gulfport",
+      "rank": 157,
+      "tvHouseholds": 130030,
+      "usSharePct": 0.113,
+      "states": [
+        "MS"
+      ]
+    },
+    {
+      "code": "554",
+      "name": "Wheeling-Steubenville",
+      "rank": 158,
+      "tvHouseholds": 128720,
+      "usSharePct": 0.112,
+      "states": [
+        "OH",
+        "WV"
+      ]
+    },
+    {
+      "code": "559",
+      "name": "Bluefield-Beckley-Oak Hill",
+      "rank": 159,
+      "tvHouseholds": 127090,
+      "usSharePct": 0.111,
+      "states": [
+        "VA",
+        "WV"
+      ]
+    },
+    {
+      "code": "502",
+      "name": "Binghamton",
+      "rank": 160,
+      "tvHouseholds": 127070,
+      "usSharePct": 0.111,
+      "states": [
+        "NY"
+      ]
+    },
+    {
+      "code": "592",
+      "name": "Gainesville",
+      "rank": 161,
+      "tvHouseholds": 126400,
+      "usSharePct": 0.11,
+      "states": [
+        "FL"
+      ]
+    },
+    {
+      "code": "657",
+      "name": "Sherman-Ada",
+      "rank": 162,
+      "tvHouseholds": 126050,
+      "usSharePct": 0.11,
+      "states": [
+        "OK",
+        "TX"
+      ]
+    },
+    {
+      "code": "758",
+      "name": "Idaho Falls-Pocatello",
+      "rank": 163,
+      "tvHouseholds": 123170,
+      "usSharePct": 0.107,
+      "states": [
+        "ID",
+        "WY"
+      ]
+    },
+    {
+      "code": "762",
+      "name": "Missoula",
+      "rank": 164,
+      "tvHouseholds": 115020,
+      "usSharePct": 0.1,
+      "states": [
+        "MT"
+      ]
+    },
+    {
+      "code": "662",
+      "name": "Abilene-Sweetwater",
+      "rank": 165,
+      "tvHouseholds": 113080,
+      "usSharePct": 0.099,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "756",
+      "name": "Billings",
+      "rank": 166,
+      "tvHouseholds": 110630,
+      "usSharePct": 0.096,
+      "states": [
+        "MT",
+        "WY"
+      ]
+    },
+    {
+      "code": "771",
+      "name": "Yuma-El Centro",
+      "rank": 167,
+      "tvHouseholds": 109930,
+      "usSharePct": 0.096,
+      "states": [
+        "AZ",
+        "CA"
+      ]
+    },
+    {
+      "code": "710",
+      "name": "Hattiesburg-Laurel",
+      "rank": 168,
+      "tvHouseholds": 108380,
+      "usSharePct": 0.094,
+      "states": [
+        "MS"
+      ]
+    },
+    {
+      "code": "598",
+      "name": "Clarksburg-Weston",
+      "rank": 169,
+      "tvHouseholds": 103090,
+      "usSharePct": 0.09,
+      "states": [
+        "WV"
+      ]
+    },
+    {
+      "code": "717",
+      "name": "Quincy-Hannibal-Keokuk",
+      "rank": 170,
+      "tvHouseholds": 99340,
+      "usSharePct": 0.087,
+      "states": [
+        "IA",
+        "IL",
+        "MO"
+      ]
+    },
+    {
+      "code": "526",
+      "name": "Utica",
+      "rank": 171,
+      "tvHouseholds": 99190,
+      "usSharePct": 0.086,
+      "states": [
+        "NY"
+      ]
+    },
+    {
+      "code": "764",
+      "name": "Rapid City",
+      "rank": 172,
+      "tvHouseholds": 99170,
+      "usSharePct": 0.086,
+      "states": [
+        "MT",
+        "NE",
+        "SD",
+        "WY"
+      ]
+    },
+    {
+      "code": "606",
+      "name": "Dothan",
+      "rank": 173,
+      "tvHouseholds": 97960,
+      "usSharePct": 0.085,
+      "states": [
+        "AL",
+        "FL",
+        "GA"
+      ]
+    },
+    {
+      "code": "643",
+      "name": "Lake Charles",
+      "rank": 174,
+      "tvHouseholds": 95740,
+      "usSharePct": 0.083,
+      "states": [
+        "LA"
+      ]
+    },
+    {
+      "code": "565",
+      "name": "Elmira",
+      "rank": 175,
+      "tvHouseholds": 90550,
+      "usSharePct": 0.079,
+      "states": [
+        "NY",
+        "PA"
+      ]
+    },
+    {
+      "code": "639",
+      "name": "Jackson, Tn",
+      "rank": 176,
+      "tvHouseholds": 89970,
+      "usSharePct": 0.078,
+      "states": [
+        "TN"
+      ]
+    },
+    {
+      "code": "569",
+      "name": "Harrisonburg",
+      "rank": 177,
+      "tvHouseholds": 89730,
+      "usSharePct": 0.078,
+      "states": [
+        "VA",
+        "WV"
+      ]
+    },
+    {
+      "code": "549",
+      "name": "Watertown",
+      "rank": 178,
+      "tvHouseholds": 88070,
+      "usSharePct": 0.077,
+      "states": [
+        "NY"
+      ]
+    },
+    {
+      "code": "644",
+      "name": "Alexandria, La",
+      "rank": 179,
+      "tvHouseholds": 85560,
+      "usSharePct": 0.075,
+      "states": [
+        "LA"
+      ]
+    },
+    {
+      "code": "553",
+      "name": "Marquette",
+      "rank": 180,
+      "tvHouseholds": 82740,
+      "usSharePct": 0.072,
+      "states": [
+        "MI",
+        "WI"
+      ]
+    },
+    {
+      "code": "736",
+      "name": "Bowling Green",
+      "rank": 181,
+      "tvHouseholds": 80230,
+      "usSharePct": 0.07,
+      "states": [
+        "KY"
+      ]
+    },
+    {
+      "code": "734",
+      "name": "Jonesboro",
+      "rank": 182,
+      "tvHouseholds": 79860,
+      "usSharePct": 0.07,
+      "states": [
+        "AR",
+        "MO"
+      ]
+    },
+    {
+      "code": "584",
+      "name": "Charlottesville",
+      "rank": 183,
+      "tvHouseholds": 74990,
+      "usSharePct": 0.065,
+      "states": [
+        "VA"
+      ]
+    },
+    {
+      "code": "749",
+      "name": "Laredo",
+      "rank": 184,
+      "tvHouseholds": 74330,
+      "usSharePct": 0.065,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "754",
+      "name": "Butte-Bozeman",
+      "rank": 185,
+      "tvHouseholds": 70320,
+      "usSharePct": 0.061,
+      "states": [
+        "MT"
+      ]
+    },
+    {
+      "code": "773",
+      "name": "Grand Junction-Montrose",
+      "rank": 186,
+      "tvHouseholds": 69820,
+      "usSharePct": 0.061,
+      "states": [
+        "CO"
+      ]
+    },
+    {
+      "code": "582",
+      "name": "Lafayette, In",
+      "rank": 187,
+      "tvHouseholds": 69180,
+      "usSharePct": 0.06,
+      "states": [
+        "IN"
+      ]
+    },
+    {
+      "code": "821",
+      "name": "Bend, Or",
+      "rank": 188,
+      "tvHouseholds": 67430,
+      "usSharePct": 0.059,
+      "states": [
+        "OR"
+      ]
+    },
+    {
+      "code": "558",
+      "name": "Lima",
+      "rank": 189,
+      "tvHouseholds": 66570,
+      "usSharePct": 0.058,
+      "states": [
+        "OH"
+      ]
+    },
+    {
+      "code": "711",
+      "name": "Meridian",
+      "rank": 190,
+      "tvHouseholds": 65300,
+      "usSharePct": 0.057,
+      "states": [
+        "AL",
+        "MS"
+      ]
+    },
+    {
+      "code": "760",
+      "name": "Twin Falls",
+      "rank": 191,
+      "tvHouseholds": 64190,
+      "usSharePct": 0.056,
+      "states": [
+        "ID"
+      ]
+    },
+    {
+      "code": "755",
+      "name": "Great Falls",
+      "rank": 192,
+      "tvHouseholds": 63720,
+      "usSharePct": 0.056,
+      "states": [
+        "MT"
+      ]
+    },
+    {
+      "code": "647",
+      "name": "Greenwood-Greenville",
+      "rank": 193,
+      "tvHouseholds": 62690,
+      "usSharePct": 0.055,
+      "states": [
+        "AR",
+        "MS"
+      ]
+    },
+    {
+      "code": "597",
+      "name": "Parkersburg",
+      "rank": 194,
+      "tvHouseholds": 60620,
+      "usSharePct": 0.053,
+      "states": [
+        "OH",
+        "WV"
+      ]
+    },
+    {
+      "code": "802",
+      "name": "Eureka",
+      "rank": 195,
+      "tvHouseholds": 58640,
+      "usSharePct": 0.051,
+      "states": [
+        "CA"
+      ]
+    },
+    {
+      "code": "661",
+      "name": "San Angelo",
+      "rank": 196,
+      "tvHouseholds": 56680,
+      "usSharePct": 0.049,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "767",
+      "name": "Casper-Riverton",
+      "rank": 197,
+      "tvHouseholds": 56260,
+      "usSharePct": 0.049,
+      "states": [
+        "WY"
+      ]
+    },
+    {
+      "code": "759",
+      "name": "Cheyenne-Scottsbluf",
+      "rank": 198,
+      "tvHouseholds": 56120,
+      "usSharePct": 0.049,
+      "states": [
+        "NE",
+        "WY"
+      ]
+    },
+    {
+      "code": "737",
+      "name": "Mankato",
+      "rank": 199,
+      "tvHouseholds": 51820,
+      "usSharePct": 0.045,
+      "states": [
+        "IA",
+        "MN"
+      ]
+    },
+    {
+      "code": "631",
+      "name": "Ottumwa-Kirksville",
+      "rank": 200,
+      "tvHouseholds": 44690,
+      "usSharePct": 0.039,
+      "states": [
+        "IA",
+        "MO"
+      ]
+    },
+    {
+      "code": "638",
+      "name": "St. Joseph",
+      "rank": 201,
+      "tvHouseholds": 44460,
+      "usSharePct": 0.039,
+      "states": [
+        "KS",
+        "MO"
+      ]
+    },
+    {
+      "code": "745",
+      "name": "Fairbanks",
+      "rank": 202,
+      "tvHouseholds": 36070,
+      "usSharePct": 0.031,
+      "states": [
+        "AK"
+      ]
+    },
+    {
+      "code": "626",
+      "name": "Victoria",
+      "rank": 203,
+      "tvHouseholds": 32930,
+      "usSharePct": 0.029,
+      "states": [
+        "TX"
+      ]
+    },
+    {
+      "code": "596",
+      "name": "Zanesville",
+      "rank": 204,
+      "tvHouseholds": 32450,
+      "usSharePct": 0.028,
+      "states": [
+        "OH"
+      ]
+    },
+    {
+      "code": "766",
+      "name": "Helena",
+      "rank": 205,
+      "tvHouseholds": 28110,
+      "usSharePct": 0.025,
+      "states": [
+        "MT"
+      ]
+    },
+    {
+      "code": "552",
+      "name": "Presque Isle",
+      "rank": 206,
+      "tvHouseholds": 26880,
+      "usSharePct": 0.023,
+      "states": [
+        "ME"
+      ]
+    },
+    {
+      "code": "747",
+      "name": "Juneau",
+      "rank": 207,
+      "tvHouseholds": 25680,
+      "usSharePct": 0.022,
+      "states": [
+        "AK"
+      ]
+    },
+    {
+      "code": "583",
+      "name": "Alpena",
+      "rank": 208,
+      "tvHouseholds": 16010,
+      "usSharePct": 0.014,
+      "states": [
+        "MI"
+      ]
+    },
+    {
+      "code": "740",
+      "name": "North Platte",
+      "rank": 209,
+      "tvHouseholds": 14370,
+      "usSharePct": 0.013,
+      "states": [
+        "NE"
+      ]
+    },
+    {
+      "code": "798",
+      "name": "Glendive",
+      "rank": 210,
+      "tvHouseholds": 4370,
+      "usSharePct": 0.004,
+      "states": [
+        "MT"
+      ]
+    }
+  ]
+}

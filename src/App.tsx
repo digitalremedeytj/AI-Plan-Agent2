@@ -51,7 +51,7 @@ import {
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData } from "./types";
+import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type GeoScope, type GeoTargeting } from "./types";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import {
@@ -68,6 +68,9 @@ import { MediaPlanSelector } from "./components/MediaPlanSelector";
 import { TaxonomyVerificationBadge } from "./components/TaxonomyVerificationBadge";
 import { ALL_INTERNAL_VISIBLE, ChannelStrategySection, type InternalOnlyVisibility } from "./components/ChannelStrategySection";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
+import { GeoTargetingFields } from "./components/GeoTargetingFields";
+import { GeoTargetingSection } from "./components/GeoTargetingSection";
+import { applyGeographyChoice, emptyGeoSelection, rehydrateGeoTargeting, type GeoSelection } from "./planning/geoTargeting";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
 import { normalizeRawChannel } from "./utils/mediaTaxonomy";
@@ -557,6 +560,15 @@ export default function App() {
   const [audienceDescription, setAudienceDescription] = useState("");
   const [url, setUrl] = useState("");
   const [geography, setGeography] = useState("United States");
+  /**
+   * Targeting scope is a separate axis from the market. `geography` keeps feeding product
+   * eligibility in the planning engine; a scope value reaching it would fail every product.
+   * Exactly one scope is ever submitted, but both selections are held while the user edits
+   * so toggling between them does not discard work.
+   */
+  const [geoScope, setGeoScope] = useState<GeoScope>("national");
+  const [geoStateSelection, setGeoStateSelection] = useState<GeoSelection>(emptyGeoSelection("select"));
+  const [geoDmaSelection, setGeoDmaSelection] = useState<GeoSelection>(emptyGeoSelection("paste"));
   const [campaignFocus, setCampaignFocus] = useState("Full-funnel digital media plan");
   const [additionalContext, setAdditionalContext] = useState("");
   const [isInsightsExpanded, setIsInsightsExpanded] = useState(false);
@@ -623,9 +635,22 @@ export default function App() {
     [planningSettings],
   );
 
+  // Only the market is validated against the product catalog here. The scope lives in
+  // geoScope and must never be written into `geography`.
   React.useEffect(() => {
     if (!availableGeographies.includes(geography)) setGeography(availableGeographies[0]);
   }, [availableGeographies, geography]);
+
+  const geoTargeting = React.useMemo<GeoTargeting>(
+    () => ({
+      scope: geoScope,
+      ...(geoScope === "state" ? geoStateSelection : geoScope === "dma" ? geoDmaSelection : emptyGeoSelection("select")),
+    }),
+    [geoScope, geoStateSelection, geoDmaSelection],
+  );
+
+  /** State and DMA briefs are incomplete until at least one market has been supplied. */
+  const geoTargetingIncomplete = geoScope !== "national" && geoTargeting.entries.length === 0;
 
   /**
    * Settings are global and shared, so the server decides whether the write is allowed
@@ -1214,6 +1239,7 @@ export default function App() {
     audienceDescription,
     url,
     geography,
+    geoTargeting,
     campaignFocus,
     additionalContext,
     budget,
@@ -1293,6 +1319,11 @@ export default function App() {
     setAudienceDescription(body.audienceDescription || "");
     setUrl(body.url || "");
     setGeography(body.geography || "United States");
+    // Plans saved before geo targeting existed carry no footprint and open as national.
+    const savedGeo = rehydrateGeoTargeting(body.geoTargeting);
+    setGeoScope(savedGeo?.scope || "national");
+    setGeoStateSelection(savedGeo?.scope === "state" ? savedGeo : emptyGeoSelection("select"));
+    setGeoDmaSelection(savedGeo?.scope === "dma" ? savedGeo : emptyGeoSelection("paste"));
     setCampaignFocus(body.campaignFocus || "Full-funnel digital media plan");
     setAdditionalContext(body.additionalContext || "");
     setBudget(body.budget || "$10,000");
@@ -1812,6 +1843,7 @@ export default function App() {
           audienceDescription: briefMode === "upload" ? `[Media Plan / RFP: ${uploadedFileName || 'Uploaded File'}]\n\n${(uploadedFileText || '').slice(0, 1500)}` : audienceDescription,
           url,
           geography,
+          geoTargeting,
           campaignFocus,
           additionalContext,
           regenerateType: typeOverride,
@@ -1924,7 +1956,7 @@ export default function App() {
   // Copy Profile Markdown to clipboard
   const handleCopyProfile = () => {
     if (!profileData) return;
-    const md = exportProfileToMarkdown(profileData, false, false);
+    const md = exportProfileToMarkdown(profileData, false, false, geoTargeting);
     navigator.clipboard.writeText(md);
     setCopyProfileCopied(true);
     setTimeout(() => setCopyProfileCopied(false), 2000);
@@ -1971,6 +2003,7 @@ export default function App() {
           kpis: kpis.filter((k) => k.trim().length > 0),
           campaignFocus,
           geography,
+          geoTargeting,
           workingMediaBudget: budgetNormalization.workingMediaBudget,
           campaignFlightDays: budgetNormalization.campaignFlightDays,
           planningSettings,
@@ -2079,7 +2112,7 @@ export default function App() {
   // Download Profile Markdown file
   const handleDownloadMarkdown = () => {
     if (!profileData) return;
-    const md = exportProfileToMarkdown(profileData);
+    const md = exportProfileToMarkdown(profileData, true, true, geoTargeting);
     const blob = new Blob([md], { type: "text/markdown;charset=utf-8;" });
     const fileUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2099,7 +2132,7 @@ export default function App() {
   // Download Profile Text file (Markdown format)
   const handleDownloadTxt = () => {
     if (!profileData) return;
-    const md = exportProfileToMarkdown(profileData);
+    const md = exportProfileToMarkdown(profileData, true, true, geoTargeting);
     const blob = new Blob([md], { type: "text/plain;charset=utf-8;" });
     const fileUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -3080,11 +3113,17 @@ export default function App() {
                       Geography
                     </label>
                     <select
-                      value={geography}
-                      onChange={(e) => setGeography(e.target.value)}
+                      value={geoScope === "national" ? geography : geoScope}
+                      onChange={(e) => {
+                        const { market, scope } = applyGeographyChoice(e.target.value, geography);
+                        setGeography(market);
+                        setGeoScope(scope);
+                      }}
                       className="w-full text-xs px-2 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 cursor-pointer"
                     >
                       {availableGeographies.map((market) => <option key={market} value={market}>{market}</option>)}
+                      <option value="state">State</option>
+                      <option value="dma">DMA</option>
                     </select>
                   </div>
 
@@ -3105,6 +3144,14 @@ export default function App() {
                   </div>
                 </div>
 
+                {geoScope !== "national" && (
+                  <GeoTargetingFields
+                    scope={geoScope}
+                    selection={geoScope === "state" ? geoStateSelection : geoDmaSelection}
+                    onChange={geoScope === "state" ? setGeoStateSelection : setGeoDmaSelection}
+                  />
+                )}
+
                 {/* Input 3: Additional Context */}
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
@@ -3118,6 +3165,16 @@ export default function App() {
                     className="w-full h-20 text-sm px-3 py-2 border border-slate-200 rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-none placeholder:text-slate-400"
                   />
                 </div>
+
+                {geoTargetingIncomplete && (
+                  <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-800 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      Add at least one {geoScope === "state" ? "state" : "DMA"} to run a {geoScope === "state" ? "state" : "DMA"}-targeted plan,
+                      or switch Geography back to United States.
+                    </span>
+                  </div>
+                )}
 
                 {/* Error Message */}
                 {error && (
@@ -3134,6 +3191,7 @@ export default function App() {
                   type="submit"
                   disabled={
                     loading || 
+                    geoTargetingIncomplete ||
                     (briefMode === "upload" && (
                       isParsingPlan || 
                       !uploadedFileName || 
@@ -3151,6 +3209,11 @@ export default function App() {
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
                       <span>Parsing Uploaded Plan...</span>
+                    </>
+                  ) : geoTargetingIncomplete ? (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>Awaiting {geoScope === "state" ? "States" : "DMAs"}...</span>
                     </>
                   ) : briefMode === "upload" && !uploadedFileText && !rfpAnalysis && extractedPlacements.length === 0 && uploadedFileName ? (
                     <>
@@ -3765,7 +3828,9 @@ export default function App() {
                     </h2>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-2 font-medium">
                       <span className="bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700/50 text-[10px] uppercase font-semibold">
-                        {geography}
+                        {geoTargeting.scope === "national"
+                          ? geography
+                          : `${geography} · ${geoTargeting.entries.length} ${geoTargeting.scope === "dma" ? "DMA" : "state"}${geoTargeting.entries.length === 1 ? "" : "s"}`}
                       </span>
                       <span className="bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700/50 text-[10px] font-semibold">
                         {campaignFocus}
@@ -4554,6 +4619,11 @@ export default function App() {
                     </div>
                   );
                 })()}
+
+                {/* 6b. Geo Targeting - the campaign's buying footprint, beside where the audience concentrates */}
+                {geoTargeting.scope !== "national" && geoTargeting.entries.length > 0 && (
+                  <GeoTargetingSection targeting={geoTargeting} insights={profileData.geoInsights} />
+                )}
 
                 {/* 7. Temporal Activity Patterns - Collapsible Panel with Option C Highlights */}
                 {(() => {

@@ -1,9 +1,12 @@
-import { AudienceProfile } from "../types";
+import { AudienceProfile, GeoTargeting } from "../types";
+import { geoCoverage } from "../planning/geoTargeting";
 
 export function exportProfileToMarkdown(
   profile: AudienceProfile,
   includeSources: boolean = true,
-  includeAudit: boolean = true
+  includeAudit: boolean = true,
+  // The footprint is brief input rather than part of the profile, so it is passed in.
+  geoTargeting?: GeoTargeting
 ): string {
   const dateStr = new Date().toLocaleDateString("en-US", {
     year: "numeric",
@@ -99,6 +102,33 @@ export function exportProfileToMarkdown(
 
   markdown += `#### Geographic & Regional Footprint\n`;
   markdown += `${profile.demographics.geographyNotes}\n\n`;
+
+  // Geo targeting footprint. Coverage is stated only where the data supports it: state
+  // targeting gets market overlap, because rolling multi-state markets up to states would
+  // count the same households several times.
+  const geoCoverageSummary = geoTargeting ? geoCoverage(geoTargeting) : null;
+  if (geoTargeting && geoCoverageSummary) {
+    markdown += `## Geo Targeting Footprint\n\n`;
+    if (geoCoverageSummary.scope === "dma") {
+      markdown += `**${geoCoverageSummary.marketCount} DMAs** covering ${geoCoverageSummary.tvHouseholds.toLocaleString()} TV households (${geoCoverageSummary.usSharePct.toFixed(1)}% of US), delivering into ${geoCoverageSummary.states.length} states.\n\n`;
+      markdown += `| Rank | Market | DMA Code | TV Households | States |\n`;
+      markdown += `| :--- | :--- | :--- | :--- | :--- |\n`;
+      geoTargeting.entries.forEach(entry => {
+        markdown += `| ${entry.rank} | ${entry.name} | ${entry.id} | ${(entry.tvHouseholds || 0).toLocaleString()} | ${(entry.states || []).join(", ")} |\n`;
+      });
+      markdown += `\n`;
+    } else {
+      markdown += `**${geoCoverageSummary.stateCount} states**, served by ${geoCoverageSummary.overlappingDmaCount} DMAs.\n\n`;
+      markdown += `States: ${geoTargeting.entries.map(entry => `${entry.name} (${entry.id})`).join(", ")}\n\n`;
+      if (geoCoverageSummary.spillMarketCount > 0) {
+        markdown += `*Market spill: ${geoCoverageSummary.spillMarketCount} of those markets also deliver into ${geoCoverageSummary.spillStates.length} neighbouring states (${geoCoverageSummary.spillStates.join(", ")}).*\n\n`;
+      }
+    }
+    if (profile.geoInsights && profile.geoInsights.trim().length > 0) {
+      markdown += `#### Geo Insights\n`;
+      markdown += `${profile.geoInsights}\n\n`;
+    }
+  }
 
   // Temporal patterns
   markdown += `## Temporal Activity & Daypart Strategy\n\n`;

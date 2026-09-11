@@ -14,6 +14,7 @@ import { validateProductRegistry } from "./src/planning/knowledge/registry";
 import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
+import { geoSummaryForPrompt, rehydrateGeoTargeting } from "./src/planning/geoTargeting";
 import { createStorage, PlanNotFoundError, RevisionConflictError, type StorageAdapter } from "./src/storage";
 import {
   actorName,
@@ -502,6 +503,10 @@ const audienceProfileSchema = {
       type: Type.STRING,
       description: "One highly polished professional paragraph summarizing the audience opportunity and recommended media strategy."
     },
+    geoInsights: {
+      type: Type.STRING,
+      description: "If the campaign targets specific states or DMAs, write a professional paragraph explaining why that footprint fits the advertiser's goals, audience and locations, and what it means for channel selection, inventory availability and pacing. If the campaign is national, set this field to an empty string (\"\")."
+    },
     sources: {
       type: Type.ARRAY,
       description: "Curated evidence registry: the 8-12 strongest sources actually used to ground this response, each drawn from the supplied pool of discovered URLs. Not a search log. No fabricated sources.",
@@ -692,7 +697,7 @@ const candidateSignalSchema = {
   },
 };
 
-async function generateCandidateSignals(audienceProfile: any, facts: any): Promise<AiCandidateSignal[]> {
+async function generateCandidateSignals(audienceProfile: any, facts: any, geoSummary?: string): Promise<AiCandidateSignal[]> {
   // Built from the effective catalog, not the raw registry: a product disabled in
   // settings must not reach the model, and a custom media type must.
   const customNotes = new Map(
@@ -736,6 +741,8 @@ ${JSON.stringify({
   audienceDescriptions: facts.audienceDescriptions,
   audienceSignals: facts.audienceSignals.slice(0, 20),
   geography: facts.geography,
+  // The market gates eligibility; the footprint is context for scoring only.
+  geoFootprint: geoSummary || undefined,
   planningMode: facts.planningMode,
   workingMediaBudget: facts.totalWorkingMediaBudget,
   normalized30DayBudget: facts.normalized30DayBudget,
@@ -795,6 +802,8 @@ async function buildChannelStrategy(
     advertiserUrl?: string;
     campaignFocus?: string;
     geography?: string;
+    /** Rendered footprint, for the scoring model's context only - never for eligibility. */
+    geoSummary?: string;
     workingMediaBudget?: number;
     campaignFlightDays?: number | null;
     planningSettings?: unknown;
@@ -845,7 +854,7 @@ async function buildChannelStrategy(
   const suppliedSignals = Array.isArray(options?.candidateSignals)
     ? options.candidateSignals.filter((signal) => signal && allowedSignalIds.has(signal.channelId))
     : [];
-  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts);
+  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts, options?.geoSummary);
   const mediaPlan = buildMediaRecommendationPlan(facts, aiSignals);
 
   const toLegacyEvaluation = (candidate: any) => {
@@ -1523,7 +1532,18 @@ app.post("/api/analyze-media-plan", async (req, res) => {
       budgetStrategyMode || 'reallocation',
       advertiserName,
       kpis,
-      { advertiserUrl, campaignFocus, geography, workingMediaBudget, campaignFlightDays, planningSettings, requiredChannelIds, excludedChannelIds, candidateSignals },
+      {
+        advertiserUrl,
+        campaignFocus,
+        geography,
+        geoSummary: geoSummaryForPrompt(rehydrateGeoTargeting(req.body?.geoTargeting), geography || "United States"),
+        workingMediaBudget,
+        campaignFlightDays,
+        planningSettings,
+        requiredChannelIds,
+        excludedChannelIds,
+        candidateSignals,
+      },
     );
     res.json({ success: true, channelStrategy });
   } catch (err: any) {
@@ -1758,6 +1778,20 @@ function trimmedOrUndefined(value: unknown, maxLength: number): string | undefin
   return typeof value === "string" && value.trim() ? value.trim().slice(0, maxLength) : undefined;
 }
 
+/**
+ * What the saved-plans list shows for a plan's geography. The footprint is summarised into
+ * the existing preview field rather than given a column of its own, so the list stays
+ * informative without a storage schema change.
+ */
+function geographyPreview(payload: any): string | undefined {
+  const market = trimmedOrUndefined(payload?.geography, 100);
+  const targeting = rehydrateGeoTargeting(payload?.geoTargeting);
+  if (!targeting || targeting.scope === "national" || targeting.entries.length === 0) return market;
+  const unit = targeting.scope === "dma" ? "DMA" : "state";
+  const plural = targeting.entries.length === 1 ? unit : `${unit}s`;
+  return `${market || "United States"} (${targeting.entries.length} ${plural})`.slice(0, 100);
+}
+
 function planPayloadFromBody(body: any) {
   const { title, advertiserName, settingsRevision, payload } = body || {};
   const cleanPayload = payload && typeof payload === "object" ? payload : {};
@@ -1768,7 +1802,7 @@ function planPayloadFromBody(body: any) {
     // Preview fields are derived here rather than trusted from the client, so the list
     // view can never disagree with the payload it claims to summarize.
     audienceDescription: trimmedOrUndefined((cleanPayload as any).audienceDescription, 500),
-    geography: trimmedOrUndefined((cleanPayload as any).geography, 100),
+    geography: geographyPreview(cleanPayload),
     campaignFocus: trimmedOrUndefined((cleanPayload as any).campaignFocus, 100),
     url: trimmedOrUndefined((cleanPayload as any).url, 500),
     payload: cleanPayload,
@@ -1978,6 +2012,11 @@ app.post("/api/generate-profile", async (req, res) => {
     ctvPublishers,
   } = req.body;
 
+  // Re-resolved from the reference here rather than trusted: the client's list decides what
+  // the research prompts are told the campaign is buying.
+  const geoTargeting = rehydrateGeoTargeting(req.body?.geoTargeting);
+  const geoSummary = geoSummaryForPrompt(geoTargeting, geography || "United States");
+
   // SSE Setup Headers
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -2071,7 +2110,7 @@ app.post("/api/generate-profile", async (req, res) => {
 Advertiser Name: ${cleanAdvertiserName || "Not specified"}
 Target Campaign KPIs (Goals): ${cleanKpis.length > 0 ? cleanKpis.join("; ") : "Not specified"}
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geography}
+Geography/Market: ${geoSummary}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -2082,7 +2121,7 @@ Search the web for real, reputable statistics regarding:
 1. Age distribution ranges (specifically looking for percentage splits across 18-24, 25-34, 35-44, 45-54, 55+ or similar cohorts).
 2. Gender split percentages (Male, Female, Non-Binary/Other).
 3. Household Income distribution splits (e.g., <$50k, $50k-$75k, $75k-$100k, $100k-$150k, $150k+).
-4. Geographic/regional or DMA concentrations (e.g. urban, suburban skews).
+4. Geographic/regional or DMA concentrations (e.g. urban, suburban skews) within the targeted footprint above, naming those markets specifically where data exists for them.
 
 INSTRUCTIONS:
 - Search for and cite real stats from high-authority sources (e.g., Census Bureau, Pew Research, GWI, MRI-Simmons, eMarketer, Statista, trade associations).
@@ -2091,7 +2130,7 @@ INSTRUCTIONS:
     // 2. Browser & Domain Affinity Sub-Call Prompt
     const promptWebAffinity = `Research and compile digital touchpoints, web traffic, and domain affinities for this target audience.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geography}
+Geography/Market: ${geoSummary}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -2110,7 +2149,7 @@ INSTRUCTIONS:
     // 3. CTV & Devices Sub-Call Prompt
     const promptDevices = `Research and compile Connected TV (CTV) viewing, video streaming, and hardware device usage patterns for this target audience.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geography}
+Geography/Market: ${geoSummary}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -2129,7 +2168,7 @@ INSTRUCTIONS:
     // 4. Temporal & Purchase Patterns Sub-Call Prompt
     const promptTemporalPurchase = `Research and compile temporal activity peaks, day-of-week, hour-of-day habits, and purchase triggers/behaviors for this target audience.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geography}
+Geography/Market: ${geoSummary}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -2299,7 +2338,7 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 4. Be highly precise with definitions: composition vs index vs reach vs penetration. Clearly distinguish percentage split from activity index (average = 100).
 5. Do not call an audience segment "affluent", "young", "tech-savvy", etc. unless the research supportively proves it with metrics.
 6. Ensure demographic charts, device charts, web share charts, and day/hour charts are fully populated with exact numbers. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'. Provide realistic index values (e.g. 120%, 150%, 210%, 280% depending on target audience domain affinity).
-7. Use current ${currentYear} data. Match geography: ${geography}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
+7. Use current ${currentYear} data. Match geography: ${geoSummary}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
    - You are STRICTLY PROHIBITED from fabricating, guessing, or making up consumer desire/sentiment figures, survey percentages, or market statistics (such as "85% of gamers express a desire to see product recommendations on their TV home screens").
    - Every single statistic or percentage mentioned in the recommendations ('recommendations.why' or 'recommendations.action') or core takeaways ('takeaways') MUST be directly grounded and cross-referenced from the provided parallel research dossiers.
@@ -2335,6 +2374,15 @@ ${ctvPublishersSection}
     Write an executive-ready, highly actionable strategic synthesis for 'executiveSummary'. You MUST explicitly emphasize:
     - Why the cross-screen channel strategy effectively reaches this audience where they actually are (e.g. living room Connected TV co-viewing, mobile digital companion screens, and high-affinity contextual domains during peak activity dayparts).
     - Why this media mix and tactical allocation is specifically engineered to hit the campaign's target KPIs (e.g., brand lift, view-through rates, incremental household reach, or direct conversion goals).
+
+13. GEO FOOTPRINT NARRATIVE (MANDATORY WHEN THE CAMPAIGN IS NOT NATIONAL):
+    The GEOGRAPHY line above is the campaign's actual buying footprint. It was supplied by the planner and validated against a market reference - it is not a claim to evaluate, and its market counts, household totals and coverage percentages were computed by code.
+    - When that footprint names specific states or DMAs, populate 'geoInsights' with a professional paragraph explaining why this footprint aligns to the advertiser's goals, audience and locations, and what it means for channel selection, inventory availability and delivery pacing. Where markets span several states, say what that means for the buy.
+    - You are STRICTLY FORBIDDEN from naming any market, state or region that does not appear in the supplied footprint.
+    - Do NOT restate, recalculate or estimate the household totals or coverage percentages; they are already displayed alongside your narrative and a second figure contradicts them.
+    - Do NOT write any budget, allocation or spend figure here, for the same reason rule 5 forbids it elsewhere.
+    - Keep it consistent with 'demographics.geographyNotes': that field describes where the audience naturally concentrates, this one describes where the campaign will actually run. If they differ, say why.
+    - When the GEOGRAPHY line says the campaign is national, set 'geoInsights' to an empty string ("").
 
 STRATEGY 2: AUTHORITY FILTERING & CITATION LOGIC:
 You are provided with a pool of real URLs discovered during search research. You MUST evaluate, filter, and structure these sources into the 'sources' array of the JSON response following these authority guidelines:
@@ -2375,7 +2423,7 @@ If an uploaded RFP document, RFP questions, or RFP analysis is provided in the u
 
 ADVERTISER NAME: ${cleanAdvertiserName || "None provided"}
 	TARGET CAMPAIGN KPIS (GOALS): ${cleanKpis.length > 0 ? cleanKpis.join("; ") : "None provided"}
-	GEOGRAPHY: ${geography}
+	GEOGRAPHY: ${geoSummary}
 	CAMPAIGN FOCUS: ${campaignFocus}
 	WORKING MEDIA BUDGET: $${Number(workingMediaBudget || 0).toLocaleString()}
 	CAMPAIGN FLIGHT DAYS: ${campaignFlightDays || "Unknown"}
@@ -2527,6 +2575,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             advertiserUrl: cleanUrl,
             campaignFocus,
             geography,
+            geoSummary,
             workingMediaBudget: Number(workingMediaBudget) || 0,
             campaignFlightDays: Number(campaignFlightDays) || null,
             planningSettings,
@@ -2573,6 +2622,7 @@ You MUST score across these five categories (0 to 20 points each):
 CONTEXT YOU MUST APPLY BEFORE SCORING:
 - Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
 ${channelStrategyGuidance}
+- The campaign's geographic footprint is a planner input validated against a market reference, and its market counts, household totals and coverage percentages are computed by code, not written by the model. Do not charge them to Data Integrity. Score 'geoInsights' on whether it is consistent with that footprint and free of markets the campaign is not buying; an empty 'geoInsights' on a national campaign is correct, not a gap.
 - 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
 
 Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
@@ -2669,7 +2719,8 @@ Your task is to rewrite and update the audience profile to:
 3. Bring all CTR/QR/conversion rates within standard industry-accepted trade benchmarks.
 4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
 5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
-6. 'deviceTypeIndex.chartData' MUST stay a composition share summing to 100 - it renders as a pie chart and as a "Split Share %" table, so index values get redrawn as shares and contradict whatever the overview says. Fix a broken device chart by correcting the shares and their stated denominator, never by reframing it as an index. 'browserAndReach.chartData' stays an affinity index with metricType 'Affinity Index'.
+6. 'geoInsights' describes a buying footprint the planner supplied and code validated. You may rewrite the prose, but you MUST NOT introduce any market, state or region it does not already name, and you MUST NOT add or restate household totals or coverage percentages - those are computed and displayed separately.
+7. 'deviceTypeIndex.chartData' MUST stay a composition share summing to 100 - it renders as a pie chart and as a "Split Share %" table, so index values get redrawn as shares and contradict whatever the overview says. Fix a broken device chart by correcting the shares and their stated denominator, never by reframing it as an index. 'browserAndReach.chartData' stays an affinity index with metricType 'Affinity Index'.
 
 You must return a JSON matching the profile correction schema. It contains:
 1. 'correctedProfile': the updated AudienceProfile JSON.
