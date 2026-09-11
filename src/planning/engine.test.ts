@@ -331,3 +331,112 @@ test("manual removals remain excluded during portfolio recalculation", () => {
   const display = plan.evaluatedCandidates.find((candidate) => candidate.product.id === "channel.display");
   assert.ok(display?.eligibilityFailures.some((failure) => failure.includes("explicitly excluded")));
 });
+
+test("a hidden product is absent from planning entirely, not merely rejected", () => {
+  const base = settings();
+  const target = base.products.find((product) => product.productId === "channel.ctv");
+  assert.ok(target, "channel.ctv is in the default catalog");
+
+  const withCtv = buildMediaRecommendationPlan(buildCampaignFacts({
+    kpis: ["awareness", "reach"],
+    audienceDescriptions: ["Streaming video viewers"],
+    workingMediaBudget: 250_000,
+    campaignFlightDays: 30,
+    planningSettings: base,
+  }));
+  assert.ok(
+    withCtv.evaluatedCandidates.some((candidate) => candidate.product.id === "channel.ctv"),
+    "baseline evaluates the product",
+  );
+
+  const hidden = settings();
+  hidden.products.find((product) => product.productId === "channel.ctv")!.enabled = false;
+  const plan = buildMediaRecommendationPlan(buildCampaignFacts({
+    kpis: ["awareness", "reach"],
+    audienceDescriptions: ["Streaming video viewers"],
+    workingMediaBudget: 250_000,
+    campaignFlightDays: 30,
+    planningSettings: hidden,
+  }));
+
+  // Distinct from recommendationEligible, which leaves a DO_NOT_ADD candidate behind
+  // that the planner can still add by hand.
+  assert.ok(!plan.evaluatedCandidates.some((candidate) => candidate.product.id === "channel.ctv"));
+  assert.ok(!plan.channels.some((channel) => channel.channelId === "channel.ctv"));
+});
+
+test("a custom media type is scored and can win budget alongside registry products", () => {
+  const withCustom = settings();
+  withCustom.customProducts.push({
+    productId: "custom.retail_media_network",
+    displayName: "Retail Media Network",
+    enabled: true,
+    digitalRemedyExecutable: true,
+    status: "live",
+    recommendationEligible: true,
+    supportedGeographies: ["United States"],
+    typicalCpmLow: 8,
+    typicalCpmHigh: 22,
+    minimumTotalSpend: 5_000,
+    minimumNormalized30DaySpend: 5_000,
+    minimumFlightDays: 14,
+    minimumAllocationPercent: 10,
+    maximumAllocationPercent: 60,
+    canonicalId: "programmatic_display",
+    aliases: ["rmn", "retail media"],
+    funnelRoles: ["consideration", "conversion"],
+    supportedKpis: ["conversion", "roas", "sales lift"],
+    audienceSignals: ["shopping", "purchase intent"],
+    planningNotes: "Use when the advertiser sells through retail partners.",
+  });
+
+  const plan = buildMediaRecommendationPlan(buildCampaignFacts({
+    kpis: ["conversion", "roas"],
+    campaignFocus: "drive retail sales and conversion",
+    audienceDescriptions: ["Shoppers with purchase intent"],
+    workingMediaBudget: 250_000,
+    campaignFlightDays: 30,
+    planningSettings: withCustom,
+  }));
+
+  const evaluated = plan.evaluatedCandidates.find((candidate) => candidate.product.id === "custom.retail_media_network");
+  assert.ok(evaluated, "the custom media type is evaluated like any other candidate");
+  assert.equal(evaluated.eligibilityFailures.length, 0, evaluated.eligibilityFailures.join("; "));
+  assert.ok(evaluated.recommendationScore > 0);
+});
+
+test("a hidden custom media type never reaches the planner", () => {
+  const hidden = settings();
+  hidden.customProducts.push({
+    productId: "custom.hidden_type",
+    displayName: "Hidden Type",
+    enabled: false,
+    digitalRemedyExecutable: true,
+    status: "live",
+    recommendationEligible: true,
+    supportedGeographies: ["United States"],
+    typicalCpmLow: null,
+    typicalCpmHigh: null,
+    minimumTotalSpend: 1_000,
+    minimumNormalized30DaySpend: 1_000,
+    minimumFlightDays: 7,
+    minimumAllocationPercent: 10,
+    maximumAllocationPercent: 100,
+    canonicalId: "ctv",
+    aliases: [],
+    funnelRoles: ["awareness"],
+    supportedKpis: ["reach"],
+    audienceSignals: [],
+    planningNotes: "",
+  });
+
+  const plan = buildMediaRecommendationPlan(buildCampaignFacts({
+    kpis: ["awareness"],
+    audienceDescriptions: ["Broad reach"],
+    workingMediaBudget: 250_000,
+    campaignFlightDays: 30,
+    planningSettings: hidden,
+  }));
+
+  assert.ok(!plan.evaluatedCandidates.some((candidate) => candidate.product.id === "custom.hidden_type"));
+});

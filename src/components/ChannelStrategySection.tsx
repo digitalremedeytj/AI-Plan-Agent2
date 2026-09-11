@@ -13,6 +13,12 @@ import {
 
 interface ChannelStrategySectionProps {
   data: ChannelStrategyData;
+  /**
+   * Internal-only visibility from shared settings. These hide detail from the rendered
+   * plan without changing it, so a client-facing screen share and an internal review
+   * read from the same saved plan.
+   */
+  internalOnly?: InternalOnlyVisibility;
   onToggleBudgetMode?: (mode: 'reallocation' | 'incremental') => void;
   onManualMediaTypeChange?: (channelId: string, action: 'add' | 'remove') => Promise<void>;
   onSaveAllocations?: (basisPoints: AllocationBasisPoints, lockedChannelIds: string[], newBudget?: number) => Promise<void>;
@@ -20,6 +26,22 @@ interface ChannelStrategySectionProps {
   onUndoPlanChange?: () => void;
   canUndoPlanChange?: boolean;
 }
+
+export interface InternalOnlyVisibility {
+  channelAllocationColumn: boolean;
+  channelDollarsColumn: boolean;
+  channelScoreColumn: boolean;
+  channelConfidenceBadge: boolean;
+  channelStatusTag: boolean;
+}
+
+export const ALL_INTERNAL_VISIBLE: InternalOnlyVisibility = {
+  channelAllocationColumn: true,
+  channelDollarsColumn: true,
+  channelScoreColumn: true,
+  channelConfidenceBadge: true,
+  channelStatusTag: true,
+};
 
 interface AllocationInputValue {
   percent: string;
@@ -161,6 +183,7 @@ const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
 
 export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   data,
+  internalOnly = ALL_INTERNAL_VISIBLE,
   onToggleBudgetMode,
   onManualMediaTypeChange,
   onSaveAllocations,
@@ -178,6 +201,15 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   const [draftBudgetInput, setDraftBudgetInput] = useState<string>('');
   const [draftBasisPoints, setDraftBasisPoints] = useState<AllocationBasisPoints>({});
   const [draftInputs, setDraftInputs] = useState<Record<string, AllocationInputValue>>({});
+
+  // Tailwind only ships classes it can see as literals, so the column count maps to a
+  // fixed set rather than being interpolated into `grid-cols-${n}`.
+  const channelColumnCount = [
+    internalOnly.channelAllocationColumn,
+    internalOnly.channelDollarsColumn,
+    internalOnly.channelScoreColumn,
+  ].filter(Boolean).length;
+  const channelColumnGridClass = channelColumnCount === 3 ? 'grid-cols-3' : channelColumnCount === 2 ? 'grid-cols-2' : 'grid-cols-1';
   const [draftLockedChannelIds, setDraftLockedChannelIds] = useState<string[]>([]);
   const [allocationEditorError, setAllocationEditorError] = useState('');
   const [isSavingAllocations, setIsSavingAllocations] = useState(false);
@@ -712,18 +744,30 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="text-base font-extrabold text-slate-900">{channel.channelName}</h3>
-                            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${channel.status === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>{displayRecommendationStatus(channel.status)}</span>
-                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{channel.confidence} confidence</span>
+                            {internalOnly.channelStatusTag && (
+                              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${channel.status === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>{displayRecommendationStatus(channel.status)}</span>
+                            )}
+                            {internalOnly.channelConfidenceBadge && (
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{channel.confidence} confidence</span>
+                            )}
                             {manualIncludedIds.has(channel.channelId) && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Manual</span>}
                           </div>
                           <p className="mt-1 text-sm text-slate-600">{channel.role}</p>
                         </div>
                         <div className="flex items-center gap-3">
-                          <div className="grid grid-cols-3 gap-3 text-right">
-                            <div><div className="text-[10px] font-bold uppercase text-slate-400">Allocation</div><div className="font-extrabold text-indigo-700">{channel.allocationPercent.toFixed(0)}%</div></div>
-                            <div><div className="text-[10px] font-bold uppercase text-slate-400">Dollars</div><div className="font-extrabold text-slate-900">${channel.allocationDollars.toLocaleString()}</div></div>
-                            <div><div className="text-[10px] font-bold uppercase text-slate-400">Score</div><div className="font-extrabold text-slate-900">{channel.recommendationScore}/100</div></div>
-                          </div>
+                          {channelColumnCount > 0 && (
+                            <div className={`grid gap-3 text-right ${channelColumnGridClass}`}>
+                              {internalOnly.channelAllocationColumn && (
+                                <div><div className="text-[10px] font-bold uppercase text-slate-400">Allocation</div><div className="font-extrabold text-indigo-700">{channel.allocationPercent.toFixed(0)}%</div></div>
+                              )}
+                              {internalOnly.channelDollarsColumn && (
+                                <div><div className="text-[10px] font-bold uppercase text-slate-400">Dollars</div><div className="font-extrabold text-slate-900">${channel.allocationDollars.toLocaleString()}</div></div>
+                              )}
+                              {internalOnly.channelScoreColumn && (
+                                <div><div className="text-[10px] font-bold uppercase text-slate-400">Score</div><div className="font-extrabold text-slate-900">{channel.recommendationScore}/100</div></div>
+                              )}
+                            </div>
+                          )}
                           <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expandedChannels.has(channel.channelId) ? 'rotate-180' : ''}`} />
                         </div>
                       </button>
@@ -833,14 +877,18 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                               <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <h5 className="font-extrabold text-slate-900">{candidate.product.displayName}</h5>
-                                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${displayedStatus === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : displayedStatus === 'TEST' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{displayedStatus}</span>
+                                  {internalOnly.channelStatusTag && (
+                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${displayedStatus === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : displayedStatus === 'TEST' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{displayedStatus}</span>
+                                  )}
                                   {displayedStatus === 'ADD' && candidate.eligibilityFailures.length === 0 && (
                                     <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700"><Sparkles className="h-3 w-3" />ScoutAI Recommended Alternative</span>
                                   )}
                                   {displayedStatus === 'TEST' && (
                                     <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800"><Sparkles className="h-3 w-3" />ScoutAI Test Opportunity</span>
                                   )}
-                                  <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{candidate.confidence} confidence</span>
+                                  {internalOnly.channelConfidenceBadge && (
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{candidate.confidence} confidence</span>
+                                  )}
                                   {manuallyRequested && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Manual request pending</span>}
                                 </div>
                                 <p className="mt-1 text-xs font-semibold text-slate-500">Role: {candidate.product.funnelRoles.join(' / ')}</p>

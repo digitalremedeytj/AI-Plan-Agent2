@@ -117,6 +117,25 @@ test("settings writes are versioned and old revisions stay readable", async () =
   );
 });
 
+test("a settings record from an older version keeps its catalog edits instead of being reseeded", async () => {
+  const adapter = freshAdapter();
+  await adapter.getCurrentSettings();
+
+  // Rewrite the stored record as the previous schema version, the way a deploy that
+  // adds a settings field leaves it. Reseeding here would discard shared team edits.
+  const currentPath = path.join((adapter as any).rootDir, "settings", "current.json");
+  const stored = JSON.parse(fs.readFileSync(currentPath, "utf8"));
+  stored.settings.products[0].minimumTotalSpend = 99_999;
+  delete stored.settings.internalOnly;
+  stored.settings.version = 3;
+  fs.writeFileSync(currentPath, JSON.stringify(stored));
+
+  const loaded = await adapter.getCurrentSettings();
+  assert.equal(loaded.revision, 1, "migrating on read does not burn a revision");
+  assert.equal(loaded.settings.products[0].minimumTotalSpend, 99_999);
+  assert.deepEqual(loaded.settings.internalOnly, DEFAULT_PLANNING_SETTINGS.internalOnly);
+});
+
 test("invalid settings are rejected without advancing the revision", async () => {
   const adapter = freshAdapter();
   await adapter.getCurrentSettings();

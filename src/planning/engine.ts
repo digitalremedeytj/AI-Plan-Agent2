@@ -6,6 +6,7 @@ import {
   PLANNING_CATALOG_VERSION,
 } from "./knowledge/registry";
 import { planningKnowledgeBase } from "./knowledge/normalizeWorkbook";
+import { findEffectiveProduct, resolveEffectiveProducts } from "./effectiveProducts";
 import { findBudgetChannelTier, normalizeCampaignBudget } from "./settings";
 import type {
   AiCandidateSignal,
@@ -142,32 +143,16 @@ function canonicalToProductId(canonicalId: CanonicalMediaType): string | null {
 }
 
 function effectiveProductRegistry(facts: CampaignFacts): MediaProductRecord[] {
-  const configured = new Map(facts.settings.products.map((product) => [product.productId, product]));
-  return DIGITAL_REMEDY_PRODUCT_REGISTRY.map((product) => {
-    const setting = configured.get(product.id);
-    if (!setting) return product;
-    return {
-      ...product,
-      displayName: setting.displayName,
-      // A browser override can disable an executable product, but it cannot add a product
-      // that is absent from the Digital Remedy-controlled registry.
-      digitalRemedyExecutable: product.digitalRemedyExecutable && setting.digitalRemedyExecutable,
-      status: setting.status,
-      recommendationEligible: setting.recommendationEligible,
-      supportedGeographies: [...setting.supportedGeographies],
-      typicalCpmLow: setting.typicalCpmLow,
-      typicalCpmHigh: setting.typicalCpmHigh,
-      minimumTotalSpend: setting.minimumTotalSpend,
-      minimumNormalized30DaySpend: setting.minimumNormalized30DaySpend,
-      minimumFlightDays: setting.minimumFlightDays,
-      minimumAllocationPercent: setting.minimumAllocationPercent,
-      maximumAllocationPercent: setting.maximumAllocationPercent,
-    };
-  });
+  return resolveEffectiveProducts(facts.settings);
 }
 
-function resolveChannelId(raw: string): string | null {
-  const exact = findProductByAnyId(raw);
+/**
+ * `products` is the effective catalog, so custom media types resolve by id, name, or
+ * alias the same way registry ones do. It falls back to the registry-only lookup for
+ * the few call sites that run before a catalog is in hand.
+ */
+function resolveChannelId(raw: string, products?: MediaProductRecord[]): string | null {
+  const exact = products ? findEffectiveProduct(products, raw) : findProductByAnyId(raw);
   if (exact) return exact.id;
   const mapping = normalizeRawChannel(raw);
   return canonicalToProductId(mapping.canonicalId);
@@ -202,9 +187,10 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     ...existingPlacements.flatMap((placement) => [placement.audience, placement.notes, placement.adSizes]),
   ].filter(Boolean).join(" ");
   const inferred = inferReadiness(combinedText);
+  const effectiveProducts = resolveEffectiveProducts(input.planningSettings);
   const existingChannelIds = Array.from(new Set(
     existingPlacements
-      .map((placement) => resolveChannelId(placement.mediaType || placement.productType || placement.publisher || ""))
+      .map((placement) => resolveChannelId(placement.mediaType || placement.productType || placement.publisher || "", effectiveProducts))
       .filter((value): value is string => Boolean(value)),
   ));
 
@@ -227,9 +213,9 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     planningMode: input.planningMode || (selectedOptions.length > 0 ? "reallocation" : "greenfield"),
     existingPlacements,
     existingChannelIds,
-    requiredChannelIds: (input.requiredChannelIds || []).map((id) => resolveChannelId(id) || id),
-    preferredChannelIds: (input.preferredChannelIds || []).map((id) => resolveChannelId(id) || id),
-    excludedChannelIds: (input.excludedChannelIds || []).map((id) => resolveChannelId(id) || id),
+    requiredChannelIds: (input.requiredChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id),
+    preferredChannelIds: (input.preferredChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id),
+    excludedChannelIds: (input.excludedChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id),
     dataReadiness: { ...inferred.data, ...(input.dataReadiness || {}) },
     creativeReadiness: { ...inferred.creative, ...(input.creativeReadiness || {}) },
     measurementExpectations: input.measurementExpectations || [],
@@ -260,7 +246,9 @@ function fallbackComponents(product: MediaProductRecord, facts: CampaignFacts): 
   const context = triggerText(facts);
   const kpiHits = includesAny(context, [...product.supportedKpis, ...product.funnelRoles]);
   const audienceHits = includesAny(context, product.audienceSignals);
-  const alreadyRunning = facts.existingChannelIds.some((id) => findProductByAnyId(id)?.id === product.id);
+  // existingChannelIds are already resolved product ids, so compare directly; routing
+  // them back through the registry lookup would drop custom media types.
+  const alreadyRunning = facts.existingChannelIds.includes(product.id);
   const preferred = facts.preferredChannelIds.includes(product.id);
   return {
     kpiAndFunnelFit: Math.min(95, 48 + kpiHits * 12 + (product.defaultPriority === "core" ? 6 : 0)),

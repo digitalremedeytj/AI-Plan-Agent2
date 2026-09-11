@@ -28,11 +28,15 @@ import {
   Upload,
   X
 } from "lucide-react";
+import { CANONICAL_MEDIA_TAXONOMY } from "../utils/mediaTaxonomy";
 import {
   BudgetChannelTier,
   clonePlanningSettings,
+  CustomProductSetting,
+  CUSTOM_PRODUCT_ID_PREFIX,
   DEFAULT_PLANNING_SETTINGS,
   EnhancementPlanningSetting,
+  InternalOnlySettingId,
   OverviewMetricId,
   PlanningSettings,
   ProductPlanningSetting,
@@ -61,7 +65,7 @@ interface SettingsDrawerProps {
   saveError?: string | null;
 }
 
-type SettingsTab = "overview" | "budgets" | "products" | "publishers" | "enhancements";
+type SettingsTab = "visibility" | "budgets" | "products" | "publishers" | "enhancements";
 
 function numericValue(value: string): number {
   if (value.trim() === "") return Number.NaN;
@@ -198,6 +202,76 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
       ...current,
       overviewMetrics: current.overviewMetrics.map((metric) =>
         metric.id === metricId ? { ...metric, show } : metric
+      ),
+    }));
+    clearErrors();
+  };
+
+  const updateCustomProduct = (productId: string, patch: Partial<CustomProductSetting>) => {
+    setDraftSettings((current) => ({
+      ...current,
+      customProducts: current.customProducts.map((product) =>
+        product.productId === productId ? { ...product, ...patch } : product
+      ),
+    }));
+    clearErrors();
+  };
+
+  const addCustomProduct = () => {
+    setDraftSettings((current) => {
+      const taken = new Set([
+        ...current.products.map((product) => product.productId),
+        ...current.customProducts.map((product) => product.productId),
+      ]);
+      let suffix = current.customProducts.length + 1;
+      while (taken.has(`${CUSTOM_PRODUCT_ID_PREFIX}media_type_${suffix}`)) suffix += 1;
+      const productId = `${CUSTOM_PRODUCT_ID_PREFIX}media_type_${suffix}`;
+      // Seeded so the record is valid on save; the admin narrows it from here. Blank
+      // roles/KPIs would leave ScoutAI nothing to score the media type on.
+      const created: CustomProductSetting = {
+        productId,
+        displayName: `New media type ${suffix}`,
+        enabled: true,
+        digitalRemedyExecutable: true,
+        status: "live",
+        recommendationEligible: true,
+        supportedGeographies: ["United States"],
+        typicalCpmLow: null,
+        typicalCpmHigh: null,
+        minimumTotalSpend: 5_000,
+        minimumNormalized30DaySpend: 5_000,
+        minimumFlightDays: 14,
+        minimumAllocationPercent: 10,
+        maximumAllocationPercent: 100,
+        canonicalId: "ctv",
+        aliases: [],
+        funnelRoles: ["awareness"],
+        supportedKpis: ["reach"],
+        audienceSignals: [],
+        planningNotes: "",
+      };
+      return { ...current, customProducts: [...current.customProducts, created] };
+    });
+    clearErrors();
+  };
+
+  const removeCustomProduct = (product: CustomProductSetting) => {
+    const confirmed = confirm(
+      `Delete "${product.displayName}"?\n\nIt will stop being offered in channel allocations and will no longer be sent to ScoutAI. Plans already generated keep the settings revision they were built against, so their numbers do not change.`
+    );
+    if (!confirmed) return;
+    setDraftSettings((current) => ({
+      ...current,
+      customProducts: current.customProducts.filter((entry) => entry.productId !== product.productId),
+    }));
+    clearErrors();
+  };
+
+  const updateInternalOnlySetting = (settingId: InternalOnlySettingId, show: boolean) => {
+    setDraftSettings((current) => ({
+      ...current,
+      internalOnly: current.internalOnly.map((setting) =>
+        setting.id === settingId ? { ...setting, show } : setting
       ),
     }));
     clearErrors();
@@ -465,7 +539,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     { id: "budgets", label: "Budget & Media-Type Limits" },
     { id: "products", label: "Product Rules", count: draftSettings.products.length },
     { id: "enhancements", label: "Enhancements", count: draftSettings.enhancements.length },
-    { id: "overview", label: "Overview Metrics", count: draftSettings.overviewMetrics.length },
+    { id: "visibility", label: "Visibility", count: draftSettings.overviewMetrics.length + draftSettings.internalOnly.length },
   ];
 
   const currentEditingPub = editingLogoPubId
@@ -937,39 +1011,306 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
               <div>
                 <h3 className="text-base font-bold text-slate-900">Digital Remedy Product Rules</h3>
                 <p className="mt-1 text-sm leading-6 text-slate-600">
-                  These are conservative planning defaults. Only products in the controlled Digital Remedy registry can be recommended. Geography defaults to United States only.
+                  These are conservative planning defaults. Geography defaults to United States only. Hiding a product removes it from planning entirely; clearing <span className="font-semibold">Recommend</span> keeps it available for manual add but stops ScoutAI proposing it.
                 </p>
               </div>
 
+              {/* CUSTOM MEDIA TYPES */}
+              <section className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h4 className="flex items-center gap-2 text-sm font-extrabold text-slate-900">
+                      <Plus className="h-4 w-4 text-indigo-600" /> Custom Media Types
+                    </h4>
+                    <p className="mt-1 text-xs leading-5 text-slate-600">
+                      Media types outside the Digital Remedy workbook. They are planned, scored, and allocated exactly like registry products. ScoutAI only knows what is in the list below, so the funnel roles, KPIs, and notes are what let it judge when to propose one.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addCustomProduct}
+                    disabled={readOnly}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add media type
+                  </button>
+                </div>
+
+                {draftSettings.customProducts.length === 0 ? (
+                  <p className="mt-3 rounded-lg border border-dashed border-indigo-200 bg-white px-3 py-4 text-center text-xs text-slate-500">
+                    No custom media types yet.
+                  </p>
+                ) : (
+                  <div className="mt-4 space-y-4">
+                    {draftSettings.customProducts.map((product) => (
+                      <article key={product.productId} className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className={`min-w-0 flex-1 ${product.enabled ? "" : "opacity-60"}`}>
+                            <input
+                              value={product.displayName}
+                              onChange={(e) => updateCustomProduct(product.productId, { displayName: e.target.value })}
+                              className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm font-bold text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                              placeholder="Media type name"
+                            />
+                            <p className="mt-1 text-[11px] text-slate-400">{product.productId}</p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-600">
+                            <label className={`flex items-center gap-2 ${product.enabled ? "" : "opacity-40"}`}>
+                              <input
+                                type="checkbox"
+                                disabled={!product.enabled}
+                                checked={product.recommendationEligible}
+                                onChange={(e) => updateCustomProduct(product.productId, { recommendationEligible: e.target.checked })}
+                              />
+                              Recommend
+                            </label>
+                            <div className="flex items-center gap-2 border-l border-slate-200 pl-3">
+                              <span className={`text-[11px] font-bold uppercase tracking-wide ${product.enabled ? "text-slate-500" : "text-slate-400"}`}>
+                                {product.enabled ? "Shown" : "Hidden"}
+                              </span>
+                              <ShowToggle
+                                checked={product.enabled}
+                                onChange={(enabled) => updateCustomProduct(product.productId, { enabled })}
+                                label={product.displayName}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeCustomProduct(product)}
+                              disabled={readOnly}
+                              aria-label={`Delete ${product.displayName}`}
+                              title="Delete this custom media type"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className={`mt-4 space-y-3 ${product.enabled ? "" : "hidden"}`}>
+                          <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-3">
+                            <p className="text-[11px] font-extrabold uppercase tracking-wide text-indigo-900">What ScoutAI reasons from</p>
+                            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                              <label className={labelClass}>
+                                Funnel roles
+                                <input
+                                  value={product.funnelRoles.join(", ")}
+                                  onChange={(e) => updateCustomProduct(product.productId, { funnelRoles: listValue(e.target.value) })}
+                                  className={inputClass}
+                                  placeholder="awareness, consideration, conversion"
+                                />
+                              </label>
+                              <label className={labelClass}>
+                                Supported KPIs
+                                <input
+                                  value={product.supportedKpis.join(", ")}
+                                  onChange={(e) => updateCustomProduct(product.productId, { supportedKpis: listValue(e.target.value) })}
+                                  className={inputClass}
+                                  placeholder="reach, vcr, conversion, roas"
+                                />
+                              </label>
+                              <label className={labelClass}>
+                                Audience signals
+                                <input
+                                  value={product.audienceSignals.join(", ")}
+                                  onChange={(e) => updateCustomProduct(product.productId, { audienceSignals: listValue(e.target.value) })}
+                                  className={inputClass}
+                                  placeholder="streaming, sports, mobile"
+                                />
+                              </label>
+                              <label className={labelClass}>
+                                Also known as
+                                <input
+                                  value={product.aliases.join(", ")}
+                                  onChange={(e) => updateCustomProduct(product.productId, { aliases: listValue(e.target.value) })}
+                                  className={inputClass}
+                                  placeholder="Alternate names used in uploaded plans"
+                                />
+                              </label>
+                              <label className={`${labelClass} sm:col-span-2`}>
+                                Planning notes
+                                <textarea
+                                  value={product.planningNotes}
+                                  onChange={(e) => updateCustomProduct(product.productId, { planningNotes: e.target.value })}
+                                  rows={2}
+                                  className={inputClass}
+                                  placeholder="When should this be used, what makes it a good fit, what does it need? Passed to ScoutAI verbatim."
+                                />
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                            <label className={labelClass}>
+                              Closest standard media type
+                              <select
+                                value={product.canonicalId}
+                                onChange={(e) => updateCustomProduct(product.productId, { canonicalId: e.target.value as CustomProductSetting["canonicalId"] })}
+                                className={inputClass}
+                              >
+                                {CANONICAL_MEDIA_TAXONOMY.map((item) => (
+                                  <option key={item.id} value={item.id}>{item.displayName}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className={labelClass}>
+                              Status
+                              <select
+                                value={product.status}
+                                onChange={(e) => updateCustomProduct(product.productId, { status: e.target.value as any })}
+                                className={inputClass}
+                              >
+                                <option value="live">Live</option>
+                                <option value="beta">Beta</option>
+                                <option value="future">Future</option>
+                                <option value="retired">Retired</option>
+                              </select>
+                            </label>
+                            <label className={`${labelClass} lg:col-span-2`}>
+                              Geography coverage
+                              <input
+                                value={product.supportedGeographies.join(", ")}
+                                onChange={(e) => updateCustomProduct(product.productId, { supportedGeographies: listValue(e.target.value) })}
+                                className={inputClass}
+                                placeholder="United States"
+                              />
+                            </label>
+                            <label className={labelClass}>
+                              Typical CPM low
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={product.typicalCpmLow ?? ""}
+                                onChange={(e) => updateCustomProduct(product.productId, { typicalCpmLow: nullableNumericValue(e.target.value) })}
+                                className={inputClass}
+                                placeholder="Varies"
+                              />
+                            </label>
+                            <label className={labelClass}>
+                              Typical CPM high
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={product.typicalCpmHigh ?? ""}
+                                onChange={(e) => updateCustomProduct(product.productId, { typicalCpmHigh: nullableNumericValue(e.target.value) })}
+                                className={inputClass}
+                                placeholder="Varies"
+                              />
+                            </label>
+                            <label className={labelClass}>
+                              Minimum total spend
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={product.minimumTotalSpend}
+                                onChange={(e) => updateCustomProduct(product.productId, { minimumTotalSpend: numericValue(e.target.value) })}
+                                className={inputClass}
+                              />
+                            </label>
+                            <label className={labelClass}>
+                              Minimum 30-day spend
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={product.minimumNormalized30DaySpend}
+                                onChange={(e) => updateCustomProduct(product.productId, { minimumNormalized30DaySpend: numericValue(e.target.value) })}
+                                className={inputClass}
+                              />
+                            </label>
+                            <label className={labelClass}>
+                              Minimum flight days
+                              <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={product.minimumFlightDays}
+                                onChange={(e) => updateCustomProduct(product.productId, { minimumFlightDays: numericValue(e.target.value) })}
+                                className={inputClass}
+                              />
+                            </label>
+                            <label className={labelClass}>
+                              Minimum allocation %
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.1"
+                                value={product.minimumAllocationPercent}
+                                onChange={(e) => updateCustomProduct(product.productId, { minimumAllocationPercent: numericValue(e.target.value) })}
+                                className={inputClass}
+                              />
+                            </label>
+                            <label className={labelClass}>
+                              Maximum allocation %
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.1"
+                                value={product.maximumAllocationPercent}
+                                onChange={(e) => updateCustomProduct(product.productId, { maximumAllocationPercent: numericValue(e.target.value) })}
+                                className={inputClass}
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+
               <div className="space-y-4">
                 {draftSettings.products.map((product) => (
-                  <article key={product.productId} className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                  <article key={product.productId} className={`rounded-xl border bg-white p-4 shadow-xs transition-colors ${product.enabled ? "border-slate-200" : "border-slate-200 bg-slate-50"}`}>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
+                      <div className={product.enabled ? "" : "opacity-60"}>
                         <h4 className="font-bold text-slate-900">{product.displayName}</h4>
                         <p className="text-[11px] text-slate-400">{product.productId}</p>
                       </div>
-                      <div className="flex flex-wrap gap-4 text-xs font-semibold text-slate-600">
-                        <label className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-4 text-xs font-semibold text-slate-600">
+                        <label className={`flex items-center gap-2 ${product.enabled ? "" : "opacity-40"}`}>
                           <input
                             type="checkbox"
+                            disabled={!product.enabled}
                             checked={product.digitalRemedyExecutable}
                             onChange={(e) => updateProduct(product.productId, { digitalRemedyExecutable: e.target.checked })}
                           />
                           DR executable
                         </label>
-                        <label className="flex items-center gap-2">
+                        <label className={`flex items-center gap-2 ${product.enabled ? "" : "opacity-40"}`}>
                           <input
                             type="checkbox"
+                            disabled={!product.enabled}
                             checked={product.recommendationEligible}
                             onChange={(e) => updateProduct(product.productId, { recommendationEligible: e.target.checked })}
                           />
                           Recommend
                         </label>
+                        <div className="flex items-center gap-2 border-l border-slate-200 pl-4">
+                          <span className={`text-[11px] font-bold uppercase tracking-wide ${product.enabled ? "text-slate-500" : "text-slate-400"}`}>
+                            {product.enabled ? "Shown" : "Hidden"}
+                          </span>
+                          <ShowToggle
+                            checked={product.enabled}
+                            onChange={(enabled) => updateProduct(product.productId, { enabled })}
+                            label={product.displayName}
+                          />
+                        </div>
                       </div>
                     </div>
 
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {!product.enabled && (
+                      <p className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+                        Hidden from planning entirely &mdash; not scored, not offered in channel allocations, and not sent to ScoutAI.
+                      </p>
+                    )}
+
+                    <div className={`mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 ${product.enabled ? "" : "hidden"}`}>
                       <label className={labelClass}>
                         Status
                         <select
@@ -1153,41 +1494,86 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
             </section>
           )}
 
-          {/* TAB 5: OVERVIEW METRICS */}
-          {activeTab === "overview" && (
-            <section className="space-y-4">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">Overview Metrics</h3>
-                <p className="mt-1 text-sm leading-6 text-slate-600">
-                  Choose which Plan vs. AI Scout metrics appear in the left-column overview.
-                </p>
-              </div>
+          {/* TAB 5: VISIBILITY */}
+          {activeTab === "visibility" && (
+            <div className="space-y-8">
+              <section className="space-y-4">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Overview Metrics</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Choose which Plan vs. AI Scout metrics appear in the left-column overview.
+                  </p>
+                </div>
 
-              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
-                <table className="w-full border-collapse text-left">
-                  <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3">Metric</th>
-                      <th className="w-24 px-4 py-3 text-center">Show</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {draftSettings.overviewMetrics.map((metric) => (
-                      <tr key={metric.id}>
-                        <td className="px-4 py-3 text-sm font-semibold text-slate-800">{metric.label}</td>
-                        <td className="px-4 py-3 text-center">
-                          <ShowToggle
-                            checked={metric.show}
-                            onChange={(show) => updateOverviewMetric(metric.id, show)}
-                            label={metric.label}
-                          />
-                        </td>
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
+                  <table className="w-full border-collapse text-left">
+                    <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-4 py-3">Metric</th>
+                        <th className="w-24 px-4 py-3 text-center">Show</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {draftSettings.overviewMetrics.map((metric) => (
+                        <tr key={metric.id}>
+                          <td className="px-4 py-3 text-sm font-semibold text-slate-800">{metric.label}</td>
+                          <td className="px-4 py-3 text-center">
+                            <ShowToggle
+                              checked={metric.show}
+                              onChange={(show) => updateOverviewMetric(metric.id, show)}
+                              label={metric.label}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="space-y-4">
+                <div>
+                  <h3 className="flex items-center gap-2 text-base font-bold text-slate-900">
+                    <Lock className="h-4 w-4 text-slate-500" /> Internal Only
+                  </h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Detail that is useful to the team but noise in front of a client. Turning one off
+                    hides it everywhere in the plan &mdash; nothing is recalculated, so a plan can be
+                    screen-shared either way without regenerating it.
+                  </p>
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
+                  <table className="w-full border-collapse text-left">
+                    <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-4 py-3">Detail</th>
+                        <th className="w-24 px-4 py-3 text-center">Show</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {draftSettings.internalOnly.map((setting) => (
+                        <tr key={setting.id}>
+                          <td className="px-4 py-3">
+                            <div className="text-sm font-semibold text-slate-800">{setting.label}</div>
+                            {setting.description && (
+                              <p className="mt-0.5 text-xs text-slate-500">{setting.description}</p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-center align-top">
+                            <ShowToggle
+                              checked={setting.show}
+                              onChange={(show) => updateInternalOnlySetting(setting.id, show)}
+                              label={setting.label}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
           )}
 
           {/* Errors list if any */}

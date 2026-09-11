@@ -10,7 +10,8 @@ import fs from "fs";
 import crypto from "crypto";
 import { CANONICAL_MEDIA_TAXONOMY, isNonMediaItem, normalizeRawChannel } from "./src/utils/mediaTaxonomy";
 import { buildCampaignFacts, buildMediaRecommendationPlan, profileSignals } from "./src/planning/engine";
-import { DIGITAL_REMEDY_PRODUCT_REGISTRY, validateProductRegistry } from "./src/planning/knowledge/registry";
+import { validateProductRegistry } from "./src/planning/knowledge/registry";
+import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
 import { createStorage, PlanNotFoundError, RevisionConflictError, type StorageAdapter } from "./src/storage";
@@ -677,20 +678,36 @@ const candidateSignalSchema = {
 };
 
 async function generateCandidateSignals(audienceProfile: any, facts: any): Promise<AiCandidateSignal[]> {
-  const candidates = DIGITAL_REMEDY_PRODUCT_REGISTRY
+  // Built from the effective catalog, not the raw registry: a product disabled in
+  // settings must not reach the model, and a custom media type must.
+  const customNotes = new Map(
+    (facts?.settings?.customProducts || []).map((product: any) => [product.productId, product.planningNotes]),
+  );
+  const candidates = resolveEffectiveProducts(facts.settings)
     .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live")
-    .map((product) => ({
-      channelId: product.id,
-      displayName: product.displayName,
-      familyId: product.familyId,
-      funnelRoles: product.funnelRoles,
-      supportedKpis: product.supportedKpis,
-      audienceSignals: product.audienceSignals,
-      sourceLabels: product.sourceMetadata.sourceLabels,
-    }));
+    .map((product) => {
+      const custom = isCustomProductId(product.id);
+      return {
+        channelId: product.id,
+        displayName: product.displayName,
+        familyId: product.familyId,
+        funnelRoles: product.funnelRoles,
+        supportedKpis: product.supportedKpis,
+        audienceSignals: product.audienceSignals,
+        sourceLabels: product.sourceMetadata.sourceLabels,
+        // Custom products carry no workbook evidence, so they are labelled as such and
+        // given the admin's own notes to reason from rather than being passed off as
+        // workbook-verified.
+        ...(custom
+          ? { catalogSource: "custom", planningNotes: customNotes.get(product.id) || "" }
+          : { catalogSource: "digital_remedy_workbook" }),
+      };
+    });
   const prompt = `You are ScoutAI's media-strategy reasoning layer. Evaluate only the supplied, Digital Remedy-executable product candidates.
 
 Code—not you—owns eligibility, availability, budget tiers, product minimums, portfolio selection, and allocation arithmetic. Do not add products, change IDs, or claim a prerequisite is present when it is unknown.
+
+A candidate with catalogSource "custom" is a media type the Digital Remedy team added themselves. Treat it as a genuine option and score it on the same terms as the rest, using its planningNotes as the primary evidence for fit. It carries no workbook validation, so cite it as a digital_remedy_rule rather than implying workbook or research backing, and do not award it dataReadiness or creativeReadiness credit that the campaign facts do not support.
 
 Score each component from 0 to 100 using campaign-specific evidence. Keep confidence separate from fit by citing evidence source types. Provide concise activation, measurement, tradeoff, allocation-rationale, and scale/stop explanations. Do not calculate final allocations.
 
@@ -807,7 +824,9 @@ async function buildChannelStrategy(
     excludedChannelIds: options?.excludedChannelIds,
     planningSettings,
   });
-  const allowedSignalIds = new Set(DIGITAL_REMEDY_PRODUCT_REGISTRY.map((product) => product.id));
+  // Must match the catalog the candidates were generated from, or scores for custom
+  // media types get silently dropped and they fall back to heuristic defaults.
+  const allowedSignalIds = new Set(resolveEffectiveProducts(planningSettings).map((product) => product.id));
   const suppliedSignals = Array.isArray(options?.candidateSignals)
     ? options.candidateSignals.filter((signal) => signal && allowedSignalIds.has(signal.channelId))
     : [];

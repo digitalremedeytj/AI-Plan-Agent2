@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings, PlanningSettings } from "../planning/settings";
+import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings, PlanningSettings } from "../planning/settings";
 import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import { getAccessToken } from "./googleAuth";
 import { decodeFields, encodeFields } from "./firestoreValue";
@@ -299,7 +299,12 @@ export class FirestoreAdapter implements StorageAdapter {
     const doc = await this.getDocument(SETTINGS, CURRENT_DOC);
     if (doc) {
       const record = this.documentToSettings(doc);
-      if (record && validatePlanningSettings(record.settings).valid) return record;
+      if (record) {
+        // Migrate before validating: an older-version record is still the team's real
+        // configuration, and falling through would reseed defaults over it.
+        const migrated = validatePlanningSettings(migrateStoredSettings(record.settings));
+        if (migrated.valid && migrated.settings) return { ...record, settings: migrated.settings };
+      }
       console.warn("[STORAGE:firestore] settings/current failed validation; reseeding defaults.");
     }
     return this.saveSettings(DEFAULT_PLANNING_SETTINGS, "system");

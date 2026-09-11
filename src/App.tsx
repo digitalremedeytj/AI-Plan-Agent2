@@ -66,7 +66,7 @@ import {
 import { exportProfileToMarkdown, exportSourcesToMarkdown } from "./utils/markdownExporter";
 import { MediaPlanSelector } from "./components/MediaPlanSelector";
 import { TaxonomyVerificationBadge } from "./components/TaxonomyVerificationBadge";
-import { ChannelStrategySection } from "./components/ChannelStrategySection";
+import { ALL_INTERNAL_VISIBLE, ChannelStrategySection, type InternalOnlyVisibility } from "./components/ChannelStrategySection";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
@@ -598,6 +598,14 @@ export default function App() {
   const budgetNormalization = React.useMemo(
     () => normalizeCampaignBudget(parseCurrencyInput(budget), Number(campaignLength)),
     [budget, campaignLength],
+  );
+  // Settings store internal-only visibility as a list; the plan UI wants it keyed by id.
+  const internalOnlyVisibility = React.useMemo(
+    () => ({
+      ...ALL_INTERNAL_VISIBLE,
+      ...Object.fromEntries(planningSettings.internalOnly.map((setting) => [setting.id, setting.show])),
+    }) as InternalOnlyVisibility,
+    [planningSettings.internalOnly],
   );
   const appliedBudgetTier = React.useMemo(
     () => findBudgetChannelTier(budgetNormalization.normalized30DayBudget, planningSettings),
@@ -4632,6 +4640,7 @@ export default function App() {
                 {profileData.channelStrategy && (
                   <ChannelStrategySection
                     data={profileData.channelStrategy}
+                    internalOnly={internalOnlyVisibility}
                     onToggleBudgetMode={handleToggleBudgetMode}
                     onManualMediaTypeChange={handleManualMediaTypeChange}
                     onSaveAllocations={handleSaveManualAllocations}

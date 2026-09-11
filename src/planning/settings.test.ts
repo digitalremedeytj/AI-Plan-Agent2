@@ -54,7 +54,7 @@ test("version 1 browser settings migrate budget edits into the usable catalog de
   legacyTiers[0].maxChannels = 2;
   storage.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify({ version: 1, budgetChannelTiers: legacyTiers }));
   const migrated = loadPlanningSettings(storage);
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 5);
   assert.equal(migrated.budgetChannelTiers[0].maxChannels, 2);
   assert.equal(migrated.products.length, 14);
   assert.equal(migrated.publishers.length, 67);
@@ -69,9 +69,53 @@ test("version 2 browser settings retain catalog edits and receive overview defau
   const { overviewMetrics: _overviewMetrics, ...withoutOverviewMetrics } = current;
   storageVersion2.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify({ ...withoutOverviewMetrics, version: 2 }));
   const migrated = loadPlanningSettings(storageVersion2);
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 5);
   assert.equal(migrated.products[0].minimumTotalSpend, 12_345);
   assert.deepEqual(migrated.overviewMetrics, DEFAULT_PLANNING_SETTINGS.overviewMetrics);
+});
+
+test("internal-only defaults hide dollars and confidence but keep allocation and score", () => {
+  const visibility = Object.fromEntries(DEFAULT_PLANNING_SETTINGS.internalOnly.map((setting) => [setting.id, setting.show]));
+  assert.deepEqual(visibility, {
+    channelAllocationColumn: true,
+    channelDollarsColumn: false,
+    channelScoreColumn: true,
+    channelConfidenceBadge: false,
+    channelStatusTag: false,
+  });
+});
+
+test("version 3 settings keep their catalog edits instead of being reseeded from defaults", () => {
+  const storage = new MemoryStorage();
+  const current = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  current.products[0].minimumTotalSpend = 54_321;
+  current.overviewMetrics[1].show = true;
+  const { internalOnly: _internalOnly, ...withoutInternalOnly } = current;
+  storage.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify({ ...withoutInternalOnly, version: 3 }));
+  const migrated = loadPlanningSettings(storage);
+  assert.equal(migrated.version, 5);
+  assert.equal(migrated.products[0].minimumTotalSpend, 54_321);
+  assert.equal(migrated.overviewMetrics[1].show, true);
+  assert.deepEqual(migrated.internalOnly, DEFAULT_PLANNING_SETTINGS.internalOnly);
+});
+
+test("version 4 settings gain the enabled switch already on, so no product silently disappears", () => {
+  const storage = new MemoryStorage();
+  const current = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  current.products[0].minimumTotalSpend = 11_111;
+  const stripped = {
+    ...current,
+    version: 4,
+    products: current.products.map(({ enabled: _enabled, ...product }) => product),
+  };
+  delete (stripped as Record<string, unknown>).customProducts;
+  storage.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify(stripped));
+
+  const migrated = loadPlanningSettings(storage);
+  assert.equal(migrated.version, 5);
+  assert.equal(migrated.products[0].minimumTotalSpend, 11_111);
+  assert.ok(migrated.products.every((product) => product.enabled), "every pre-existing product stays in play");
+  assert.deepEqual(migrated.customProducts, []);
 });
 
 test("provisional catalog defaults are valid and US-only for every controlled product", () => {

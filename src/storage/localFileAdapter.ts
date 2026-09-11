@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings, PlanningSettings } from "../planning/settings";
+import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings, PlanningSettings } from "../planning/settings";
 import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import {
   CreatePlanInput,
@@ -157,7 +157,12 @@ export class LocalFileAdapter implements StorageAdapter {
   async getCurrentSettings(): Promise<SettingsRecord> {
     await this.init();
     const current = readJson<SettingsRecord>(path.join(this.settingsDir, "current.json"));
-    if (current && validatePlanningSettings(current.settings).valid) return current;
+    if (current) {
+      // Migrate before validating: an older-version record is still the team's real
+      // configuration, and falling through would reseed defaults over it.
+      const migrated = validatePlanningSettings(migrateStoredSettings(current.settings));
+      if (migrated.valid && migrated.settings) return { ...current, settings: migrated.settings };
+    }
     return this.saveSettings(DEFAULT_PLANNING_SETTINGS, "system");
   }
 
