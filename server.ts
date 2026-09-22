@@ -96,7 +96,13 @@ import {
   normalizeSegments,
   sanitizeSegmentRequest,
 } from "./src/research/segmentRecommendations";
-import { generateStructuredJsonWithFallback, generateText, GEMINI_FLASH_MODEL } from "./src/server/geminiInteractions";
+import {
+  generateStructuredJson,
+  generateStructuredJsonWithFallback,
+  generateText,
+  GEMINI_FLASH_MODEL,
+  toGeminiJsonSchema,
+} from "./src/server/geminiInteractions";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: false, quiet: true });
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: false, quiet: true });
@@ -695,6 +701,13 @@ const candidateSignalSchema = {
     required: ["channelId", "components", "gapAddressed", "evidence", "activationGuidance", "measurementApproach", "tradeoffs", "allocationRationale", "decisionRule"],
   },
 };
+// Wrapped in an object rather than sent as a top-level array: the 3.8 structured-output docs
+// only show object roots, and this call has a deterministic fallback we would rather not trip.
+const candidateSignalResponseSchema = {
+  type: "object",
+  properties: { signals: toGeminiJsonSchema(candidateSignalSchema) },
+  required: ["signals"],
+};
 
 async function generateCandidateSignals(audienceProfile: any, facts: any): Promise<AiCandidateSignal[]> {
   // Built from the effective catalog, not the raw registry: a product disabled in
@@ -764,25 +777,25 @@ ${JSON.stringify(candidates, null, 2)}
 Return one signal object per allowed candidate and no other products.`;
 
   try {
-    const response = await withTimeout(
-      getAiClient().models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: candidateSignalSchema,
-          temperature: 0.1,
-        },
+    // Medium, not high: in testing high took ~49s of this 60s budget for near-identical scores,
+    // and a timeout here silently drops the AI reasoning for the whole plan.
+    const response: any = await withTimeout(
+      generateStructuredJson(getAiClient(), {
+        input: prompt,
+        schema: candidateSignalResponseSchema,
+        thinkingLevel: "medium",
+        timeoutMs: TIMEOUT_SCORING_MS,
       }),
       TIMEOUT_SCORING_MS,
-      null as any,
+      null,
     );
-    if (!response?.text) return [];
-    const parsed = JSON.parse(response.text);
+    const parsed = response?.signals;
+    if (!Array.isArray(parsed)) {
+      console.warn("[PLANNING] AI candidate reasoning unavailable (no signals returned); using deterministic fallback scores and explanations.");
+      return [];
+    }
     const allowedIds = new Set(candidates.map((candidate) => candidate.channelId));
-    return Array.isArray(parsed)
-      ? parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId))
-      : [];
+    return parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId));
   } catch (error) {
     console.warn("[PLANNING] AI candidate reasoning unavailable; using deterministic fallback scores and explanations.", error);
     return [];

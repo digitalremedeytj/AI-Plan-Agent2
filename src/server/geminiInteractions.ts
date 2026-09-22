@@ -52,7 +52,6 @@ async function createInteraction(
 }
 
 export interface StructuredJsonRequest extends InteractionRequest {
-  systemInstruction: string;
   /** JSON Schema subset supported by Gemini structured output. */
   schema: Record<string, unknown>;
 }
