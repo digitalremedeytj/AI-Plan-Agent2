@@ -47,11 +47,17 @@ import {
   Monitor,
   Tablet,
   Users,
-  UserCheck
+  UserCheck,
+  Upload,
+  FileSpreadsheet,
+  Share2,
+  AlertCircle,
+  ShoppingCart
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type GeoScope, type GeoTargeting } from "./types";
+import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
+import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import {
@@ -68,10 +74,15 @@ import { MediaPlanSelector } from "./components/MediaPlanSelector";
 import { TaxonomyVerificationBadge } from "./components/TaxonomyVerificationBadge";
 import { ALL_INTERNAL_VISIBLE, ChannelStrategySection, type InternalOnlyVisibility } from "./components/ChannelStrategySection";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
-import { GeoTargetingFields } from "./components/GeoTargetingFields";
-import { GeoTargetingSection } from "./components/GeoTargetingSection";
-import { applyGeographyChoice, emptyGeoSelection, rehydrateGeoTargeting, type GeoSelection } from "./planning/geoTargeting";
 import { SettingsDrawer } from "./components/SettingsDrawer";
+import { SharePlanModal } from "./components/SharePlanModal";
+import { CtvPublishersModal } from "./components/CtvPublishersModal";
+import { CtvPublisherCard } from "./components/CtvPublisherCard";
+import { CtvSlideExportView } from "./components/CtvSlideExportView";
+import { CtvExportDropdown } from "./components/CtvExportDropdown";
+import { PersonaSlideExportModal } from "./components/PersonaSlideExportModal";
+import { captureElementToCanvas } from "./utils/html2canvasPolyfill";
+import { CtvPublisherRecommendation } from "./types";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
 import { normalizeRawChannel } from "./utils/mediaTaxonomy";
 import {
@@ -79,6 +90,9 @@ import {
   normalizeCampaignBudget,
   parseCurrencyInput,
   type PlanningSettings,
+  clonePlanningSettings,
+  migrateStoredSettings,
+  validatePlanningSettings,
 } from "./planning/settings";
 import {
   addMediaTypeAndRebalance,
@@ -100,6 +114,12 @@ import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
 const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
   return resolvePublisherLogo(name, customPublishers);
+};
+
+const normalizeAndValidateSettings = (s: unknown): PlanningSettings => {
+  const migrated = migrateStoredSettings(s);
+  const validated = validatePlanningSettings(migrated);
+  return validated.valid && validated.settings ? validated.settings : clonePlanningSettings(s as PlanningSettings);
 };
 
 // Summary highlight extractor for Device Share (Option C: Tag + Metric Chips)
@@ -377,6 +397,7 @@ function parseCSVLine(line: string, delimiter: string = ","): string[] {
 
 const extractMetadata = (rows: any[][]) => {
   const metadata: Array<{ key: string; value: string }> = [];
+  if (!rows || !Array.isArray(rows)) return metadata;
   const labelsToMatch = [
     "advertiser", "client", "brand", "campaign", "media planner", 
     "planner", "media buyer", "buyer", "agency", "date", 
@@ -559,18 +580,18 @@ export default function App() {
   const [kpis, setKpis] = useState<string[]>([""]);
   const [audienceDescription, setAudienceDescription] = useState("");
   const [url, setUrl] = useState("");
-  const [geography, setGeography] = useState("United States");
-  /**
-   * Targeting scope is a separate axis from the market. `geography` keeps feeding product
-   * eligibility in the planning engine; a scope value reaching it would fail every product.
-   * Exactly one scope is ever submitted, but both selections are held while the user edits
-   * so toggling between them does not discard work.
-   */
-  const [geoScope, setGeoScope] = useState<GeoScope>("national");
-  const [geoStateSelection, setGeoStateSelection] = useState<GeoSelection>(emptyGeoSelection("select"));
-  const [geoDmaSelection, setGeoDmaSelection] = useState<GeoSelection>(emptyGeoSelection("paste"));
+  const [geographyType, setGeographyType] = useState<GeographyType>("National");
+  const [geoTargets, setGeoTargets] = useState<string[]>([]);
+  const [geoRawInput, setGeoRawInput] = useState("");
+  const [geoUnrecognized, setGeoUnrecognized] = useState<string[]>([]);
+  const [geoUploadNotice, setGeoUploadNotice] = useState<string | null>(null);
+  const [isGeoFileDragging, setIsGeoFileDragging] = useState(false);
+  const [geoCopiedNotice, setGeoCopiedNotice] = useState(false);
+  const geoFileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [campaignFocus, setCampaignFocus] = useState("Full-funnel digital media plan");
   const [additionalContext, setAdditionalContext] = useState("");
+  const [isAdvancedPersonaOpen, setIsAdvancedPersonaOpen] = useState(false);
+  const [targetPersonas, setTargetPersonas] = useState<string[]>(["", "", "", ""]);
   const [isInsightsExpanded, setIsInsightsExpanded] = useState(false);
   const [isCitationsExpanded, setIsCitationsExpanded] = useState(false);
   const [isAuditExpanded, setIsAuditExpanded] = useState(false);
@@ -592,15 +613,17 @@ export default function App() {
     api
       .fetchSettings()
       .then((data) => {
-        setPlanningSettings(data.settings);
-        setSettingsRevision(data.revision);
+        if (data?.settings) {
+          setPlanningSettings(normalizeAndValidateSettings(data.settings));
+          setSettingsRevision(data.revision);
+        }
       })
       .catch((err) => console.warn("Could not load shared settings from the server:", err));
 
     api
       .fetchPublishers()
       .then((data) => {
-        if (Array.isArray(data.publishers) && data.publishers.length > 0) {
+        if (Array.isArray(data?.publishers) && data.publishers.length > 0) {
           setCtvPublishers(data.publishers);
         }
       })
@@ -615,42 +638,130 @@ export default function App() {
   const internalOnlyVisibility = React.useMemo(
     () => ({
       ...ALL_INTERNAL_VISIBLE,
-      ...Object.fromEntries(planningSettings.internalOnly.map((setting) => [setting.id, setting.show])),
+      ...Object.fromEntries(
+        (Array.isArray(planningSettings?.internalOnly) ? planningSettings.internalOnly : []).map((setting) => [setting.id, setting.show])
+      ),
     }) as InternalOnlyVisibility,
-    [planningSettings.internalOnly],
+    [planningSettings?.internalOnly],
   );
   const appliedBudgetTier = React.useMemo(
     () => findBudgetChannelTier(budgetNormalization.normalized30DayBudget, planningSettings),
     [budgetNormalization.normalized30DayBudget, planningSettings],
   );
-  const availableGeographies = React.useMemo(
-    () => {
-      const configured = Array.from(new Set(
+
+  const geography = React.useMemo(() => {
+    if (geographyType === "National") return "National";
+    if (geoTargets.length === 0) return geographyType;
+    if (geographyType === "State") {
+      if (geoTargets.length <= 4) {
+        return `State (${geoTargets.map((t) => t.match(/\(([^)]+)\)/)?.[1] || t).join(", ")})`;
+      }
+      return `State (${geoTargets.length} States: ${geoTargets.slice(0, 3).map((t) => t.match(/\(([^)]+)\)/)?.[1] || t).join(", ")}, +${geoTargets.length - 3} more)`;
+    }
+    if (geographyType === "DMA") {
+      if (geoTargets.length <= 3) {
+        return `DMA (${geoTargets.map((t) => t.split(",")[0]).join(", ")})`;
+      }
+      return `DMA (${geoTargets.length} Markets: ${geoTargets.slice(0, 2).map((t) => t.split(",")[0]).join(", ")}, +${geoTargets.length - 2} more)`;
+    }
+    return geographyType;
+  }, [geographyType, geoTargets]);
+
+  const geographyOptions = React.useMemo(() => {
+    const base: string[] = ["National", "State", "DMA"];
+    const configured = Array.from(
+      new Set(
         planningSettings.products
-          .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live")
+          .filter(
+            (product) =>
+              product.digitalRemedyExecutable &&
+              product.recommendationEligible &&
+              product.status === "live",
+          )
           .flatMap((product) => product.supportedGeographies),
-      )).sort();
-      return configured.length > 0 ? configured : ["United States"];
-    },
-    [planningSettings],
-  );
+      ),
+    );
+    const extras = configured.filter(
+      (g) => !["united states", "us", "usa", "national"].includes(g.trim().toLowerCase()),
+    );
+    return [...base, ...extras];
+  }, [planningSettings]);
 
-  // Only the market is validated against the product catalog here. The scope lives in
-  // geoScope and must never be written into `geography`.
   React.useEffect(() => {
-    if (!availableGeographies.includes(geography)) setGeography(availableGeographies[0]);
-  }, [availableGeographies, geography]);
+    if (!geographyOptions.includes(geographyType)) {
+      setGeographyType("National");
+    }
+  }, [geographyOptions, geographyType]);
 
-  const geoTargeting = React.useMemo<GeoTargeting>(
-    () => ({
-      scope: geoScope,
-      ...(geoScope === "state" ? geoStateSelection : geoScope === "dma" ? geoDmaSelection : emptyGeoSelection("select")),
-    }),
-    [geoScope, geoStateSelection, geoDmaSelection],
-  );
+  const handleApplyGeoRawInput = () => {
+    if (!geoRawInput.trim()) return;
+    const parsed = parseGeoTextInput(geoRawInput, geographyType as "State" | "DMA");
+    if (parsed.valid.length > 0) {
+      setGeoTargets((prev) => Array.from(new Set([...prev, ...parsed.valid])));
+    }
+    if (parsed.unrecognized.length > 0) {
+      setGeoUnrecognized(parsed.unrecognized);
+    } else {
+      setGeoUnrecognized([]);
+    }
+    setGeoRawInput("");
+  };
 
-  /** State and DMA briefs are incomplete until at least one market has been supplied. */
-  const geoTargetingIncomplete = geoScope !== "national" && geoTargeting.entries.length === 0;
+  const handleRemoveGeoTarget = (target: string) => {
+    setGeoTargets((prev) => prev.filter((t) => t !== target));
+  };
+
+  const processGeoSpreadsheet = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: "array" });
+        if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+          setGeoUploadNotice(`No sheets found in file "${file.name}".`);
+          return;
+        }
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: "" }) as any[][];
+        const result = extractGeoFromSpreadsheetRows(rows, geographyType as "State" | "DMA");
+
+        if (result.valid.length > 0) {
+          setGeoTargets((prev) => Array.from(new Set([...prev, ...result.valid])));
+          setGeoUploadNotice(
+            `Added ${result.valid.length} ${geographyType === "State" ? "states" : "DMAs"} from "${file.name}"${result.detectedColumnName ? ` (${result.detectedColumnName})` : ""}.`,
+          );
+        } else {
+          setGeoUploadNotice(`No matching ${geographyType === "State" ? "US states" : "Nielsen DMAs"} detected in "${file.name}".`);
+        }
+
+        if (result.unrecognized.length > 0) {
+          setGeoUnrecognized(result.unrecognized.slice(0, 10));
+        } else {
+          setGeoUnrecognized([]);
+        }
+      } catch (err: any) {
+        setGeoUploadNotice(`Could not parse "${file.name}": ${err?.message || "Invalid file format"}`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleGeoFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processGeoSpreadsheet(file);
+      e.target.value = "";
+    }
+  };
+
+  const handleGeoFileDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsGeoFileDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      processGeoSpreadsheet(file);
+    }
+  };
 
   /**
    * Settings are global and shared, so the server decides whether the write is allowed
@@ -662,7 +773,7 @@ export default function App() {
     setSettingsError(null);
     try {
       const saved = await api.saveSettings(nextSettings);
-      setPlanningSettings(saved.settings);
+      setPlanningSettings(normalizeAndValidateSettings(saved.settings));
       setSettingsRevision(saved.revision);
 
       if (nextPublishers && Array.isArray(nextPublishers)) {
@@ -679,7 +790,7 @@ export default function App() {
       // Re-read so this tab shows what is actually stored, not the rejected edit.
       try {
         const current = await api.fetchSettings();
-        setPlanningSettings(current.settings);
+        setPlanningSettings(normalizeAndValidateSettings(current.settings));
         setSettingsRevision(current.revision);
       } catch {
         // Leave the current view alone if even the re-read fails.
@@ -797,6 +908,7 @@ export default function App() {
   const [parsingError, setParsingError] = useState<string | null>(null);
   const [ignoreCache, setIgnoreCache] = useState<boolean>(false);
   const lastUploadedFileRef = React.useRef<File | null>(null);
+  const mediaPlanFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Media plan option selection & taxonomy state
   const [planOptions, setPlanOptions] = useState<ParsedPlanOption[]>([]);
@@ -953,7 +1065,7 @@ export default function App() {
 
     personas.forEach((persona, index) => {
       if (persona?.avatarUrl && persona.avatarUrl.startsWith("data:image/")) return;
-      fetch("/api/generate-persona-avatar", {
+      api.authFetch("/api/generate-persona-avatar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ persona })
@@ -1091,7 +1203,7 @@ export default function App() {
     setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, personaIndex])));
     try {
       const targetPersona = profileData.personas[personaIndex];
-      const res = await fetch("/api/generate-persona-avatar", {
+      const res = await api.authFetch("/api/generate-persona-avatar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ persona: targetPersona })
@@ -1137,10 +1249,12 @@ export default function App() {
     setIsLoadingPlans(true);
     setPlansError(null);
     try {
-      setPlanSummaries(await api.listPlans());
+      const plans = await api.listPlans();
+      setPlanSummaries(Array.isArray(plans) ? plans : []);
     } catch (err: any) {
       console.error("Could not load shared plans:", err);
       setPlansError(err?.message || "Could not load saved plans.");
+      setPlanSummaries([]);
     } finally {
       setIsLoadingPlans(false);
     }
@@ -1214,6 +1328,70 @@ export default function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
 
+  // Share Token & Public View State
+  const [shareToken, setShareToken] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("share");
+    }
+    return null;
+  });
+  const isShareView = Boolean(shareToken);
+  const [sharedPlanLoading, setSharedPlanLoading] = useState<boolean>(Boolean(shareToken));
+  const [sharedPlanError, setSharedPlanError] = useState<string | null>(null);
+
+  // Share Management Modal State (for planners)
+  const [shareModalPlan, setShareModalPlan] = useState<{
+    id: string;
+    title: string;
+    shareToken?: string | null;
+    isShared?: boolean;
+  } | null>(null);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+
+  // CTV Publishers Edit Modal State
+  const [isCtvPublishersModalOpen, setIsCtvPublishersModalOpen] = useState(false);
+  const initialCtvPublishersRef = React.useRef<CtvPublisherRecommendation[] | null>(null);
+
+  // Presentation AI Slide Studio (gpt-image-2.5-sunburst) Modal State
+  const [isSlideStudioOpen, setIsSlideStudioOpen] = useState(false);
+  const [slideStudioSection, setSlideStudioSection] = useState<'personas' | 'channels'>('personas');
+
+  const handleOpenSlideStudio = (section: 'personas' | 'channels' = 'personas') => {
+    setSlideStudioSection(section);
+    setIsSlideStudioOpen(true);
+  };
+
+  // CTV Publishers 16:9 Slide Export State
+  const [isExportingCtvSlide, setIsExportingCtvSlide] = useState(false);
+  const [exportingVariant, setExportingVariant] = useState<'detailed' | 'basic' | null>(null);
+  const [ctvSlideExportSuccess, setCtvSlideExportSuccess] = useState(false);
+  const [summarizedPublisherInsights, setSummarizedPublisherInsights] = useState<string | null>(null);
+  const ctvSlideDetailedExportRef = React.useRef<HTMLDivElement>(null);
+  const ctvSlideBasicExportRef = React.useRef<HTMLDivElement>(null);
+
+  // Store initial CTV publisher recommendations when profileData is populated
+  React.useEffect(() => {
+    setSummarizedPublisherInsights(null);
+    if (profileData && initialCtvPublishersRef.current === null) {
+      initialCtvPublishersRef.current = profileData.ctvPublishers && profileData.ctvPublishers.length > 0
+        ? profileData.ctvPublishers
+        : defaultCtvPublishers;
+    }
+  }, [profileData]);
+
+  // Set noindex, nofollow robots tag when viewing a shared plan link
+  React.useEffect(() => {
+    if (!isShareView) return;
+    let metaRobots = document.querySelector('meta[name="robots"]');
+    if (!metaRobots) {
+      metaRobots = document.createElement("meta");
+      metaRobots.setAttribute("name", "robots");
+      document.head.appendChild(metaRobots);
+    }
+    metaRobots.setAttribute("content", "noindex, nofollow");
+  }, [isShareView]);
+
   // Handler to open Save Dialog with a suggested title based on user's brief or uploaded plan.
   // The advertiser leads: it is what makes a row in the saved-plans list identifiable at a
   // glance, where a truncated audience description or a generic "Audience Profile" is not.
@@ -1239,9 +1417,14 @@ export default function App() {
     audienceDescription,
     url,
     geography,
-    geoTargeting,
+    geographyConfig: {
+      type: geographyType,
+      targets: geoTargets,
+      rawInput: geoRawInput,
+    },
     campaignFocus,
     additionalContext,
+    targetPersonas: targetPersonas.filter(p => p.trim().length > 0),
     budget,
     campaignLength,
     planningSettings,
@@ -1295,67 +1478,148 @@ export default function App() {
   };
 
   /**
-   * Open a shared plan. The settings revision the plan was generated against is restored
-   * alongside it, so the numbers render the way they did when it was saved even if the
-   * global settings have moved on since.
+   * Opens the Share modal for the currently active media plan in the workspace.
+   * If the plan has not been saved yet, it auto-saves it first to obtain a plan ID.
    */
-  const handleLoadSavedProfile = async (summary: PlanSummary) => {
-    setPlansError(null);
-    setLoadingPlanId(summary.id);
+  const handleOpenShareForActivePlan = async () => {
+    if (!profileData) return;
+    let targetPlanId = activeSavedId;
+    let targetTitle =
+      (advertiserName.trim() ? (/\bplans?\b/i.test(advertiserName.trim()) ? advertiserName.trim() : `${advertiserName.trim()} Plan`) : "") ||
+      saveTitle.trim() ||
+      "Audience Strategy Plan";
+    let targetShareToken: string | null | undefined = null;
+    let targetIsShared = false;
 
-    let saved: api.StoredPlan;
-    try {
-      saved = await api.getPlan(summary.id);
-    } catch (err: any) {
-      console.error("Could not open plan:", err);
-      setPlansError(err?.message || "Could not open that plan.");
-      setLoadingPlanId(null);
-      return;
+    if (targetPlanId) {
+      const existing = planSummaries.find((p) => p.id === targetPlanId);
+      if (existing) {
+        targetTitle = existing.title;
+        targetShareToken = existing.shareToken;
+        targetIsShared = Boolean(existing.isShared);
+      }
+    } else {
+      // Auto-save the plan if not yet persisted, so we have a permanent server ID to share
+      try {
+        setIsPersistingPlan(true);
+        const input = {
+          title: targetTitle,
+          advertiserName: advertiserName || undefined,
+          settingsRevision,
+          payload: buildPlanPayload(),
+        };
+        const created = await api.createPlan(input);
+        targetPlanId = created.id;
+        targetTitle = created.title;
+        targetShareToken = created.shareToken;
+        targetIsShared = Boolean(created.isShared);
+        setActiveSavedId(created.id);
+        setActivePlanRevision(created.revision);
+        await refreshPlans();
+      } catch (err: any) {
+        console.error("Could not auto-save plan prior to sharing:", err);
+        setSaveError("Could not save the plan before sharing. Please save the plan first.");
+        setIsSaving(true);
+        return;
+      } finally {
+        setIsPersistingPlan(false);
+      }
     }
 
+    if (targetPlanId) {
+      setShareModalPlan({
+        id: targetPlanId,
+        title: targetTitle,
+        shareToken: targetShareToken,
+        isShared: targetIsShared,
+      });
+      setIsShareModalOpen(true);
+    }
+  };
+
+  /**
+   * Applies stored plan payload into workspace states.
+   */
+  const applyPlanToWorkspace = (saved: api.StoredPlan, isSharedViewMode = false) => {
     const body = saved.payload as any;
     setAdvertiserName(saved.advertiserName || "");
     setKpis(body.kpis && body.kpis.length > 0 ? body.kpis : [""]);
     setAudienceDescription(body.audienceDescription || "");
     setUrl(body.url || "");
-    setGeography(body.geography || "United States");
-    // Plans saved before geo targeting existed carry no footprint and open as national.
-    const savedGeo = rehydrateGeoTargeting(body.geoTargeting);
-    setGeoScope(savedGeo?.scope || "national");
-    setGeoStateSelection(savedGeo?.scope === "state" ? savedGeo : emptyGeoSelection("select"));
-    setGeoDmaSelection(savedGeo?.scope === "dma" ? savedGeo : emptyGeoSelection("paste"));
+    if (body.geographyConfig) {
+      setGeographyType(body.geographyConfig.type || "National");
+      setGeoTargets(Array.isArray(body.geographyConfig.targets) ? body.geographyConfig.targets : []);
+      setGeoRawInput(body.geographyConfig.rawInput || "");
+      setGeoUnrecognized([]);
+      setGeoUploadNotice(null);
+    } else if (body.geography) {
+      const savedGeo = String(body.geography);
+      if (savedGeo.toLowerCase().includes("dma")) {
+        setGeographyType("DMA");
+        const parsed = parseGeoTextInput(savedGeo.replace(/^dma[\s:(-]+/i, "").replace(/[)]+$/, ""), "DMA");
+        setGeoTargets(parsed.valid);
+        setGeoRawInput("");
+      } else if (savedGeo.toLowerCase().includes("state")) {
+        setGeographyType("State");
+        const parsed = parseGeoTextInput(savedGeo.replace(/^state[\s:(-]+/i, "").replace(/[)]+$/, ""), "State");
+        setGeoTargets(parsed.valid);
+        setGeoRawInput("");
+      } else {
+        setGeographyType(savedGeo === "United States" ? "National" : (savedGeo as any));
+        setGeoTargets([]);
+        setGeoRawInput("");
+      }
+      setGeoUnrecognized([]);
+      setGeoUploadNotice(null);
+    } else {
+      setGeographyType("National");
+      setGeoTargets([]);
+      setGeoRawInput("");
+      setGeoUnrecognized([]);
+      setGeoUploadNotice(null);
+    }
     setCampaignFocus(body.campaignFocus || "Full-funnel digital media plan");
     setAdditionalContext(body.additionalContext || "");
+    if (Array.isArray(body.targetPersonas) && body.targetPersonas.length > 0) {
+      const restored = ["", "", "", ""];
+      body.targetPersonas.slice(0, 4).forEach((p, idx) => { restored[idx] = p; });
+      setTargetPersonas(restored);
+      setIsAdvancedPersonaOpen(true);
+    } else {
+      setTargetPersonas(["", "", "", ""]);
+      setIsAdvancedPersonaOpen(false);
+    }
     setBudget(body.budget || "$10,000");
     setCampaignLength(body.campaignLength || "30");
     setProfileData(body.profile);
     setGroundingSources(body.groundingSources || null);
+    if (body.extractedPlacements) setExtractedPlacements(body.extractedPlacements);
+    if (body.planOptions) setPlanOptions(body.planOptions);
+    if (body.rfpAnalysis) setRfpAnalysis(body.rfpAnalysis);
     setActiveSavedId(saved.id);
     setActivePlanRevision(saved.revision);
     setError(null);
     setPersonaPage(0);
     setArePersonasExpanded(false);
     setIsDomainAffinityExpanded(false);
-    setLoadingPlanId(null);
 
-    // Restore the settings this plan was generated against. Falling back to the plan's
-    // own embedded snapshot covers plans imported from before revisions existed.
+    // Restore the settings this plan was generated against.
     if (saved.settingsRevision !== null) {
       api
         .fetchSettingsRevision(saved.settingsRevision)
         .then((record) => {
-          if (record) setPlanningSettings(record.settings);
-          else if (body.planningSettings) setPlanningSettings(body.planningSettings);
+          if (record?.settings) setPlanningSettings(normalizeAndValidateSettings(record.settings));
+          else if (body.planningSettings) setPlanningSettings(normalizeAndValidateSettings(body.planningSettings));
         })
         .catch(() => {
-          if (body.planningSettings) setPlanningSettings(body.planningSettings);
+          if (body.planningSettings) setPlanningSettings(normalizeAndValidateSettings(body.planningSettings));
         });
     } else if (body.planningSettings) {
-      setPlanningSettings(body.planningSettings);
+      setPlanningSettings(normalizeAndValidateSettings(body.planningSettings));
     }
 
-    // Auto-generate missing headshots in background if the saved plan lacks them.
-    if (body.profile && body.profile.personas) {
+    // Auto-generate missing headshots in background if authenticated and not in shared view
+    if (!isSharedViewMode && body.profile && body.profile.personas) {
       const pendingIndices: number[] = [];
       body.profile.personas.forEach((persona: any, index: number) => {
         if (!persona.avatarUrl || persona.avatarUrl.includes("example.com")) {
@@ -1368,7 +1632,7 @@ export default function App() {
 
       body.profile.personas.forEach((persona: any, index: number) => {
         if (!persona.avatarUrl || persona.avatarUrl.includes("example.com")) {
-          fetch("/api/generate-persona-avatar", {
+          api.authFetch("/api/generate-persona-avatar", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ persona })
@@ -1400,6 +1664,48 @@ export default function App() {
     const workspace = document.getElementById("profile-workspace");
     if (workspace) {
       workspace.scrollIntoView({ behavior: "smooth" });
+    }
+  };
+
+  // Load shared plan if viewing via share token
+  React.useEffect(() => {
+    if (!shareToken) return;
+    setSharedPlanLoading(true);
+    setSharedPlanError(null);
+    api
+      .fetchSharedPlan(shareToken)
+      .then((stored) => {
+        applyPlanToWorkspace(stored, true);
+        setLeftTab("overview");
+      })
+      .catch((err: any) => {
+        console.error("Could not load shared plan:", err);
+        setSharedPlanError(
+          err?.message || "This shared media plan link does not exist, has expired, or was revoked."
+        );
+      })
+      .finally(() => {
+        setSharedPlanLoading(false);
+      });
+  }, [shareToken]);
+
+  /**
+   * Open a shared plan. The settings revision the plan was generated against is restored
+   * alongside it, so the numbers render the way they did when it was saved even if the
+   * global settings have moved on since.
+   */
+  const handleLoadSavedProfile = async (summary: PlanSummary) => {
+    setPlansError(null);
+    setLoadingPlanId(summary.id);
+
+    try {
+      const saved = await api.getPlan(summary.id);
+      applyPlanToWorkspace(saved, false);
+    } catch (err: any) {
+      console.error("Could not open plan:", err);
+      setPlansError(err?.message || "Could not open that plan.");
+    } finally {
+      setLoadingPlanId(null);
     }
   };
 
@@ -1684,7 +1990,7 @@ export default function App() {
     setModalTab("raw"); // Default to raw grid on upload
     setExtractedPlacements([]); // Reset previous
 
-    fetch("/api/parse-plan", {
+    api.authFetch("/api/parse-plan", {
       method: "POST",
       body: formData,
     })
@@ -1833,7 +2139,7 @@ export default function App() {
 
     try {
       const selectedOpts = (planOptions && planOptions.length > 0) ? planOptions.filter(p => p.selected) : undefined;
-      const response = await fetch("/api/generate-profile", {
+      const response = await api.authFetch("/api/generate-profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: abortController.signal,
@@ -1843,9 +2149,9 @@ export default function App() {
           audienceDescription: briefMode === "upload" ? `[Media Plan / RFP: ${uploadedFileName || 'Uploaded File'}]\n\n${(uploadedFileText || '').slice(0, 1500)}` : audienceDescription,
           url,
           geography,
-          geoTargeting,
           campaignFocus,
           additionalContext,
+          targetPersonas: targetPersonas.map(p => p.trim()).filter(p => p.length > 0),
           regenerateType: typeOverride,
           selectedPlanOptions: selectedOpts,
           budgetStrategyMode,
@@ -1953,10 +2259,85 @@ export default function App() {
     }
   };
 
+  // Reset workspace to a fresh blank brief and clear the active plan
+  const handleNewPlan = () => {
+    // Reset brief input fields
+    setAdvertiserName("");
+    setBudget("$10,000");
+    setCampaignLength("30");
+    setKpis([""]);
+    setAudienceDescription("");
+    setUrl("");
+    setGeographyType("National");
+    setGeoTargets([]);
+    setGeoRawInput("");
+    setGeoUnrecognized([]);
+    setGeoUploadNotice(null);
+    setCampaignFocus("Full-funnel digital media plan");
+    setAdditionalContext("");
+
+    // Reset media plan upload & parsing states
+    setBriefMode("text");
+    setUploadedFileName("");
+    setUploadedFileText("");
+    setParsedSheetsData([]);
+    setExtractedPlacements([]);
+    setRfpAnalysis(null);
+    setActivePlanSubTab("ALL");
+    setIsParsingPlan(false);
+    setParsingError(null);
+    setPlanOptions([]);
+    setTaxonomyMappings([]);
+    setBudgetStrategyMode("reallocation");
+    setChannelStrategyUndo(null);
+    if (lastUploadedFileRef.current) lastUploadedFileRef.current = null;
+    if (geoFileInputRef.current) geoFileInputRef.current.value = "";
+    if (mediaPlanFileInputRef.current) mediaPlanFileInputRef.current.value = "";
+
+    // Reset active profile output & generation states
+    setProfileData(null);
+    setGroundingSources(null);
+    setError(null);
+    setLoading(false);
+    setPersonaPage(0);
+    setArePersonasExpanded(false);
+    setIsDeviceShareExpanded(false);
+    setIsDemographicsExpanded(false);
+    setIsTemporalExpanded(false);
+    setIsDomainAffinityExpanded(false);
+    setResearchLogs([]);
+    setServerCompleteData(null);
+    setGeneratingAvatarIndices([]);
+    setSummarizedPublisherInsights(null);
+    if (initialCtvPublishersRef.current) initialCtvPublishersRef.current = null;
+
+    // Reset saved plan selection & modals
+    setActiveSavedId(null);
+    setActivePlanRevision(null);
+    setLeftTab("brief");
+    setIsExportOpen(false);
+    setIsPreviewModalOpen(false);
+    setIsCtvPublishersModalOpen(false);
+    setIsSlideStudioOpen(false);
+    setIsShareModalOpen(false);
+    setIsInsightsExpanded(false);
+    setIsCitationsExpanded(false);
+    setIsAuditExpanded(false);
+
+    // Clear any share token or URL query parameters and scroll to top
+    if (typeof window !== "undefined") {
+      if (window.location.search) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+      setShareToken(null);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
   // Copy Profile Markdown to clipboard
   const handleCopyProfile = () => {
     if (!profileData) return;
-    const md = exportProfileToMarkdown(profileData, false, false, geoTargeting);
+    const md = exportProfileToMarkdown(profileData, false, false);
     navigator.clipboard.writeText(md);
     setCopyProfileCopied(true);
     setTimeout(() => setCopyProfileCopied(false), 2000);
@@ -1991,7 +2372,7 @@ export default function App() {
     })) || [];
 
     try {
-      const res = await fetch("/api/analyze-media-plan", {
+      const res = await api.authFetch("/api/analyze-media-plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2003,7 +2384,6 @@ export default function App() {
           kpis: kpis.filter((k) => k.trim().length > 0),
           campaignFocus,
           geography,
-          geoTargeting,
           workingMediaBudget: budgetNormalization.workingMediaBudget,
           campaignFlightDays: budgetNormalization.campaignFlightDays,
           planningSettings,
@@ -2109,10 +2489,33 @@ export default function App() {
     setProfileData((previous) => previous ? { ...previous, channelStrategy: strategyToRestore } : null);
   };
 
+  const handleUpdateCtvPublishers = (updated: CtvPublisherRecommendation[]) => {
+    setProfileData((previous) => {
+      if (!previous) return null;
+      return {
+        ...previous,
+        ctvPublishers: updated,
+        channelStrategy: previous.channelStrategy
+          ? {
+              ...previous.channelStrategy,
+              ctvPublishers: updated,
+            }
+          : undefined,
+      };
+    });
+  };
+
+  const handleResetCtvPublishers = () => {
+    const toRestore = initialCtvPublishersRef.current && initialCtvPublishersRef.current.length > 0
+      ? initialCtvPublishersRef.current
+      : defaultCtvPublishers;
+    handleUpdateCtvPublishers(toRestore);
+  };
+
   // Download Profile Markdown file
   const handleDownloadMarkdown = () => {
     if (!profileData) return;
-    const md = exportProfileToMarkdown(profileData, true, true, geoTargeting);
+    const md = exportProfileToMarkdown(profileData, true, Boolean(internalOnlyVisibility.qaAudit));
     const blob = new Blob([md], { type: "text/markdown;charset=utf-8;" });
     const fileUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2132,7 +2535,7 @@ export default function App() {
   // Download Profile Text file (Markdown format)
   const handleDownloadTxt = () => {
     if (!profileData) return;
-    const md = exportProfileToMarkdown(profileData, true, true, geoTargeting);
+    const md = exportProfileToMarkdown(profileData, true, Boolean(internalOnlyVisibility.qaAudit));
     const blob = new Blob([md], { type: "text/plain;charset=utf-8;" });
     const fileUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2367,16 +2770,157 @@ export default function App() {
     }
   };
 
-  // Avoid flashing the login screen while the session cookie is being verified.
-  if (!isSessionChecked) {
-    return (
-      <div className="min-h-screen bg-[#fafbfc] flex items-center justify-center p-4 font-sans">
-        <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
-      </div>
-    );
-  }
+  // Export 16:9 Slide Image of CTV Publishers & Publisher Insights for Presentations (Detailed or Basic)
+  const handleExportCtvSlide = async (variant: 'detailed' | 'basic' = 'detailed') => {
+    if (isExportingCtvSlide) return;
+    setIsExportingCtvSlide(true);
+    setExportingVariant(variant);
+    setCtvSlideExportSuccess(false);
 
-  if (!isAuthenticated) {
+    // Wait a moment for React to toggle the active canvas variant in the DOM
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const targetRef = variant === 'basic' ? ctvSlideBasicExportRef.current : ctvSlideDetailedExportRef.current;
+    if (!targetRef) {
+      setIsExportingCtvSlide(false);
+      return;
+    }
+
+    try {
+      // Ensure AI summarizes publisher insights if over limits (basic has a larger column than detailed)
+      const rawInsights = (profileData?.publisherInsights || defaultPublisherInsights || "").trim();
+      const maxWords = variant === 'basic' ? 110 : 65;
+      const maxCharacters = variant === 'basic' ? 780 : 450;
+      const wordCount = rawInsights.split(/\s+/).length;
+
+      if ((rawInsights.length > maxCharacters || wordCount > maxWords) && !summarizedPublisherInsights) {
+        try {
+          const sumRes = await fetch("/api/summarize-publisher-insights", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: rawInsights,
+              maxWords,
+              maxCharacters,
+            }),
+          });
+          if (sumRes.ok) {
+            const sumData = await sumRes.json();
+            if (sumData.summary) {
+              setSummarizedPublisherInsights(sumData.summary);
+              // Wait for React to flush state to the DOM
+              await new Promise((resolve) => setTimeout(resolve, 200));
+            }
+          }
+        } catch (sumErr) {
+          console.warn("AI summarization pre-export notice:", sumErr);
+        }
+      }
+
+      const canvas = await captureElementToCanvas(targetRef, {
+        scale: 2, // 3840x2160 crisp 4K presentation quality
+        width: 1920,
+        height: 1080,
+        backgroundColor: variant === 'basic' ? "#ffffff" : "#f8fafc",
+      });
+
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const sanitizedName = (profileData?.personas?.[0]?.name || advertiserName || "ctv_publisher_strategy")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_");
+        link.download = `${sanitizedName}_ctv_publishers_${variant}_16x9.png`;
+        link.href = url;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+
+        // Attempt direct copy to clipboard for immediate pasting into Google Slides or PowerPoint
+        if (navigator.clipboard && typeof ClipboardItem !== "undefined") {
+          try {
+            navigator.clipboard
+              .write([
+                new ClipboardItem({
+                  "image/png": blob,
+                }),
+              ])
+              .catch(() => {
+                // Clipboard write permission may be restricted in sandboxed iframe contexts
+              });
+          } catch {
+            // Ignore clipboard errors gracefully
+          }
+        }
+
+        setCtvSlideExportSuccess(true);
+        setTimeout(() => setCtvSlideExportSuccess(false), 3500);
+      }, "image/png");
+    } catch (err) {
+      console.error("Failed to export CTV slide image:", err);
+    } finally {
+      setIsExportingCtvSlide(false);
+      setExportingVariant(null);
+    }
+  };
+
+  // When viewing via a share token, bypass the login screen and render the shared plan.
+  if (isShareView) {
+    if (sharedPlanLoading) {
+      return (
+        <div className="min-h-screen bg-[#fafbfc] flex flex-col items-center justify-center p-4 font-sans space-y-4">
+          <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-xs overflow-hidden p-2.5">
+            <img src={drIconWhite} alt="Digital Remedy Logo" className="w-full h-full object-contain" referrerPolicy="no-referrer" />
+          </div>
+          <div className="flex items-center gap-2 text-indigo-600 font-medium text-sm">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            <span>Loading shared media plan...</span>
+          </div>
+        </div>
+      );
+    }
+
+    if (sharedPlanError) {
+      return (
+        <div className="min-h-screen bg-[#fafbfc] flex items-center justify-center p-4 md:p-6 font-sans">
+          <div className="w-full max-w-md bg-white border border-slate-100 rounded-2xl shadow-xl p-8 space-y-6 text-center">
+            <div className="w-12 h-12 bg-rose-50 border border-rose-100 rounded-xl flex items-center justify-center text-rose-600 mx-auto">
+              <AlertCircle className="w-6 h-6" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-xl font-display font-bold text-slate-900">Shared Plan Unavailable</h2>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                {sharedPlanError}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                window.history.replaceState({}, "", window.location.pathname);
+                setShareToken(null);
+                setSharedPlanError(null);
+              }}
+              className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl transition-all shadow-xs cursor-pointer"
+            >
+              Back to Sign In
+            </button>
+          </div>
+        </div>
+      );
+    }
+  } else {
+    // Avoid flashing the login screen while the session cookie is being verified.
+    if (!isSessionChecked) {
+      return (
+        <div className="min-h-screen bg-[#fafbfc] flex items-center justify-center p-4 font-sans">
+          <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
+        </div>
+      );
+    }
+
+    if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-[#fafbfc] flex items-center justify-center p-4 md:p-6 font-sans">
         <div className="w-full max-w-md bg-white border border-slate-100 rounded-2xl shadow-xl p-8 space-y-6">
@@ -2529,6 +3073,7 @@ export default function App() {
       </div>
     );
   }
+}
 
   return (
     <div className="min-h-screen bg-[#fafbfc] text-slate-800 flex flex-col font-sans">
@@ -2543,43 +3088,165 @@ export default function App() {
               <h1 className="text-xl font-display font-bold text-slate-900 tracking-tight">AI Plan Agent</h1>
             </div>
           </div>
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setIsHeaderMenuOpen((open) => !open)}
-              className="rounded-xl border border-slate-200 bg-white p-2.5 text-slate-600 shadow-xs transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
-              aria-label="Open application menu"
-              aria-expanded={isHeaderMenuOpen}
-            >
-              <Menu className="h-5 w-5" />
-            </button>
-            {isHeaderMenuOpen && (
-              <>
-                <button className="fixed inset-0 z-0 cursor-default" aria-label="Close application menu" onClick={() => setIsHeaderMenuOpen(false)} />
-                <div className="absolute right-0 z-10 mt-2 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
-                  <div className="px-3 py-2 border-b border-slate-100 mb-1">
-                    <p className="text-xs font-bold text-slate-800 truncate">{session?.name}</p>
-                    <p className="text-[10px] text-slate-400">
-                      {canEditSettings ? "Can edit global settings" : "Settings are read-only"}
-                    </p>
-                  </div>
+          <div className="flex items-center gap-2.5">
+            {/* Plan Action Buttons (Save, Share, New Plan, Export) */}
+            {!isShareView && profileData && !loading && (
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Save to History Button */}
+                <button
+                  onClick={handleOpenSaveDialog}
+                  className="inline-flex items-center justify-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
+                  title="Save this profile to history list"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{activeSavedId ? "Update Save" : "Save Profile"}</span>
+                </button>
+
+                {/* Share Plan Button */}
+                <button
+                  onClick={handleOpenShareForActivePlan}
+                  className="inline-flex items-center justify-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
+                  title="Create or manage shareable link for this plan"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Share Plan</span>
+                </button>
+
+                {/* New Plan Button */}
+                <button
+                  onClick={handleNewPlan}
+                  className="inline-flex items-center justify-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
+                  title="Start a new blank brief and clear the current plan"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>New Plan</span>
+                </button>
+
+                {/* Export Dropdown */}
+                <div className="relative">
                   <button
-                    type="button"
-                    onClick={() => { setIsHeaderMenuOpen(false); setIsSettingsOpen(true); }}
-                    className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                    onClick={() => setIsExportOpen(!isExportOpen)}
+                    className="inline-flex items-center justify-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
+                    title="Export this profile to PDF or Markdown formats"
                   >
-                    {canEditSettings ? "Settings" : "View Settings"}
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export Plan</span>
+                    <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isExportOpen ? 'rotate-180' : ''}`} />
                   </button>
-                  <button
-                    type="button"
-                    onClick={handleLogout}
-                    className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-700"
-                  >
-                    Sign Out
-                  </button>
+                  
+                  {isExportOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40 cursor-default" onClick={() => setIsExportOpen(false)} />
+                      <div className="absolute right-0 mt-2 w-52 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 z-50 text-left">
+                        <button
+                          onClick={() => {
+                            setIsExportOpen(false);
+                            handleDownloadMarkdown();
+                          }}
+                          className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
+                        >
+                          <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                          <div>
+                            <span className="block font-semibold">Download Markdown</span>
+                            <span className="block text-[9px] text-slate-400 font-mono">Clean document (.md)</span>
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setIsExportOpen(false);
+                            handleDownloadTxt();
+                          }}
+                          className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
+                        >
+                          <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                          <div>
+                            <span className="block font-semibold">Download Text File</span>
+                            <span className="block text-[9px] text-slate-400 font-mono">Markdown text (.txt)</span>
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setIsExportOpen(false);
+                            handleCopyProfile();
+                          }}
+                          className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
+                        >
+                          {copyProfileCopied ? (
+                            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                          ) : (
+                            <Copy className="w-4 h-4 text-slate-400 shrink-0" />
+                          )}
+                          <div>
+                            <span className="block font-semibold">{copyProfileCopied ? "Copied!" : "Copy to Clipboard"}</span>
+                            <span className="block text-[9px] text-slate-400 font-mono">Markdown content</span>
+                          </div>
+                        </button>
+                        <button
+                          onClick={async () => {
+                            setIsExportOpen(false);
+                            await handleDownloadPDF();
+                          }}
+                          disabled={pdfGenerating}
+                          className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
+                        >
+                          {pdfGenerating ? (
+                            <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
+                          ) : (
+                            <BookOpen className="w-4 h-4 text-slate-400 shrink-0" />
+                          )}
+                          <div>
+                            <span className="block font-semibold">{pdfGenerating ? "Generating..." : "Download PDF"}</span>
+                            <span className="block text-[9px] text-slate-400 font-mono">High-fidelity visual (.pdf)</span>
+                          </div>
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
-              </>
+              </div>
             )}
+
+            {/* Menu button for authenticated planners; hidden for shared read-only link */}
+            {!isShareView ? (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsHeaderMenuOpen((open) => !open)}
+                  className="rounded-xl border border-slate-200 bg-white p-2.5 text-slate-600 shadow-xs transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+                  aria-label="Open application menu"
+                  aria-expanded={isHeaderMenuOpen}
+                >
+                  <Menu className="h-5 w-5" />
+                </button>
+                {isHeaderMenuOpen && (
+                  <>
+                    <button className="fixed inset-0 z-40 cursor-default" aria-label="Close application menu" onClick={() => setIsHeaderMenuOpen(false)} />
+                    <div className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                      <div className="px-3 py-2 border-b border-slate-100 mb-1">
+                        <p className="text-xs font-bold text-slate-800 truncate">{session?.name}</p>
+                        <p className="text-[10px] text-slate-400">
+                          {canEditSettings ? "Can edit global settings" : "Settings are read-only"}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { setIsHeaderMenuOpen(false); setIsSettingsOpen(true); }}
+                        className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                      >
+                        {canEditSettings ? "Settings" : "View Settings"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-700"
+                      >
+                        Sign Out
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : null}
           </div>
         </div>
       </header>
@@ -2598,46 +3265,58 @@ export default function App() {
       <main className="flex-1 max-w-[1500px] w-full mx-auto p-4 md:p-6 flex flex-col lg:flex-row gap-6 items-start">
         {/* Left Column: Media Planner Inputs (350px fixed on lg) */}
         <section className="w-full lg:w-[350px] shrink-0 bg-white border border-slate-100 rounded-2xl shadow-xs sticky lg:top-24 max-h-[calc(100vh-120px)] flex flex-col overflow-hidden">
-          {/* Tabs header */}
-          <div className="flex border-b border-slate-100 p-4 pb-3 gap-1 shrink-0 bg-white">
-            <button
-              onClick={() => setLeftTab("brief")}
-              className={`flex-1 flex items-center justify-center gap-1 py-2 px-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                leftTab === "brief"
-                  ? "bg-indigo-50 text-indigo-700 font-bold"
-                  : "text-slate-500 hover:text-slate-800 hover:bg-slate-50"
-              }`}
-            >
-              <Target className="w-3.5 h-3.5 shrink-0" />
-              <span>Brief</span>
-            </button>
-            <button
-              onClick={() => setLeftTab("saved")}
-              className={`flex-1 flex items-center justify-center gap-1 py-2 px-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                leftTab === "saved"
-                  ? "bg-indigo-50 text-indigo-700 font-bold"
-                  : "text-slate-500 hover:text-slate-800 hover:bg-slate-50"
-              }`}
-            >
-              <History className="w-3.5 h-3.5 shrink-0" />
-              <span>Saved</span>
-            </button>
-            {profileData && (
+          {/* Tabs header: shown for authenticated planners, hidden on shared read-only link */}
+          {!isShareView ? (
+            <div className="flex border-b border-slate-100 p-4 pb-3 gap-1 shrink-0 bg-white">
               <button
-                onClick={() => setLeftTab("overview")}
+                onClick={() => setLeftTab("brief")}
                 className={`flex-1 flex items-center justify-center gap-1 py-2 px-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                  leftTab === "overview"
+                  leftTab === "brief"
                     ? "bg-indigo-50 text-indigo-700 font-bold"
                     : "text-slate-500 hover:text-slate-800 hover:bg-slate-50"
                 }`}
               >
-                <TrendingUp className="w-3.5 h-3.5 shrink-0" />
-                <span>Overview</span>
+                <Target className="w-3.5 h-3.5 shrink-0" />
+                <span>Brief</span>
               </button>
-            )}
-          </div>
+              <button
+                onClick={() => setLeftTab("saved")}
+                className={`flex-1 flex items-center justify-center gap-1 py-2 px-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  leftTab === "saved"
+                    ? "bg-indigo-50 text-indigo-700 font-bold"
+                    : "text-slate-500 hover:text-slate-800 hover:bg-slate-50"
+                }`}
+              >
+                <History className="w-3.5 h-3.5 shrink-0" />
+                <span>Saved</span>
+              </button>
+              {profileData && (
+                <button
+                  onClick={() => setLeftTab("overview")}
+                  className={`flex-1 flex items-center justify-center gap-1 py-2 px-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                    leftTab === "overview"
+                      ? "bg-indigo-50 text-indigo-700 font-bold"
+                      : "text-slate-500 hover:text-slate-800 hover:bg-slate-50"
+                  }`}
+                >
+                  <TrendingUp className="w-3.5 h-3.5 shrink-0" />
+                  <span>Overview</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-between border-b border-slate-100 p-4 shrink-0 bg-white">
+              <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs uppercase tracking-wider">
+                <TrendingUp className="w-4 h-4 text-indigo-600" />
+                <span>Campaign Overview</span>
+              </div>
+              <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
+                Summary
+              </span>
+            </div>
+          )}
 
-          {leftTab === "brief" ? (
+          {!isShareView && leftTab === "brief" ? (
             <form onSubmit={(e) => handleGenerate(e)} className="flex flex-col flex-1 min-h-0">
               <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
                 <div className="flex items-center gap-2 mb-1">
@@ -2693,6 +3372,7 @@ export default function App() {
                     </label>
                     <div className="relative border border-dashed border-slate-200 hover:border-indigo-400 bg-slate-50/50 hover:bg-slate-50 rounded-xl p-4 text-center cursor-pointer transition min-h-[110px] flex flex-col justify-center items-center group">
                       <input
+                        ref={mediaPlanFileInputRef}
                         type="file"
                         accept=".pdf,.doc,.docx,.txt,.csv,.xlsx,.xls"
                         onChange={handleFileUpload}
@@ -3051,7 +3731,7 @@ export default function App() {
                       <span className="font-bold text-indigo-700">{appliedBudgetTier.maxChannels}</span>
                     </div>
                   </div>
-                  {budgetNormalization.assumptions.map((assumption) => (
+                  {internalOnlyVisibility.planningAssumptions && budgetNormalization.assumptions.map((assumption) => (
                     <p key={assumption} className="mt-2 text-[10px] leading-4 text-amber-700">{assumption}</p>
                   ))}
                 </div>
@@ -3113,17 +3793,24 @@ export default function App() {
                       Geography
                     </label>
                     <select
-                      value={geoScope === "national" ? geography : geoScope}
+                      value={geographyType}
                       onChange={(e) => {
-                        const { market, scope } = applyGeographyChoice(e.target.value, geography);
-                        setGeography(market);
-                        setGeoScope(scope);
+                        const nextType = e.target.value as GeographyType;
+                        setGeographyType(nextType);
+                        if (nextType === "National") {
+                          setGeoTargets([]);
+                          setGeoRawInput("");
+                          setGeoUnrecognized([]);
+                          setGeoUploadNotice(null);
+                        }
                       }}
-                      className="w-full text-xs px-2 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 cursor-pointer"
+                      className="w-full text-xs px-2 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 cursor-pointer font-medium text-slate-700"
                     >
-                      {availableGeographies.map((market) => <option key={market} value={market}>{market}</option>)}
-                      <option value="state">State</option>
-                      <option value="dma">DMA</option>
+                      {geographyOptions.map((market) => (
+                        <option key={market} value={market}>
+                          {market === "United States" ? "National" : market}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -3135,7 +3822,7 @@ export default function App() {
                     <select
                       value={campaignFocus}
                       onChange={(e) => setCampaignFocus(e.target.value)}
-                      className="w-full text-xs px-2 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 cursor-pointer"
+                      className="w-full text-xs px-2 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 cursor-pointer font-medium text-slate-700"
                     >
                       <option value="CTV-first digital media plan">CTV-First</option>
                       <option value="Full-funnel digital media plan">Full-Funnel</option>
@@ -3144,12 +3831,211 @@ export default function App() {
                   </div>
                 </div>
 
-                {geoScope !== "national" && (
-                  <GeoTargetingFields
-                    scope={geoScope}
-                    selection={geoScope === "state" ? geoStateSelection : geoDmaSelection}
-                    onChange={geoScope === "state" ? setGeoStateSelection : setGeoDmaSelection}
-                  />
+                {/* Conditional Geo-Targeting Panel for State or DMA */}
+                {(geographyType === "State" || geographyType === "DMA") && (
+                  <div className="bg-slate-50/90 border border-slate-200/90 rounded-2xl p-3.5 space-y-3 transition-all">
+                    {/* Panel Header */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
+                          {geographyType === "State" ? "ST" : "DMA"}
+                        </span>
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-700">
+                            {geographyType === "State" ? "Target States" : "Target Designated Market Areas (DMAs)"}
+                          </h4>
+                          <p className="text-[10px] text-slate-400">
+                            {geographyType === "State"
+                              ? "Type state names or 2-letter codes, or upload a CSV / XLSX list."
+                              : "Type Nielsen DMA names or codes, or upload a CSV / XLSX list."}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-700 shadow-2xs">
+                          {geoTargets.length} {geographyType === "State" ? (geoTargets.length === 1 ? "State" : "States") : (geoTargets.length === 1 ? "DMA" : "DMAs")}
+                        </span>
+                        {geoTargets.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGeoTargets([]);
+                              setGeoRawInput("");
+                              setGeoUnrecognized([]);
+                              setGeoUploadNotice(null);
+                            }}
+                            className="text-[10px] text-slate-400 hover:text-rose-600 hover:underline cursor-pointer font-medium"
+                          >
+                            Clear all
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Comma-separated Text Input */}
+                    <div>
+                      <textarea
+                        value={geoRawInput}
+                        onChange={(e) => setGeoRawInput(e.target.value)}
+                        onBlur={handleApplyGeoRawInput}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            handleApplyGeoRawInput();
+                          }
+                        }}
+                        placeholder={
+                          geographyType === "State"
+                            ? "Type or paste comma-separated states (e.g. CA, NY, TX, Florida, Washington)..."
+                            : "Type or paste comma-separated DMAs (e.g. New York, Los Angeles, Chicago, Atlanta, DFW)..."
+                        }
+                        className="w-full h-16 text-xs px-3 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-none placeholder:text-slate-400"
+                      />
+                      <div className="flex items-center justify-between mt-1">
+                        <span className="text-[10px] text-slate-400">
+                          Press <kbd className="px-1 py-0.5 bg-slate-100 border border-slate-200 rounded text-[9px] font-mono">Enter</kbd> or click Apply to add
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleApplyGeoRawInput}
+                          disabled={!geoRawInput.trim()}
+                          className="text-[10px] font-semibold px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg transition-colors cursor-pointer"
+                        >
+                          + Add Targets
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* CSV / XLSX File Upload Dropzone */}
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setIsGeoFileDragging(true);
+                      }}
+                      onDragLeave={() => setIsGeoFileDragging(false)}
+                      onDrop={handleGeoFileDrop}
+                      onClick={() => geoFileInputRef.current?.click()}
+                      className={`border border-dashed rounded-xl p-3 text-center cursor-pointer transition-all ${
+                        isGeoFileDragging
+                          ? "border-indigo-500 bg-indigo-50/50"
+                          : "border-slate-200 bg-white/80 hover:bg-white hover:border-slate-300"
+                      }`}
+                    >
+                      <input
+                        ref={geoFileInputRef}
+                        type="file"
+                        accept=".csv, .xlsx, .xls"
+                        onChange={handleGeoFileInputChange}
+                        className="hidden"
+                      />
+                      <div className="flex items-center justify-center gap-2 text-slate-600">
+                        <Upload className="w-3.5 h-3.5 text-indigo-600" />
+                        <span className="text-xs font-medium">
+                          Drop CSV or XLSX file here, or <span className="text-indigo-600 underline">browse</span>
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        Auto-detects {geographyType === "State" ? "State names & postal codes" : "Nielsen DMA names & codes"}
+                      </p>
+                    </div>
+
+                    {/* Upload Notification */}
+                    {geoUploadNotice && (
+                      <div className="p-2 bg-indigo-50/80 border border-indigo-100 rounded-xl text-[11px] text-indigo-800 flex items-start gap-1.5">
+                        <CheckCircle className="w-3.5 h-3.5 text-indigo-600 shrink-0 mt-0.5" />
+                        <span className="flex-1">{geoUploadNotice}</span>
+                        <button
+                          type="button"
+                          onClick={() => setGeoUploadNotice(null)}
+                          className="text-indigo-400 hover:text-indigo-700"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Unrecognized Tokens Alert */}
+                    {geoUnrecognized.length > 0 && (
+                      <div className="p-2.5 bg-amber-50 border border-amber-200/80 rounded-xl text-[10px] text-amber-800 flex items-start gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <p className="font-semibold">Unrecognized entries ({geoUnrecognized.length}):</p>
+                          <p className="mt-0.5 font-mono text-[9px] text-amber-700">
+                            {geoUnrecognized.slice(0, 5).join(", ")}
+                            {geoUnrecognized.length > 5 ? ` +${geoUnrecognized.length - 5} more` : ""}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setGeoUnrecognized([])}
+                          className="text-amber-500 hover:text-amber-800"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Selected Targets Chip List */}
+                    {geoTargets.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between text-[10px] text-slate-500 font-medium">
+                          <span>Active Target List ({geoTargets.length})</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(geoTargets.join(", "));
+                              setGeoCopiedNotice(true);
+                              setTimeout(() => setGeoCopiedNotice(false), 2000);
+                            }}
+                            className="text-indigo-600 hover:underline cursor-pointer flex items-center gap-1 font-medium"
+                          >
+                            <Copy className="w-3 h-3" />
+                            {geoCopiedNotice ? "Copied!" : "Copy list"}
+                          </button>
+                        </div>
+                        <div className="max-h-28 overflow-y-auto custom-scrollbar flex flex-wrap gap-1.5 p-2 bg-white rounded-xl border border-slate-200/80">
+                          {geoTargets.map((target) => (
+                            <span
+                              key={target}
+                              className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-50 border border-indigo-100/80 text-indigo-700 rounded-md font-medium"
+                            >
+                              {target}
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveGeoTarget(target)}
+                                className="text-indigo-400 hover:text-rose-600 hover:bg-rose-50 rounded p-0.5 transition-colors cursor-pointer"
+                                title={`Remove ${target}`}
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Market Budget Density & Fragmentation Advisory */}
+                    {geoTargets.length > 0 && (
+                      <div className="pt-1">
+                        <div className="flex items-center justify-between text-[11px] px-3 py-2 bg-indigo-50/50 rounded-xl border border-indigo-100/60 text-slate-700">
+                          <span className="font-medium text-slate-600">Est. Budget per Market</span>
+                          <span className="font-bold text-indigo-700 font-mono">
+                            ~${Math.round((parseCurrencyInput(budget) || 10000) / geoTargets.length).toLocaleString()} / {geographyType === "State" ? "state" : "DMA"}
+                          </span>
+                        </div>
+
+                        {Math.round((parseCurrencyInput(budget) || 10000) / geoTargets.length) < 500 && (
+                          <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200/80 rounded-xl text-[10px] text-amber-800 flex items-start gap-1.5">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                            <span>
+                              <strong>Market Fragmentation Advisory:</strong> Targeting {geoTargets.length} {geographyType === "State" ? "states" : "DMAs"} with this budget averages less than $500/market. Consider prioritizing top markets to ensure sufficient reach and frequency capping.
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {/* Input 3: Additional Context */}
@@ -3166,15 +4052,114 @@ export default function App() {
                   />
                 </div>
 
-                {geoTargetingIncomplete && (
-                  <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-800 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>
-                      Add at least one {geoScope === "state" ? "state" : "DMA"} to run a {geoScope === "state" ? "state" : "DMA"}-targeted plan,
-                      or switch Geography back to United States.
-                    </span>
+                {/* Advanced: Target Specific Personas */}
+                <div className="pt-0.5">
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      id="btn-toggle-advanced-personas"
+                      onClick={() => setIsAdvancedPersonaOpen(!isAdvancedPersonaOpen)}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors py-1 group"
+                    >
+                      <ChevronRight className={`w-3.5 h-3.5 text-indigo-500 transition-transform duration-200 ${isAdvancedPersonaOpen ? 'rotate-90' : ''}`} />
+                      <span>Advanced</span>
+                      {targetPersonas.filter(p => p.trim().length > 0).length > 0 && !isAdvancedPersonaOpen && (
+                        <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-700 font-bold border border-indigo-200">
+                          {targetPersonas.filter(p => p.trim().length > 0).length}/4 set
+                        </span>
+                      )}
+                    </button>
+                    {isAdvancedPersonaOpen && targetPersonas.some(p => p.trim().length > 0) && (
+                      <button
+                        type="button"
+                        id="btn-clear-target-personas"
+                        onClick={() => setTargetPersonas(["", "", "", ""])}
+                        className="text-[11px] font-medium text-slate-400 hover:text-rose-600 transition-colors"
+                      >
+                        Clear personas
+                      </button>
+                    )}
                   </div>
-                )}
+
+                  {isAdvancedPersonaOpen && (
+                    <div className="mt-2.5 p-3.5 bg-slate-50/80 border border-slate-200/90 rounded-xl space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <Users className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                            <h4 className="text-xs font-semibold text-slate-800">Target Specific Personas</h4>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                            Define up to 4 exact archetypes for ScoutAI to adopt. If fewer than 4 are provided, ScoutAI will generate complementary expansion personas.
+                          </p>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-600 shrink-0">
+                          {targetPersonas.filter(p => p.trim().length > 0).length} of 4 defined
+                        </span>
+                      </div>
+
+                      <div className="space-y-2 pt-1">
+                        {[0, 1, 2, 3].map((slotIdx) => {
+                          const isFilled = targetPersonas[slotIdx]?.trim().length > 0;
+                          return (
+                            <div key={slotIdx} className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <label className="text-[11px] font-medium text-slate-600 flex items-center gap-1.5">
+                                  <span className="w-4 h-4 rounded-full bg-white border border-slate-200 text-slate-600 text-[10px] font-mono font-bold inline-flex items-center justify-center shadow-xs">
+                                    {slotIdx + 1}
+                                  </span>
+                                  <span>Persona {slotIdx + 1}</span>
+                                  {isFilled ? (
+                                    <span className="text-[9px] uppercase font-mono font-bold tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded">
+                                      User Target
+                                    </span>
+                                  ) : (
+                                    <span className="text-[9px] uppercase font-mono text-slate-400">
+                                      AI Auto-Generated
+                                    </span>
+                                  )}
+                                </label>
+                                {isFilled && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const updated = [...targetPersonas];
+                                      updated[slotIdx] = "";
+                                      setTargetPersonas(updated);
+                                    }}
+                                    className="text-[10px] text-slate-400 hover:text-rose-600 transition-colors"
+                                  >
+                                    Clear
+                                  </button>
+                                )}
+                              </div>
+                              <input
+                                type="text"
+                                id={`input-target-persona-${slotIdx + 1}`}
+                                value={targetPersonas[slotIdx] || ""}
+                                onChange={(e) => {
+                                  const updated = [...targetPersonas];
+                                  updated[slotIdx] = e.target.value;
+                                  setTargetPersonas(updated);
+                                }}
+                                placeholder={
+                                  slotIdx === 0
+                                    ? "e.g. Competitive Esports Enthusiast"
+                                    : slotIdx === 1
+                                    ? "e.g. Weekend Streamer & Content Creator"
+                                    : slotIdx === 2
+                                    ? "e.g. Budget-Conscious Casual Gamer"
+                                    : "e.g. High-Income Audio Tech Early Adopter"
+                                }
+                                className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all placeholder:text-slate-400"
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {/* Error Message */}
                 {error && (
@@ -3191,7 +4176,6 @@ export default function App() {
                   type="submit"
                   disabled={
                     loading || 
-                    geoTargetingIncomplete ||
                     (briefMode === "upload" && (
                       isParsingPlan || 
                       !uploadedFileName || 
@@ -3209,11 +4193,6 @@ export default function App() {
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
                       <span>Parsing Uploaded Plan...</span>
-                    </>
-                  ) : geoTargetingIncomplete ? (
-                    <>
-                      <Sparkles className="w-4 h-4" />
-                      <span>Awaiting {geoScope === "state" ? "States" : "DMAs"}...</span>
                     </>
                   ) : briefMode === "upload" && !uploadedFileText && !rfpAnalysis && extractedPlacements.length === 0 && uploadedFileName ? (
                     <>
@@ -3233,7 +4212,7 @@ export default function App() {
                 </button>
               </div>
             </form>
-          ) : leftTab === "saved" ? (
+          ) : !isShareView && leftTab === "saved" ? (
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -3323,15 +4302,35 @@ export default function App() {
                             </button>
                           </div>
                         ) : (
-                          <div className="pr-12">
+                          <div className="pr-16">
                             <h4 className="text-xs font-bold text-slate-800 group-hover:text-indigo-900 leading-snug line-clamp-2">
                               {saved.title}
                             </h4>
                           </div>
                         )}
 
-                        {/* Top-Right Action Row (Rename / Delete) */}
+                        {/* Top-Right Action Row (Share / Rename / Delete) */}
                         <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShareModalPlan({
+                                id: saved.id,
+                                title: saved.title,
+                                shareToken: saved.shareToken,
+                                isShared: saved.isShared,
+                              });
+                              setIsShareModalOpen(true);
+                            }}
+                            className={`p-1 rounded-md transition-colors ${
+                              saved.isShared
+                                ? "text-indigo-600 hover:bg-indigo-50"
+                                : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"
+                            }`}
+                            title={saved.isShared ? "Manage Share Link" : "Create Share Link"}
+                          >
+                            <Share2 className="w-3 h-3" />
+                          </button>
                           {editingId !== saved.id && (
                             <button
                               onClick={(e) => handleStartRename(saved.id, saved.title, e)}
@@ -3358,6 +4357,12 @@ export default function App() {
 
                       {/* Metadata badges */}
                       <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-semibold text-slate-500">
+                        {saved.isShared && (
+                          <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded font-mono text-[9px] flex items-center gap-1">
+                            <Share2 className="w-2.5 h-2.5" />
+                            Shared
+                          </span>
+                        )}
                         {saved.geography && (
                           <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded uppercase font-mono">
                             {saved.geography}
@@ -3394,7 +4399,7 @@ export default function App() {
                 </div>
               )}
             </div>
-          ) : leftTab === "overview" && profileData ? (
+          ) : (isShareView || leftTab === "overview") && profileData ? (
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
               <OverviewMetricsTab
                 extractedPlacements={extractedPlacements}
@@ -3648,172 +4653,6 @@ export default function App() {
           {/* Active Audience Profile Output */}
           {profileData && !loading && (
             <div className="space-y-6">
-              {/* Document Actions Bar Container */}
-              <div className="bg-slate-900 text-white rounded-2xl p-4 md:p-5 shadow-md space-y-4">
-                <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Bookmark className="w-5 h-5 text-indigo-400" />
-                    <div>
-                      <span className="text-[10px] uppercase tracking-widest font-mono text-indigo-300 block font-semibold">Media Plan Blueprint Ready</span>
-                      <h3 className="text-sm font-display font-bold text-white">
-                        {profileData.personas[0]?.name ? `${profileData.personas[0].name} & Segments` : "Strategy Document"}
-                      </h3>
-                    </div>
-                  </div>
-                  
-                  <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-                    {/* Save to History Button */}
-                    <button
-                      onClick={handleOpenSaveDialog}
-                      className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-lg transition-colors cursor-pointer font-semibold"
-                      title="Save this profile to history list"
-                    >
-                      <Save className="w-3.5 h-3.5" />
-                      <span>{activeSavedId ? "Update Save" : "Save Profile"}</span>
-                    </button>
-
-                    <button
-                      onClick={handleCopyProfile}
-                      className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-white px-3.5 py-2 rounded-lg transition-colors cursor-pointer"
-                      title="Copy full report as Markdown"
-                    >
-                      {copyProfileCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      <span>{copyProfileCopied ? "Copied!" : "Copy Report"}</span>
-                    </button>
-
-                    {/* Export Dropdown */}
-                    <div className="relative flex-1 sm:flex-none">
-                      <button
-                        onClick={() => setIsExportOpen(!isExportOpen)}
-                        className="w-full inline-flex items-center justify-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-lg transition-colors cursor-pointer font-semibold"
-                        title="Export this profile to PDF or Markdown formats"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>Export Plan</span>
-                        <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isExportOpen ? 'rotate-180' : ''}`} />
-                      </button>
-                      
-                      {isExportOpen && (
-                        <>
-                          <div className="fixed inset-0 z-45" onClick={() => setIsExportOpen(false)} />
-                          <div className="absolute right-0 mt-2 w-52 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 z-50 text-left">
-                            <button
-                              onClick={() => {
-                                setIsExportOpen(false);
-                                handleDownloadMarkdown();
-                              }}
-                              className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
-                            >
-                              <FileText className="w-4 h-4 text-slate-400 shrink-0" />
-                              <div>
-                                <span className="block font-semibold">Download Markdown</span>
-                                <span className="block text-[9px] text-slate-400 font-mono">Clean document (.md)</span>
-                              </div>
-                            </button>
-                            <button
-                              onClick={() => {
-                                setIsExportOpen(false);
-                                handleDownloadTxt();
-                              }}
-                              className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
-                            >
-                              <FileText className="w-4 h-4 text-slate-400 shrink-0" />
-                              <div>
-                                <span className="block font-semibold">Download Text File</span>
-                                <span className="block text-[9px] text-slate-400 font-mono">Markdown text (.txt)</span>
-                              </div>
-                            </button>
-                            <button
-                              onClick={() => {
-                                setIsExportOpen(false);
-                                handleCopyProfile();
-                              }}
-                              className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
-                            >
-                              {copyProfileCopied ? (
-                                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                              ) : (
-                                <Copy className="w-4 h-4 text-slate-400 shrink-0" />
-                              )}
-                              <div>
-                                <span className="block font-semibold">{copyProfileCopied ? "Copied!" : "Copy to Clipboard"}</span>
-                                <span className="block text-[9px] text-slate-400 font-mono">Markdown content</span>
-                              </div>
-                            </button>
-                            <button
-                              onClick={async () => {
-                                setIsExportOpen(false);
-                                await handleDownloadPDF();
-                              }}
-                              disabled={pdfGenerating}
-                              className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
-                            >
-                              {pdfGenerating ? (
-                                <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
-                              ) : (
-                                <BookOpen className="w-4 h-4 text-slate-400 shrink-0" />
-                              )}
-                              <div>
-                                <span className="block font-semibold">{pdfGenerating ? "Generating..." : "Download PDF"}</span>
-                                <span className="block text-[9px] text-slate-400 font-mono">High-fidelity visual (.pdf)</span>
-                              </div>
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Inline Save Drawer */}
-                {isSaving && (
-                  <div className="pt-3 border-t border-slate-800 flex flex-col sm:flex-row items-end sm:items-center justify-between gap-3 bg-slate-950/45 p-3 rounded-xl">
-                    <div className="w-full">
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                        Profile Save Title
-                      </label>
-                      <input
-                        type="text"
-                        value={saveTitle}
-                        onChange={(e) => setSaveTitle(e.target.value)}
-                        placeholder="e.g. US Gamers Profile"
-                        className="w-full text-xs text-slate-100 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 focus:outline-hidden focus:border-indigo-500 placeholder:text-slate-500"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !isPersistingPlan) handleSaveProfile();
-                          if (e.key === "Escape") { setIsSaving(false); setSaveError(null); }
-                        }}
-                        autoFocus
-                      />
-                      <p className="text-[10px] text-slate-500 mt-1.5">
-                        Saved plans are shared with everyone on the team.
-                      </p>
-                      {saveError && (
-                        <div className="mt-2 flex items-start gap-1.5 text-[10px] font-medium text-rose-300 bg-rose-950/40 border border-rose-900/60 rounded-lg p-2">
-                          <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
-                          <span>{saveError}</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex gap-2 w-full sm:w-auto justify-end shrink-0">
-                      <button
-                        onClick={() => { setIsSaving(false); setSaveError(null); }}
-                        className="text-xs text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded-lg"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={handleSaveProfile}
-                        disabled={isPersistingPlan}
-                        className="text-xs font-bold bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-600/50 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
-                      >
-                        {isPersistingPlan && <Loader2 className="w-3 h-3 animate-spin" />}
-                        {isPersistingPlan ? "Saving..." : activeSavedId ? "Save Changes" : "Confirm Save"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
               {/* PDF Printable Wrapper and Cover Card */}
               <div id="profile-export-content" className="space-y-6">
                 {/* Strategy Report Cover Card */}
@@ -3827,11 +4666,32 @@ export default function App() {
                       {profileData.personas[0]?.name ? `${profileData.personas[0].name} Target Audience Plan` : "Strategic Audience Profile"}
                     </h2>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-2 font-medium">
-                      <span className="bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700/50 text-[10px] uppercase font-semibold">
-                        {geoTargeting.scope === "national"
-                          ? geography
-                          : `${geography} · ${geoTargeting.entries.length} ${geoTargeting.scope === "dma" ? "DMA" : "state"}${geoTargeting.entries.length === 1 ? "" : "s"}`}
-                      </span>
+                      {geoTargets.length > 0 ? (
+                        <div className="relative group">
+                          <span className="inline-flex items-center gap-1.5 bg-indigo-950/60 hover:bg-indigo-900/70 text-indigo-300 border border-indigo-500/30 px-2.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide cursor-pointer transition-colors">
+                            <MapPin className="w-3 h-3 text-indigo-400" />
+                            {geographyType}: {geoTargets.length} {geographyType === "State" ? (geoTargets.length === 1 ? "State" : "States") : (geoTargets.length === 1 ? "DMA" : "DMAs")}
+                          </span>
+                          <div className="hidden group-hover:block absolute top-full left-0 mt-1.5 z-40 w-72 bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-3 shadow-2xl text-left">
+                            <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-slate-800 text-[11px] font-bold text-slate-300">
+                              <span>Targeted {geographyType === "State" ? "States" : "Nielsen DMAs"} ({geoTargets.length})</span>
+                            </div>
+                            <div className="max-h-48 overflow-y-auto custom-scrollbar space-y-1 pr-1 text-[10px]">
+                              {geoTargets.map((target, idx) => (
+                                <div key={idx} className="flex items-center gap-1.5 text-slate-300">
+                                  <span className="text-slate-500 font-mono text-[9px] w-4">{idx + 1}.</span>
+                                  <span className="truncate">{target}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700/50 text-[10px] uppercase font-semibold text-slate-300">
+                          <MapPin className="w-3 h-3 text-slate-400" />
+                          {geography === "United States" ? "National (US)" : geography}
+                        </span>
+                      )}
                       <span className="bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700/50 text-[10px] font-semibold">
                         {campaignFocus}
                       </span>
@@ -3877,23 +4737,36 @@ export default function App() {
                       <span>Consumer Segments & Personas</span>
                     </div>
                     {profileData.personas && profileData.personas.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={toggleAllPersonasExpanded}
-                        className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer transition-colors"
-                      >
-                        {arePersonasExpanded ? (
-                          <>
-                            <span>Collapse All</span>
-                            <ChevronUp className="w-3.5 h-3.5" />
-                          </>
-                        ) : (
-                          <>
-                            <span>Expand All</span>
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          </>
-                        )}
-                      </button>
+                      <div className="flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          id="btn-open-persona-slide-studio"
+                          onClick={() => handleOpenSlideStudio('personas')}
+                          className="p-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer transition-all shadow-2xs hover:shadow-xs active:scale-[0.98]"
+                          title="Export Presentation Slide (16:9)"
+                          aria-label="Export Presentation Slide"
+                        >
+                          <Download className="w-4 h-4 text-indigo-600" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={toggleAllPersonasExpanded}
+                          className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          {arePersonasExpanded ? (
+                            <>
+                              <span>Collapse All</span>
+                              <ChevronUp className="w-3.5 h-3.5" />
+                            </>
+                          ) : (
+                            <>
+                              <span>Expand All</span>
+                              <ChevronDown className="w-3.5 h-3.5" />
+                            </>
+                          )}
+                        </button>
+                      </div>
                     )}
                   </div>
 
@@ -3920,6 +4793,7 @@ export default function App() {
                           {personas.map((persona, globalIndex) => {
                             const isGeneratingThis = generatingAvatarIndices.includes(globalIndex);
                             const hasValidAvatar = Boolean(persona.avatarUrl && !persona.avatarUrl.includes("example.com"));
+                            const isUserTarget = persona.sourceType === 'User';
                             const isRfp = persona.sourceType === 'RFP';
                             const isExpanded = arePersonasExpanded;
 
@@ -3975,7 +4849,11 @@ export default function App() {
                                         <span className="inline-block text-[10px] uppercase font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md font-bold border border-indigo-100">
                                           Archetype 0{globalIndex + 1}
                                         </span>
-                                        {isUploadedPlanMode && (
+                                        {isUserTarget ? (
+                                          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-100/90 text-emerald-900 border border-emerald-200 px-2 py-0.5 rounded-md uppercase tracking-wider">
+                                            <User className="w-2.5 h-2.5 text-emerald-700" /> Target Archetype
+                                          </span>
+                                        ) : isUploadedPlanMode ? (
                                           isRfp ? (
                                             <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-amber-100/90 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md uppercase tracking-wider">
                                               <FileText className="w-2.5 h-2.5 text-amber-700" /> RFP
@@ -3985,7 +4863,7 @@ export default function App() {
                                               <Sparkles className="w-2.5 h-2.5 text-indigo-600" /> ScoutAI
                                             </span>
                                           )
-                                        )}
+                                        ) : null}
                                       </div>
                                       <h4 className="text-base font-display font-bold text-slate-800 leading-snug">{persona.name}</h4>
                                     </div>
@@ -4013,17 +4891,26 @@ export default function App() {
                                   {isExpanded && (
                                     <div className="mt-4 space-y-4 pt-3 border-t border-slate-100">
                                       <div className="space-y-2.5 text-xs">
-                                        <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
-                                          <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">📺 Watch Profile:</strong>
-                                          <span className="text-slate-600">{persona.watch}</span>
+                                        <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
+                                          <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
+                                            <Tv className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                                            <span>Watch Profile:</span>
+                                          </div>
+                                          <span className="text-slate-600 block pl-5">{persona.watch}</span>
                                         </div>
-                                        <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
-                                          <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">🌐 Digital Browsing:</strong>
-                                          <span className="text-slate-600">{persona.browse}</span>
+                                        <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
+                                          <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
+                                            <Globe className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                            <span>Digital Browsing:</span>
+                                          </div>
+                                          <span className="text-slate-600 block pl-5">{persona.browse}</span>
                                         </div>
-                                        <div className="leading-relaxed bg-slate-50/50 p-2.5 rounded-lg border border-slate-100/50">
-                                          <strong className="text-slate-700 block text-[11px] font-semibold mb-0.5">🛒 Purchasing Focus:</strong>
-                                          <span className="text-slate-600">{persona.buy}</span>
+                                        <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
+                                          <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
+                                            <ShoppingCart className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                            <span>Purchasing Focus:</span>
+                                          </div>
+                                          <span className="text-slate-600 block pl-5">{persona.buy}</span>
                                         </div>
                                       </div>
 
@@ -4160,49 +5047,73 @@ export default function App() {
                 {/* Dynamic Domain Affinity & CTV Publishers Bento Rows */}
                 {/* Case 1: CTV-First - SHOW CTV Publishers and REPLACE Domains */}
                 {campaignFocus === "CTV-first digital media plan" && (
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    {/* CTV Publishers to Target */}
-                    <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
-                      <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
-                        <Tv className="w-4 h-4" />
-                        <span>Recommended CTV Publishers</span>
+                  <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                    {/* CTV Publishers to Target (60% width) */}
+                    <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
+                          <Tv className="w-4 h-4" />
+                          <span>Recommended CTV Publishers</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <CtvExportDropdown
+                            id="export-ctv-slide-dropdown-ctv-first"
+                            isExporting={isExportingCtvSlide}
+                            exportSuccess={ctvSlideExportSuccess}
+                            onExport={handleExportCtvSlide}
+                            activeVariant={exportingVariant}
+                          />
+                          {!isShareView && (
+                            <button
+                              id="edit-ctv-publishers-btn-ctv-first"
+                              type="button"
+                              onClick={() => setIsCtvPublishersModalOpen(true)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/70 rounded-xl transition-colors cursor-pointer shadow-2xs"
+                              title="Edit CTV Publishers to Target"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Edit Publishers</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <h3 className="text-base font-display font-bold text-slate-800">CTV Publishers to Target</h3>
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-base font-display font-bold text-slate-800">CTV Publishers to Target</h3>
+                        <span className="text-xs font-semibold text-slate-500">
+                          {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).length} Targeted
+                        </span>
+                      </div>
                       
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {(profileData.ctvPublishers || defaultCtvPublishers).map((pub, idx) => (
-                          <div key={idx} className="bg-slate-50/50 border border-slate-100 p-4 rounded-xl flex items-start gap-3 hover:bg-indigo-50/10 transition-colors">
-                            <div className="w-12 h-12 rounded-full border border-slate-100 bg-white shadow-xs flex items-center justify-center p-[2px] overflow-hidden shrink-0">
-                              <img
-                                src={getPublisherLogo(pub.publisher)}
-                                alt={pub.publisher}
-                                className="w-full h-full object-cover rounded-full"
-                                referrerPolicy="no-referrer"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).src = "/assets/pub-logos/placeholder_80x80.png";
-                                }}
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs font-bold text-slate-800">{pub.publisher}</span>
-                                <span className={`text-[8px] font-mono font-bold uppercase px-1.5 py-0.5 rounded ${
-                                  pub.category === "App" ? "bg-indigo-50 text-indigo-700 border border-indigo-100/30" :
-                                  pub.category === "Network" ? "bg-sky-50 text-sky-700 border border-sky-100/30" :
-                                  "bg-emerald-50 text-emerald-700 border border-emerald-100/30"
-                                }`}>
-                                  {pub.category}
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-slate-600 leading-normal">{pub.why}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                      {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).length === 0 ? (
+                        <div className="p-8 text-center bg-slate-50/70 rounded-xl border border-dashed border-slate-200">
+                          <Tv className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                          <p className="text-sm font-semibold text-slate-700">No CTV publishers selected</p>
+                          <p className="text-xs text-slate-500 mt-1 mb-3">Click below to select which streaming apps and networks to target.</p>
+                          {!isShareView && (
+                            <button
+                              type="button"
+                              onClick={() => setIsCtvPublishersModalOpen(true)}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" /> Select Publishers
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).map((pub, idx) => (
+                            <CtvPublisherCard
+                              key={`${pub.publisher}-${idx}`}
+                              pub={pub}
+                              logoSrc={getPublisherLogo(pub.publisher, ctvPublishers)}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
 
-                    {/* CTV Publisher Insights */}
-                    <div className="lg:col-span-1 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
+                    {/* CTV Publisher Insights (40% width) */}
+                    <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
                       <div>
                         <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
                           <TrendingUp className="w-4 h-4" />
@@ -4310,49 +5221,73 @@ export default function App() {
                     })()}
 
                     {/* CTV Publishers Grid */}
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                      {/* CTV Publishers to Target */}
-                      <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
-                        <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
-                          <Tv className="w-4 h-4" />
-                          <span>Recommended CTV Publishers</span>
+                    <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                      {/* CTV Publishers to Target (60% width) */}
+                      <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
+                            <Tv className="w-4 h-4" />
+                            <span>Recommended CTV Publishers</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <CtvExportDropdown
+                              id="export-ctv-slide-dropdown-full-funnel"
+                              isExporting={isExportingCtvSlide}
+                              exportSuccess={ctvSlideExportSuccess}
+                              onExport={handleExportCtvSlide}
+                              activeVariant={exportingVariant}
+                            />
+                            {!isShareView && (
+                              <button
+                                id="edit-ctv-publishers-btn-full-funnel"
+                                type="button"
+                                onClick={() => setIsCtvPublishersModalOpen(true)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/70 rounded-xl transition-colors cursor-pointer shadow-2xs"
+                                title="Edit CTV Publishers to Target"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                                <span>Edit Publishers</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <h3 className="text-base font-display font-bold text-slate-800">CTV Publishers to Target</h3>
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-base font-display font-bold text-slate-800">CTV Publishers to Target</h3>
+                          <span className="text-xs font-semibold text-slate-500">
+                            {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).length} Targeted
+                          </span>
+                        </div>
                         
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {(profileData.ctvPublishers || defaultCtvPublishers).map((pub, idx) => (
-                            <div key={idx} className="bg-slate-50/50 border border-slate-100 p-4 rounded-xl flex items-start gap-3 hover:bg-indigo-50/10 transition-colors">
-                              <div className="w-12 h-12 rounded-full border border-slate-100 bg-white shadow-xs flex items-center justify-center p-[2px] overflow-hidden shrink-0">
-                                <img
-                                  src={getPublisherLogo(pub.publisher, ctvPublishers)}
-                                  alt={pub.publisher}
-                                  className="w-full h-full object-cover rounded-full"
-                                  referrerPolicy="no-referrer"
-                                  onError={(e) => {
-                                    (e.target as HTMLImageElement).src = "/assets/pub-logos/placeholder_80x80.png";
-                                  }}
-                                />
-                              </div>
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-xs font-bold text-slate-800">{pub.publisher}</span>
-                                  <span className={`text-[8px] font-mono font-bold uppercase px-1.5 py-0.5 rounded ${
-                                    pub.category === "App" ? "bg-indigo-50 text-indigo-700 border border-indigo-100/30" :
-                                    pub.category === "Network" ? "bg-sky-50 text-sky-700 border border-sky-100/30" :
-                                    "bg-emerald-50 text-emerald-700 border border-emerald-100/30"
-                                  }`}>
-                                    {pub.category}
-                                  </span>
-                                </div>
-                                <p className="text-[11px] text-slate-600 leading-normal">{pub.why}</p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
+                        {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).length === 0 ? (
+                          <div className="p-8 text-center bg-slate-50/70 rounded-xl border border-dashed border-slate-200">
+                            <Tv className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                            <p className="text-sm font-semibold text-slate-700">No CTV publishers selected</p>
+                            <p className="text-xs text-slate-500 mt-1 mb-3">Click below to select which streaming apps and networks to target.</p>
+                            {!isShareView && (
+                              <button
+                                type="button"
+                                onClick={() => setIsCtvPublishersModalOpen(true)}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs cursor-pointer"
+                              >
+                                <Plus className="w-3.5 h-3.5" /> Select Publishers
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).map((pub, idx) => (
+                              <CtvPublisherCard
+                                key={`${pub.publisher}-${idx}`}
+                                pub={pub}
+                                logoSrc={getPublisherLogo(pub.publisher, ctvPublishers)}
+                              />
+                            ))}
+                          </div>
+                        )}
                       </div>
 
-                      {/* CTV Publisher Insights */}
-                      <div className="lg:col-span-1 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
+                      {/* CTV Publisher Insights (40% width) */}
+                      <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
                         <div>
                           <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
                             <TrendingUp className="w-4 h-4" />
@@ -4605,13 +5540,44 @@ export default function App() {
                             />
                           </div>
 
-                          {/* Geographic Concentration Notes - Full Width under charts */}
-                          {profileData.demographics.geographyNotes && (
-                            <div className="bg-slate-50 rounded-xl border border-slate-100/80 p-4 text-[11px] text-slate-500">
-                              <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-1">Geographic Concentration Notes</span>
-                              <p className="leading-relaxed">
-                                {profileData.demographics.geographyNotes}
-                              </p>
+                          {/* Geographic Concentration Notes & Market Footprint */}
+                          {(profileData.demographics.geographyNotes || geoTargets.length > 0) && (
+                            <div className="bg-slate-50 rounded-xl border border-slate-100/80 p-4 text-[11px] text-slate-500 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold flex items-center gap-1.5">
+                                  <MapPin className="w-3.5 h-3.5" />
+                                  Geographic Footprint & Market Targeting
+                                </span>
+                                {geoTargets.length > 0 && (
+                                  <span className="text-[10px] font-semibold bg-white border border-slate-200 px-2 py-0.5 rounded-full text-indigo-700 shadow-2xs">
+                                    {geoTargets.length} {geographyType === "State" ? (geoTargets.length === 1 ? "State" : "States") : (geoTargets.length === 1 ? "DMA" : "DMAs")} Targeted
+                                  </span>
+                                )}
+                              </div>
+
+                              {geoTargets.length > 0 && (
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-600">
+                                    <span>Target Market Coverage:</span>
+                                    <span className="text-slate-400 font-mono text-[9px]">
+                                      ~${Math.round((parseCurrencyInput(budget) || 10000) / geoTargets.length).toLocaleString()} / market
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto custom-scrollbar p-2 bg-white rounded-lg border border-slate-200/60">
+                                    {geoTargets.map((market, i) => (
+                                      <span key={i} className="px-2 py-0.5 bg-indigo-50 border border-indigo-100/60 text-indigo-700 text-[10px] font-medium rounded-md">
+                                        {market}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {profileData.demographics.geographyNotes && (
+                                <p className="leading-relaxed text-slate-600">
+                                  {profileData.demographics.geographyNotes}
+                                </p>
+                              )}
                             </div>
                           )}
                         </div>
@@ -4619,11 +5585,6 @@ export default function App() {
                     </div>
                   );
                 })()}
-
-                {/* 6b. Geo Targeting - the campaign's buying footprint, beside where the audience concentrates */}
-                {geoTargeting.scope !== "national" && geoTargeting.entries.length > 0 && (
-                  <GeoTargetingSection targeting={geoTargeting} insights={profileData.geoInsights} />
-                )}
 
                 {/* 7. Temporal Activity Patterns - Collapsible Panel with Option C Highlights */}
                 {(() => {
@@ -4715,6 +5676,7 @@ export default function App() {
                 {profileData.channelStrategy && (
                   <ChannelStrategySection
                     data={profileData.channelStrategy}
+                    ctvPublishers={profileData.ctvPublishers || defaultCtvPublishers}
                     internalOnly={internalOnlyVisibility}
                     onToggleBudgetMode={handleToggleBudgetMode}
                     onManualMediaTypeChange={handleManualMediaTypeChange}
@@ -4722,6 +5684,8 @@ export default function App() {
                     onResetAllocations={handleResetManualAllocations}
                     onUndoPlanChange={handleUndoChannelStrategyChange}
                     canUndoPlanChange={Boolean(channelStrategyUndo)}
+                    onOpenSlideStudio={() => handleOpenSlideStudio('channels')}
+                    readOnly={isShareView}
                   />
                 )}
 
@@ -4879,7 +5843,7 @@ export default function App() {
               </div>
 
               {/* AI QA Audit & Scoring Center */}
-              {profileData.auditResult && (
+              {!isShareView && internalOnlyVisibility.qaAudit && profileData.auditResult && (
                 <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs transition-all">
                   <button
                     type="button"
@@ -5072,7 +6036,7 @@ export default function App() {
               )}
 
               {/* Additional RFP Requirements & Agency Capability Responses */}
-              {profileData.additionalRfpRequirements && 
+              {!isShareView && profileData.additionalRfpRequirements && 
                (profileData.additionalRfpRequirements.isRfpDocument ||
                 (profileData.additionalRfpRequirements.rfpAsksAndQuestions && profileData.additionalRfpRequirements.rfpAsksAndQuestions.length > 0) ||
                 (profileData.additionalRfpRequirements.digitalRemedyCapabilityMatches && profileData.additionalRfpRequirements.digitalRemedyCapabilityMatches.length > 0) ||
@@ -5223,31 +6187,33 @@ export default function App() {
             </div> {/* End of #profile-export-content wrapper */}
 
               {/* Advanced Regenerate Triggers */}
-              <div className="bg-slate-50 border border-slate-100 rounded-2xl p-5 md:p-6 text-center space-y-4">
-                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Advanced Strategy Tuning</h4>
-                <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-                  Tweak the planning assumptions by triggering the generation agent again with localized weighting configurations.
-                </p>
-                <div className="flex flex-wrap justify-center gap-3">
-                  <button
-                    onClick={() => handleGenerate(undefined, "stricter_sourcing")}
-                    disabled={loading}
-                    className="inline-flex items-center gap-1.5 text-xs text-indigo-700 bg-white hover:bg-indigo-50 border border-indigo-100 px-4 py-2 rounded-xl transition-all font-semibold shadow-xs hover:shadow-sm cursor-pointer disabled:opacity-55"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Regenerate with Stricter Sourcing</span>
-                  </button>
+              {!isShareView && (
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-5 md:p-6 text-center space-y-4">
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Advanced Strategy Tuning</h4>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+                    Tweak the planning assumptions by triggering the generation agent again with localized weighting configurations.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-3">
+                    <button
+                      onClick={() => handleGenerate(undefined, "stricter_sourcing")}
+                      disabled={loading}
+                      className="inline-flex items-center gap-1.5 text-xs text-indigo-700 bg-white hover:bg-indigo-50 border border-indigo-100 px-4 py-2 rounded-xl transition-all font-semibold shadow-xs hover:shadow-sm cursor-pointer disabled:opacity-55"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Regenerate with Stricter Sourcing</span>
+                    </button>
 
-                  <button
-                    onClick={() => handleGenerate(undefined, "more_strategic")}
-                    disabled={loading}
-                    className="inline-flex items-center gap-1.5 text-xs text-emerald-700 bg-white hover:bg-emerald-50 border border-emerald-100 px-4 py-2 rounded-xl transition-all font-semibold shadow-xs hover:shadow-sm cursor-pointer disabled:opacity-55"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Regenerate with Deeper Recommendations</span>
-                  </button>
+                    <button
+                      onClick={() => handleGenerate(undefined, "more_strategic")}
+                      disabled={loading}
+                      className="inline-flex items-center gap-1.5 text-xs text-emerald-700 bg-white hover:bg-emerald-50 border border-emerald-100 px-4 py-2 rounded-xl transition-all font-semibold shadow-xs hover:shadow-sm cursor-pointer disabled:opacity-55"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Regenerate with Deeper Recommendations</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </section>
@@ -5431,7 +6397,7 @@ export default function App() {
                           )}
                         </h4>
                         <p className="text-xs text-slate-400">
-                          Total Rows: {parsedSheetsData[activeSheetIndex]?.rows.length || 0} | Columns: {parsedSheetsData[activeSheetIndex]?.headers.length || 0}
+                          Total Rows: {parsedSheetsData[activeSheetIndex]?.rows?.length || 0} | Columns: {parsedSheetsData[activeSheetIndex]?.headers?.length || 0}
                         </p>
                       </div>
 
@@ -5465,7 +6431,7 @@ export default function App() {
                     <div className="flex-1 min-h-0 overflow-auto border border-slate-100 rounded-xl custom-scrollbar relative">
                       {(() => {
                         const activeSheet = parsedSheetsData[activeSheetIndex];
-                        if (!activeSheet || activeSheet.rows.length === 0) {
+                        if (!activeSheet || !activeSheet.rows || activeSheet.rows.length === 0) {
                           return (
                             <div className="text-center py-12 text-slate-400 text-xs">
                               No data found in this sheet.
@@ -5575,7 +6541,7 @@ export default function App() {
                                 </span>{" "}
                                 of <span className="font-bold text-slate-800">{totalRows}</span> filtered rows
                                 {modalSearchQuery && (
-                                  <span> (filtered from {activeSheet.rows.length} total)</span>
+                                  <span> (filtered from {activeSheet?.rows?.length || 0} total)</span>
                                 )}
                               </div>
                               <div className="flex items-center gap-1.5">
@@ -5909,6 +6875,202 @@ export default function App() {
         mappings={taxonomyMappings}
         onUpdateMapping={handleUpdateTaxonomyMapping}
       />
+
+      {/* Save Plan Modal */}
+      {isSaving && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <Save className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    {activeSavedId ? "Update Saved Plan" : "Save Media Plan"}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">Save this profile and strategy to team history</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setIsSaving(false); setSaveError(null); }}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Plan Title
+                </label>
+                <input
+                  type="text"
+                  value={saveTitle}
+                  onChange={(e) => setSaveTitle(e.target.value)}
+                  placeholder="e.g. US Gamers Profile"
+                  className="w-full text-sm text-slate-900 bg-white border border-slate-200 rounded-xl px-3.5 py-2 focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 placeholder:text-slate-400"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !isPersistingPlan) handleSaveProfile();
+                    if (e.key === "Escape") { setIsSaving(false); setSaveError(null); }
+                  }}
+                  autoFocus
+                />
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  Saved plans are accessible to all planners on your team.
+                </p>
+              </div>
+
+              {saveError && (
+                <div className="flex items-start gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500 mt-0.5" />
+                  <span>{saveError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => { setIsSaving(false); setSaveError(null); }}
+                className="text-xs font-medium text-slate-600 hover:text-slate-800 px-4 py-2 rounded-xl hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveProfile}
+                disabled={isPersistingPlan || !saveTitle.trim()}
+                className="text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-600/50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+              >
+                {isPersistingPlan && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isPersistingPlan ? "Saving..." : activeSavedId ? "Save Changes" : "Confirm Save"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Share Plan Modal for authenticated planners */}
+      {shareModalPlan && (
+        <SharePlanModal
+          isOpen={isShareModalOpen}
+          onClose={() => {
+            setIsShareModalOpen(false);
+            setShareModalPlan(null);
+          }}
+          planId={shareModalPlan.id}
+          planTitle={shareModalPlan.title}
+          isShared={shareModalPlan.isShared}
+          shareToken={shareModalPlan.shareToken}
+          onShareStatusChanged={(isShared, shareToken) => {
+            setPlanSummaries((prev) =>
+              prev.map((p) =>
+                p.id === shareModalPlan.id
+                  ? { ...p, isShared, shareToken: shareToken || undefined }
+                  : p
+              )
+            );
+            if (shareModalPlan) {
+              setShareModalPlan((prev) =>
+                prev ? { ...prev, isShared, shareToken } : null
+              );
+            }
+          }}
+        />
+      )}
+      {/* CTV Publishers Edit Modal */}
+      {profileData && (
+        <CtvPublishersModal
+          isOpen={isCtvPublishersModalOpen}
+          onClose={() => setIsCtvPublishersModalOpen(false)}
+          selectedPublishers={profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers}
+          onUpdatePublishers={handleUpdateCtvPublishers}
+          onResetToDefault={handleResetCtvPublishers}
+          catalogPublishers={ctvPublishers}
+          readOnly={isShareView}
+        />
+      )}
+      {/* Presentation AI Slide Studio (gpt-image-2.5-sunburst) Export Modal */}
+      {profileData && (
+        <PersonaSlideExportModal
+          isOpen={isSlideStudioOpen}
+          onClose={() => setIsSlideStudioOpen(false)}
+          initialSection={slideStudioSection}
+          personas={profileData.personas || []}
+          channelStrategy={profileData.channelStrategy}
+          mediaPlan={profileData.channelStrategy?.mediaPlan}
+          advertiserName={advertiserName || "Brand"}
+          campaignFocus={campaignFocus || ""}
+          geography={geographyType || "National (US)"}
+          api={api}
+        />
+      )}
+      {/* Off-screen 16:9 Canvases for CTV Publishers & Insights Slide Export */}
+      {profileData && (
+        <div
+          id="ctv-slide-export-offscreen-root"
+          style={{
+            position: "fixed",
+            left: "-99999px",
+            top: 0,
+            overflow: "hidden",
+            zIndex: -9999,
+            pointerEvents: "none",
+          }}
+          aria-hidden="true"
+        >
+          {/* Detailed Export Canvas Container */}
+          <div
+            id="ctv-slide-export-container-detailed"
+            style={{
+              position: "fixed",
+              left: "-99999px",
+              top: 0,
+              width: "1920px",
+              height: "1080px",
+              overflow: "hidden",
+              zIndex: -9999,
+              pointerEvents: "none",
+            }}
+          >
+            <CtvSlideExportView
+              ref={ctvSlideDetailedExportRef}
+              layoutVariant="detailed"
+              publishers={profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers}
+              publisherInsights={summarizedPublisherInsights || profileData.publisherInsights}
+              defaultPublisherInsights={defaultPublisherInsights}
+              customPublishers={ctvPublishers}
+            />
+          </div>
+
+          {/* Basic Export Canvas Container */}
+          <div
+            id="ctv-slide-export-container-basic"
+            style={{
+              position: "fixed",
+              left: "-99999px",
+              top: 0,
+              width: "1920px",
+              height: "1080px",
+              overflow: "hidden",
+              zIndex: -9999,
+              pointerEvents: "none",
+            }}
+          >
+            <CtvSlideExportView
+              ref={ctvSlideBasicExportRef}
+              layoutVariant="basic"
+              publishers={profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers}
+              publisherInsights={summarizedPublisherInsights || profileData.publisherInsights}
+              defaultPublisherInsights={defaultPublisherInsights}
+              customPublishers={ctvPublishers}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

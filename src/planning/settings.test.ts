@@ -74,7 +74,7 @@ test("version 2 browser settings retain catalog edits and receive overview defau
   assert.deepEqual(migrated.overviewMetrics, DEFAULT_PLANNING_SETTINGS.overviewMetrics);
 });
 
-test("internal-only defaults hide dollars and confidence but keep allocation and score", () => {
+test("internal-only defaults hide dollars, confidence, assumptions, and qa audit but keep allocation and score", () => {
   const visibility = Object.fromEntries(DEFAULT_PLANNING_SETTINGS.internalOnly.map((setting) => [setting.id, setting.show]));
   assert.deepEqual(visibility, {
     channelAllocationColumn: true,
@@ -82,6 +82,8 @@ test("internal-only defaults hide dollars and confidence but keep allocation and
     channelScoreColumn: true,
     channelConfidenceBadge: false,
     channelStatusTag: false,
+    planningAssumptions: false,
+    qaAudit: false,
   });
 });
 
@@ -169,3 +171,41 @@ test("normalizes only the portfolio-size budget and records unknown duration", (
   assert.equal(unknown.campaignFlightDays, null);
   assert.equal(unknown.assumptions.length, 1);
 });
+
+test("migrating and cloning backfills missing internalOnly and overviewMetrics toggles so Target CTV Publishers Count saves cleanly", () => {
+  // Simulate saved settings where internalOnly was omitted or missing some toggles
+  const legacy: any = {
+    ...DEFAULT_PLANNING_SETTINGS,
+    ctvPublisherTargetCount: 12,
+  };
+  delete legacy.internalOnly;
+  delete legacy.overviewMetrics;
+
+  const cloned = clonePlanningSettings(legacy);
+  assert.equal(cloned.ctvPublisherTargetCount, 12);
+  assert.equal(cloned.internalOnly.length, 7);
+  assert.equal(cloned.overviewMetrics.length, 7);
+
+  const validation = validatePlanningSettings(cloned);
+  assert.equal(validation.valid, true, validation.errors.join("; "));
+  assert.equal(validation.settings?.ctvPublisherTargetCount, 12);
+});
+
+test("partial internalOnly settings are cleanly merged with defaults without duplicates", () => {
+  const partial: any = {
+    ...DEFAULT_PLANNING_SETTINGS,
+    internalOnly: [
+      { id: "channelAllocationColumn", label: "Allocation", show: false },
+    ],
+  };
+  const cloned = clonePlanningSettings(partial);
+  assert.equal(cloned.internalOnly.length, 7);
+  const allocToggle = cloned.internalOnly.find((s) => s.id === "channelAllocationColumn");
+  assert.equal(allocToggle?.show, false);
+  const dollarsToggle = cloned.internalOnly.find((s) => s.id === "channelDollarsColumn");
+  assert.equal(dollarsToggle?.show, false);
+
+  const validation = validatePlanningSettings(cloned);
+  assert.equal(validation.valid, true);
+});
+

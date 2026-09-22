@@ -102,21 +102,42 @@ export function parseCookies(header: string | undefined): Record<string, string>
 }
 
 export function getSession(req: Request): SessionUser | null {
+  // 1. Authorization header: "Bearer <token>"
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+    const token = authHeader.slice(7).trim();
+    const user = verifySessionToken(token);
+    if (user) return user;
+  }
+  // 2. Custom header: "x-session-token: <token>"
+  const customHeader = req.headers["x-session-token"];
+  if (typeof customHeader === "string" && customHeader.trim()) {
+    const user = verifySessionToken(customHeader.trim());
+    if (user) return user;
+  }
+  // 3. Cookie fallback
   return verifySessionToken(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
 }
 
 export function setSessionCookie(res: Response, user: SessionUser): void {
+  // In an iframe environment (e.g. AI Studio preview), cross-site cookies must have SameSite=None and Secure=true.
+  // Note: partitioned: true is supported in modern Chrome for CHIPS.
   res.cookie(SESSION_COOKIE, createSessionToken(user), {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production", // Cloud Run terminates TLS
+    sameSite: "none",
+    secure: true,
     maxAge: SESSION_TTL_MS,
     path: "/",
-  });
+    partitioned: true,
+  } as any);
 }
 
 export function clearSessionCookie(res: Response): void {
-  res.clearCookie(SESSION_COOKIE, { path: "/" });
+  res.clearCookie(SESSION_COOKIE, {
+    path: "/",
+    sameSite: "none",
+    secure: true,
+  });
 }
 
 /**

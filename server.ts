@@ -14,11 +14,11 @@ import { validateProductRegistry } from "./src/planning/knowledge/registry";
 import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
-import { geoSummaryForPrompt, rehydrateGeoTargeting } from "./src/planning/geoTargeting";
 import { createStorage, PlanNotFoundError, RevisionConflictError, type StorageAdapter } from "./src/storage";
 import {
   actorName,
   clearSessionCookie,
+  createSessionToken,
   getSession,
   isAdminPasswordConfigured,
   isAdminRequestAllowed,
@@ -167,6 +167,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T
 }
 
 const app = express();
+app.set("trust proxy", 1);
 // Cloud Run (and most PaaS hosts) inject the port to listen on via $PORT and will fail the
 // health check if the container binds anything else. 3000 stays the local default.
 const PORT = Number(process.env.PORT) || 3000;
@@ -202,7 +203,16 @@ async function getStorage(): Promise<StorageAdapter> {
 // Unauthenticated endpoints. Everything else under /api requires a session cookie -
 // the previous login was a client-side gate only, which left these routes open to the
 // internet on a service deployed with invoker-iam-disabled.
-const PUBLIC_API_PATHS = new Set(["/api/health", "/api/auth/login", "/api/auth/me", "/api/auth/logout"]);
+const PUBLIC_API_PATHS = new Set([
+  "/api/health",
+  "/api/auth/login",
+  "/api/auth/me",
+  "/api/auth/logout",
+  "/api/share/plan",
+  "/api/summarize-publisher-insights",
+  "/api/personas/generate-slide",
+  "/api/channels/generate-slide",
+]);
 
 app.use("/api", (req, res, next) => {
   // req.path is relative to the "/api" mount point.
@@ -340,7 +350,7 @@ const audienceProfileSchema = {
           browse: { type: Type.STRING, description: "Specific digital platforms and apps they browse" },
           buy: { type: Type.STRING, description: "Key shopping categories, brands, or products they buy" },
           narrative: { type: Type.STRING, description: "A highly realistic narrative paragraph describing their motivations, lifestyle, and media activation context." },
-          sourceType: { type: Type.STRING, description: "Must be 'RFP' if persona is derived from uploaded media plan listed audiences, or 'ScoutAI' if it is a recommended expansion audience by ScoutAI." }
+          sourceType: { type: Type.STRING, description: "Must be 'User' if persona was explicitly specified by the user in the brief, 'RFP' if derived from uploaded media plan listed audiences, or 'ScoutAI' if it is an AI recommended / expansion audience by ScoutAI." }
         },
         required: ["name", "gender", "income", "age", "watch", "browse", "buy", "narrative"]
       }
@@ -503,10 +513,6 @@ const audienceProfileSchema = {
       type: Type.STRING,
       description: "One highly polished professional paragraph summarizing the audience opportunity and recommended media strategy."
     },
-    geoInsights: {
-      type: Type.STRING,
-      description: "If the campaign targets specific states or DMAs, write a professional paragraph explaining why that footprint fits the advertiser's goals, audience and locations, and what it means for channel selection, inventory availability and pacing. If the campaign is national, set this field to an empty string (\"\")."
-    },
     sources: {
       type: Type.ARRAY,
       description: "Curated evidence registry: the 8-12 strongest sources actually used to ground this response, each drawn from the supplied pool of discovered URLs. Not a search log. No fabricated sources.",
@@ -524,13 +530,13 @@ const audienceProfileSchema = {
     },
     ctvPublishers: {
       type: Type.ARRAY,
-      description: "Between 6 and 8 recommended CTV publishers to target, selected ONLY from the approved list of publishers.",
+      description: "Curated list of recommended CTV publishers to target, selected STRICTLY from the approved list of publishers conforming to the exact target count specified in the prompt.",
       items: {
         type: Type.OBJECT,
         properties: {
-          publisher: { type: Type.STRING, description: "Name of the publisher, e.g., 'Hulu', 'ESPN', 'The Roku Channel', etc." },
+          publisher: { type: Type.STRING, description: "Name of the publisher, e.g., 'Hulu', 'ESPN', 'Roku', etc." },
           category: { type: Type.STRING, description: "Must be exactly one of: 'App', 'Network', 'OS'" },
-          why: { type: Type.STRING, description: "A concise 1-2 sentence explanation of why this specific publisher aligns with the audience's demographics, viewing habits, or lifestyle." }
+          why: { type: Type.STRING, description: "A concise 1-2 sentence explanation of why this specific publisher aligns with the audience's demographics, viewing habits, or lifestyle. DO NOT mention tiers." }
         },
         required: ["publisher", "category", "why"]
       }
@@ -697,7 +703,7 @@ const candidateSignalSchema = {
   },
 };
 
-async function generateCandidateSignals(audienceProfile: any, facts: any, geoSummary?: string): Promise<AiCandidateSignal[]> {
+async function generateCandidateSignals(audienceProfile: any, facts: any): Promise<AiCandidateSignal[]> {
   // Built from the effective catalog, not the raw registry: a product disabled in
   // settings must not reach the model, and a custom media type must.
   const customNotes = new Map(
@@ -741,8 +747,6 @@ ${JSON.stringify({
   audienceDescriptions: facts.audienceDescriptions,
   audienceSignals: facts.audienceSignals.slice(0, 20),
   geography: facts.geography,
-  // The market gates eligibility; the footprint is context for scoring only.
-  geoFootprint: geoSummary || undefined,
   planningMode: facts.planningMode,
   workingMediaBudget: facts.totalWorkingMediaBudget,
   normalized30DayBudget: facts.normalized30DayBudget,
@@ -802,8 +806,6 @@ async function buildChannelStrategy(
     advertiserUrl?: string;
     campaignFocus?: string;
     geography?: string;
-    /** Rendered footprint, for the scoring model's context only - never for eligibility. */
-    geoSummary?: string;
     workingMediaBudget?: number;
     campaignFlightDays?: number | null;
     planningSettings?: unknown;
@@ -847,6 +849,7 @@ async function buildChannelStrategy(
     requiredChannelIds: options?.requiredChannelIds,
     excludedChannelIds: options?.excludedChannelIds,
     planningSettings,
+    ctvPublishers: audienceProfile?.ctvPublishers,
   });
   // Must match the catalog the candidates were generated from, or scores for custom
   // media types get silently dropped and they fall back to heuristic defaults.
@@ -854,7 +857,7 @@ async function buildChannelStrategy(
   const suppliedSignals = Array.isArray(options?.candidateSignals)
     ? options.candidateSignals.filter((signal) => signal && allowedSignalIds.has(signal.channelId))
     : [];
-  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts, options?.geoSummary);
+  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts);
   const mediaPlan = buildMediaRecommendationPlan(facts, aiSignals);
 
   const toLegacyEvaluation = (candidate: any) => {
@@ -898,6 +901,7 @@ async function buildChannelStrategy(
     manualIncludedChannelIds: facts.requiredChannelIds,
     manualExcludedChannelIds: facts.excludedChannelIds,
     mediaPlan,
+    ctvPublishers: audienceProfile?.ctvPublishers,
   };
 }
 
@@ -1532,18 +1536,7 @@ app.post("/api/analyze-media-plan", async (req, res) => {
       budgetStrategyMode || 'reallocation',
       advertiserName,
       kpis,
-      {
-        advertiserUrl,
-        campaignFocus,
-        geography,
-        geoSummary: geoSummaryForPrompt(rehydrateGeoTargeting(req.body?.geoTargeting), geography || "United States"),
-        workingMediaBudget,
-        campaignFlightDays,
-        planningSettings,
-        requiredChannelIds,
-        excludedChannelIds,
-        candidateSignals,
-      },
+      { advertiserUrl, campaignFocus, geography, workingMediaBudget, campaignFlightDays, planningSettings, requiredChannelIds, excludedChannelIds, candidateSignals },
     );
     res.json({ success: true, channelStrategy });
   } catch (err: any) {
@@ -1740,9 +1733,14 @@ app.post("/api/auth/login", (req, res) => {
     const isAdmin = Boolean(configuredAdminPassword) && suppliedAdminPassword === configuredAdminPassword;
 
     const user = { name, isAdmin, issuedAt: Date.now() };
+    const token = createSessionToken(user);
     setSessionCookie(res, user);
     console.log(`[AUTH] '${name}' signed in${isAdmin ? " as an administrator" : ""}.`);
-    res.json({ success: true, user: { name, isAdmin, canEditSettings: isAdminRequestAllowed(user) } });
+    res.json({
+      success: true,
+      token,
+      user: { name, isAdmin, canEditSettings: isAdminRequestAllowed(user) },
+    });
   } catch (err: any) {
     console.error("[AUTH ERROR] Error processing login:", err);
     res.status(500).json({ success: false, error: "Internal authentication error." });
@@ -1757,8 +1755,10 @@ app.get("/api/auth/me", (req, res) => {
     res.status(401).json({ authenticated: false });
     return;
   }
+  const token = createSessionToken(user);
   res.json({
     authenticated: true,
+    token,
     user: { name: user.name, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user) },
     adminPasswordConfigured: isAdminPasswordConfigured(),
   });
@@ -1778,20 +1778,6 @@ function trimmedOrUndefined(value: unknown, maxLength: number): string | undefin
   return typeof value === "string" && value.trim() ? value.trim().slice(0, maxLength) : undefined;
 }
 
-/**
- * What the saved-plans list shows for a plan's geography. The footprint is summarised into
- * the existing preview field rather than given a column of its own, so the list stays
- * informative without a storage schema change.
- */
-function geographyPreview(payload: any): string | undefined {
-  const market = trimmedOrUndefined(payload?.geography, 100);
-  const targeting = rehydrateGeoTargeting(payload?.geoTargeting);
-  if (!targeting || targeting.scope === "national" || targeting.entries.length === 0) return market;
-  const unit = targeting.scope === "dma" ? "DMA" : "state";
-  const plural = targeting.entries.length === 1 ? unit : `${unit}s`;
-  return `${market || "United States"} (${targeting.entries.length} ${plural})`.slice(0, 100);
-}
-
 function planPayloadFromBody(body: any) {
   const { title, advertiserName, settingsRevision, payload } = body || {};
   const cleanPayload = payload && typeof payload === "object" ? payload : {};
@@ -1802,7 +1788,7 @@ function planPayloadFromBody(body: any) {
     // Preview fields are derived here rather than trusted from the client, so the list
     // view can never disagree with the payload it claims to summarize.
     audienceDescription: trimmedOrUndefined((cleanPayload as any).audienceDescription, 500),
-    geography: geographyPreview(cleanPayload),
+    geography: trimmedOrUndefined((cleanPayload as any).geography, 100),
     campaignFocus: trimmedOrUndefined((cleanPayload as any).campaignFocus, 100),
     url: trimmedOrUndefined((cleanPayload as any).url, 500),
     payload: cleanPayload,
@@ -1903,6 +1889,65 @@ app.post("/api/plans/:id/restore", async (req, res) => {
   }
 });
 
+// --- plan sharing -----------------------------------------------------------
+
+// Public, unauthenticated view of an actively shared plan
+app.get("/api/share/plan", async (req, res) => {
+  res.set("X-Robots-Tag", "noindex, nofollow");
+  try {
+    const token = String(req.query.token || "").trim();
+    if (!token || token.length < 16) {
+      res.status(400).json({ error: "A valid share token is required.", code: "INVALID_TOKEN" });
+      return;
+    }
+    const storage = await getStorage();
+    const plan = await storage.getPlanByShareToken(token);
+    if (!plan || plan.archived || !plan.isShared) {
+      res.status(404).json({
+        error: "This shared media plan link does not exist, has expired, or was revoked.",
+        code: "NOT_FOUND",
+      });
+      return;
+    }
+    res.json({ success: true, plan });
+  } catch (err: any) {
+    respondToStorageError(res, err, "load shared plan");
+  }
+});
+
+// Generate or enable a cryptographically secure share link (authenticated)
+app.post("/api/plans/:id/share", async (req, res) => {
+  try {
+    const storage = await getStorage();
+    const existing = await storage.getPlan(req.params.id);
+    if (!existing) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    const regenerate = req.body?.regenerate === true;
+    let shareToken = existing.shareToken;
+    if (!shareToken || regenerate) {
+      // 256 bits of cryptographically secure randomness, URL-safe base64
+      shareToken = `sec_${crypto.randomBytes(32).toString("base64url")}`;
+    }
+    const updated = await storage.setPlanShare(req.params.id, true, shareToken);
+    res.json({ success: true, shareToken: updated.shareToken, isShared: true });
+  } catch (err: any) {
+    respondToStorageError(res, err, "enable plan sharing");
+  }
+});
+
+// Revoke an active share link (authenticated)
+app.post("/api/plans/:id/unshare", async (req, res) => {
+  try {
+    const storage = await getStorage();
+    const updated = await storage.setPlanShare(req.params.id, false);
+    res.json({ success: true, shareToken: updated.shareToken, isShared: false });
+  } catch (err: any) {
+    respondToStorageError(res, err, "revoke plan sharing");
+  }
+});
+
 // Helper: Generate a realistic profile photo headshot using Gemini 3.1 Flash Image (Nano Banana 2)
 async function generatePersonaHeadshot(persona: any, retryCount: number = 0): Promise<string | null> {
   try {
@@ -1989,6 +2034,674 @@ app.post("/api/generate-persona-avatar", async (req, res) => {
   }
 });
 
+// API: Generate 16:9 Presentation Slides for Personas using gpt-image-2.5-sunburst
+app.post("/api/personas/generate-slide", async (req, res) => {
+  // Prevent socket timeout on long-running image generation
+  req.socket.setTimeout(0);
+
+  try {
+    const {
+      mode = "portfolio", // "portfolio" (4-in-1) | "spotlight" (1 persona)
+      personaIndex = 0,
+      personas = [],
+      advertiserName = "Brand",
+      campaignFocus = "",
+      geography = "National (US)",
+      style = "corporate_light", // "corporate_light" | "modern_dark" | "minimal_slate"
+      customNotes = "",
+    } = req.body || {};
+
+    if (!Array.isArray(personas) || personas.length === 0) {
+      res.status(400).json({ error: "Personas array is required to generate presentation slide." });
+      return;
+    }
+
+    let openai: OpenAI;
+    try {
+      openai = getOpenaiClient();
+    } catch (clientErr: any) {
+      res.status(500).json({ error: "OpenAI client configuration error.", details: clientErr.message || clientErr });
+      return;
+    }
+
+    const brand = advertiserName ? String(advertiserName).trim() : "Brand";
+    console.log(`[API /api/personas/generate-slide] Starting slide generation. Mode: '${mode}', Style: '${style}', Personas count: ${personas.length}`);
+
+    // EXACT BRAND DESIGN GUIDE (Mandatory across all slide layouts)
+    const brandDesignGuide = `
+CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
+- COLOR PALETTE & TONAL EXECUTION:
+  • Primary Color: Teal #0e8f86 (used for primary brand elements, key highlights, active tags, and primary accents).
+  • Dark Surfaces: Deep Teal #0e3b42 for dark surfaces, rich container backgrounds, or high-contrast card blocks.
+  • Secondary Color: Indigo #6b63e6 for secondary tags, supporting category indicators, and demographic badges.
+  • Limited Accents: Lime #a6cf56 for high-impact metric callouts and limited accent badges only.
+  • Neutrals & Body Copy: Cool slate-tinted neutrals with all body text and descriptions rendered strictly at #0c1e24 rather than true black.
+  • Elevation & Shadows: Shadows are cool-tinted and low-contrast, providing soft, premium depth without harsh dark edges.
+  • Layout & Negative Space: Layout stays generous and breathable because ample whitespace is an intentional part of the premium feel.
+  • Persona Imagery Framing: No border around persona images (clean, seamless, borderless portraits with no stroke, outline, or border ring around photos). For the 4-persona multi-card slide, round circular avatars are used; for individual spotlight slides, the persona image is NOT round—instead, use what framing works best for the layout (such as an elegant vertical rectangular or softly rounded-corner editorial portrait).
+- TYPOGRAPHY SYSTEM (LEXEND THROUGHOUT):
+  • Typeface: Lexend throughout all textual elements.
+  • Headlines & Persona Titles: Lexend Bold with tight 1.05 leading and -0.02em tracking.
+  • Body Text & Descriptions: Lexend Regular at 1.5 leading with body text in #0c1e24.
+  • Eyebrow Labels & Category Badges: Lexend SemiBold in all-caps (UPPERCASE) with 0.08em tracking for teal (#0e8f86) eyebrow labels.
+`;
+
+    // Palette & visual styling directives - optimized for white background slide decks
+    let paletteDesc = "Pure white presentation canvas (#FFFFFF) with cool slate-tinted neutral card containers (#F8FAFC), subtle 1px cool borders (#E2E8F0), body text at #0c1e24, primary teal #0e8f86 accents, deep teal #0e3b42 dark surfaces, indigo #6b63e6 secondary accents, and limited lime #a6cf56 highlights";
+    if (style === "modern_dark") {
+      paletteDesc = "Executive dark theme: deep teal (#0e3b42) canvas and surfaces, clean white text, teal #0e8f86 and indigo #6b63e6 accents, limited lime #a6cf56 callouts, with subtle cool-tinted low-contrast borders";
+    } else if (style === "minimal_slate") {
+      paletteDesc = "Refined minimal editorial theme: pure white canvas (#FFFFFF), high-contrast #0c1e24 typography in Lexend, subtle cool slate borders (#E2E8F0), teal #0e8f86 eyebrow labels, and indigo #6b63e6 accents";
+    }
+
+    let prompt = "";
+    const referenceFiles: any[] = [];
+
+    if (mode === "spotlight") {
+      const pIdx = Math.max(0, Math.min(personaIndex, personas.length - 1));
+      const targetPersona = personas[pIdx] || personas[0];
+      const personaName = targetPersona.name || `Persona Archetype ${pIdx + 1}`;
+      const roleTag = targetPersona.sourceType === "User"
+        ? "Target Specific Persona"
+        : targetPersona.sourceType === "RFP"
+        ? "Core RFP Target Audience"
+        : "ScoutAI Reach Expansion Segment";
+
+      // Check if avatar image is available
+      if (targetPersona.avatarUrl && typeof targetPersona.avatarUrl === "string" && targetPersona.avatarUrl.startsWith("data:image/")) {
+        try {
+          const parts = targetPersona.avatarUrl.split(",");
+          const mime = targetPersona.avatarUrl.split(";")[0].replace("data:", "") || "image/png";
+          const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : "png";
+          const buf = Buffer.from(parts[1], "base64");
+          const file = await toFile(buf, `persona_${pIdx + 1}.${ext}`, { type: mime });
+          referenceFiles.push(file);
+          console.log(`[API /api/personas/generate-slide] Added avatar reference for spotlight persona: ${personaName}`);
+        } catch (bufErr) {
+          console.warn("[API /api/personas/generate-slide] Could not convert avatar to file:", bufErr);
+        }
+      }
+
+      prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing an audience persona spotlight, designed to be placed directly onto a white background presentation slide.
+
+CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
+- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
+- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
+- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+
+${brandDesignGuide}
+
+BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+The entire image consists purely of the two-column slide body cards:
+
+LEFT COLUMN (~38% of width):
+- Photographic Studio Portrait: A large, high-definition photorealistic studio headshot portrait of ${personaName} (${targetPersona.age || "35"} year old ${targetPersona.gender || "individual"}). Warm, approachable, professional studio portrait lighting, facing camera. CRITICAL: For this spotlight layout, the persona image MUST NOT BE ROUND — instead, use what framing works best for the layout (e.g., an elegant vertical portrait or rectangular studio framing with natural soft corners that fills the top of the card). There must be NO border around the persona image (completely borderless, seamless photo placement with no stroke, outline, or border ring).
+- Demographic Card directly beneath the portrait:
+  • Eyebrow Label: "${roleTag.toUpperCase()}" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
+  • Persona Name: "${personaName}" (Lexend Bold with tight 1.05 leading and -0.02em tracking, prominent title in card)
+  • Demographic Pill Badges: Age: ${targetPersona.age || "25-45"} (teal #0e8f86) | Gender: ${targetPersona.gender || "Balanced"} (indigo #6b63e6) | HHI: ${targetPersona.income || "$85,000+"} (lime #a6cf56 accent)
+  • Primary Geography: ${geography || "National (US)"}
+
+RIGHT COLUMN (~62% of width):
+- Executive Persona Narrative Card:
+  • Eyebrow Label: "AUDIENCE ARCHETYPE NARRATIVE" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
+  • Narrative Text: "${targetPersona.narrative || "Representative consumer archetype exhibiting distinct digital media engagement, high brand affinity, and measurable commercial purchase intent."}" (Lexend Regular at 1.5 leading in #0c1e24)
+- Three Structured Insight Blocks:
+  1. 📺 Connected TV & Viewing Patterns:
+     • Eyebrow: "CONNECTED TV & STREAMING" in teal #0e8f86 (Lexend SemiBold, 0.08em tracking)
+     • Body: "${targetPersona.watch || "Ad-supported Connected TV, premium streaming, and prime-time OTT"}" (Lexend Regular at 1.5 leading in #0c1e24)
+  2. 🌐 Digital, Mobile & Web Affinity:
+     • Eyebrow: "DIGITAL & MOBILE BEHAVIOR" in teal #0e8f86 (Lexend SemiBold, 0.08em tracking)
+     • Body: "${targetPersona.browse || "High-affinity digital news, lifestyle apps, and social platforms"}" (Lexend Regular at 1.5 leading in #0c1e24)
+  3. 🛍️ Purchase Drivers & Commerce Behavior:
+     • Eyebrow: "COMMERCE & PURCHASE DRIVERS" in teal #0e8f86 (Lexend SemiBold, 0.08em tracking)
+     • Body: "${targetPersona.buy || "Direct-to-consumer goods, high e-commerce propensity, responsive to digital offers"}" (Lexend Regular at 1.5 leading in #0c1e24)
+- Media Planning Activation Recommendation:
+  • Container: Deep teal (#0e3b42) or cool slate surface with subtle cool-tinted shadow and 1px border.
+  • Eyebrow: "STRATEGIC ACTIVATION RECOMMENDATION" in teal #0e8f86 with a small lime #a6cf56 accent tag.
+  • Recommendation Text: "Deploy targeted CTV video creative and synchronized cross-device retargeting to engage ${personaName} during high-attention evening and weekend dayparts." (Lexend Regular in #0c1e24 or crisp white if on deep teal)
+
+DESIGN & EXECUTION DIRECTIVES:
+- Follow all directives in the CORE BRAND DESIGN GUIDE above.
+- Borderless persona imagery (NOT round): For this individual spotlight slide, the persona portrait photo MUST NOT BE ROUND; instead, use whatever framing works best for the layout (e.g. natural vertical rectangular/portrait studio framing) with absolutely NO border around it (borderless photo with no stroke, outline, or framing ring).
+- Clean graphic card containers with subtle 1px border outlines (#E2E8F0) and rounded corners (12px) on a pure white (#FFFFFF) background.
+- Generous whitespace throughout ensuring an uncluttered, high-end presentation feel.
+- Razor-sharp, high-contrast, perfectly legible Lexend typography.
+- STRICT REMINDER: ONLY produce the visual body cards. NO top slide title, NO subhead, NO logo, NO footer text.
+${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
+
+    } else {
+      // 4-in-1 Portfolio mode
+      const candidatePersonas = personas.slice(0, 4);
+
+      // Collect avatar references if available
+      for (let i = 0; i < candidatePersonas.length; i++) {
+        const p = candidatePersonas[i];
+        if (p.avatarUrl && typeof p.avatarUrl === "string" && p.avatarUrl.startsWith("data:image/")) {
+          try {
+            const parts = p.avatarUrl.split(",");
+            const mime = p.avatarUrl.split(";")[0].replace("data:", "") || "image/png";
+            const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : "png";
+            const buf = Buffer.from(parts[1], "base64");
+            const file = await toFile(buf, `persona_${i + 1}.${ext}`, { type: mime });
+            referenceFiles.push(file);
+          } catch (bufErr) {
+            console.warn(`[API /api/personas/generate-slide] Could not convert avatar ${i + 1} to file:`, bufErr);
+          }
+        }
+      }
+      console.log(`[API /api/personas/generate-slide] Added ${referenceFiles.length} avatar reference(s) for portfolio slide.`);
+
+      prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing 4 audience persona cards side-by-side, designed to be placed directly onto a white background presentation slide.
+
+CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
+- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
+- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
+- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+
+${brandDesignGuide}
+
+BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+The entire image consists purely of exactly 4 distinct, equal vertical persona cards arranged horizontally side-by-side across the slide:
+
+${candidatePersonas.map((p: any, idx: number) => `
+CARD ${idx + 1}:
+• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait at the top showing a realistic ${p.age || "35"} year old ${p.gender || "adult"} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).
+• Eyebrow Tag: "${p.sourceType === "User" ? "TARGET SPECIFIC PERSONA" : p.sourceType === "RFP" ? "CORE RFP TARGET" : "SCOUTAI GROWTH SEGMENT"}" in teal #0e8f86 (Lexend SemiBold in uppercase with 0.08em tracking).
+• Persona Name: "${p.name || `Persona Archetype ${idx + 1}`}" (Lexend Bold with tight 1.05 leading and -0.02em tracking).
+• Demographic Pills: "${p.gender || "Balanced"} | Age ${p.age || "25-45"} | HHI ${p.income || "$85k+"}" (Teal #0e8f86, secondary indigo #6b63e6, and subtle lime #a6cf56 accents).
+• 3 Key Media & Purchasing Behaviors (Lexend Regular text at 1.5 leading in #0c1e24):
+  - 📺 Watch: ${p.watch || "Connected TV & Streaming"}
+  - 🌐 Browse: ${p.browse || "Digital news & mobile apps"}
+  - 🛍️ Buy: ${p.buy || "E-commerce & retail"}
+• Summary Highlight: "${(p.narrative || "").slice(0, 100)}..." (Lexend Regular in #0c1e24)
+`).join("\n")}
+
+DESIGN & EXECUTION DIRECTIVES:
+- Follow all directives in the CORE BRAND DESIGN GUIDE above.
+- Round persona images with no border: All 4 persona portrait photos MUST BE ROUND (perfect circular avatars) with absolutely NO border around them (completely borderless circular photos with no outer stroke, ring, or outline).
+- 4 clean vertical cards with cool slate-tinted neutral container backgrounds (#F8FAFC), subtle 1px cool borders (#E2E8F0), and cool-tinted low-contrast shadows on a pure white (#FFFFFF) canvas.
+- Deep teal #0e3b42 used for prominent card accents or dark surfaces, primary teal #0e8f86 for active tags, indigo #6b63e6 for secondary badges, and lime #a6cf56 for limited high-impact accents.
+- All body copy strictly in #0c1e24.
+- Generous whitespace between cards and within containers ensuring an uncluttered, high-end executive look.
+- Razor-sharp, high-contrast, perfectly legible Lexend typography throughout.
+- STRICT REMINDER: ONLY produce the 4 persona cards. NO top slide title, NO subhead, NO logo, NO footer text.
+${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
+    }
+
+    console.log(`[API /api/personas/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: 1536x864)...`);
+
+    let resultImageBase64: string | null = null;
+    let revisedPrompt: string | undefined = undefined;
+
+    // Try edit endpoint if reference files exist
+    if (referenceFiles.length > 0) {
+      try {
+        console.log(`[API /api/personas/generate-slide] Attempting openai.images.edit with ${referenceFiles.length} reference image(s)...`);
+        const editResponse = await withTimeout(
+          openai.images.edit({
+            model: "gpt-image-2.5-sunburst",
+            image: referenceFiles.length === 1 ? referenceFiles[0] : referenceFiles,
+            prompt,
+            size: "1536x864",
+            quality: "high",
+          } as any),
+          120000,
+          null
+        );
+
+        if (editResponse && editResponse.data && editResponse.data[0]?.b64_json) {
+          resultImageBase64 = editResponse.data[0].b64_json;
+          revisedPrompt = editResponse.data[0].revised_prompt;
+          console.log("[API /api/personas/generate-slide] Successfully generated slide using openai.images.edit!");
+        }
+      } catch (editErr: any) {
+        console.warn(`[API /api/personas/generate-slide] openai.images.edit failed (${editErr.message || editErr}). Gracefully falling back to openai.images.generate...`);
+      }
+    }
+
+    // Fallback or default to images.generate
+    if (!resultImageBase64) {
+      console.log("[API /api/personas/generate-slide] Calling openai.images.generate with gpt-image-2.5-sunburst...");
+      const genResponse = await withTimeout(
+        openai.images.generate({
+          model: "gpt-image-2.5-sunburst",
+          prompt,
+          size: "1536x864",
+          quality: "high",
+        }),
+        120000,
+        null
+      );
+
+      if (genResponse && genResponse.data && genResponse.data[0]?.b64_json) {
+        resultImageBase64 = genResponse.data[0].b64_json;
+        revisedPrompt = genResponse.data[0].revised_prompt;
+        console.log("[API /api/personas/generate-slide] Successfully generated slide using openai.images.generate!");
+      } else {
+        throw new Error("gpt-image-2.5-sunburst did not return image data.");
+      }
+    }
+
+    const finalImageUrl = `data:image/png;base64,${resultImageBase64}`;
+    res.json({
+      success: true,
+      imageUrl: finalImageUrl,
+      model: "gpt-image-2.5-sunburst",
+      mode,
+      personaIndex,
+      revisedPrompt,
+    });
+
+  } catch (err: any) {
+    console.error("[API /api/personas/generate-slide ERROR]:", err);
+    res.status(500).json({
+      error: "Failed to generate presentation slide.",
+      details: err.message || String(err),
+    });
+  }
+});
+
+// API: Generate 16:9 Presentation Slides for Channel Strategy using gpt-image-2.5-sunburst
+app.post("/api/channels/generate-slide", async (req, res) => {
+  // Prevent socket timeout on long-running image generation
+  req.socket.setTimeout(0);
+
+  try {
+    const {
+      mode = "overview", // "overview" (all active channels on 1 slide) | "spotlight" (1 channel deep dive)
+      channelIndex = 0,
+      channels = [],
+      workingMediaBudget = 0,
+      flightDays = 30,
+      appliedBudgetTier = "",
+      advertiserName = "Brand",
+      campaignFocus = "",
+      geography = "National (US)",
+      style = "corporate_light", // "corporate_light" | "modern_dark" | "minimal_slate"
+      customNotes = "",
+      executiveInsight = "",
+    } = req.body || {};
+
+    if (!Array.isArray(channels) || channels.length === 0) {
+      res.status(400).json({ error: "Active channels array is required to generate channel strategy presentation slide." });
+      return;
+    }
+
+    let openai: OpenAI;
+    try {
+      openai = getOpenaiClient();
+    } catch (clientErr: any) {
+      res.status(500).json({ error: "OpenAI client configuration error.", details: clientErr.message || clientErr });
+      return;
+    }
+
+    const brand = advertiserName ? String(advertiserName).trim() : "Brand";
+    console.log(`[API /api/channels/generate-slide] Starting channel slide generation. Mode: '${mode}', Style: '${style}', Active channels count: ${channels.length}`);
+
+    // EXACT BRAND DESIGN GUIDE (Mandatory across all slide layouts)
+    const brandDesignGuide = `
+CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
+- COLOR PALETTE & TONAL EXECUTION:
+  • Primary Color: Teal #0e8f86 (used for primary brand elements, key allocation metrics, active status tags, and primary accents).
+  • Dark Surfaces: Deep Teal #0e3b42 for dark surfaces, rich container backgrounds, or high-contrast header metric blocks.
+  • Secondary Color: Indigo #6b63e6 for secondary category tags, tactic badges, and supporting indicators.
+  • Limited Accents: Lime #a6cf56 for high-impact metric callouts, budget highlights, and KPI badges only.
+  • Neutrals & Body Copy: Cool slate-tinted neutrals with all body text and descriptions rendered strictly at #0c1e24 rather than true black.
+  • Elevation & Shadows: Shadows are cool-tinted and low-contrast, providing soft, premium depth without harsh dark edges.
+  • Layout & Negative Space: Layout stays generous and breathable because ample whitespace is an intentional part of the premium feel.
+- TYPOGRAPHY SYSTEM (LEXEND THROUGHOUT):
+  • Typeface: Lexend throughout all textual elements.
+  • Headlines & Channel Titles: Lexend Bold with tight 1.05 leading and -0.02em tracking.
+  • Body Text & Descriptions: Lexend Regular at 1.5 leading with body text in #0c1e24.
+  • Eyebrow Labels & Category Badges: Lexend SemiBold in all-caps (UPPERCASE) with 0.08em tracking for teal (#0e8f86) eyebrow labels.
+`;
+
+    let prompt = "";
+
+    if (mode === "spotlight") {
+      const cIdx = Math.max(0, Math.min(channelIndex, channels.length - 1));
+      const targetChannel = channels[cIdx] || channels[0];
+      const channelName = targetChannel.channelName || `Media Channel ${cIdx + 1}`;
+      const allocPct = targetChannel.allocationPercent != null ? Math.round(targetChannel.allocationPercent) : 0;
+      const allocDollars = targetChannel.allocationDollars ? `$${Math.round(targetChannel.allocationDollars).toLocaleString()}` : "";
+      const cpmRange = targetChannel.typicalCpmLow && targetChannel.typicalCpmHigh 
+        ? `$${targetChannel.typicalCpmLow} – $${targetChannel.typicalCpmHigh} CPM` 
+        : targetChannel.typicalCpmLow ? `$${targetChannel.typicalCpmLow} CPM` : "Standard Benchmark CPM";
+      const score = targetChannel.recommendationScore ? targetChannel.recommendationScore.toFixed(1) : "9.0";
+      const confidence = targetChannel.confidence || "HIGH";
+      const status = targetChannel.status === "TEST" ? "TACTICAL TEST" : "RECOMMENDED CORE";
+
+      // Extract tactics & publishers
+      const tactics = Array.isArray(targetChannel.targetingTactics) && targetChannel.targetingTactics.length > 0
+        ? targetChannel.targetingTactics.slice(0, 3).map((t: any) => t.displayName || t.id).join(", ")
+        : "First-party audience matching, behavioral segment targeting, geographic radius optimization";
+
+      const publishers = Array.isArray(targetChannel.publishers) && targetChannel.publishers.length > 0
+        ? targetChannel.publishers.slice(0, 4).map((p: any) => p.displayName || p.id).join(", ")
+        : "Premium direct publisher inventory and verified private marketplaces";
+
+      const enhancements = Array.isArray(targetChannel.creativeEnhancements) && targetChannel.creativeEnhancements.length > 0
+        ? targetChannel.creativeEnhancements.slice(0, 3).map((e: any) => e.displayName || e.id).join(", ")
+        : "Interactive video overlays, dynamic creative optimization, frequency capping";
+
+      const measurement = Array.isArray(targetChannel.measurementCapabilities) && targetChannel.measurementCapabilities.length > 0
+        ? targetChannel.measurementCapabilities.slice(0, 3).map((m: any) => m.displayName || m.id).join(", ")
+        : "Multi-touch attribution, brand lift studies, real-time conversion tracking";
+
+      prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing a single media channel strategy spotlight deep dive, designed to be placed directly onto a white background presentation slide.
+
+CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
+- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
+- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
+- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+- NO UNSELECTED CANDIDATES: Only display this active, funded channel from the approved media plan.
+
+${brandDesignGuide}
+
+BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+The entire image consists purely of the two-column slide body cards:
+
+LEFT COLUMN (~36% of width):
+- Prominent Channel Overview Card:
+  • Eyebrow Label: "${status}" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
+  • Channel Name: "${channelName}" (Lexend Bold with tight 1.05 leading and -0.02em tracking, prominent title in card)
+  • Strategic Role: "${targetChannel.role || "Primary Awareness & Full-Funnel Demand Driver"}" (Lexend Regular, #0c1e24)
+  • Primary Allocation Metric Callout (Deep teal #0e3b42 background card with lime #a6cf56 accent):
+    - Percentage: "${allocPct}% of Total Budget" (Large bold display)
+    - Dollars: "${allocDollars}" (Prominent secondary figure)
+  • Key Tactical Badges:
+    - Benchmark CPM: "${cpmRange}" (Teal #0e8f86 pill)
+    - Fit Score: "${score}/100" (Indigo #6b63e6 pill)
+    - Confidence: "${confidence}" (Lime #a6cf56 accent badge)
+    - Flight Duration: "${flightDays} Days"
+  • Gap Addressed Callout: "${targetChannel.gapAddressed || "Delivers verified incremental household reach and high-attention engagement."}"
+
+RIGHT COLUMN (~64% of width):
+- Four Structured Tactical Execution Cards in a clean 2x2 grid:
+  1. 🎯 Targeting Tactics & Audience Activation:
+     • Eyebrow: "TARGETING & AUDIENCE ACTIVATION" in teal #0e8f86
+     • Body: "${tactics}" (Lexend Regular at 1.5 leading in #0c1e24)
+  2. 📺 Publisher Ecosystem & Inventory Quality:
+     • Eyebrow: "PREMIUM PUBLISHER ECOSYSTEM" in teal #0e8f86
+     • Body: "${publishers}" (Lexend Regular at 1.5 leading in #0c1e24)
+  3. 🎨 Creative Enhancements & Delivery Controls:
+     • Eyebrow: "CREATIVE & INVENTORY CONTROLS" in indigo #6b63e6
+     • Body: "${enhancements}" (Lexend Regular at 1.5 leading in #0c1e24)
+  4. 📊 Measurement & Attribution Alignment:
+     • Eyebrow: "MEASUREMENT & ATTRIBUTION" in indigo #6b63e6
+     • Body: "${measurement}" (Lexend Regular at 1.5 leading in #0c1e24)
+- Bottom Strategic Rationale Container:
+  • Container: Light cool slate container (#F8FAFC) with subtle 1px border (#E2E8F0)
+  • Eyebrow: "STRATEGIC ALLOCATION RATIONALE" in teal #0e8f86
+  • Text: "${targetChannel.allocationRationale || "Allocated based on strong cross-device synergies, proven audience affinity, and predictable cost efficiency."}" (Lexend Regular in #0c1e24)
+
+DESIGN & EXECUTION DIRECTIVES:
+- Follow all directives in the CORE BRAND DESIGN GUIDE above.
+- Clean graphic card containers with subtle 1px border outlines (#E2E8F0) and rounded corners (12px) on a pure white (#FFFFFF) background.
+- Generous whitespace throughout ensuring an uncluttered, high-end presentation feel.
+- Razor-sharp, high-contrast, perfectly legible Lexend typography.
+- STRICT REMINDER: ONLY produce the visual body cards. NO top slide title, NO subhead, NO logo, NO footer text.
+${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
+
+    } else {
+      // mode === "overview" (All active funded channels on 1 slide)
+      // DYNAMIC SELECTIVITY ENGINE: Support any number of funded channels without arbitrary truncation.
+      // Adapt layout geometry and selectively prioritize card content density so all channels fit cleanly.
+      const activeChannels = Array.isArray(channels) ? channels : [];
+      const numChannels = activeChannels.length;
+      const totalBudgetFormatted = workingMediaBudget ? `$${Math.round(workingMediaBudget).toLocaleString()}` : "$0";
+
+      // Determine adaptive layout geometry and content selectivity based on active channel count
+      let layoutInstruction = "";
+      let densityLevel: "spacious" | "moderate" | "compact" | "ultra_compact" = "spacious";
+      let selectiveContentRule = "";
+
+      if (numChannels <= 4) {
+        densityLevel = "spacious";
+        layoutInstruction = `A single horizontal row of ${numChannels} spacious, equal-width vertical cards arranged side-by-side across the 16:9 canvas with generous whitespace and margins.`;
+        selectiveContentRule = `Full detail included: Status Tag, Channel Name, Allocation (% and $), Strategic Role, Benchmark CPM, Recommendation Fit Score, Publishers, and Core Tactic.`;
+      } else if (numChannels === 5) {
+        densityLevel = "moderate";
+        layoutInstruction = `A single horizontal row of 5 streamlined vertical cards arranged side-by-side with balanced margins across the 16:9 canvas.`;
+        selectiveContentRule = `Streamlined content: Status Tag, Channel Name, Allocation (% and $), Strategic Role, Benchmark CPM, and Top Publishers. Lengthy narrative tactics are excluded to maintain clean vertical breathing room.`;
+      } else if (numChannels === 6) {
+        densityLevel = "compact";
+        layoutInstruction = `A balanced 2-row × 3-column modular grid (3 equal-sized cards in the top row, 3 equal-sized cards in the bottom row), guaranteeing all 6 channels have ample room, uniform dimensions, and equal visual weight across the 16:9 slide.`;
+        selectiveContentRule = `Selective high-impact metrics: Status Tag, Channel Name, Allocation (% and $), Concise Strategic Objective (1 phrase), and Benchmark CPM. Verbose publisher listings and long tactical paragraphs are selectively excluded to ensure large, crisp, legible typography and zero visual crowding.`;
+      } else if (numChannels <= 8) {
+        densityLevel = "compact";
+        layoutInstruction = `A balanced 2-row modular grid (4 equal-sized cards in the top row, and ${numChannels - 4} equal-sized cards uniformly spaced in the bottom row), sizing all card containers proportionally within the 16:9 canvas.`;
+        selectiveContentRule = `Selective executive metrics: Status Tag, Channel Name, Allocation (% and $), Concise Strategic Role (single phrase), and Benchmark CPM. Secondary narrative is omitted to preserve comfortable spacing, clear card borders, and prominent numbers.`;
+      } else {
+        densityLevel = "ultra_compact";
+        const rows = numChannels <= 12 ? 2 : 3;
+        const cols = Math.ceil(numChannels / rows);
+        layoutInstruction = `A structured executive allocation matrix organized into ${rows} balanced rows of ${cols} cards, uniformly proportioned so all ${numChannels} channels fit comfortably within the 16:9 widescreen canvas.`;
+        selectiveContentRule = `Ultra-streamlined essential metrics: Channel Name, Status Tag, Allocation (% and $), and 1-line Core Role. Benchmark ranges, publisher lists, and descriptions are excluded to ensure crystal-clear readability and comfortable spacing for all ${numChannels} channels.`;
+      }
+
+      prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing an executive media mix and channel allocation portfolio, designed to be placed directly onto a white background presentation slide.
+
+CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
+- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
+- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
+- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+- NO UNSELECTED CANDIDATES: Absolutely DO NOT include any out-of-plan channels, rejected options, or "media types not in plan". Strictly feature ONLY the ${numChannels} funded active channels listed below.
+
+${brandDesignGuide}
+
+CRITICAL SLIDE PACKING & ADAPTIVE LAYOUT DIRECTIVE:
+- ALL ${numChannels} CHANNELS MUST BE VISIBLE: Every one of the ${numChannels} funded active channels listed below MUST have its own designated card/tile. Do NOT skip, combine, or omit ANY channel.
+- ADAPTIVE CARD GEOMETRY:
+  ${layoutInstruction}
+- CONTENT SELECTIVITY & BREATHING ROOM:
+  To guarantee all ${numChannels} channels fit inside the 16:9 widescreen canvas (1536x864) without clipping, overflowing, or tiny unreadable text:
+  ${selectiveContentRule}
+  The cards must maintain comfortable margins, generous internal padding, crisp borders (#E2E8F0), and readable typography.
+
+BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+The entire image consists purely of the executive media allocation portfolio cards:
+
+TOP SUMMARY STRIP:
+- High-level allocation summary bar displaying:
+  • Working Media Budget: "${totalBudgetFormatted}" (Bold Lexend display with lime #a6cf56 accent)
+  • Flight Duration: "${flightDays} Days" (Lexend SemiBold)
+  • Channels: "${numChannels} Channels" (Indigo #6b63e6 pill)
+  (STRICT: Exclude Budget Tier completely from the slide export summary. Do NOT display any "Budget Tier" pill, label, or tier name. Only show Working Media Budget, Flight Duration, and Channels count.)
+- Horizontal proportional color-segmented allocation bar visually representing the budget split across all ${numChannels} channels.
+
+ACTIVE CHANNEL PORTFOLIO CARDS (${numChannels} cards arranged according to the adaptive grid layout above):
+${activeChannels.map((c: any, idx: number) => {
+  const pct = c.allocationPercent != null ? Math.round(c.allocationPercent) : 0;
+  const dollars = c.allocationDollars ? `$${Math.round(c.allocationDollars).toLocaleString()}` : "";
+  const cpm = c.typicalCpmLow && c.typicalCpmHigh ? `$${c.typicalCpmLow}–$${c.typicalCpmHigh} CPM` : "Benchmark CPM";
+  const score = c.recommendationScore ? c.recommendationScore.toFixed(1) : "9.0";
+  const pubText = Array.isArray(c.publishers) && c.publishers.length > 0
+    ? c.publishers.slice(0, 2).map((p: any) => p.displayName || p.id).join(", ")
+    : "Premium ad-supported networks";
+  const statusLabel = c.status === "TEST" ? "TACTICAL TEST" : "CORE STRATEGY";
+
+  if (densityLevel === "spacious") {
+    return `
+CARD ${idx + 1}: ${c.channelName}
+• Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold uppercase)
+• Channel Title: "${c.channelName}" (Lexend Bold)
+• Allocation Callout: "${pct}%" / "${dollars}" (Large bold metric with lime #a6cf56 highlight)
+• Strategic Role: "${c.role || "Targeted Reach & Engagement"}" (Lexend Regular in #0c1e24)
+• Key Benchmark: "${cpm}" | Fit Score: "${score}/100" (Teal & Indigo badges)
+• Key Publishers / Environments: "${pubText}"
+• Core Tactic: "${c.gapAddressed || "Captures high-attention target audiences"}"
+`;
+  }
+
+  if (densityLevel === "moderate") {
+    return `
+CARD ${idx + 1}: ${c.channelName}
+• Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold uppercase)
+• Channel Title: "${c.channelName}" (Lexend Bold)
+• Allocation Callout: "${pct}%" / "${dollars}" (Large bold metric with lime #a6cf56 highlight)
+• Strategic Role: "${c.role || "Targeted Reach & Engagement"}" (Lexend Regular, 1 concise sentence)
+• Key Benchmark: "${cpm}"
+• Key Environment: "${pubText}"
+(Selective Content Fit: Tactical paragraphs excluded to preserve vertical breathing space)`;
+  }
+
+  if (densityLevel === "compact") {
+    return `
+CARD ${idx + 1}: ${c.channelName}
+• Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold)
+• Channel Title: "${c.channelName}" (Lexend Bold)
+• Allocation Callout: "${pct}%" / "${dollars}" (Prominent bold metric with lime #a6cf56 highlight)
+• Strategic Objective: "${c.role || "Targeted Reach & Engagement"}" (Concise single phrase)
+• Key Benchmark: "${cpm}"
+(Selective Content Fit: Publishers list and narrative excluded so all ${numChannels} cards fit cleanly into the 2-row grid with high legibility)`;
+  }
+
+  // ultra_compact
+  return `
+CARD ${idx + 1}: ${c.channelName}
+• Channel Title: "${c.channelName}" (Lexend Bold) [${statusLabel}]
+• Allocation Callout: "${pct}%" / "${dollars}" (Prominent bold metric with lime #a6cf56 highlight)
+• Primary Objective: "${c.role || "Reach & Conversion"}" (Brief 1-phrase summary)
+(Selective Content Fit: Streamlined core metrics so all ${numChannels} channels fit effortlessly with generous spacing)`;
+}).join("\n")}
+
+DESIGN & EXECUTION DIRECTIVES:
+- Follow all directives in the CORE BRAND DESIGN GUIDE above.
+- Clean card containers with cool slate-tinted neutral backgrounds (#F8FAFC), subtle 1px cool borders (#E2E8F0), and soft shadows on a pure white (#FFFFFF) canvas.
+- Deep teal #0e3b42 used for prominent summary surfaces, primary teal #0e8f86 for active channel highlights, indigo #6b63e6 for secondary badges, and lime #a6cf56 for budget percentages.
+- All body copy strictly in #0c1e24.
+- Generous whitespace between cards and within containers ensuring an uncluttered, high-end executive look.
+- Razor-sharp, high-contrast, perfectly legible Lexend typography throughout.
+- STRICT REMINDER: ONLY produce the visual allocation body cards. NO top slide title, NO subhead, NO logo, NO footer text.
+${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
+    }
+
+    console.log(`[API /api/channels/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: 1536x864)...`);
+
+    const genResponse = await withTimeout(
+      openai.images.generate({
+        model: "gpt-image-2.5-sunburst",
+        prompt,
+        size: "1536x864",
+        quality: "high",
+      }),
+      120000,
+      null
+    );
+
+    if (!genResponse || !genResponse.data || !genResponse.data[0]?.b64_json) {
+      throw new Error("gpt-image-2.5-sunburst did not return image data for channel slide.");
+    }
+
+    const resultImageBase64 = genResponse.data[0].b64_json;
+    const revisedPrompt = genResponse.data[0].revised_prompt;
+    console.log("[API /api/channels/generate-slide] Successfully generated channel slide using openai.images.generate!");
+
+    const finalImageUrl = `data:image/png;base64,${resultImageBase64}`;
+    res.json({
+      success: true,
+      imageUrl: finalImageUrl,
+      model: "gpt-image-2.5-sunburst",
+      mode,
+      channelIndex,
+      revisedPrompt,
+    });
+
+  } catch (err: any) {
+    console.error("[API /api/channels/generate-slide ERROR]:", err);
+    res.status(500).json({
+      error: "Failed to generate channel strategy presentation slide.",
+      details: err.message || String(err),
+    });
+  }
+});
+
+// API: Summarize Publisher Insights with AI if text is too long for presentation slides
+app.post("/api/summarize-publisher-insights", async (req, res) => {
+  try {
+    const { text, maxWords = 65, maxCharacters = 450 } = req.body || {};
+    if (!text || typeof text !== "string" || text.trim().length === 0) {
+      res.json({ summary: "", reduced: false });
+      return;
+    }
+
+    const trimmed = text.trim();
+    const words = trimmed.split(/\s+/);
+
+    // If it's already within limits, return immediately without calling AI
+    if (trimmed.length <= maxCharacters && words.length <= maxWords) {
+      res.json({ summary: trimmed, reduced: false });
+      return;
+    }
+
+    console.log(`[AI SUMMARIZER] Summarizing publisher insights (${trimmed.length} chars, ${words.length} words) to max ${maxWords} words...`);
+
+    const ai = getAiClient();
+    const prompt = `You are a media planning strategist.
+Summarize the following CTV "Publisher Alignment" insight paragraph into a single concise, high-impact paragraph designed for an executive presentation slide.
+
+STRICT REQUIREMENTS:
+1. Maximum ${maxWords} words total.
+2. Under ${maxCharacters} characters total.
+3. Preserve the core strategic rationale (the strategic combination of premium SVOD, ad-supported FAST, OS reach, and contextual network affinity) and campaign fit.
+4. Do NOT use bullet points, headers, quotes, or markdown.
+5. Return ONLY the single summarized paragraph.
+
+Original text:
+${trimmed}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        temperature: 0.2,
+      },
+    });
+
+    const summaryText = (response.text || "").trim().replace(/^["']|["']$/g, "").trim();
+
+    if (summaryText && summaryText.length > 20) {
+      console.log(`[AI SUMMARIZER] Successfully summarized to ${summaryText.split(/\s+/).length} words (${summaryText.length} chars).`);
+      res.json({ summary: summaryText, reduced: true });
+    } else {
+      // Fallback: Smart sentence truncation
+      const sentences = trimmed.match(/[^.!?]+[.!?]+/g) || [trimmed];
+      let acc = "";
+      for (const s of sentences) {
+        if ((acc + s).length <= maxCharacters && (acc + s).split(/\s+/).length <= maxWords) {
+          acc += (acc ? " " : "") + s.trim();
+        } else {
+          break;
+        }
+      }
+      res.json({ summary: acc || words.slice(0, maxWords).join(" ") + "...", reduced: true });
+    }
+  } catch (err: any) {
+    console.error("[AI SUMMARIZER] Error summarizing publisher insights:", err);
+    // Graceful fallback: Smart sentence truncation
+    const trimmed = (req.body?.text || "").trim();
+    const maxW = req.body?.maxWords || 65;
+    const maxC = req.body?.maxCharacters || 450;
+    const words = trimmed.split(/\s+/);
+    let fallback = "";
+    const sentences = trimmed.match(/[^.!?]+[.!?]+/g) || [trimmed];
+    for (const s of sentences) {
+      if ((fallback + s).length <= maxC && (fallback + s).split(/\s+/).length <= maxW) {
+        fallback += (fallback ? " " : "") + s.trim();
+      } else {
+        break;
+      }
+    }
+    res.json({ summary: fallback || words.slice(0, maxW).join(" ") + "...", reduced: true, fallback: true });
+  }
+});
+
 // API: Generate profile using search grounding with live real-time research feedback
 app.post("/api/generate-profile", async (req, res) => {
   // Prevent Express or Node from timing out socket connections on this long-running streaming endpoint
@@ -2002,6 +2715,7 @@ app.post("/api/generate-profile", async (req, res) => {
     geography,
     campaignFocus,
     additionalContext,
+    targetPersonas,
     regenerateType,
     selectedPlanOptions,
     budgetStrategyMode,
@@ -2011,11 +2725,6 @@ app.post("/api/generate-profile", async (req, res) => {
     planningSettings,
     ctvPublishers,
   } = req.body;
-
-  // Re-resolved from the reference here rather than trusted: the client's list decides what
-  // the research prompts are told the campaign is buying.
-  const geoTargeting = rehydrateGeoTargeting(req.body?.geoTargeting);
-  const geoSummary = geoSummaryForPrompt(geoTargeting, geography || "United States");
 
   // SSE Setup Headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -2072,6 +2781,9 @@ app.post("/api/generate-profile", async (req, res) => {
     const cleanAudienceDesc = (audienceDescription || "").slice(0, 1500);
     const cleanUrl = (url || "").slice(0, 500);
     const cleanAdditionalContext = (additionalContext || "").slice(0, 500);
+    const cleanTargetPersonas: string[] = Array.isArray(targetPersonas)
+      ? targetPersonas.map((p: any) => String(p || "").trim().slice(0, 150)).filter((p: string) => p.length > 0).slice(0, 4)
+      : [];
 
     const audienceSnippet = cleanAudienceDesc ? `"${cleanAudienceDesc.slice(0, 50)}${cleanAudienceDesc.length > 50 ? '...' : ''}"` : "Target Audience";
     sendEvent("status", { message: `Initializing campaign parameters for ${audienceSnippet} in ${geography || 'United States'}...` });
@@ -2110,7 +2822,7 @@ app.post("/api/generate-profile", async (req, res) => {
 Advertiser Name: ${cleanAdvertiserName || "Not specified"}
 Target Campaign KPIs (Goals): ${cleanKpis.length > 0 ? cleanKpis.join("; ") : "Not specified"}
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geoSummary}
+Geography/Market: ${geography}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -2121,7 +2833,7 @@ Search the web for real, reputable statistics regarding:
 1. Age distribution ranges (specifically looking for percentage splits across 18-24, 25-34, 35-44, 45-54, 55+ or similar cohorts).
 2. Gender split percentages (Male, Female, Non-Binary/Other).
 3. Household Income distribution splits (e.g., <$50k, $50k-$75k, $75k-$100k, $100k-$150k, $150k+).
-4. Geographic/regional or DMA concentrations (e.g. urban, suburban skews) within the targeted footprint above, naming those markets specifically where data exists for them.
+4. Geographic/regional or DMA concentrations (e.g. urban, suburban skews).
 
 INSTRUCTIONS:
 - Search for and cite real stats from high-authority sources (e.g., Census Bureau, Pew Research, GWI, MRI-Simmons, eMarketer, Statista, trade associations).
@@ -2130,7 +2842,7 @@ INSTRUCTIONS:
     // 2. Browser & Domain Affinity Sub-Call Prompt
     const promptWebAffinity = `Research and compile digital touchpoints, web traffic, and domain affinities for this target audience.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geoSummary}
+Geography/Market: ${geography}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -2149,7 +2861,7 @@ INSTRUCTIONS:
     // 3. CTV & Devices Sub-Call Prompt
     const promptDevices = `Research and compile Connected TV (CTV) viewing, video streaming, and hardware device usage patterns for this target audience.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geoSummary}
+Geography/Market: ${geography}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -2168,7 +2880,7 @@ INSTRUCTIONS:
     // 4. Temporal & Purchase Patterns Sub-Call Prompt
     const promptTemporalPurchase = `Research and compile temporal activity peaks, day-of-week, hour-of-day habits, and purchase triggers/behaviors for this target audience.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geoSummary}
+Geography/Market: ${geography}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -2289,36 +3001,67 @@ INSTRUCTIONS:
     const resolvedCount = deduplicatedSources.filter((src, idx) => src.uri !== redirectSources[idx].uri).length;
     console.log(`Resolved ${resolvedCount}/${deduplicatedSources.length} grounding redirects to publisher URLs in ${Date.now() - resolveStartedAt}ms.`);
 
-    // Build dynamic CTV Publisher guidance based on active enabled publishers and their targeting rules
+    // Build dynamic CTV Publisher guidance based on active enabled publishers, tiers, and settings
     const effectivePublishers = (Array.isArray(ctvPublishers) && ctvPublishers.length > 0)
       ? ctvPublishers
       : (await (await getStorage()).getCurrentPublishers()).publishers;
     
+    const targetPublisherCount = Math.max(1, Math.min(30, Math.round(Number(planningSettings?.ctvPublisherTargetCount) || 8)));
+    
+    // Distribution targets: adjustable percentages (default 35% Tier 1, 45% Tier 2, 20% Tier 3)
+    let rawT1 = Number(planningSettings?.ctvTier1TargetPercent);
+    let rawT2 = Number(planningSettings?.ctvTier2TargetPercent);
+    let rawT3 = Number(planningSettings?.ctvTier3TargetPercent);
+    if (!Number.isFinite(rawT1) || rawT1 < 0) rawT1 = 35;
+    if (!Number.isFinite(rawT2) || rawT2 < 0) rawT2 = 45;
+    if (!Number.isFinite(rawT3) || rawT3 < 0) rawT3 = 20;
+
+    const totalTierWeight = (rawT1 + rawT2 + rawT3) || 100;
+    const t1Pct = Math.round((rawT1 / totalTierWeight) * 100);
+    const t2Pct = Math.round((rawT2 / totalTierWeight) * 100);
+    const t3Pct = Math.max(0, 100 - t1Pct - t2Pct);
+
+    const t1Target = Math.round(targetPublisherCount * (rawT1 / totalTierWeight));
+    const t2Target = Math.round(targetPublisherCount * (rawT2 / totalTierWeight));
+    const t3Target = Math.max(0, targetPublisherCount - t1Target - t2Target);
+
     const enabledPublishers = effectivePublishers.filter((p: any) => p && p.enabled !== false && p.name);
-    const pubApps = enabledPublishers.filter((p: any) => p.category === "App");
-    const pubNetworks = enabledPublishers.filter((p: any) => p.category === "Network");
-    const pubOsFast = enabledPublishers.filter((p: any) => p.category === "OS");
+    const pubTier1 = enabledPublishers.filter((p: any) => Number(p.tier) === 1);
+    const pubTier2 = enabledPublishers.filter((p: any) => Number(p.tier) === 2 || !p.tier);
+    const pubTier3 = enabledPublishers.filter((p: any) => Number(p.tier) === 3);
 
     const formatPublisherLine = (p: any) => `      - '${p.name}' (Category: '${p.category}'${p.notes ? ` | Targeting Rules / When to Include: "${p.notes}"` : ''})`;
 
     const ctvPublishersSection = `9. CTV PUBLISHER RECOMMENDATIONS (MANDATORY & TARGETING RULE GROUNDED):
-   You MUST select between 6 and 8 highly relevant CTV publishers STRICTLY from this approved pool of currently enabled publishers based on the audience's personas, demographic profile, content affinities, and campaign objectives.
-   You MUST leverage the provided Targeting Rules & Notes to guide your selection (e.g. prioritize female-skewed networks for female audiences, news/finance networks for B2B/high-HHI, sports networks for active/male skews, FAST/OS for broad reach / cable replacement, etc.):
+   You MUST select EXACTLY ${targetPublisherCount} highly relevant CTV publishers STRICTLY from this approved pool of currently enabled publishers based on the audience's personas, demographic profile, content affinities, and campaign objectives.
 
-   --- APPROVED ENABLED APPS (Category 'App') ---
-${pubApps.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
+   DISTRIBUTION DIRECTIVE:
+   Aim for a balanced tier mix across the ${targetPublisherCount} selections reflecting approximately:
+   * ~${t1Pct}% Tier 1 (approximately ${t1Target} publisher${t1Target === 1 ? '' : 's'})
+   * ~${t2Pct}% Tier 2 (approximately ${t2Target} publisher${t2Target === 1 ? '' : 's'})
+   * ~${t3Pct}% Tier 3 (approximately ${t3Target} publisher${t3Target === 1 ? '' : 's'})
 
-   --- APPROVED ENABLED NETWORKS (Category 'Network') ---
-${pubNetworks.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
+   PRIORITY AUDIENCE-ALIGNMENT RULE:
+   While aiming for this tier distribution, your absolute top priority is audience relevance: select publishers whose programming, viewer demographics, content type, and platform environment best match this specific audience and campaign focus.
+   You MUST leverage the provided Targeting Rules & Notes to guide your selection (e.g. female-skewed networks for female audiences, news/finance networks for B2B/high-HHI, sports networks for active/sports skews, FAST/OS for broad reach / cable replacement, etc.).
 
-   --- APPROVED ENABLED OPERATING SYSTEMS & FAST (Category 'OS') ---
-${pubOsFast.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
+   CRITICAL CONFIDENTIALITY INSTRUCTION:
+   Do NOT mention, disclose, or reference tiers (e.g. "Tier 1", "Tier 2", "Tier 3", or "tier level") anywhere in the output, including in 'why' explanations or 'publisherInsights'. The tier system is strictly internal media planning logic and must NEVER be visible or mentioned to the user.
+
+   --- APPROVED TIER 1 PUBLISHERS (Premium Flagship SVOD/AVOD & Live Sports) ---
+${pubTier1.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
+
+   --- APPROVED TIER 2 PUBLISHERS (Linear / Cable / Broadcast Networks & Targeted Verticals) ---
+${pubTier2.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
+
+   --- APPROVED TIER 3 PUBLISHERS (FAST Platforms, Smart TV OS & Connected Devices) ---
+${pubTier3.map(formatPublisherLine).join('\n') || '      - None currently enabled'}
 
    For each selected publisher, provide:
    * 'publisher': The exact publisher name as listed in the approved pool.
    * 'category': The publisher category ('App' | 'Network' | 'OS').
-   * 'why': A highly specific, evidence-grounded justification explaining why this publisher's programming, viewer demographics, or platform environment fits the persona and fulfills its targeting rule.
-   Also, write a professional, cohesive paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign.`;
+   * 'why': A highly specific, evidence-grounded justification explaining why this publisher's programming, viewer demographics, or platform environment fits the persona and fulfills its targeting rule. (Remember: NEVER mention tiers here!)
+   Also, write a professional, cohesive, and concise paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign. Keep it strictly between 50 to 65 words (under 450 characters) so it fits slide presentation layouts without overflowing. (Remember: NEVER mention tiers here!)`;
 
     // Synthesis & Strategy 2 (Authority Filtering)
     const synthesisSystemInstruction = `You are a senior digital media director, veteran audience research partner, and master data synthesizer.
@@ -2338,7 +3081,7 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 4. Be highly precise with definitions: composition vs index vs reach vs penetration. Clearly distinguish percentage split from activity index (average = 100).
 5. Do not call an audience segment "affluent", "young", "tech-savvy", etc. unless the research supportively proves it with metrics.
 6. Ensure demographic charts, device charts, web share charts, and day/hour charts are fully populated with exact numbers. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'. Provide realistic index values (e.g. 120%, 150%, 210%, 280% depending on target audience domain affinity).
-7. Use current ${currentYear} data. Match geography: ${geoSummary}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
+7. Use current ${currentYear} data. Match geography: ${geography}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
    - You are STRICTLY PROHIBITED from fabricating, guessing, or making up consumer desire/sentiment figures, survey percentages, or market statistics (such as "85% of gamers express a desire to see product recommendations on their TV home screens").
    - Every single statistic or percentage mentioned in the recommendations ('recommendations.why' or 'recommendations.action') or core takeaways ('takeaways') MUST be directly grounded and cross-referenced from the provided parallel research dossiers.
@@ -2355,15 +3098,23 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 
 ${ctvPublishersSection}
 
-10. EXACTLY 4 PERSONAS (MANDATORY & ORIGIN SPECIFICATION):
+10. EXACTLY 4 PERSONAS (MANDATORY & USER SPECIFICATION / ORIGIN RULES):
    You MUST generate EXACTLY 4 distinct consumer personas in the 'personas' array (never 3 or 5).
-   - STANDARD BRIEF MODE (when NO uploaded media plan / RFP is provided):
+${cleanTargetPersonas.length > 0 ? `   - USER-SPECIFIED TARGET PERSONAS (HIGHEST PRIORITY OVERRIDE):
+     The user explicitly specified ${cleanTargetPersonas.length} target persona archetype(s) in their campaign brief:
+${cleanTargetPersonas.map((p, idx) => `     * Persona Slot ${idx + 1}: "${p}" (MANDATORY)`).join('\n')}
+     STRICT ENFORCEMENT RULES FOR USER PERSONAS:
+     1. You MUST assign these exact ${cleanTargetPersonas.length} user-specified personas to the first ${cleanTargetPersonas.length} slot(s) of the 'personas' array.
+     2. Keep the 'name' strictly identical or directly faithful to what the user typed (e.g. "${cleanTargetPersonas[0]}"). DO NOT rename, omit, replace, or dilute them.
+     3. Set 'sourceType' to 'User' for each of these user-specified personas.
+     4. Build rich, realistic demographics, watch, browse, buy, and narrative profiles around each of these specific archetypes, informed by the advertiser and research dossiers.
+     ${cleanTargetPersonas.length < 4 ? `5. For the remaining ${4 - cleanTargetPersonas.length} persona slot(s) (Slots ${cleanTargetPersonas.length + 1} through 4): You MUST autonomously generate complementary, high-potential expansion personas that broaden campaign addressable reach. Set 'sourceType' to 'ScoutAI' for these additional generated personas.` : '5. All 4 personas have been user-specified, so set \'sourceType\' to \'User\' for all 4.'}` : `   - STANDARD BRIEF MODE (when NO target personas entered and NO uploaded media plan / RFP):
      * Generate 4 distinct consumer personas representing the core target market. Set 'sourceType' to 'ScoutAI' for all 4.
-   - UPLOADED MEDIA PLAN / RFP MODE (when an uploaded media plan IS provided):
+   - UPLOADED MEDIA PLAN / RFP MODE (when an uploaded media plan IS provided and no user personas specified):
      * You MUST generate EXACTLY 4 personas in total.
      * Up to 3 personas MUST be derived directly from the listed target audiences in the uploaded media plan RFP (set 'sourceType': 'RFP' for these personas).
      * At least 1 persona MUST be a ScoutAI recommended "expansion persona" targeting a high-potential complementary audience segment not explicitly in the RFP that expands total addressable reach (set 'sourceType': 'ScoutAI' for this expansion persona).
-     * If the uploaded media plan lists fewer than 3 audiences (e.g., 2, 1, or 0), generate as many ScoutAI expansion personas ('sourceType': 'ScoutAI') as needed so the total array length is EXACTLY 4.
+     * If the uploaded media plan lists fewer than 3 audiences (e.g., 2, 1, or 0), generate as many ScoutAI expansion personas ('sourceType': 'ScoutAI') as needed so the total array length is EXACTLY 4.`}
      * Provide 'expansionReachPercent' as a number between 25 and 45 representing the estimated percentage increase in addressable reach achieved by including the ScoutAI expansion persona(s) (e.g. 35).
 
 11. UPLOADED MEDIA PLAN AUDIENCE ANALYSIS (MANDATORY WHEN MEDIA PLAN CONTAINS AUDIENCES):
@@ -2374,15 +3125,6 @@ ${ctvPublishersSection}
     Write an executive-ready, highly actionable strategic synthesis for 'executiveSummary'. You MUST explicitly emphasize:
     - Why the cross-screen channel strategy effectively reaches this audience where they actually are (e.g. living room Connected TV co-viewing, mobile digital companion screens, and high-affinity contextual domains during peak activity dayparts).
     - Why this media mix and tactical allocation is specifically engineered to hit the campaign's target KPIs (e.g., brand lift, view-through rates, incremental household reach, or direct conversion goals).
-
-13. GEO FOOTPRINT NARRATIVE (MANDATORY WHEN THE CAMPAIGN IS NOT NATIONAL):
-    The GEOGRAPHY line above is the campaign's actual buying footprint. It was supplied by the planner and validated against a market reference - it is not a claim to evaluate, and its market counts, household totals and coverage percentages were computed by code.
-    - When that footprint names specific states or DMAs, populate 'geoInsights' with a professional paragraph explaining why this footprint aligns to the advertiser's goals, audience and locations, and what it means for channel selection, inventory availability and delivery pacing. Where markets span several states, say what that means for the buy.
-    - You are STRICTLY FORBIDDEN from naming any market, state or region that does not appear in the supplied footprint.
-    - Do NOT restate, recalculate or estimate the household totals or coverage percentages; they are already displayed alongside your narrative and a second figure contradicts them.
-    - Do NOT write any budget, allocation or spend figure here, for the same reason rule 5 forbids it elsewhere.
-    - Keep it consistent with 'demographics.geographyNotes': that field describes where the audience naturally concentrates, this one describes where the campaign will actually run. If they differ, say why.
-    - When the GEOGRAPHY line says the campaign is national, set 'geoInsights' to an empty string ("").
 
 STRATEGY 2: AUTHORITY FILTERING & CITATION LOGIC:
 You are provided with a pool of real URLs discovered during search research. You MUST evaluate, filter, and structure these sources into the 'sources' array of the JSON response following these authority guidelines:
@@ -2423,12 +3165,15 @@ If an uploaded RFP document, RFP questions, or RFP analysis is provided in the u
 
 ADVERTISER NAME: ${cleanAdvertiserName || "None provided"}
 	TARGET CAMPAIGN KPIS (GOALS): ${cleanKpis.length > 0 ? cleanKpis.join("; ") : "None provided"}
-	GEOGRAPHY: ${geoSummary}
+	GEOGRAPHY: ${geography}
 	CAMPAIGN FOCUS: ${campaignFocus}
 	WORKING MEDIA BUDGET: $${Number(workingMediaBudget || 0).toLocaleString()}
 	CAMPAIGN FLIGHT DAYS: ${campaignFlightDays || "Unknown"}
 	BRAND URL: ${cleanUrl || "None provided"}
 ADDITIONAL CONTEXT: ${cleanAdditionalContext || "None provided"}
+${cleanTargetPersonas.length > 0 ? `USER SPECIFIED TARGET PERSONAS (MANDATORY TO USE IN ORDER):
+${cleanTargetPersonas.map((p, i) => `  Slot ${i + 1}: "${p}"`).join('\n')}
+(You MUST preserve these exact persona archetypes in the first ${cleanTargetPersonas.length} persona slots with sourceType 'User')` : ""}
 ${contextGuidance}
 
 --------------------------------------------------
@@ -2575,7 +3320,6 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             advertiserUrl: cleanUrl,
             campaignFocus,
             geography,
-            geoSummary,
             workingMediaBudget: Number(workingMediaBudget) || 0,
             campaignFlightDays: Number(campaignFlightDays) || null,
             planningSettings,
@@ -2622,7 +3366,6 @@ You MUST score across these five categories (0 to 20 points each):
 CONTEXT YOU MUST APPLY BEFORE SCORING:
 - Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
 ${channelStrategyGuidance}
-- The campaign's geographic footprint is a planner input validated against a market reference, and its market counts, household totals and coverage percentages are computed by code, not written by the model. Do not charge them to Data Integrity. Score 'geoInsights' on whether it is consistent with that footprint and free of markets the campaign is not buying; an empty 'geoInsights' on a national campaign is correct, not a gap.
 - 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
 
 Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
@@ -2719,7 +3462,7 @@ Your task is to rewrite and update the audience profile to:
 3. Bring all CTR/QR/conversion rates within standard industry-accepted trade benchmarks.
 4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
 5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
-6. 'geoInsights' describes a buying footprint the planner supplied and code validated. You may rewrite the prose, but you MUST NOT introduce any market, state or region it does not already name, and you MUST NOT add or restate household totals or coverage percentages - those are computed and displayed separately.
+6. USER-SPECIFIED PERSONAS ARE PROTECTED: If the input profile contains personas with sourceType 'User' (or personas matching user-specified targets), you MUST strictly preserve their exact names and 'sourceType': 'User'. Do NOT rename, delete, swap, or overwrite user-specified personas.
 7. 'deviceTypeIndex.chartData' MUST stay a composition share summing to 100 - it renders as a pie chart and as a "Split Share %" table, so index values get redrawn as shares and contradict whatever the overview says. Fix a broken device chart by correcting the shares and their stated denominator, never by reframing it as an index. 'browserAndReach.chartData' stays an affinity index with metricType 'Affinity Index'.
 
 You must return a JSON matching the profile correction schema. It contains:
@@ -2781,6 +3524,15 @@ Please correct the profile to resolve all issues.`
           // that had never been consulted. It may rewrite the analysis; it may not rewrite what
           // the analysis was based on.
           if (Array.isArray(originalData.sources)) finalProfile.sources = originalData.sources;
+          // Guardrail: Ensure user-specified personas are never lost or altered by remediation
+          if (cleanTargetPersonas.length > 0 && Array.isArray(finalProfile.personas)) {
+            cleanTargetPersonas.forEach((targetName, idx) => {
+              if (finalProfile.personas[idx]) {
+                finalProfile.personas[idx].name = targetName;
+                finalProfile.personas[idx].sourceType = 'User';
+              }
+            });
+          }
           autoFixesList = Array.isArray(correctionData.autoFixes) ? correctionData.autoFixes : [];
           if (autoFixesList.length === 0) {
             autoFixesList.push({

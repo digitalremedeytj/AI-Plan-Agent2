@@ -22,6 +22,7 @@ import {
   Save,
   Search,
   Settings,
+  Sliders,
   Sparkles,
   Trash2,
   Tv,
@@ -48,6 +49,7 @@ import {
   resolvePublisherLogo,
   validateCtvPublishers,
 } from "../planning/knowledge/ctvPublishers";
+import { authFetch } from "../api/client";
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -113,6 +115,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
   // CTV Publisher Filters & Modals
   const [pubCategoryFilter, setPubCategoryFilter] = React.useState<"all" | "App" | "Network" | "OS">("all");
   const [pubStatusFilter, setPubStatusFilter] = React.useState<"all" | "active" | "disabled">("all");
+  const [pubTierFilter, setPubTierFilter] = React.useState<"all" | "1" | "2" | "3">("all");
   
   // Logo editing modal state
   const [editingLogoPubId, setEditingLogoPubId] = React.useState<string | null>(null);
@@ -126,6 +129,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
   const [isAddPubModalOpen, setIsAddPubModalOpen] = React.useState(false);
   const [newPubName, setNewPubName] = React.useState("");
   const [newPubCategory, setNewPubCategory] = React.useState<"App" | "Network" | "OS">("App");
+  const [newPubTier, setNewPubTier] = React.useState<1 | 2 | 3>(2);
   const [newPubChannel, setNewPubChannel] = React.useState("CTV / OTT");
   const [newPubNotes, setNewPubNotes] = React.useState("");
   const [newPubLogoUrl, setNewPubLogoUrl] = React.useState("");
@@ -340,7 +344,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
       const formData = new FormData();
       formData.append("logo", file);
 
-      const res = await fetch("/api/ctv-publishers/upload-logo", {
+      const res = await authFetch("/api/ctv-publishers/upload-logo", {
         method: "POST",
         body: formData,
       });
@@ -404,38 +408,97 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
         const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
         if (lines.length <= 1) return;
 
+        const headerTokens = lines[0].toLowerCase().split(",").map((s) => s.replace(/^"|"$/g, "").trim());
+        const hasHeader = headerTokens.some((h) => h.includes("publisher") || h.includes("channel") || h.includes("tier"));
+        const startIndex = hasHeader ? 1 : 0;
+
+        const nameIdx = headerTokens.findIndex((h) => h.includes("publisher") || h.includes("name"));
+        const channelIdx = headerTokens.findIndex((h) => h.includes("channel"));
+        const notesIdx = headerTokens.findIndex((h) => h.includes("notes") || h.includes("environment"));
+        const tierIdx = headerTokens.findIndex((h) => h.includes("tier"));
+        const categoryIdx = headerTokens.findIndex((h) => h.includes("category"));
+
         const parsedPubs: CtvPublisherSetting[] = [];
-        // Skip header if first line contains 'publisher' or 'category'
-        const startIndex = lines[0].toLowerCase().includes("publisher") ? 1 : 0;
 
         for (let i = startIndex; i < lines.length; i++) {
           const line = lines[i];
-          // Simple CSV parser supporting quotes
-          const match = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g);
-          const parts = line.split(",").map((p) => p.replace(/^"|"$/g, "").trim());
-
-          if (parts.length >= 1 && parts[0]) {
-            const name = parts[0];
-            const categoryRaw = (parts[1] || "App").trim();
-            const category: "App" | "Network" | "OS" =
-              categoryRaw.toLowerCase().includes("network")
-                ? "Network"
-                : categoryRaw.toLowerCase().includes("os") || categoryRaw.toLowerCase().includes("fast")
-                ? "OS"
-                : "App";
-            const channel = parts[2] || "CTV / OTT";
-            const notes = parts.slice(3).join(", ").trim() || "";
-
-            const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-            parsedPubs.push({
-              id: id || `pub-${Date.now()}-${i}`,
-              name,
-              category,
-              channel,
-              notes,
-              enabled: true,
-            });
+          // Handle quoted commas properly
+          const parts: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let c = 0; c < line.length; c++) {
+            const char = line[c];
+            if (char === '"') {
+              inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+              parts.push(current.trim());
+              current = "";
+            } else {
+              current += char;
+            }
           }
+          parts.push(current.trim());
+
+          const cleanParts = parts.map((p) => p.replace(/^"|"$/g, "").trim());
+          if (cleanParts.length === 0 || !cleanParts[0]) continue;
+
+          // Resolve columns
+          const name = (nameIdx >= 0 ? cleanParts[nameIdx] : cleanParts[0]) || "";
+          if (!name) continue;
+
+          const channel = (channelIdx >= 0 ? cleanParts[channelIdx] : cleanParts[1] || "CTV / OTT") || "CTV / OTT";
+          
+          // Ignore audio publishers as requested
+          if (channel.toLowerCase().includes("audio")) {
+            continue;
+          }
+
+          const notes = (notesIdx >= 0 ? cleanParts[notesIdx] : (cleanParts.length >= 3 ? cleanParts[2] : "") || "");
+
+          // Tier resolution (1, 2, or 3)
+          let tier: 1 | 2 | 3 = 2;
+          if (tierIdx >= 0 && cleanParts[tierIdx]) {
+            const parsedTier = parseInt(cleanParts[tierIdx], 10);
+            if (parsedTier === 1 || parsedTier === 2 || parsedTier === 3) {
+              tier = parsedTier;
+            }
+          } else if (cleanParts.length >= 4) {
+            const lastPart = cleanParts[cleanParts.length - 1];
+            const parsedTier = parseInt(lastPart, 10);
+            if (parsedTier === 1 || parsedTier === 2 || parsedTier === 3) {
+              tier = parsedTier;
+            }
+          }
+
+          // Category resolution
+          let category: "App" | "Network" | "OS" = "App";
+          if (categoryIdx >= 0 && cleanParts[categoryIdx]) {
+            const catRaw = cleanParts[categoryIdx].toLowerCase();
+            if (catRaw.includes("network")) category = "Network";
+            else if (catRaw.includes("os") || catRaw.includes("fast")) category = "OS";
+            else category = "App";
+          } else {
+            // Infer from channel, notes, or name
+            const lowText = (notes + " " + name + " " + channel).toLowerCase();
+            if (lowText.includes("fast") || lowText.includes("smart tv") || lowText.includes("vizio") || lowText.includes("roku") || lowText.includes("lg") || lowText.includes("samsung") || lowText.includes("os")) {
+              category = "OS";
+            } else if (lowText.includes("network") || lowText.includes("cable") || lowText.includes("broadcast") || lowText.includes("news") || lowText.includes("linear") || lowText.includes("fox") || lowText.includes("nbc") || lowText.includes("cbs") || lowText.includes("abc")) {
+              category = "Network";
+            } else {
+              category = "App";
+            }
+          }
+
+          const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+          parsedPubs.push({
+            id: id || `pub-${Date.now()}-${i}`,
+            name,
+            category,
+            channel,
+            notes,
+            tier,
+            enabled: true,
+          });
         }
 
         if (parsedPubs.length > 0) {
@@ -465,6 +528,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
       category: newPubCategory,
       channel: newPubChannel.trim() || "CTV / OTT",
       notes: newPubNotes.trim(),
+      tier: newPubTier,
       logoUrl: newPubLogoUrl.trim() || undefined,
       enabled: true,
     };
@@ -473,6 +537,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     setIsAddPubModalOpen(false);
     setNewPubName("");
     setNewPubCategory("App");
+    setNewPubTier(2);
     setNewPubChannel("CTV / OTT");
     setNewPubNotes("");
     setNewPubLogoUrl("");
@@ -483,7 +548,8 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     // write we already know will be rejected.
     if (readOnly) return;
 
-    const settingsValidation = validatePlanningSettings(draftSettings);
+    const normalizedDraft = clonePlanningSettings(draftSettings);
+    const settingsValidation = validatePlanningSettings(normalizedDraft);
     const pubValidation = validateCtvPublishers(draftPublishers);
 
     const allErrors: string[] = [];
@@ -495,7 +561,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
       return;
     }
 
-    onSave(settingsValidation.settings || draftSettings, pubValidation.publishers || draftPublishers);
+    onSave(settingsValidation.settings || normalizedDraft, pubValidation.publishers || draftPublishers);
     onClose();
   };
 
@@ -516,34 +582,44 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     if (pubCategoryFilter !== "all" && pub.category !== pubCategoryFilter) return false;
     if (pubStatusFilter === "active" && !pub.enabled) return false;
     if (pubStatusFilter === "disabled" && pub.enabled) return false;
+    if (pubTierFilter !== "all" && String(pub.tier || 2) !== pubTierFilter) return false;
     if (!normalizedSearch) return true;
-    const combined = `${pub.name} ${pub.category} ${pub.channel} ${pub.notes}`.toLowerCase();
+    const combined = `${pub.name} ${pub.category} ${pub.channel} ${pub.notes} tier ${pub.tier || 2}`.toLowerCase();
     return combined.includes(normalizedSearch);
   });
 
-  const enabledCount = draftPublishers.filter((p) => p.enabled).length;
-  const appCount = draftPublishers.filter((p) => p.category === "App").length;
-  const networkCount = draftPublishers.filter((p) => p.category === "Network").length;
-  const osCount = draftPublishers.filter((p) => p.category === "OS").length;
+  const safePublishers = Array.isArray(draftPublishers) ? draftPublishers : [];
+  const safeProducts = Array.isArray(draftSettings?.products) ? draftSettings.products : [];
+  const safeEnhancements = Array.isArray(draftSettings?.enhancements) ? draftSettings.enhancements : [];
+  const safeOverviewMetrics = Array.isArray(draftSettings?.overviewMetrics) ? draftSettings.overviewMetrics : [];
+  const safeInternalOnly = Array.isArray(draftSettings?.internalOnly) ? draftSettings.internalOnly : [];
 
-  const visibleEnhancements = draftSettings.enhancements.filter(
+  const enabledCount = safePublishers.filter((p) => p.enabled).length;
+  const appCount = safePublishers.filter((p) => p.category === "App").length;
+  const networkCount = safePublishers.filter((p) => p.category === "Network").length;
+  const osCount = safePublishers.filter((p) => p.category === "OS").length;
+  const tier1Count = safePublishers.filter((p) => Number(p.tier) === 1).length;
+  const tier2Count = safePublishers.filter((p) => Number(p.tier) === 2 || !p.tier).length;
+  const tier3Count = safePublishers.filter((p) => Number(p.tier) === 3).length;
+
+  const visibleEnhancements = safeEnhancements.filter(
     (enhancement) =>
       !normalizedSearch ||
-      `${enhancement.displayName} ${enhancement.attachesTo.join(" ")} ${enhancement.trigger} ${enhancement.formatType}`
+      `${enhancement.displayName} ${(enhancement.attachesTo || []).join(" ")} ${enhancement.trigger} ${enhancement.formatType}`
         .toLowerCase()
         .includes(normalizedSearch)
   );
 
   const tabs: Array<{ id: SettingsTab; label: string; count?: number }> = [
-    { id: "publishers", label: "Recommended CTV Publishers", count: draftPublishers.length },
+    { id: "publishers", label: "Recommended CTV Publishers", count: safePublishers.length },
     { id: "budgets", label: "Budget & Media-Type Limits" },
-    { id: "products", label: "Product Rules", count: draftSettings.products.length },
-    { id: "enhancements", label: "Enhancements", count: draftSettings.enhancements.length },
-    { id: "visibility", label: "Visibility", count: draftSettings.overviewMetrics.length + draftSettings.internalOnly.length },
+    { id: "products", label: "Product Rules", count: safeProducts.length },
+    { id: "enhancements", label: "Enhancements", count: safeEnhancements.length },
+    { id: "visibility", label: "Visibility", count: safeOverviewMetrics.length + safeInternalOnly.length },
   ];
 
   const currentEditingPub = editingLogoPubId
-    ? draftPublishers.find((p) => p.id === editingLogoPubId)
+    ? safePublishers.find((p) => p.id === editingLogoPubId)
     : null;
 
   return (
@@ -653,45 +729,87 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
 
                 {/* Quick Action Toolbar */}
                 <div className="mt-4 pt-4 border-t border-indigo-100/70 flex flex-wrap items-center justify-between gap-3">
-                  {/* Category filters */}
-                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                    <span className="font-semibold text-slate-500 mr-1">Category:</span>
-                    <button
-                      type="button"
-                      onClick={() => setPubCategoryFilter("all")}
-                      className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
-                        pubCategoryFilter === "all" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
-                      }`}
-                    >
-                      All ({draftPublishers.length})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPubCategoryFilter("App")}
-                      className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
-                        pubCategoryFilter === "App" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
-                      }`}
-                    >
-                      Apps ({appCount})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPubCategoryFilter("Network")}
-                      className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
-                        pubCategoryFilter === "Network" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
-                      }`}
-                    >
-                      Networks ({networkCount})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPubCategoryFilter("OS")}
-                      className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
-                        pubCategoryFilter === "OS" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
-                      }`}
-                    >
-                      FAST &amp; OS ({osCount})
-                    </button>
+                  {/* Category and Tier filters */}
+                  <div className="flex flex-wrap items-center gap-3 text-xs">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-semibold text-slate-500 mr-1">Category:</span>
+                      <button
+                        type="button"
+                        onClick={() => setPubCategoryFilter("all")}
+                        className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
+                          pubCategoryFilter === "all" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                        }`}
+                      >
+                        All ({draftPublishers.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPubCategoryFilter("App")}
+                        className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
+                          pubCategoryFilter === "App" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                        }`}
+                      >
+                        Apps ({appCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPubCategoryFilter("Network")}
+                        className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
+                          pubCategoryFilter === "Network" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                        }`}
+                      >
+                        Networks ({networkCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPubCategoryFilter("OS")}
+                        className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
+                          pubCategoryFilter === "OS" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                        }`}
+                      >
+                        FAST &amp; OS ({osCount})
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-semibold text-slate-500 mr-1">Tier:</span>
+                      <button
+                        type="button"
+                        onClick={() => setPubTierFilter("all")}
+                        className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
+                          pubTierFilter === "all" ? "bg-slate-800 text-white shadow-xs" : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                        }`}
+                      >
+                        All Tiers
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPubTierFilter("1")}
+                        className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
+                          pubTierFilter === "1" ? "bg-amber-600 text-white shadow-xs" : "bg-white border border-amber-200 text-amber-800 hover:bg-amber-50"
+                        }`}
+                      >
+                        Tier 1 ({tier1Count})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPubTierFilter("2")}
+                        className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
+                          pubTierFilter === "2" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border border-indigo-200 text-indigo-800 hover:bg-indigo-50"
+                        }`}
+                      >
+                        Tier 2 ({tier2Count})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPubTierFilter("3")}
+                        className={`rounded-lg px-2.5 py-1 font-semibold transition-colors ${
+                          pubTierFilter === "3" ? "bg-emerald-600 text-white shadow-xs" : "bg-white border border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                        }`}
+                      >
+                        Tier 3 ({tier3Count})
+                      </button>
+                    </div>
                   </div>
 
                   {/* Right side buttons */}
@@ -757,6 +875,302 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                     </button>
                   </div>
                 </div>
+              </div>
+
+              {/* Target Recommended CTV Publishers Setting Card */}
+              <div className="rounded-2xl border border-indigo-200/80 bg-white p-4 sm:p-5 shadow-xs space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Sliders className="h-4 w-4 text-indigo-600" />
+                      <label htmlFor="ctv-target-count-input" className="text-sm font-bold text-slate-900">
+                        Target Recommended CTV Publishers Count
+                      </label>
+                      <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700 border border-indigo-200/50 font-mono">
+                        Range 1–30
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 max-w-xl">
+                      Specifies how many CTV publishers ScoutAI selects for the media plan. Default is 8.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min={1}
+                      max={30}
+                      step={1}
+                      value={draftSettings.ctvPublisherTargetCount ?? 8}
+                      onChange={(e) => {
+                        const val = Math.max(1, Math.min(30, parseInt(e.target.value, 10) || 8));
+                        setDraftSettings((curr) => ({ ...curr, ctvPublisherTargetCount: val }));
+                      }}
+                      className="w-28 sm:w-36 accent-indigo-600 cursor-pointer"
+                    />
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        id="ctv-target-count-input"
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={draftSettings.ctvPublisherTargetCount ?? 8}
+                        onChange={(e) => {
+                          const raw = parseInt(e.target.value, 10);
+                          const val = Number.isNaN(raw) ? 8 : Math.max(1, Math.min(30, raw));
+                          setDraftSettings((curr) => ({ ...curr, ctvPublisherTargetCount: val }));
+                        }}
+                        className="w-16 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-center text-sm font-bold text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                      />
+                      <span className="text-xs text-slate-400 font-semibold">pubs</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Target Tier Distribution Breakdown & Adjustable Controls */}
+                {(() => {
+                  const targetCount = Math.max(1, Math.min(30, Math.round(Number(draftSettings.ctvPublisherTargetCount) || 8)));
+                  const rawT1 = draftSettings.ctvTier1TargetPercent ?? 35;
+                  const rawT2 = draftSettings.ctvTier2TargetPercent ?? 45;
+                  const rawT3 = draftSettings.ctvTier3TargetPercent ?? 20;
+
+                  const sumPct = rawT1 + rawT2 + rawT3;
+                  const totalPct = sumPct || 100;
+                  const isExactly100 = sumPct === 100;
+
+                  const t1Alloc = Math.round(targetCount * (rawT1 / totalPct));
+                  const t2Alloc = Math.round(targetCount * (rawT2 / totalPct));
+                  const t3Alloc = Math.max(0, targetCount - t1Alloc - t2Alloc);
+
+                  const normalizeTiers = () => {
+                    if (sumPct === 0) {
+                      setDraftSettings((curr) => ({ ...curr, ctvTier1TargetPercent: 35, ctvTier2TargetPercent: 45, ctvTier3TargetPercent: 20 }));
+                      return;
+                    }
+                    const n1 = Math.round((rawT1 / sumPct) * 100);
+                    const n2 = Math.round((rawT2 / sumPct) * 100);
+                    const n3 = Math.max(0, 100 - n1 - n2);
+                    setDraftSettings((curr) => ({ ...curr, ctvTier1TargetPercent: n1, ctvTier2TargetPercent: n2, ctvTier3TargetPercent: n3 }));
+                  };
+
+                  const resetTiers = () => {
+                    setDraftSettings((curr) => ({ ...curr, ctvTier1TargetPercent: 35, ctvTier2TargetPercent: 45, ctvTier3TargetPercent: 20 }));
+                  };
+
+                  return (
+                    <div className="pt-3 border-t border-slate-100 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-bold text-slate-800">
+                            Internal Tier Targets:
+                          </span>
+                          {isExactly100 ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 border border-emerald-200/80">
+                              Total: 100% ✓
+                            </span>
+                          ) : (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700 border border-amber-200/80"
+                              title="ScoutAI will proportionally normalize this to 100% when selecting publishers"
+                            >
+                              Total: {sumPct}% (Auto-Normalized)
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {!isExactly100 && (
+                            <button
+                              type="button"
+                              onClick={normalizeTiers}
+                              className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded-md border border-indigo-200/60 transition-colors"
+                            >
+                              Auto-Fix to 100%
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={resetTiers}
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200 transition-colors"
+                            title="Reset to default 35% / 45% / 20%"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            Reset (35/45/20)
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Visual proportion bar */}
+                      <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden flex">
+                        <div
+                          style={{ width: `${Math.max(0, (rawT1 / totalPct) * 100)}%` }}
+                          className="bg-amber-500 transition-all duration-200"
+                          title={`Tier 1: ${rawT1}% (${t1Alloc} pubs)`}
+                        />
+                        <div
+                          style={{ width: `${Math.max(0, (rawT2 / totalPct) * 100)}%` }}
+                          className="bg-indigo-600 transition-all duration-200"
+                          title={`Tier 2: ${rawT2}% (${t2Alloc} pubs)`}
+                        />
+                        <div
+                          style={{ width: `${Math.max(0, (rawT3 / totalPct) * 100)}%` }}
+                          className="bg-emerald-500 transition-all duration-200"
+                          title={`Tier 3: ${rawT3}% (${t3Alloc} pubs)`}
+                        />
+                      </div>
+
+                      {/* 3 Adjustable Tier Target Cards */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        {/* Tier 1 */}
+                        <div className="rounded-xl border border-amber-200/80 bg-amber-50/40 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full bg-amber-500" />
+                              <span className="text-xs font-bold text-amber-900">Tier 1</span>
+                              <span className="text-[10px] text-amber-700 font-medium">(SVOD &amp; Sports)</span>
+                            </div>
+                            <span className="text-[11px] font-bold text-amber-800 bg-amber-100/90 px-1.5 py-0.5 rounded border border-amber-200/60">
+                              {t1Alloc} {t1Alloc === 1 ? "pub" : "pubs"}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={5}
+                              value={rawT1}
+                              onChange={(e) => {
+                                const val = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
+                                setDraftSettings((curr) => ({ ...curr, ctvTier1TargetPercent: val }));
+                              }}
+                              className="w-full accent-amber-500 cursor-pointer"
+                            />
+                            <div className="flex items-center shrink-0">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={rawT1}
+                                onChange={(e) => {
+                                  const raw = parseInt(e.target.value, 10);
+                                  const val = Number.isNaN(raw) ? 0 : Math.max(0, Math.min(100, raw));
+                                  setDraftSettings((curr) => ({ ...curr, ctvTier1TargetPercent: val }));
+                                }}
+                                className="w-14 rounded-lg border border-amber-300 bg-white px-1.5 py-1 text-center text-xs font-bold text-amber-900 shadow-2xs focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                              />
+                              <span className="text-[11px] font-bold text-amber-700 ml-1">%</span>
+                            </div>
+                          </div>
+                          <p className="text-[10px] text-amber-800/80 leading-tight">
+                            Premium SVOD / AVOD &amp; live sports
+                          </p>
+                        </div>
+
+                        {/* Tier 2 */}
+                        <div className="rounded-xl border border-indigo-200/80 bg-indigo-50/40 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full bg-indigo-600" />
+                              <span className="text-xs font-bold text-indigo-900">Tier 2</span>
+                              <span className="text-[10px] text-indigo-700 font-medium">(Linear &amp; Targeted)</span>
+                            </div>
+                            <span className="text-[11px] font-bold text-indigo-800 bg-indigo-100/90 px-1.5 py-0.5 rounded border border-indigo-200/60">
+                              {t2Alloc} {t2Alloc === 1 ? "pub" : "pubs"}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={5}
+                              value={rawT2}
+                              onChange={(e) => {
+                                const val = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
+                                setDraftSettings((curr) => ({ ...curr, ctvTier2TargetPercent: val }));
+                              }}
+                              className="w-full accent-indigo-600 cursor-pointer"
+                            />
+                            <div className="flex items-center shrink-0">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={rawT2}
+                                onChange={(e) => {
+                                  const raw = parseInt(e.target.value, 10);
+                                  const val = Number.isNaN(raw) ? 0 : Math.max(0, Math.min(100, raw));
+                                  setDraftSettings((curr) => ({ ...curr, ctvTier2TargetPercent: val }));
+                                }}
+                                className="w-14 rounded-lg border border-indigo-300 bg-white px-1.5 py-1 text-center text-xs font-bold text-indigo-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                              />
+                              <span className="text-[11px] font-bold text-indigo-700 ml-1">%</span>
+                            </div>
+                          </div>
+                          <p className="text-[10px] text-indigo-800/80 leading-tight">
+                            Broadcast/cable networks &amp; verticals
+                          </p>
+                        </div>
+
+                        {/* Tier 3 */}
+                        <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/40 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                              <span className="text-xs font-bold text-emerald-900">Tier 3</span>
+                              <span className="text-[10px] text-emerald-700 font-medium">(FAST &amp; OS)</span>
+                            </div>
+                            <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100/90 px-1.5 py-0.5 rounded border border-emerald-200/60">
+                              {t3Alloc} {t3Alloc === 1 ? "pub" : "pubs"}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={5}
+                              value={rawT3}
+                              onChange={(e) => {
+                                const val = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
+                                setDraftSettings((curr) => ({ ...curr, ctvTier3TargetPercent: val }));
+                              }}
+                              className="w-full accent-emerald-500 cursor-pointer"
+                            />
+                            <div className="flex items-center shrink-0">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={rawT3}
+                                onChange={(e) => {
+                                  const raw = parseInt(e.target.value, 10);
+                                  const val = Number.isNaN(raw) ? 0 : Math.max(0, Math.min(100, raw));
+                                  setDraftSettings((curr) => ({ ...curr, ctvTier3TargetPercent: val }));
+                                }}
+                                className="w-14 rounded-lg border border-emerald-300 bg-white px-1.5 py-1 text-center text-xs font-bold text-emerald-900 shadow-2xs focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                              />
+                              <span className="text-[11px] font-bold text-emerald-700 ml-1">%</span>
+                            </div>
+                          </div>
+                          <p className="text-[10px] text-emerald-800/80 leading-tight">
+                            FAST platforms &amp; Smart TV operating systems
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="pt-1 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-slate-400 italic">
+                        <span>
+                          ScoutAI matches audience personas to publisher rules while adhering to these tier distribution targets.
+                        </span>
+                        <span className="font-medium text-slate-500 not-italic">
+                          Tier labels remain strictly internal to planning.
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Search & Status Filter Bar */}
@@ -868,6 +1282,22 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                                   <option value="App">App</option>
                                   <option value="Network">Network</option>
                                   <option value="OS">FAST / OS</option>
+                                </select>
+                                <select
+                                  value={pub.tier || 2}
+                                  onChange={(e) => updatePublisherField(pub.id, { tier: Number(e.target.value) as 1 | 2 | 3 })}
+                                  className={`rounded-md border px-2 py-0.5 text-[11px] font-bold ${
+                                    pub.tier === 1
+                                      ? "bg-amber-50 text-amber-800 border-amber-300"
+                                      : pub.tier === 3
+                                      ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                                      : "bg-indigo-50 text-indigo-800 border-indigo-300"
+                                  }`}
+                                  title="Internal tier for AI recommendation distribution"
+                                >
+                                  <option value={1}>Tier 1</option>
+                                  <option value={2}>Tier 2</option>
+                                  <option value={3}>Tier 3</option>
                                 </select>
                                 <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
                                   {pub.channel || "CTV / OTT"}
@@ -1784,7 +2214,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                 />
               </label>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <label className="block text-xs font-bold text-slate-700">
                   Category
                   <select
@@ -1795,6 +2225,19 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                     <option value="App">App (Streaming Service)</option>
                     <option value="Network">Network (Broadcast/Cable)</option>
                     <option value="OS">FAST / Smart TV OS</option>
+                  </select>
+                </label>
+
+                <label className="block text-xs font-bold text-slate-700">
+                  Internal Tier
+                  <select
+                    value={newPubTier}
+                    onChange={(e) => setNewPubTier(Number(e.target.value) as 1 | 2 | 3)}
+                    className={inputClass}
+                  >
+                    <option value={1}>Tier 1 (SVOD / Sports)</option>
+                    <option value={2}>Tier 2 (Linear / Targeted)</option>
+                    <option value={3}>Tier 3 (FAST / Device OS)</option>
                   </select>
                 </label>
 

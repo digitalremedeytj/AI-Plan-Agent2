@@ -226,6 +226,7 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     ],
     settings: input.planningSettings,
     appliedBudgetTier,
+    ctvPublishers: input.ctvPublishers || [],
   };
 }
 
@@ -274,7 +275,22 @@ function evidenceConfidence(evidenceCount: number, prerequisites: string[], scor
 
 function canonicalGeography(value: string): string {
   const normalized = value.trim().toLowerCase();
-  if (["us", "u.s.", "usa", "u.s.a.", "united states", "united states of america"].includes(normalized)) return "united states";
+  if (
+    [
+      "us",
+      "u.s.",
+      "usa",
+      "u.s.a.",
+      "united states",
+      "united states of america",
+      "national",
+    ].includes(normalized)
+  ) {
+    return "united states";
+  }
+  if (normalized.startsWith("state") || normalized.startsWith("dma")) {
+    return "united states";
+  }
   return normalized;
 }
 
@@ -316,7 +332,7 @@ function eligibility(product: MediaProductRecord, facts: CampaignFacts): { failu
 }
 
 function defaultGap(product: MediaProductRecord, facts: CampaignFacts): string {
-  const existing = facts.existingChannelIds.length > 0 ? "uploaded baseline" : "greenfield mix";
+  const existing = facts.existingChannelIds.length > 0 ? "uploaded baseline" : "new plan mix";
   return `${product.displayName} adds ${product.funnelRoles.join(" and ")} coverage that is not fully represented in the ${existing}.`;
 }
 
@@ -611,16 +627,90 @@ function attachTargeting(product: MediaProductRecord, facts: CampaignFacts): Att
     .map(({ id, displayName, rationale }) => ({ id, displayName, rationale }));
 }
 
+function isCtvOrPerformanceTvProduct(product: MediaProductRecord): boolean {
+  const id = product.id.toLowerCase();
+  const name = product.displayName.toLowerCase();
+  const canonical = (product.legacyCanonicalId || "").toLowerCase();
+
+  return (
+    id === "channel.ctv" ||
+    id === "channel.performance_tv" ||
+    id === "ctv" ||
+    id === "performance_tv" ||
+    canonical === "ctv" ||
+    canonical === "ctv_ott" ||
+    canonical === "performance_tv" ||
+    name === "ctv / ott" ||
+    name === "ctv/ott" ||
+    name === "performance tv" ||
+    name === "performance ctv" ||
+    name === "connected tv" ||
+    id.includes("channel.ctv") ||
+    id.includes("performance_tv") ||
+    name.includes("performance tv") ||
+    name.includes("ctv / ott") ||
+    name.includes("ctv/ott")
+  );
+}
+
 function attachPublishers(product: MediaProductRecord, facts: CampaignFacts): AttachedPlanningRecord[] {
+  const isCtvOrPerf = isCtvOrPerformanceTvProduct(product);
+
+  if (isCtvOrPerf && facts.ctvPublishers && facts.ctvPublishers.length > 0) {
+    return facts.ctvPublishers.map((pub) => ({
+      id: `publisher.ctv.${pub.publisher.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
+      displayName: pub.publisher,
+      rationale: pub.why || `Recommended CTV publisher (${pub.category || "Targeted"}).`,
+    }));
+  }
+
   const context = triggerText(facts);
-  return facts.settings.publishers
-    .filter((record) => record.recommendationEligible && attachmentMatches(record.attachesTo, product))
+  const eligible = facts.settings.publishers
+    .filter((record) => record.recommendationEligible && (attachmentMatches(record.attachesTo, product) || (isCtvOrPerf && attachmentMatches(record.attachesTo, { ...product, id: "channel.ctv", displayName: "CTV / OTT" }))));
+
+  if (isCtvOrPerf) {
+    const targetCount = Math.max(1, Math.min(30, Math.round(facts.settings.ctvPublisherTargetCount ?? 8)));
+
+    const sortByRelevance = (a: (typeof eligible)[0], b: (typeof eligible)[0]) =>
+      includesAny(context, [b.notes]) - includesAny(context, [a.notes]) || a.displayName.localeCompare(b.displayName);
+
+    const t1 = eligible.filter((p) => p.tier === 1).sort(sortByRelevance);
+    const t2 = eligible.filter((p) => p.tier === 2).sort(sortByRelevance);
+    const t3 = eligible.filter((p) => p.tier === 3).sort(sortByRelevance);
+
+    // Distribution: 35% Tier 1, 45% Tier 2, 20% Tier 3
+    const t1Count = Math.round(targetCount * 0.35);
+    const t2Count = Math.round(targetCount * 0.45);
+    const t3Count = Math.max(0, targetCount - t1Count - t2Count);
+
+    const selectedT1 = t1.slice(0, t1Count);
+    const selectedT2 = t2.slice(0, t2Count);
+    const selectedT3 = t3.slice(0, t3Count);
+
+    const selected = [...selectedT1, ...selectedT2, ...selectedT3];
+    const selectedIds = new Set(selected.map((p) => p.publisherId));
+
+    if (selected.length < targetCount) {
+      const remaining = eligible
+        .filter((p) => !selectedIds.has(p.publisherId))
+        .sort((a, b) => a.tier - b.tier || sortByRelevance(a, b));
+      selected.push(...remaining.slice(0, targetCount - selected.length));
+    }
+
+    return selected.slice(0, targetCount).map((record) => ({
+      id: record.publisherId,
+      displayName: record.displayName,
+      rationale: record.notes || "Strong audience and contextual alignment with target parameters.",
+    }));
+  }
+
+  return eligible
     .sort((a, b) => a.tier - b.tier || includesAny(context, [b.notes]) - includesAny(context, [a.notes]) || a.displayName.localeCompare(b.displayName))
-    .slice(0, product.id === "channel.ctv" ? 6 : 4)
+    .slice(0, 4)
     .map((record) => ({
       id: record.publisherId,
       displayName: record.displayName,
-      rationale: `Tier ${record.tier}. ${record.notes}`,
+      rationale: record.notes || "Recommended based on campaign channel profile.",
     }));
 }
 
@@ -767,7 +857,7 @@ export function buildMediaRecommendationPlan(
         ? "Incremental working media budget"
         : facts.planningMode === "reallocation"
           ? "Reallocated uploaded-plan working media"
-          : "Greenfield working media budget",
+          : "New plan working media budget",
     };
   });
 

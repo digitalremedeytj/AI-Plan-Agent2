@@ -41,7 +41,9 @@ export type InternalOnlySettingId =
   | "channelDollarsColumn"
   | "channelScoreColumn"
   | "channelConfidenceBadge"
-  | "channelStatusTag";
+  | "channelStatusTag"
+  | "planningAssumptions"
+  | "qaAudit";
 
 export interface InternalOnlySetting {
   id: InternalOnlySettingId;
@@ -79,6 +81,18 @@ export const DEFAULT_INTERNAL_ONLY_SETTINGS: InternalOnlySetting[] = [
     id: "channelStatusTag",
     label: "Channel > Status Tags",
     description: "The ADD / TEST / DO_NOT_ADD recommendation tag shown beside each media type name.",
+    show: false,
+  },
+  {
+    id: "planningAssumptions",
+    label: "Planning Assumptions Notes / Banners",
+    description: "Informational notes and callout banners detailing flight normalization and media planning assumptions.",
+    show: false,
+  },
+  {
+    id: "qaAudit",
+    label: "Programmatic Media Buyer QA Audit",
+    description: "The QA Audit & Scoring Center scorecard, media planning score, and auto-remediation details at the bottom of the plan.",
     show: false,
   },
 ];
@@ -178,6 +192,14 @@ export interface PlanningSettings {
   customProducts: CustomProductSetting[];
   publishers: PublisherPlanningSetting[];
   enhancements: EnhancementPlanningSetting[];
+  /** Target number of recommended CTV publishers (range 1-30, default 8). */
+  ctvPublisherTargetCount?: number;
+  /** CTV Publisher target percentage for Tier 1 (SVOD / Live Sports, default 35). */
+  ctvTier1TargetPercent?: number;
+  /** CTV Publisher target percentage for Tier 2 (Linear / Broadcast / Targeted, default 45). */
+  ctvTier2TargetPercent?: number;
+  /** CTV Publisher target percentage for Tier 3 (FAST / Device OS, default 20). */
+  ctvTier3TargetPercent?: number;
 }
 
 export interface SettingsValidationResult {
@@ -283,28 +305,69 @@ function buildDefaultSettings(): PlanningSettings {
           specificationNotes: String(enhancement.metadata["Spec / Vendor Notes"] || "").trim() || "Best-guess starting specification: confirm dimensions, file weight, duration, click behavior, tracking, accessibility, production lead time, and final QA requirements with the selected vendor before launch.",
         };
       }),
+    ctvPublisherTargetCount: 8,
+    ctvTier1TargetPercent: 35,
+    ctvTier2TargetPercent: 45,
+    ctvTier3TargetPercent: 20,
   };
 }
 
 export const DEFAULT_PLANNING_SETTINGS: PlanningSettings = buildDefaultSettings();
 
 export function clonePlanningSettings(settings: PlanningSettings): PlanningSettings {
+  if (!settings) return buildDefaultSettings();
+
+  const rawInternalOnly = Array.isArray(settings.internalOnly) ? settings.internalOnly : [];
+  const internalMap = new Map(rawInternalOnly.filter((s) => s && typeof s === "object").map((item) => [item.id, item]));
+  const internalOnly = DEFAULT_INTERNAL_ONLY_SETTINGS.map((def) => {
+    const existing = internalMap.get(def.id);
+    return existing ? { ...def, ...existing } : { ...def };
+  });
+
+  const rawMetrics = Array.isArray(settings.overviewMetrics) ? settings.overviewMetrics : [];
+  const metricsMap = new Map(rawMetrics.filter((m) => m && typeof m === "object").map((item) => [item.id, item]));
+  const overviewMetrics = DEFAULT_OVERVIEW_METRICS.map((def) => {
+    const existing = metricsMap.get(def.id);
+    return existing ? { ...def, ...existing } : { ...def };
+  });
+
   return {
-    version: PLANNING_SETTINGS_VERSION,
-    overviewMetrics: settings.overviewMetrics.map((metric) => ({ ...metric })),
-    internalOnly: settings.internalOnly.map((setting) => ({ ...setting })),
-    budgetChannelTiers: settings.budgetChannelTiers.map((tier) => ({ ...tier })),
-    products: settings.products.map((product) => ({ ...product, supportedGeographies: [...product.supportedGeographies] })),
-    customProducts: settings.customProducts.map((product) => ({
+    version: settings.version || PLANNING_SETTINGS_VERSION,
+    overviewMetrics,
+    internalOnly,
+    budgetChannelTiers: (settings.budgetChannelTiers || []).map((tier) => ({ ...tier })),
+    products: (settings.products || []).map((product) => ({
       ...product,
-      supportedGeographies: [...product.supportedGeographies],
-      aliases: [...product.aliases],
-      funnelRoles: [...product.funnelRoles],
-      supportedKpis: [...product.supportedKpis],
-      audienceSignals: [...product.audienceSignals],
+      supportedGeographies: [...(product.supportedGeographies || [])],
     })),
-    publishers: settings.publishers.map((publisher) => ({ ...publisher, attachesTo: [...publisher.attachesTo] })),
-    enhancements: settings.enhancements.map((enhancement) => ({ ...enhancement, attachesTo: [...enhancement.attachesTo] })),
+    customProducts: (settings.customProducts || []).map((product) => ({
+      ...product,
+      supportedGeographies: [...(product.supportedGeographies || [])],
+      aliases: [...(product.aliases || [])],
+      funnelRoles: [...(product.funnelRoles || [])],
+      supportedKpis: [...(product.supportedKpis || [])],
+      audienceSignals: [...(product.audienceSignals || [])],
+    })),
+    publishers: (settings.publishers || []).map((publisher) => ({
+      ...publisher,
+      attachesTo: [...(publisher.attachesTo || [])],
+    })),
+    enhancements: (settings.enhancements || []).map((enhancement) => ({
+      ...enhancement,
+      attachesTo: [...(enhancement.attachesTo || [])],
+    })),
+    ctvPublisherTargetCount: typeof settings.ctvPublisherTargetCount === "number" && Number.isFinite(settings.ctvPublisherTargetCount)
+      ? Math.max(1, Math.min(30, Math.round(settings.ctvPublisherTargetCount)))
+      : 8,
+    ctvTier1TargetPercent: typeof settings.ctvTier1TargetPercent === "number" && Number.isFinite(settings.ctvTier1TargetPercent)
+      ? Math.max(0, Math.min(100, Math.round(settings.ctvTier1TargetPercent)))
+      : 35,
+    ctvTier2TargetPercent: typeof settings.ctvTier2TargetPercent === "number" && Number.isFinite(settings.ctvTier2TargetPercent)
+      ? Math.max(0, Math.min(100, Math.round(settings.ctvTier2TargetPercent)))
+      : 45,
+    ctvTier3TargetPercent: typeof settings.ctvTier3TargetPercent === "number" && Number.isFinite(settings.ctvTier3TargetPercent)
+      ? Math.max(0, Math.min(100, Math.round(settings.ctvTier3TargetPercent)))
+      : 20,
   };
 }
 
@@ -454,8 +517,39 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
     if (typeof enhancement.recommendationEligible !== "boolean") errors.push(`${label} availability must be true or false.`);
   });
 
+  const ctvPublisherTargetCount = typeof candidate.ctvPublisherTargetCount === "number" && Number.isFinite(candidate.ctvPublisherTargetCount)
+    ? Math.max(1, Math.min(30, Math.round(candidate.ctvPublisherTargetCount)))
+    : 8;
+
+  const ctvTier1TargetPercent = typeof candidate.ctvTier1TargetPercent === "number" && Number.isFinite(candidate.ctvTier1TargetPercent)
+    ? Math.max(0, Math.min(100, Math.round(candidate.ctvTier1TargetPercent)))
+    : 35;
+  const ctvTier2TargetPercent = typeof candidate.ctvTier2TargetPercent === "number" && Number.isFinite(candidate.ctvTier2TargetPercent)
+    ? Math.max(0, Math.min(100, Math.round(candidate.ctvTier2TargetPercent)))
+    : 45;
+  const ctvTier3TargetPercent = typeof candidate.ctvTier3TargetPercent === "number" && Number.isFinite(candidate.ctvTier3TargetPercent)
+    ? Math.max(0, Math.min(100, Math.round(candidate.ctvTier3TargetPercent)))
+    : 20;
+
   if (errors.length > 0) return { valid: false, errors };
-  return { valid: true, errors: [], settings: { version: PLANNING_SETTINGS_VERSION, overviewMetrics, internalOnly, budgetChannelTiers: tiers, products, customProducts, publishers, enhancements } };
+  return {
+    valid: true,
+    errors: [],
+    settings: {
+      version: PLANNING_SETTINGS_VERSION,
+      overviewMetrics,
+      internalOnly,
+      budgetChannelTiers: tiers,
+      products,
+      customProducts,
+      publishers,
+      enhancements,
+      ctvPublisherTargetCount,
+      ctvTier1TargetPercent,
+      ctvTier2TargetPercent,
+      ctvTier3TargetPercent,
+    },
+  };
 }
 
 /**
@@ -464,23 +558,54 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
  * unmigrated record would silently discard the team's shared catalog edits.
  */
 export function migrateStoredSettings(value: unknown, defaults: PlanningSettings = DEFAULT_PLANNING_SETTINGS): unknown {
-  if (!value || typeof value !== "object") return value;
+  if (!value || typeof value !== "object") return clonePlanningSettings(defaults);
   const stored = value as Record<string, unknown> & { version?: number; budgetChannelTiers?: BudgetChannelTier[] };
   if (stored.version === 1 && Array.isArray(stored.budgetChannelTiers)) {
     return { ...clonePlanningSettings(defaults), budgetChannelTiers: stored.budgetChannelTiers.map((tier) => ({ ...tier })) };
   }
   if (stored.version === 2) {
-    return withVersion5Defaults({
+    return withMergedInternalOnly(withMergedOverviewMetrics(withVersion5Defaults({
       ...stored,
       overviewMetrics: DEFAULT_OVERVIEW_METRICS.map((metric) => ({ ...metric })),
       internalOnly: DEFAULT_INTERNAL_ONLY_SETTINGS.map((setting) => ({ ...setting })),
-    });
+    }) as Record<string, unknown>));
   }
   if (stored.version === 3) {
-    return withVersion5Defaults({ ...stored, internalOnly: DEFAULT_INTERNAL_ONLY_SETTINGS.map((setting) => ({ ...setting })) });
+    return withMergedInternalOnly(withMergedOverviewMetrics(withVersion5Defaults({
+      ...stored,
+      internalOnly: DEFAULT_INTERNAL_ONLY_SETTINGS.map((setting) => ({ ...setting })),
+    }) as Record<string, unknown>));
   }
-  if (stored.version === 4) return withVersion5Defaults(stored);
-  return value;
+  if (stored.version === 4) {
+    return withMergedInternalOnly(withMergedOverviewMetrics(withVersion5Defaults(stored) as Record<string, unknown>));
+  }
+  return withMergedInternalOnly(withMergedOverviewMetrics(withVersion5Defaults(stored) as Record<string, unknown>));
+}
+
+function withMergedInternalOnly(stored: Record<string, unknown>): Record<string, unknown> {
+  const rawList = Array.isArray(stored.internalOnly) ? (stored.internalOnly as any[]) : [];
+  const existingMap = new Map(rawList.filter((s) => s && typeof s === "object").map((s: any) => [s.id, s]));
+  const merged = DEFAULT_INTERNAL_ONLY_SETTINGS.map((def) => {
+    const existing = existingMap.get(def.id);
+    return existing ? { ...def, ...existing } : { ...def };
+  });
+  return {
+    ...stored,
+    internalOnly: merged,
+  };
+}
+
+function withMergedOverviewMetrics(stored: Record<string, unknown>): Record<string, unknown> {
+  const rawList = Array.isArray(stored.overviewMetrics) ? (stored.overviewMetrics as any[]) : [];
+  const existingMap = new Map(rawList.filter((m) => m && typeof m === "object").map((m: any) => [m.id, m]));
+  const merged = DEFAULT_OVERVIEW_METRICS.map((def) => {
+    const existing = existingMap.get(def.id);
+    return existing ? { ...def, ...existing } : { ...def };
+  });
+  return {
+    ...stored,
+    overviewMetrics: merged,
+  };
 }
 
 /**
@@ -491,7 +616,28 @@ function withVersion5Defaults(stored: Record<string, unknown>): unknown {
   const products = Array.isArray(stored.products)
     ? stored.products.map((product) => ({ enabled: true, ...(product as Record<string, unknown>) }))
     : stored.products;
-  return { ...stored, version: PLANNING_SETTINGS_VERSION, products, customProducts: stored.customProducts ?? [] };
+  const ctvPublisherTargetCount = typeof stored.ctvPublisherTargetCount === "number" && Number.isFinite(stored.ctvPublisherTargetCount)
+    ? Math.max(1, Math.min(30, Math.round(stored.ctvPublisherTargetCount)))
+    : 8;
+  const ctvTier1TargetPercent = typeof stored.ctvTier1TargetPercent === "number" && Number.isFinite(stored.ctvTier1TargetPercent)
+    ? Math.max(0, Math.min(100, Math.round(stored.ctvTier1TargetPercent as number)))
+    : 35;
+  const ctvTier2TargetPercent = typeof stored.ctvTier2TargetPercent === "number" && Number.isFinite(stored.ctvTier2TargetPercent)
+    ? Math.max(0, Math.min(100, Math.round(stored.ctvTier2TargetPercent as number)))
+    : 45;
+  const ctvTier3TargetPercent = typeof stored.ctvTier3TargetPercent === "number" && Number.isFinite(stored.ctvTier3TargetPercent)
+    ? Math.max(0, Math.min(100, Math.round(stored.ctvTier3TargetPercent as number)))
+    : 20;
+  return {
+    ...stored,
+    version: PLANNING_SETTINGS_VERSION,
+    products,
+    customProducts: stored.customProducts ?? [],
+    ctvPublisherTargetCount,
+    ctvTier1TargetPercent,
+    ctvTier2TargetPercent,
+    ctvTier3TargetPercent,
+  };
 }
 
 export function loadPlanningSettings(storage: Pick<Storage, "getItem"> | null | undefined, defaults: PlanningSettings = DEFAULT_PLANNING_SETTINGS): PlanningSettings {

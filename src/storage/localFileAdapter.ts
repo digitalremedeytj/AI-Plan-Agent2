@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings, PlanningSettings } from "../planning/settings";
-import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
+import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, enrichPublishersWithKnownLogos, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import {
   CreatePlanInput,
   ListPlansOptions,
@@ -120,6 +120,33 @@ export class LocalFileAdapter implements StorageAdapter {
     await this.setArchived(id, actor, false);
   }
 
+  async getPlanByShareToken(token: string): Promise<StoredPlan | null> {
+    if (!token) return null;
+    await this.init();
+    const files = fs.readdirSync(this.plansDir).filter((f) => f.endsWith(".json"));
+    for (const file of files) {
+      const plan = this.readPlanFile(path.join(this.plansDir, file));
+      if (plan && !plan.archived && plan.isShared && plan.shareToken === token) {
+        return plan;
+      }
+    }
+    return null;
+  }
+
+  async setPlanShare(id: string, isShared: boolean, shareToken?: string | null): Promise<StoredPlan> {
+    await this.init();
+    const existing = this.readPlanFile(this.planPath(id));
+    if (!existing) throw new PlanNotFoundError(id);
+    const updated: StoredPlan = {
+      ...existing,
+      isShared,
+      shareToken: shareToken !== undefined ? shareToken : existing.shareToken,
+      updatedAt: new Date().toISOString(),
+    };
+    writeJsonAtomic(this.planPath(id), updated);
+    return updated;
+  }
+
   private async setArchived(id: string, actor: string, archived: boolean): Promise<void> {
     await this.init();
     const existing = this.readPlanFile(this.planPath(id));
@@ -173,7 +200,8 @@ export class LocalFileAdapter implements StorageAdapter {
 
   async saveSettings(settings: PlanningSettings, actor: string): Promise<SettingsRecord> {
     await this.init();
-    const validation = validatePlanningSettings(settings);
+    const migrated = migrateStoredSettings(settings);
+    const validation = validatePlanningSettings(migrated);
     if (!validation.valid || !validation.settings) {
       throw new Error(`Invalid planning settings: ${validation.errors.join("; ")}`);
     }
@@ -194,13 +222,19 @@ export class LocalFileAdapter implements StorageAdapter {
   async getCurrentPublishers(): Promise<PublishersRecord> {
     await this.init();
     const current = readJson<PublishersRecord>(path.join(this.publishersDir, "current.json"));
-    if (current && Array.isArray(current.publishers) && current.publishers.length > 0) return current;
+    if (current && Array.isArray(current.publishers) && current.publishers.length > 0) {
+      return {
+        ...current,
+        publishers: enrichPublishersWithKnownLogos(current.publishers),
+      };
+    }
     return this.savePublishers(DEFAULT_CTV_PUBLISHERS, "system");
   }
 
   async savePublishers(publishers: CtvPublisherSetting[], actor: string): Promise<PublishersRecord> {
     await this.init();
-    const validation = validateCtvPublishers(publishers);
+    const enriched = enrichPublishersWithKnownLogos(publishers);
+    const validation = validateCtvPublishers(enriched);
     if (!validation.valid) {
       throw new Error(`Invalid CTV publishers: ${validation.errors.join("; ")}`);
     }

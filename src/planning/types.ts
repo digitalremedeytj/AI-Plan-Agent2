@@ -1,4 +1,4 @@
-import type { CanonicalMediaType, ExtractedPlacement, ParsedPlanOption } from "../types";
+import type { CanonicalMediaType, CtvPublisherRecommendation, ExtractedPlacement, ParsedPlanOption } from "../types";
 import type { BudgetChannelTier, PlanningSettings } from "./settings";
 
 export type TriState = true | false | "unknown";
@@ -61,6 +61,7 @@ export interface CampaignFacts {
   assumptions: string[];
   settings: PlanningSettings;
   appliedBudgetTier: BudgetChannelTier;
+  ctvPublishers?: CtvPublisherRecommendation[];
 }
 
 export interface SourceMetadata {
@@ -251,4 +252,5 @@ export interface CampaignFactsInput {
   measurementExpectations?: string[];
   brandSafetyConstraints?: string[];
   planningSettings: PlanningSettings;
+  ctvPublishers?: CtvPublisherRecommendation[];
 }

@@ -37,6 +37,10 @@ export interface PlanSummary {
   geography?: string;
   campaignFocus?: string;
   url?: string;
+  /** Secret share token for unauthenticated link-sharing. */
+  shareToken?: string | null;
+  /** Whether the plan is currently accessible via its shareToken. */
+  isShared?: boolean;
 }
 
 /** A full plan record: metadata plus the opaque saved-plan body the client round-trips. */
@@ -126,6 +130,11 @@ export interface StorageAdapter {
   /** Soft delete. Plans are never destroyed, so a mis-click is always recoverable. */
   archivePlan(id: string, actor: string): Promise<void>;
   restorePlan(id: string, actor: string): Promise<void>;
+
+  /** Look up an unarchived, actively shared plan by its secret share token. Returns null if revoked/absent. */
+  getPlanByShareToken(token: string): Promise<StoredPlan | null>;
+  /** Update the sharing status and/or token for a plan. */
+  setPlanShare(id: string, isShared: boolean, shareToken?: string | null): Promise<StoredPlan>;
 
   getCurrentSettings(): Promise<SettingsRecord>;
   getSettingsRevision(revision: number): Promise<SettingsRecord | null>;

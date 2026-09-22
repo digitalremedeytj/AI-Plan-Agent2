@@ -168,7 +168,7 @@ test("planning mode changes the funding source and audit assumption", () => {
   };
   const greenfield = buildMediaRecommendationPlan(buildCampaignFacts({ ...base, planningMode: "greenfield" }));
   const incremental = buildMediaRecommendationPlan(buildCampaignFacts({ ...base, planningMode: "incremental" }));
-  assert.equal(greenfield.channels[0].fundingSource, "Greenfield working media budget");
+  assert.equal(greenfield.channels[0].fundingSource, "New plan working media budget");
   assert.equal(incremental.channels[0].fundingSource, "Incremental working media budget");
   assert.ok(incremental.assumptions.some((item) => item.includes("Existing plan allocations are fixed")));
 });
@@ -440,3 +440,58 @@ test("a hidden custom media type never reaches the planner", () => {
 
   assert.ok(!plan.evaluatedCandidates.some((candidate) => candidate.product.id === "custom.hidden_type"));
 });
+
+test("facts.ctvPublishers are attached to both CTV/OTT and Performance TV candidates", () => {
+  const customPublishers = [
+    { publisher: "Hulu", category: "App", why: "Top premium streaming" },
+    { publisher: "Disney+", category: "App", why: "Family co-viewing" },
+    { publisher: "ESPN", category: "Network", why: "Live sports" },
+  ];
+
+  const customSettings = settings();
+  customSettings.customProducts.push({
+    productId: "custom.performance_tv",
+    displayName: "Performance TV",
+    enabled: true,
+    digitalRemedyExecutable: true,
+    status: "live",
+    recommendationEligible: true,
+    supportedGeographies: ["United States"],
+    typicalCpmLow: null,
+    typicalCpmHigh: null,
+    minimumTotalSpend: 1_000,
+    minimumNormalized30DaySpend: 1_000,
+    minimumFlightDays: 7,
+    minimumAllocationPercent: 10,
+    maximumAllocationPercent: 100,
+    canonicalId: "ctv",
+    aliases: [],
+    funnelRoles: ["awareness", "conversion"],
+    supportedKpis: ["reach", "conversion"],
+    audienceSignals: [],
+    planningNotes: "",
+  });
+
+  const facts = buildCampaignFacts({
+    kpis: ["awareness", "conversion"],
+    audienceDescriptions: ["Connected TV streaming audience"],
+    workingMediaBudget: 100_000,
+    campaignFlightDays: 30,
+    planningSettings: customSettings,
+    ctvPublishers: customPublishers,
+  });
+
+  const plan = buildMediaRecommendationPlan(facts);
+  const ctvCandidate = plan.evaluatedCandidates.find((c) => c.product.id === "channel.ctv");
+  const perfTvCandidate = plan.evaluatedCandidates.find((c) => c.product.id === "custom.performance_tv");
+
+  assert.ok(ctvCandidate);
+  assert.ok(perfTvCandidate);
+
+  const ctvPubNames = ctvCandidate.publishers.map((p) => p.displayName);
+  const perfTvPubNames = perfTvCandidate.publishers.map((p) => p.displayName);
+
+  assert.deepEqual(ctvPubNames, ["Hulu", "Disney+", "ESPN"]);
+  assert.deepEqual(perfTvPubNames, ["Hulu", "Disney+", "ESPN"]);
+});
+

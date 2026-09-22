@@ -34,6 +34,8 @@ export interface PlanSummary {
   geography?: string;
   campaignFocus?: string;
   url?: string;
+  shareToken?: string | null;
+  isShared?: boolean;
 }
 
 export interface StoredPlan extends PlanSummary {
@@ -70,13 +72,76 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, {
-    // Send the session cookie; same-origin is the default but being explicit means a
-    // future move to a separate API origin fails loudly rather than silently anonymous.
-    credentials: "same-origin",
-    headers: init.body ? { "Content-Type": "application/json", ...(init.headers || {}) } : init.headers,
+const AUTH_TOKEN_KEY = "apa_session_token";
+let inMemoryToken: string | null = null;
+
+export function getAuthToken(): string | null {
+  if (inMemoryToken) return inMemoryToken;
+  try {
+    const stored = localStorage.getItem(AUTH_TOKEN_KEY) || sessionStorage.getItem(AUTH_TOKEN_KEY);
+    if (stored) {
+      inMemoryToken = stored;
+      return stored;
+    }
+  } catch {
+    // Storage access might be restricted in some iframe sandboxes
+  }
+  return null;
+}
+
+export function setAuthToken(token: string | null): void {
+  inMemoryToken = token;
+  try {
+    if (token) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+      sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      sessionStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
+}
+
+export function getAuthHeaders(initHeaders?: HeadersInit): Headers {
+  const headers = new Headers(initHeaders || {});
+  const token = getAuthToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+    headers.set("x-session-token", token);
+  }
+  return headers;
+}
+
+/**
+ * Fetch wrapper that attaches authentication headers and credentials: "include".
+ * Essential for operating securely inside embedded iframes and cross-site contexts.
+ */
+export async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const headers = getAuthHeaders(init.headers);
+  const res = await fetch(input, {
+    credentials: "include",
     ...init,
+    headers,
+  });
+
+  if (res.status === 401) {
+    setAuthToken(null);
+  }
+  return res;
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = getAuthHeaders(init.headers);
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const res = await fetch(path, {
+    credentials: "include",
+    ...init,
+    headers,
   });
 
   let body: any = null;
@@ -84,6 +149,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     body = await res.json();
   } catch {
     // A non-JSON body (proxy error page, empty 204) is fine; status still drives control flow.
+  }
+
+  if (res.status === 401) {
+    setAuthToken(null);
   }
 
   if (!res.ok) {
@@ -96,10 +165,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export async function fetchSession(): Promise<SessionUser | null> {
   try {
-    const body = await request<{ authenticated: boolean; user: SessionUser }>("/api/auth/me");
+    const body = await request<{ authenticated: boolean; user: SessionUser; token?: string }>("/api/auth/me");
+    if (body.authenticated && body.token) {
+      setAuthToken(body.token);
+    }
     return body.authenticated ? body.user : null;
   } catch (err) {
-    if (err instanceof ApiError && err.isUnauthenticated) return null;
+    if (err instanceof ApiError && err.isUnauthenticated) {
+      setAuthToken(null);
+      return null;
+    }
     throw err;
   }
 }
@@ -110,15 +185,22 @@ export async function login(input: {
   displayName: string;
   adminPassword?: string;
 }): Promise<SessionUser> {
-  const body = await request<{ user: SessionUser }>("/api/auth/login", {
+  const body = await request<{ user: SessionUser; token?: string }>("/api/auth/login", {
     method: "POST",
     body: JSON.stringify(input),
   });
+  if (body.token) {
+    setAuthToken(body.token);
+  }
   return body.user;
 }
 
 export async function logout(): Promise<void> {
-  await request("/api/auth/logout", { method: "POST" });
+  try {
+    await request("/api/auth/logout", { method: "POST" });
+  } finally {
+    setAuthToken(null);
+  }
 }
 
 // --- plans -----------------------------------------------------------------
@@ -161,6 +243,27 @@ export async function updatePlan(
 
 export async function archivePlan(id: string): Promise<void> {
   await request(`/api/plans/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function fetchSharedPlan(token: string): Promise<StoredPlan> {
+  const body = await request<{ plan: StoredPlan }>(`/api/share/plan?token=${encodeURIComponent(token)}`);
+  return body.plan;
+}
+
+export async function enablePlanShare(
+  id: string,
+  regenerate = false,
+): Promise<{ shareToken: string; isShared: boolean }> {
+  return request<{ shareToken: string; isShared: boolean }>(`/api/plans/${encodeURIComponent(id)}/share`, {
+    method: "POST",
+    body: JSON.stringify({ regenerate }),
+  });
+}
+
+export async function revokePlanShare(id: string): Promise<{ shareToken: string | null; isShared: boolean }> {
+  return request<{ shareToken: string | null; isShared: boolean }>(`/api/plans/${encodeURIComponent(id)}/unshare`, {
+    method: "POST",
+  });
 }
 
 // --- settings ---------------------------------------------------------------

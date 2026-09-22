@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings, PlanningSettings } from "../planning/settings";
-import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
+import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, enrichPublishersWithKnownLogos, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import { getAccessToken } from "./googleAuth";
 import { decodeFields, encodeFields } from "./firestoreValue";
 import { sortByUpdatedDesc, toSummary } from "./localFileAdapter";
@@ -32,6 +32,7 @@ import {
  */
 
 const PLANS = "plans";
+const SHARES = "shares";
 const SETTINGS = "settings";
 const SETTINGS_REVISIONS = "settings_revisions";
 const PUBLISHERS = "publishers";
@@ -53,6 +54,8 @@ const SUMMARY_FIELDS = [
   "geography",
   "campaignFocus",
   "url",
+  "shareToken",
+  "isShared",
 ];
 
 interface FirestoreDocument {
@@ -242,6 +245,46 @@ export class FirestoreAdapter implements StorageAdapter {
     await this.setArchived(id, actor, false);
   }
 
+  async getPlanByShareToken(token: string): Promise<StoredPlan | null> {
+    if (!token) return null;
+    await this.init();
+    // 1. Look up the share mapping
+    const shareDoc = await this.getDocument(SHARES, token);
+    if (!shareDoc || !shareDoc.fields) return null;
+    const shareData = decodeFields(shareDoc.fields) as Record<string, any>;
+    if (shareData.active !== true || !shareData.planId) return null;
+
+    // 2. Fetch the referenced plan
+    const planDoc = await this.getDocument(PLANS, String(shareData.planId));
+    if (!planDoc) return null;
+    const plan = this.documentToPlan(planDoc);
+    if (plan.archived || !plan.isShared || plan.shareToken !== token) return null;
+    return plan;
+  }
+
+  async setPlanShare(id: string, isShared: boolean, shareToken?: string | null): Promise<StoredPlan> {
+    await this.init();
+    const doc = await this.getDocument(PLANS, id);
+    if (!doc) throw new PlanNotFoundError(id);
+    const existing = this.documentToPlan(doc);
+    const token = shareToken !== undefined ? shareToken : existing.shareToken;
+    const updated: StoredPlan = {
+      ...existing,
+      isShared,
+      shareToken: token,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.putDocument(PLANS, id, this.planToFields(updated), { expectedUpdateTime: doc.updateTime });
+    if (token) {
+      await this.putDocument(SHARES, token, {
+        planId: id,
+        active: isShared,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return updated;
+  }
+
   private async setArchived(id: string, actor: string, archived: boolean): Promise<void> {
     const doc = await this.getDocument(PLANS, id);
     if (!doc) throw new PlanNotFoundError(id);
@@ -289,6 +332,8 @@ export class FirestoreAdapter implements StorageAdapter {
       geography: fields.geography || undefined,
       campaignFocus: fields.campaignFocus || undefined,
       url: fields.url || undefined,
+      shareToken: fields.shareToken || undefined,
+      isShared: fields.isShared !== undefined ? Boolean(fields.isShared) : undefined,
       payload,
     };
   }
@@ -316,7 +361,8 @@ export class FirestoreAdapter implements StorageAdapter {
   }
 
   async saveSettings(settings: PlanningSettings, actor: string): Promise<SettingsRecord> {
-    const validation = validatePlanningSettings(settings);
+    const migrated = migrateStoredSettings(settings);
+    const validation = validatePlanningSettings(migrated);
     if (!validation.valid || !validation.settings) {
       throw new Error(`Invalid planning settings: ${validation.errors.join("; ")}`);
     }
@@ -372,13 +418,19 @@ export class FirestoreAdapter implements StorageAdapter {
     const doc = await this.getDocument(PUBLISHERS, CURRENT_DOC);
     if (doc) {
       const record = this.documentToPublishers(doc);
-      if (record && record.publishers.length > 0) return record;
+      if (record && record.publishers.length > 0) {
+        return {
+          ...record,
+          publishers: enrichPublishersWithKnownLogos(record.publishers),
+        };
+      }
     }
     return this.savePublishers(DEFAULT_CTV_PUBLISHERS, "system");
   }
 
   async savePublishers(publishers: CtvPublisherSetting[], actor: string): Promise<PublishersRecord> {
-    const validation = validateCtvPublishers(publishers);
+    const enriched = enrichPublishersWithKnownLogos(publishers);
+    const validation = validateCtvPublishers(enriched);
     if (!validation.valid) {
       throw new Error(`Invalid CTV publishers: ${validation.errors.join("; ")}`);
     }

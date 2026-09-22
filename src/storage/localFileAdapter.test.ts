@@ -153,3 +153,36 @@ test("publishers seed from defaults and version on save", async () => {
   assert.equal(next.revision, 2);
   assert.equal(next.publishers.length, 5);
 });
+
+test("a plan can be shared and looked up by its secret token", async () => {
+  const adapter = freshAdapter();
+  const created = await adapter.createPlan({ title: "Shared Campaign", settingsRevision: 1, payload, actor: "tj@dr.com" });
+
+  const token = "sec_testing_long_unguessable_token_1234567890";
+  const shared = await adapter.setPlanShare(created.id, true, token);
+  assert.equal(shared.isShared, true);
+  assert.equal(shared.shareToken, token);
+
+  const found = await adapter.getPlanByShareToken(token);
+  assert.ok(found);
+  assert.equal(found?.id, created.id);
+  assert.equal(found?.title, "Shared Campaign");
+
+  // Revoking makes it immediately unresolvable
+  await adapter.setPlanShare(created.id, false);
+  const revoked = await adapter.getPlanByShareToken(token);
+  assert.equal(revoked, null);
+});
+
+test("an archived plan cannot be fetched by share token", async () => {
+  const adapter = freshAdapter();
+  const created = await adapter.createPlan({ title: "To Be Archived", settingsRevision: 1, payload, actor: "tj@dr.com" });
+  const token = "sec_token_for_archived_plan_9876543210";
+  await adapter.setPlanShare(created.id, true, token);
+
+  // Archive the plan
+  await adapter.archivePlan(created.id, "tj@dr.com");
+  const found = await adapter.getPlanByShareToken(token);
+  assert.equal(found, null);
+});
+

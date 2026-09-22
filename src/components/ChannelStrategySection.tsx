@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Sparkles, Copy, Check, Info, ArrowLeftRight, TrendingUp, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2 } from 'lucide-react';
-import { ChannelStrategyData } from '../types';
+import { Sparkles, Copy, Check, Info, ArrowLeftRight, TrendingUp, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2, Download } from 'lucide-react';
+import { ChannelStrategyData, CtvPublisherRecommendation } from '../types';
 import type { AttachedPlanningRecord, CandidateScoreComponents } from '../planning/types';
 import { isNonMediaItem } from '../utils/mediaTaxonomy';
 import {
@@ -11,8 +11,51 @@ import {
   type AllocationBasisPoints,
 } from '../planning/manualAllocations';
 
-interface ChannelStrategySectionProps {
+export const DEFAULT_CTV_PUBLISHERS: Array<{ publisher: string; category?: string; why?: string }> = [
+  { publisher: 'Hulu', category: 'App', why: 'High penetration among prime-time streaming audiences with premium ad-supported options.' },
+  { publisher: 'Disney+', category: 'App', why: 'Co-viewing hub matching family oriented household profiles perfectly.' },
+  { publisher: 'The Roku Channel', category: 'OS', why: 'Dominant CTV operating system offering native home screen high-impact display slots.' },
+  { publisher: 'ESPN', category: 'Network', why: 'Essential for capturing live sports and highly engaged co-viewing audiences.' },
+];
+
+export const isCtvOrPerformanceTvChannel = (
+  channelId?: string,
+  channelName?: string,
+  canonicalId?: string,
+): boolean => {
+  const id = (channelId || '').toLowerCase().trim();
+  const name = (channelName || '').toLowerCase().trim();
+  const canonical = (canonicalId || '').toLowerCase().trim();
+
+  return (
+    id === 'channel.ctv' ||
+    id === 'channel.performance_tv' ||
+    id === 'ctv' ||
+    id === 'ctv_ott' ||
+    id === 'performance_tv' ||
+    id === 'performance_ctv' ||
+    canonical === 'ctv' ||
+    canonical === 'ctv_ott' ||
+    canonical === 'performance_tv' ||
+    name === 'ctv / ott' ||
+    name === 'ctv/ott' ||
+    name === 'performance tv' ||
+    name === 'performance ctv' ||
+    name === 'connected tv' ||
+    id.includes('channel.ctv') ||
+    id.includes('performance_tv') ||
+    id.includes('performancetv') ||
+    name.includes('performance tv') ||
+    name.includes('performance ctv') ||
+    name.includes('ctv / ott') ||
+    name.includes('ctv/ott')
+  );
+};
+
+export interface ChannelStrategySectionProps {
   data: ChannelStrategyData;
+  ctvPublishers?: Array<{ publisher: string; category?: string; why?: string }> | CtvPublisherRecommendation[];
+  initialExpandedChannels?: string[];
   /**
    * Internal-only visibility from shared settings. These hide detail from the rendered
    * plan without changing it, so a client-facing screen share and an internal review
@@ -25,6 +68,8 @@ interface ChannelStrategySectionProps {
   onResetAllocations?: () => Promise<void>;
   onUndoPlanChange?: () => void;
   canUndoPlanChange?: boolean;
+  onOpenSlideStudio?: () => void;
+  readOnly?: boolean;
 }
 
 export interface InternalOnlyVisibility {
@@ -33,6 +78,8 @@ export interface InternalOnlyVisibility {
   channelScoreColumn: boolean;
   channelConfidenceBadge: boolean;
   channelStatusTag: boolean;
+  planningAssumptions?: boolean;
+  qaAudit?: boolean;
 }
 
 export const ALL_INTERNAL_VISIBLE: InternalOnlyVisibility = {
@@ -41,6 +88,8 @@ export const ALL_INTERNAL_VISIBLE: InternalOnlyVisibility = {
   channelScoreColumn: true,
   channelConfidenceBadge: true,
   channelStatusTag: true,
+  planningAssumptions: true,
+  qaAudit: true,
 };
 
 interface AllocationInputValue {
@@ -72,8 +121,8 @@ interface MediaTypeDetailsProps {
   evidence: Array<{ detail: string }>;
   scoreComponents?: CandidateScoreComponents;
   decisionRule: string;
-  prerequisites: string[];
-  tradeoffs: string[];
+  prerequisites?: string[];
+  tradeoffs?: string[];
   eligibilityFailures?: string[];
   minimumAllocationPercent: number;
   maximumAllocationPercent: number;
@@ -89,7 +138,7 @@ interface MediaTypeDetailsProps {
 const planningRecordNames = (records: AttachedPlanningRecord[] | undefined, fallback: string) =>
   records?.map((item) => item.displayName).join(', ') || fallback;
 
-const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
+export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
   detailsId,
   gapAddressed,
   planningRationale,
@@ -103,8 +152,8 @@ const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
   evidence,
   scoreComponents,
   decisionRule,
-  prerequisites,
-  tradeoffs,
+  prerequisites = [],
+  tradeoffs = [],
   eligibilityFailures = [],
   minimumAllocationPercent,
   maximumAllocationPercent,
@@ -116,7 +165,7 @@ const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
   fundingSource,
   isPreview = false,
 }) => {
-  const warnings = Array.from(new Set([...eligibilityFailures, ...prerequisites, ...tradeoffs]));
+  const warnings = Array.from(new Set([...(eligibilityFailures || []), ...(prerequisites || []), ...(tradeoffs || [])]));
   const scoreLabels: Array<[keyof CandidateScoreComponents, string]> = [
     ['kpiAndFunnelFit', 'KPI & funnel'],
     ['audienceAndPersonaFit', 'Audience'],
@@ -139,8 +188,21 @@ const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
         <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Planning rationale: </span><span className="text-slate-700">{planningRationale}</span></div>
         <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Activation guidance: </span><span className="text-slate-700">{activationGuidance}</span></div>
         <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Targeting tactics: </span><span className="text-slate-700">{planningRecordNames(targetingTactics, 'Use channel-compatible targeting after readiness confirmation.')}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Publishers: </span><span className="text-slate-700">{planningRecordNames(publishers, 'Open inventory; no publisher-specific guidance triggered.')}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Creative enhancements: </span><span className="text-slate-700">{planningRecordNames(creativeEnhancements, 'No complete workbook enhancement trigger fired.')}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3">
+          <span className="font-bold text-slate-900">Publishers: </span>
+          <span className="text-slate-700">
+            {publishers && publishers.length > 0 ? (
+              publishers.map((item, idx) => (
+                <span key={item.id || idx} title={item.rationale || undefined}>
+                  {item.displayName}{idx < publishers.length - 1 ? ', ' : ''}
+                </span>
+              ))
+            ) : (
+              'Open inventory; no publisher-specific guidance triggered.'
+            )}
+          </span>
+        </div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Creative enhancements: </span><span className="text-slate-700">{planningRecordNames(creativeEnhancements, 'None suggested.')}</span></div>
         <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Inventory controls: </span><span className="text-slate-700">{planningRecordNames(inventoryControls, 'Apply standard platform safeguards.')}</span></div>
         <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement approach: </span><span className="text-slate-700">{measurementApproach}</span></div>
         <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement capabilities: </span><span className="text-slate-700">{planningRecordNames(measurementCapabilities, 'Confirm an eligible measurement capability.')}</span></div>
@@ -183,6 +245,8 @@ const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
 
 export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   data,
+  ctvPublishers,
+  initialExpandedChannels,
   internalOnly = ALL_INTERNAL_VISIBLE,
   onToggleBudgetMode,
   onManualMediaTypeChange,
@@ -190,9 +254,33 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   onResetAllocations,
   onUndoPlanChange,
   canUndoPlanChange = false,
+  onOpenSlideStudio,
+  readOnly = false,
 }) => {
+  const effectiveCtvPublishers = (ctvPublishers && ctvPublishers.length > 0)
+    ? ctvPublishers
+    : (data?.ctvPublishers && data.ctvPublishers.length > 0)
+    ? data.ctvPublishers
+    : DEFAULT_CTV_PUBLISHERS;
+
+  const resolvePublishers = (
+    channelId: string,
+    channelName: string,
+    canonicalId?: string,
+    existingPublishers?: AttachedPlanningRecord[]
+  ): AttachedPlanningRecord[] => {
+    if (isCtvOrPerformanceTvChannel(channelId, channelName, canonicalId)) {
+      return effectiveCtvPublishers.map((pub) => ({
+        id: `publisher.ctv.${pub.publisher.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+        displayName: pub.publisher,
+        rationale: pub.why || `Recommended CTV publisher (${pub.category || 'Targeted'}).`,
+      }));
+    }
+    return existingPublishers || [];
+  };
+
   const [copied, setCopied] = useState(false);
-  const [expandedChannels, setExpandedChannels] = useState<Set<string>>(() => new Set());
+  const [expandedChannels, setExpandedChannels] = useState<Set<string>>(() => new Set(initialExpandedChannels || []));
   const [pendingChannelId, setPendingChannelId] = useState<string | null>(null);
   const [manualUpdateError, setManualUpdateError] = useState('');
   const [manualUpdateMessage, setManualUpdateMessage] = useState('');
@@ -430,24 +518,24 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     const allocationText = mediaPlan
       ? `\n\nDETERMINISTIC MEDIA ALLOCATION\n${mediaPlan.channels.map((channel) => `- ${channel.channelName}: ${channel.allocationPercent.toFixed(0)}% / $${channel.allocationDollars.toLocaleString()} (${displayRecommendationStatus(channel.status)}, score ${channel.recommendationScore})`).join('\n')}`
       : '';
-    const text = `CHANNEL STRATEGY ANALYSIS${allocationText}\n\nRFP Channels:\n${data.rfpChannels
+    const text = `CHANNEL STRATEGY ANALYSIS${allocationText}\n\nRFP Channels:\n${(data.rfpChannels || [])
       .map(
         c =>
           `- ${c.channelName} (Score: ${c.score.toFixed(1)} | Audience Fit: ${c.audienceFit}/10 | Goal Match: ${c.goalMatch}/10)\n  Evidence: ${c.mediaConsumptionEvidence}\n  Why: ${c.whyItEarnsASpot}`
       )
-      .join('\n')}\n\nScoutAI Recommended Channels:\n${data.scoutAiRecommendedChannels
+      .join('\n')}\n\nScoutAI Recommended Channels:\n${(data.scoutAiRecommendedChannels || [])
       .map(
         c =>
           `- ${c.channelName} (Score: ${c.score.toFixed(1)} | Audience Fit: ${c.audienceFit}/10 | Goal Match: ${c.goalMatch}/10)\n  Evidence: ${c.mediaConsumptionEvidence}\n  Why: ${c.whyItEarnsASpot}`
       )
-      .join('\n')}\n\nExecutive Insight:\n${data.executiveInsight}`;
+      .join('\n')}\n\nExecutive Insight:\n${data.executiveInsight || ''}`;
 
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const rfpChannelNames = data.rfpChannels.map(c => c.channelName).join(', ');
+  const rfpChannelNames = (data.rfpChannels || []).map(c => c.channelName).join(', ');
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8 my-8 font-sans">
@@ -500,6 +588,19 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             </button>
           </div>}
 
+          {onOpenSlideStudio && (
+            <button
+              type="button"
+              id="btn-open-channel-slide-studio"
+              onClick={onOpenSlideStudio}
+              className="p-2 text-slate-500 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg inline-flex items-center justify-center cursor-pointer transition-colors shadow-2xs"
+              title="Export Presentation Slide (16:9)"
+              aria-label="Export Presentation Slide"
+            >
+              <Download className="w-4 h-4 text-[#0e8f86]" />
+            </button>
+          )}
+
           <button
             onClick={handleCopyText}
             className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors cursor-pointer"
@@ -512,14 +613,12 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
       {mediaPlan && (
         <div className="mt-6 space-y-5">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
-              { label: 'Working media', value: `$${mediaPlan.workingMediaBudget.toLocaleString()}`, icon: DollarSign },
+              { label: 'Budget', value: `$${mediaPlan.workingMediaBudget.toLocaleString()}`, icon: DollarSign },
               { label: 'Flight', value: mediaPlan.flightDays ? `${mediaPlan.flightDays} days` : 'Not supplied', icon: CalendarDays },
               { label: '30-day normalized', value: `$${mediaPlan.normalized30DayBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: Gauge },
-              { label: 'Automatic cap', value: String(mediaPlan.maxMediaTypes), icon: Layers },
-              { label: 'Selected', value: String(mediaPlan.selectedMediaTypeCount), icon: Check },
-              { label: 'Mode', value: mediaPlan.planningMode, icon: ArrowLeftRight },
+              { label: 'Mode', value: mediaPlan.planningMode === 'greenfield' ? 'New Plan' : mediaPlan.planningMode, icon: ArrowLeftRight },
             ].map(({ label, value, icon: Icon }) => (
               <div key={label} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
                 <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500"><Icon className="h-3.5 w-3.5" />{label}</div>
@@ -528,7 +627,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             ))}
           </div>
 
-          {mediaPlan.assumptions.length > 0 && (
+          {internalOnly.planningAssumptions && mediaPlan.assumptions.length > 0 && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
               <div className="mb-1 flex items-center gap-2 font-bold"><Info className="h-4 w-4" /> Planning assumptions</div>
               <ul className="list-disc space-y-1 pl-5">{mediaPlan.assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}</ul>
@@ -575,29 +674,33 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                         <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700"><Check className="h-3.5 w-3.5" /> 100% allocated</span>
                       </div>
                     )}
-                    <p className="mt-1 text-[11px] text-slate-600">Edit budget, dollars, or whole-number percentages. Every change is balanced across unlocked media types.</p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {canUndoPlanChange && onUndoPlanChange && (
-                      <button
-                        type="button"
-                        onClick={onUndoPlanChange}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
-                      >
-                        <Undo2 className="h-3.5 w-3.5" /> Undo last change
-                      </button>
-                    )}
-                    {!isEditingAllocations && (
-                      <button
-                        type="button"
-                        onClick={startAllocationEditor}
-                        disabled={!onSaveAllocations}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <Edit3 className="h-3.5 w-3.5" /> Edit allocations
-                      </button>
+                    {!readOnly && (
+                      <p className="mt-1 text-[11px] text-slate-600">Edit budget, dollars, or whole-number percentages. Every change is balanced across unlocked media types.</p>
                     )}
                   </div>
+                  {!readOnly && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {canUndoPlanChange && onUndoPlanChange && (
+                        <button
+                          type="button"
+                          onClick={onUndoPlanChange}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                        >
+                          <Undo2 className="h-3.5 w-3.5" /> Undo last change
+                        </button>
+                      )}
+                      {!isEditingAllocations && (
+                        <button
+                          type="button"
+                          onClick={startAllocationEditor}
+                          disabled={!onSaveAllocations}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Edit3 className="h-3.5 w-3.5" /> Edit allocations
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {isEditingAllocations && (
@@ -771,16 +874,18 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                           <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expandedChannels.has(channel.channelId) ? 'rotate-180' : ''}`} />
                         </div>
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => updateManualMediaType(channel.channelId, 'remove')}
-                        disabled={!onManualMediaTypeChange || pendingChannelId !== null}
-                        className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
-                        aria-label={`Remove ${channel.channelName} from plan`}
-                        title="Remove media type from this plan"
-                      >
-                        {pendingChannelId === channel.channelId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Minus className="h-4 w-4" />}
-                      </button>
+                      {!readOnly && (
+                        <button
+                          type="button"
+                          onClick={() => updateManualMediaType(channel.channelId, 'remove')}
+                          disabled={!onManualMediaTypeChange || pendingChannelId !== null}
+                          className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label={`Remove ${channel.channelName} from plan`}
+                          title="Remove media type from this plan"
+                        >
+                          {pendingChannelId === channel.channelId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Minus className="h-4 w-4" />}
+                        </button>
+                      )}
                     </div>
 
                     {expandedChannels.has(channel.channelId) && (
@@ -791,7 +896,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                         activationGuidance={evaluatedCandidate?.activationGuidance || `Activate ${channel.channelName} with channel-compatible targeting and creative.`}
                         measurementApproach={evaluatedCandidate?.measurementApproach || 'Use the best eligible measurement capability for the primary KPI.'}
                         targetingTactics={channel.targetingTactics}
-                        publishers={channel.publishers}
+                        publishers={resolvePublishers(channel.channelId, channel.channelName, evaluatedCandidate?.product.legacyCanonicalId, channel.publishers)}
                         creativeEnhancements={channel.creativeEnhancements}
                         inventoryControls={channel.inventoryControls}
                         measurementCapabilities={channel.measurementCapabilities}
@@ -831,125 +936,127 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             </div>
           )}
 
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 md:px-5">
-              <h3 className="text-sm font-extrabold text-slate-900">Media types not in plan</h3>
-              <p className="mt-1 text-xs text-slate-600">Expand any media type to preview its full planning stack. “Add &amp; rebalance” preserves the selected portfolio and fixed working-media budget while proportionally adjusting unlocked allocations. Catalog availability is still enforced; budget, flight, and readiness minimums are waived for manual additions and shown as warnings.</p>
-            </div>
-            <div>
-              {candidateGroups.map((group) => (
-                <section key={group.id} aria-labelledby={`candidate-group-${group.id}`}>
-                  <div className="border-b border-slate-200 bg-white px-4 py-2.5 md:px-5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h4 id={`candidate-group-${group.id}`} className="text-[11px] font-extrabold uppercase tracking-wide text-slate-700">{group.title}</h4>
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{group.candidates.length}</span>
+          {!readOnly && (
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 md:px-5">
+                <h3 className="text-sm font-extrabold text-slate-900">Media types not in plan</h3>
+                <p className="mt-1 text-xs text-slate-600">Expand any media type to preview its full planning stack. “Add &amp; rebalance” preserves the selected portfolio and fixed working-media budget while proportionally adjusting unlocked allocations. Catalog availability is still enforced; budget, flight, and readiness minimums are waived for manual additions and shown as warnings.</p>
+              </div>
+              <div>
+                {candidateGroups.map((group) => (
+                  <section key={group.id} aria-labelledby={`candidate-group-${group.id}`}>
+                    <div className="border-b border-slate-200 bg-white px-4 py-2.5 md:px-5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 id={`candidate-group-${group.id}`} className="text-[11px] font-extrabold uppercase tracking-wide text-slate-700">{group.title}</h4>
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{group.candidates.length}</span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-500">{group.description}</p>
                     </div>
-                    <p className="mt-0.5 text-[11px] text-slate-500">{group.description}</p>
-                  </div>
-                  <div className="divide-y divide-slate-100">
-                    {group.candidates.map((candidate) => {
-                      const manuallyRequested = manualIncludedIds.has(candidate.product.id);
-                      // Planner overrides win: any live, executable product can be added regardless of
-                      // budget, flight, or readiness minimums. Those stay visible as warnings below.
-                      const canAdd = candidate.product.digitalRemedyExecutable && candidate.product.recommendationEligible && candidate.product.status === 'live';
-                      const displayedStatus = displayRecommendationStatus(candidate.status);
-                      const detailsId = `media-type-details-${candidate.product.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
-                      const constraintReason = [...candidate.eligibilityFailures, ...candidate.prerequisites].join(' • ');
-                      const reason = manuallyRequested
-                        ? 'Manual inclusion is requested; the plan is being recalculated to fund it.'
-                        : constraintReason
-                            ? constraintReason
-                            : displayedStatus === 'ADD'
-                              ? 'Qualified recommendation omitted because the optimizer favored a higher-value feasible mix within the current portfolio constraints.'
-                              : displayedStatus === 'TEST'
-                                ? 'Promising test opportunity omitted from the automatic portfolio pending stronger fit or readiness.'
-                                : 'The score did not clear the current recommendation threshold.';
-                      return (
-                        <article key={candidate.product.id} className="px-4 py-3 md:px-5 md:py-4">
-                          <div className="flex items-start gap-2">
-                            <button
-                              type="button"
-                              onClick={() => toggleChannelDetails(candidate.product.id)}
-                              aria-expanded={expandedChannels.has(candidate.product.id)}
-                              aria-controls={detailsId}
-                              className="flex min-w-0 flex-1 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 md:flex-row md:items-start md:justify-between"
-                            >
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <h5 className="font-extrabold text-slate-900">{candidate.product.displayName}</h5>
-                                  {internalOnly.channelStatusTag && (
-                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${displayedStatus === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : displayedStatus === 'TEST' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{displayedStatus}</span>
-                                  )}
-                                  {displayedStatus === 'ADD' && candidate.eligibilityFailures.length === 0 && (
-                                    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700"><Sparkles className="h-3 w-3" />ScoutAI Recommended Alternative</span>
-                                  )}
-                                  {displayedStatus === 'TEST' && (
-                                    <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800"><Sparkles className="h-3 w-3" />ScoutAI Test Opportunity</span>
-                                  )}
-                                  {internalOnly.channelConfidenceBadge && (
-                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{candidate.confidence} confidence</span>
-                                  )}
-                                  {manuallyRequested && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Manual request pending</span>}
+                    <div className="divide-y divide-slate-100">
+                      {group.candidates.map((candidate) => {
+                        const manuallyRequested = manualIncludedIds.has(candidate.product.id);
+                        // Planner overrides win: any live, executable product can be added regardless of
+                        // budget, flight, or readiness minimums. Those stay visible as warnings below.
+                        const canAdd = candidate.product.digitalRemedyExecutable && candidate.product.recommendationEligible && candidate.product.status === 'live';
+                        const displayedStatus = displayRecommendationStatus(candidate.status);
+                        const detailsId = `media-type-details-${candidate.product.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+                        const constraintReason = [...candidate.eligibilityFailures, ...candidate.prerequisites].join(' • ');
+                        const reason = manuallyRequested
+                          ? 'Manual inclusion is requested; the plan is being recalculated to fund it.'
+                          : constraintReason
+                              ? constraintReason
+                              : displayedStatus === 'ADD'
+                                ? 'Qualified recommendation omitted because the optimizer favored a higher-value feasible mix within the current portfolio constraints.'
+                                : displayedStatus === 'TEST'
+                                  ? 'Promising test opportunity omitted from the automatic portfolio pending stronger fit or readiness.'
+                                  : 'The score did not clear the current recommendation threshold.';
+                        return (
+                          <article key={candidate.product.id} className="px-4 py-3 md:px-5 md:py-4">
+                            <div className="flex items-start gap-2">
+                              <button
+                                type="button"
+                                onClick={() => toggleChannelDetails(candidate.product.id)}
+                                aria-expanded={expandedChannels.has(candidate.product.id)}
+                                aria-controls={detailsId}
+                                className="flex min-w-0 flex-1 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 md:flex-row md:items-start md:justify-between"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <h5 className="font-extrabold text-slate-900">{candidate.product.displayName}</h5>
+                                    {internalOnly.channelStatusTag && (
+                                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${displayedStatus === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : displayedStatus === 'TEST' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{displayedStatus}</span>
+                                    )}
+                                    {displayedStatus === 'ADD' && candidate.eligibilityFailures.length === 0 && (
+                                      <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700"><Sparkles className="h-3 w-3" />ScoutAI Recommended Alternative</span>
+                                    )}
+                                    {displayedStatus === 'TEST' && (
+                                      <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800"><Sparkles className="h-3 w-3" />ScoutAI Test Opportunity</span>
+                                    )}
+                                    {internalOnly.channelConfidenceBadge && (
+                                      <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{candidate.confidence} confidence</span>
+                                    )}
+                                    {manuallyRequested && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Manual request pending</span>}
+                                  </div>
+                                  <p className="mt-1 text-xs font-semibold text-slate-500">Role: {candidate.product.funnelRoles.join(' / ')}</p>
+                                  <p className="mt-1 text-xs leading-5 text-slate-600">{reason}</p>
                                 </div>
-                                <p className="mt-1 text-xs font-semibold text-slate-500">Role: {candidate.product.funnelRoles.join(' / ')}</p>
-                                <p className="mt-1 text-xs leading-5 text-slate-600">{reason}</p>
-                              </div>
-                              <div className="flex shrink-0 items-center gap-3">
-                                <div className={`min-w-[72px] rounded-lg border px-2.5 py-1.5 text-center ${getRecommendationScoreBg(candidate.recommendationScore)}`}>
-                                  <div className="text-[10px] font-bold uppercase tracking-wider opacity-75">Score</div>
-                                  <div className="font-extrabold leading-tight">{candidate.recommendationScore}<span className="text-[10px] font-semibold opacity-90">/100</span></div>
+                                <div className="flex shrink-0 items-center gap-3">
+                                  <div className={`min-w-[72px] rounded-lg border px-2.5 py-1.5 text-center ${getRecommendationScoreBg(candidate.recommendationScore)}`}>
+                                    <div className="text-[10px] font-bold uppercase tracking-wider opacity-75">Score</div>
+                                    <div className="font-extrabold leading-tight">{candidate.recommendationScore}<span className="text-[10px] font-semibold opacity-90">/100</span></div>
+                                  </div>
+                                  <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${expandedChannels.has(candidate.product.id) ? 'rotate-180' : ''}`} />
                                 </div>
-                                <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${expandedChannels.has(candidate.product.id) ? 'rotate-180' : ''}`} />
-                              </div>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => updateManualMediaType(candidate.product.id, manuallyRequested ? 'remove' : 'add')}
-                              disabled={!onManualMediaTypeChange || pendingChannelId !== null || (!manuallyRequested && !canAdd)}
-                              className={`mt-1 inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-35 ${manuallyRequested ? 'border-rose-200 text-rose-600 hover:bg-rose-50' : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}
-                              aria-label={`${manuallyRequested ? 'Remove' : 'Add'} ${candidate.product.displayName} ${manuallyRequested ? 'from' : 'to'} plan`}
-                              title={manuallyRequested ? 'Cancel this manual inclusion' : canAdd ? 'Add this media type and rebalance the fixed budget' : 'This product is not currently executable and cannot be added'}
-                            >
-                              {pendingChannelId === candidate.product.id ? <Loader2 className="h-4 w-4 animate-spin" /> : manuallyRequested ? <><Minus className="h-4 w-4" /><span>Cancel</span></> : <><Plus className="h-4 w-4" /><span className="hidden sm:inline">Add &amp; rebalance</span></>}
-                            </button>
-                          </div>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => updateManualMediaType(candidate.product.id, manuallyRequested ? 'remove' : 'add')}
+                                disabled={!onManualMediaTypeChange || pendingChannelId !== null || (!manuallyRequested && !canAdd)}
+                                className={`mt-1 inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-35 ${manuallyRequested ? 'border-rose-200 text-rose-600 hover:bg-rose-50' : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}
+                                aria-label={`${manuallyRequested ? 'Remove' : 'Add'} ${candidate.product.displayName} ${manuallyRequested ? 'from' : 'to'} plan`}
+                                title={manuallyRequested ? 'Cancel this manual inclusion' : canAdd ? 'Add this media type and rebalance the fixed budget' : 'This product is not currently executable and cannot be added'}
+                              >
+                                {pendingChannelId === candidate.product.id ? <Loader2 className="h-4 w-4 animate-spin" /> : manuallyRequested ? <><Minus className="h-4 w-4" /><span>Cancel</span></> : <><Plus className="h-4 w-4" /><span className="hidden sm:inline">Add &amp; rebalance</span></>}
+                              </button>
+                            </div>
 
-                          {expandedChannels.has(candidate.product.id) && (
-                            <MediaTypeDetails
-                              detailsId={detailsId}
-                              gapAddressed={candidate.gapAddressed}
-                              planningRationale={candidate.allocationRationale}
-                              activationGuidance={candidate.activationGuidance}
-                              measurementApproach={candidate.measurementApproach}
-                              targetingTactics={candidate.targetingTactics || []}
-                              publishers={candidate.publishers || []}
-                              creativeEnhancements={candidate.creativeEnhancements || []}
-                              inventoryControls={candidate.inventoryControls || []}
-                              measurementCapabilities={candidate.measurementCapabilities || []}
-                              evidence={candidate.evidence}
-                              scoreComponents={candidate.components}
-                              decisionRule={candidate.decisionRule}
-                              prerequisites={candidate.prerequisites}
-                              tradeoffs={candidate.tradeoffs}
-                              eligibilityFailures={candidate.eligibilityFailures}
-                              minimumAllocationPercent={candidate.product.minimumAllocationPercent}
-                              maximumAllocationPercent={candidate.product.maximumAllocationPercent}
-                              minimumTotalSpend={candidate.product.minimumTotalSpend}
-                              minimumFlightDays={candidate.product.minimumFlightDays}
-                              typicalCpmLow={candidate.product.typicalCpmLow}
-                              typicalCpmHigh={candidate.product.typicalCpmHigh}
-                              isPreview
-                            />
-                          )}
-                        </article>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
-              {candidateGroups.length === 0 && <div className="px-5 py-6 text-sm text-slate-600">Every evaluated media type is already represented in the plan.</div>}
+                            {expandedChannels.has(candidate.product.id) && (
+                              <MediaTypeDetails
+                                detailsId={detailsId}
+                                gapAddressed={candidate.gapAddressed}
+                                planningRationale={candidate.allocationRationale}
+                                activationGuidance={candidate.activationGuidance}
+                                measurementApproach={candidate.measurementApproach}
+                                targetingTactics={candidate.targetingTactics || []}
+                                publishers={resolvePublishers(candidate.product.id, candidate.product.displayName, candidate.product.legacyCanonicalId, candidate.publishers)}
+                                creativeEnhancements={candidate.creativeEnhancements || []}
+                                inventoryControls={candidate.inventoryControls || []}
+                                measurementCapabilities={candidate.measurementCapabilities || []}
+                                evidence={candidate.evidence}
+                                scoreComponents={candidate.components}
+                                decisionRule={candidate.decisionRule}
+                                prerequisites={candidate.prerequisites}
+                                tradeoffs={candidate.tradeoffs}
+                                eligibilityFailures={candidate.eligibilityFailures}
+                                minimumAllocationPercent={candidate.product.minimumAllocationPercent}
+                                maximumAllocationPercent={candidate.product.maximumAllocationPercent}
+                                minimumTotalSpend={candidate.product.minimumTotalSpend}
+                                minimumFlightDays={candidate.product.minimumFlightDays}
+                                typicalCpmLow={candidate.product.typicalCpmLow}
+                                typicalCpmHigh={candidate.product.typicalCpmHigh}
+                                isPreview
+                              />
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+                {candidateGroups.length === 0 && <div className="px-5 py-6 text-sm text-slate-600">Every evaluated media type is already represented in the plan.</div>}
+              </div>
             </div>
-          </div>
+          )}
 
           {mediaPlan.nonMediaCosts.length > 0 && (
             <details className="rounded-xl border border-slate-200 bg-white">
@@ -967,7 +1074,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
         <div className="mt-6 text-slate-700 text-sm md:text-base font-medium leading-relaxed bg-slate-50/80 p-4 rounded-xl border border-slate-200/60">
           Your brief includes <span className="font-semibold text-slate-900">{rfpChannelNames || 'existing RFP channels'}</span>.{' '}
           <span className="text-indigo-700 font-bold">ScoutAI</span> identified{' '}
-          <span className="font-semibold text-slate-900">{data.scoutAiRecommendedChannels.length} additional programmatic channel(s)</span>{' '}
+          <span className="font-semibold text-slate-900">{data.scoutAiRecommendedChannels?.length || 0} additional programmatic channel(s)</span>{' '}
           that complement your plan based on total budget tier (${data.totalRfpBudget?.toLocaleString() || 0}).
         </div>
       )}

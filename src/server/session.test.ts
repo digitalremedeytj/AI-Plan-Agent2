@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createSessionToken,
+  getSession,
   isAdminRequestAllowed,
   parseCookies,
   sanitizeDisplayName,
@@ -9,6 +10,7 @@ import {
 } from "./session";
 
 // The signing key is derived from these when SESSION_SECRET is unset.
+delete process.env.SESSION_SECRET;
 process.env.TEST_USER = "demo";
 process.env.TEST_PASSWORD = "demo-password";
 
@@ -86,3 +88,20 @@ test("settings stay writable by everyone until ADMIN_PASSWORD is configured", ()
     delete process.env.ADMIN_PASSWORD;
   }
 });
+
+test("getSession accepts Authorization Bearer header", () => {
+  const token = createSessionToken({ name: "TJ Pascal", isAdmin: false, issuedAt: now() });
+  const req = { headers: { authorization: `Bearer ${token}` } } as any;
+  const user = getSession(req);
+  assert.equal(user?.name, "TJ Pascal");
+  assert.equal(user?.isAdmin, false);
+});
+
+test("getSession accepts x-session-token header", () => {
+  const token = createSessionToken({ name: "TJ Pascal", isAdmin: true, issuedAt: now() });
+  const req = { headers: { "x-session-token": token } } as any;
+  const user = getSession(req);
+  assert.equal(user?.name, "TJ Pascal");
+  assert.equal(user?.isAdmin, true);
+});
+

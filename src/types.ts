@@ -12,7 +12,7 @@ export interface Persona {
   buy: string;
   narrative: string;
   avatarUrl?: string;
-  sourceType?: 'RFP' | 'ScoutAI';
+  sourceType?: 'RFP' | 'ScoutAI' | 'User';
   isExpansion?: boolean;
 }
 
@@ -132,6 +132,29 @@ export interface CtvPublisherRecommendation {
   publisher: string;
   category: string;
   why: string;
+  isUserAdded?: boolean;
+}
+
+/**
+ * Checks if a CTV publisher is user-added rather than an AI-generated recommendation.
+ * User-added publishers display cleanly without targeting rationale text notes.
+ */
+export function isUserAddedPublisher(pub: CtvPublisherRecommendation): boolean {
+  if (pub.isUserAdded) return true;
+  if (!pub.why || !pub.why.trim()) return true;
+  const lower = pub.why.trim().toLowerCase();
+  if (
+    lower.startsWith('include as often') ||
+    lower.startsWith('include often') ||
+    lower.startsWith('include for') ||
+    lower.startsWith('include of') ||
+    lower.startsWith('premium, include') ||
+    lower.startsWith('custom targeted ctv') ||
+    lower.startsWith('targeted ctv')
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export interface ExtractedPlacement {
@@ -182,42 +205,6 @@ export interface RfpAnalysis {
   additionalNotes?: string;
 }
 
-// --- GEO TARGETING ---
-// The market ("United States") and the targeting footprint are separate axes. `geography`
-// stays the market, because the planning engine gates product eligibility on it; a scope
-// value leaking into that field would fail every product and empty the media plan.
-
-/** Exactly one of these is in force for a brief - never a combination. */
-export type GeoScope = "national" | "state" | "dma";
-
-export interface GeoEntry {
-  /** USPS code for a state ("NY"), Nielsen DMA code for a market ("501"). */
-  id: string;
-  name: string;
-  /** DMA only, from the market reference. */
-  rank?: number;
-  tvHouseholds?: number;
-  usSharePct?: number;
-  /** DMA only: every state the market delivers into. */
-  states?: string[];
-}
-
-/** A token from the brief that did not resolve to a market. Shown, never dropped. */
-export interface GeoUnresolvedToken {
-  token: string;
-  reason: "unknown" | "ambiguous" | "over_limit";
-  /** For "ambiguous": the markets it could have meant, so the user can retype precisely. */
-  candidates?: string[];
-}
-
-export interface GeoTargeting {
-  scope: GeoScope;
-  entries: GeoEntry[];
-  unresolved: GeoUnresolvedToken[];
-  inputMethod: "select" | "paste" | "upload";
-  sourceFileName?: string;
-}
-
 export interface AudienceProfile {
   intro: string;
   audienceAnalysis?: string;
@@ -230,11 +217,6 @@ export interface AudienceProfile {
   demographics: Demographics;
   temporalPatterns: TemporalPatterns;
   executiveSummary: string;
-  /**
-   * Narrative on why the targeted footprint fits the campaign. The footprint itself lives
-   * in the brief payload, out of reach of the remediation agent's profile rewrite.
-   */
-  geoInsights?: string;
   sources: Source[];
   ctvPublishers: CtvPublisherRecommendation[];
   publisherInsights: string;
@@ -249,6 +231,14 @@ export interface GenerateProfileResponse {
   channelStrategy?: ChannelStrategyData;
 }
 
+export type GeographyType = 'National' | 'State' | 'DMA';
+
+export interface GeographyTargetConfig {
+  type: GeographyType;
+  targets: string[];
+  rawInput?: string;
+}
+
 export interface SavedProfile {
   id: string;
   savedAt: string;
@@ -258,10 +248,10 @@ export interface SavedProfile {
   audienceDescription: string;
   url: string;
   geography: string;
-  /** The targeting footprint. Absent on plans saved before geo targeting existed. */
-  geoTargeting?: GeoTargeting;
+  geographyConfig?: GeographyTargetConfig;
   campaignFocus: string;
   additionalContext: string;
+  targetPersonas?: string[];
   budget?: string;
   campaignLength?: string;
   planningSettings?: PlanningSettings;
@@ -354,4 +344,5 @@ export interface ChannelStrategyData {
   lockedAllocationChannelIds?: string[];
   hasManualAllocationChanges?: boolean;
   mediaPlan?: MediaRecommendationPlan;
+  ctvPublishers?: CtvPublisherRecommendation[];
 }

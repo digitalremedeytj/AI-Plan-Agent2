@@ -31,15 +31,29 @@ export async function createStorage(): Promise<StorageAdapter> {
 
   if (requested === "firestore") {
     if (!projectId) {
-      throw new Error(
-        "STORAGE_DRIVER=firestore but no GCP project could be resolved. " +
-          "Set GCP_PROJECT_ID, or run where the metadata server is reachable.",
+      console.warn(
+        "[STORAGE] STORAGE_DRIVER=firestore but no GCP project could be resolved. " +
+          "Falling back to local-file driver.",
       );
+      const adapter = new LocalFileAdapter();
+      await adapter.init();
+      return adapter;
     }
-    const adapter = new FirestoreAdapter(projectId);
-    await adapter.init();
-    console.log(`[STORAGE] Using Firestore driver (project '${projectId}').`);
-    return adapter;
+    try {
+      const adapter = new FirestoreAdapter(projectId);
+      await adapter.init();
+      console.log(`[STORAGE] Using Firestore driver (project '${projectId}').`);
+      return adapter;
+    } catch (err: any) {
+      console.warn(
+        `[STORAGE] Firestore was requested for project '${projectId}' but failed to initialize. ` +
+          "Falling back to local-file driver so the application can run. Cause:",
+        err?.message || err,
+      );
+      const adapter = new LocalFileAdapter();
+      await adapter.init();
+      return adapter;
+    }
   }
 
   if (projectId) {

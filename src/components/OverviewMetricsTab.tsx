@@ -33,18 +33,20 @@ interface OverviewMetricsTabProps {
 const ALLOCATION_COLORS = ["#4f46e5", "#0f9f94", "#84a720", "#036987", "#db2777", "#d97706", "#7c3aed", "#0284c7", "#e11d48", "#64748b"];
 
 export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
-  extractedPlacements,
-  planOptions,
+  extractedPlacements = [],
+  planOptions = [],
   rfpAnalysis,
   profileData,
   metricSettings = DEFAULT_OVERVIEW_METRICS,
 }) => {
   // Determine active placements (selected plan options if any, else extracted placements)
-  const selectedOptions = planOptions.filter((p) => p.selected);
+  const safePlanOptions = Array.isArray(planOptions) ? planOptions : [];
+  const safeExtractedPlacements = Array.isArray(extractedPlacements) ? extractedPlacements : [];
+  const selectedOptions = safePlanOptions.filter((p) => p.selected);
   const activePlacements =
     selectedOptions.length > 0
-      ? selectedOptions.flatMap((o) => o.placements)
-      : extractedPlacements;
+      ? selectedOptions.flatMap((o) => o.placements || [])
+      : safeExtractedPlacements;
 
   // 1. Calculate Base Planned Budget
   let plannedBudget = 0;
