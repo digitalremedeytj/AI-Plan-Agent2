@@ -102,6 +102,7 @@ import {
   generateText,
   GEMINI_FLASH_MODEL,
   toGeminiJsonSchema,
+  type GeminiThinkingLevel,
 } from "./src/server/geminiInteractions";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: false, quiet: true });
@@ -117,7 +118,10 @@ const upload = multer({ dest: os.tmpdir() });
 // --- CONFIGURABLE TIMEOUTS FOR LLM & GROUNDING CALLS (in milliseconds) ---
 // Adjust these values to increase/decrease the allowed time for each step:
 const TIMEOUT_PARALLEL_RESEARCH_MS = 90000; // 90 seconds per parallel research thread (Option A)
-const TIMEOUT_SYNTHESIS_MS = 120000;          // 120 seconds for the main synthesis call (Option B)
+// Synthesis gets 120s at high thinking plus one 60s medium-thinking fallback (see SYNTHESIS_ATTEMPTS).
+const TIMEOUT_SYNTHESIS_HIGH_MS = 120000;
+const TIMEOUT_SYNTHESIS_FALLBACK_MS = 60000;
+const TIMEOUT_SYNTHESIS_MS = TIMEOUT_SYNTHESIS_HIGH_MS + TIMEOUT_SYNTHESIS_FALLBACK_MS;
 const TIMEOUT_SCORING_MS = 60000;            // 60 seconds for QA scorecard evaluation (Option B)
 const TIMEOUT_CORRECTION_MS = 90000;         // 90 seconds for auto-remediation rewrite (Option B)
 // Segment recommendations run after the profile is delivered, so they favour quality: high
@@ -132,11 +136,16 @@ const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
 const URL_RESOLUTION_CONCURRENCY = 12;
 
-// Thinking budget for the main synthesis call. gemini-2.5-flash defaults to DYNAMIC thinking,
-// which can add tens of thousands of invisible output tokens and is the largest single source
-// of variance in synthesis latency. Bounded here so the stage fits inside TIMEOUT_SYNTHESIS_MS.
-// Raise toward 24576 (or set to -1 for dynamic) if synthesis quality regresses; 0 disables thinking.
-const SYNTHESIS_THINKING_BUDGET = 4096;
+// Synthesis runs at high thinking. On gemini-3.8-flash, medium reported zero thinking tokens
+// for this call in every spike run, and with raw grounding links it mis-copied most of the
+// citation URLs it chose; high thought for 8-14K tokens and copied them exactly. High took
+// 55-78s, so 120s leaves headroom, and a medium retry means a slow run still ships a profile
+// instead of an error. Cloud Run allows 900s per request; the binding limits are the client's
+// 600s cap and the 240s SSE watchdog, and 180s here stays inside both.
+const SYNTHESIS_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: number }> = [
+  { thinkingLevel: "high", timeoutMs: TIMEOUT_SYNTHESIS_HIGH_MS },
+  { thinkingLevel: "medium", timeoutMs: TIMEOUT_SYNTHESIS_FALLBACK_MS },
+];
 
 // First-party campaign evidence, listed ahead of the researched public sources.
 const DIGITAL_REMEDY_SOURCE = {
@@ -600,6 +609,10 @@ const audienceProfileSchema = {
     "publisherInsights"
   ]
 };
+
+// 3.8 takes standard lowercase JSON Schema. Converted once at startup so a schema the converter
+// cannot map fails the boot, not the first generation.
+const audienceProfileJsonSchema = toGeminiJsonSchema(audienceProfileSchema);
 
 const auditResultSchema = {
   type: Type.OBJECT,
@@ -3278,16 +3291,16 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
 
     sendEvent("status", { message: "Synthesizing research dossiers and mapping audience indices..." });
     console.log("Launching final Synthesis Call to build the comprehensive profile JSON...");
-    const synthesisPromise = ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: synthesisUserPrompt,
-      config: {
-        systemInstruction: synthesisSystemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: audienceProfileSchema,
-        temperature: 0.1,
-        thinkingConfig: { thinkingBudget: SYNTHESIS_THINKING_BUDGET },
-      }
+    const synthesisStartedAt = Date.now();
+    const synthesisPromise = generateStructuredJsonWithFallback(
+      ai,
+      { systemInstruction: synthesisSystemInstruction, input: synthesisUserPrompt, schema: audienceProfileJsonSchema },
+      SYNTHESIS_ATTEMPTS,
+      (failed, next) => sendEvent("status", { message: `Deep synthesis (${failed} reasoning) ran long; retrying with ${next} reasoning...` }),
+    ).catch((err) => {
+      // Timeouts get the user-facing message below; anything else is a real failure to surface.
+      if (/timed? ?out|timeout|abort/i.test(`${err?.name} ${err?.message || err}`)) return null;
+      throw err;
     });
 
     const synthesisResult = await withTimeout(
@@ -3296,12 +3309,13 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
       null
     );
 
-    if (!synthesisResult || !synthesisResult.text) {
+    if (!synthesisResult) {
       throw new Error(`Synthesis stage exceeded the safety limit of ${TIMEOUT_SYNTHESIS_MS / 1000}s. Please simplify your input parameters and try again.`);
     }
+    console.log(`Synthesis complete via ${GEMINI_FLASH_MODEL} (${synthesisResult.thinkingLevel} thinking) in ${((Date.now() - synthesisStartedAt) / 1000).toFixed(1)}s.`);
 
     sendEvent("status", { message: "Evaluating audience profile using media planning scoring agent..." });
-    const originalData = JSON.parse(synthesisResult.text);
+    const originalData = synthesisResult.data as any;
 
     // Fallback/merge RFP requirements if rfpAnalysis was supplied
     if (rfpAnalysis) {
