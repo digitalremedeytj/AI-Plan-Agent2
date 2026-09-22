@@ -378,6 +378,7 @@ export function evaluateCandidates(facts: CampaignFacts, aiSignals: AiCandidateS
 
     return {
       product,
+      aiAssessed: Boolean(signal),
       status,
       recommendationScore: score,
       confidence,
@@ -660,7 +661,7 @@ function attachPublishers(product: MediaProductRecord, facts: CampaignFacts): At
     return facts.ctvPublishers.map((pub) => ({
       id: `publisher.ctv.${pub.publisher.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
       displayName: pub.publisher,
-      rationale: pub.why || `Recommended CTV publisher (${pub.category || "Targeted"}).`,
+      rationale: pub.why || "",
     }));
   }
 

@@ -495,3 +495,25 @@ test("facts.ctvPublishers are attached to both CTV/OTT and Performance TV candid
   assert.deepEqual(perfTvPubNames, ["Hulu", "Disney+", "ESPN"]);
 });
 
+
+test("only candidates scored by the AI layer are marked as assessed", () => {
+  const facts = buildCampaignFacts({
+    kpis: ["awareness"],
+    audienceDescriptions: ["Streaming video viewers"],
+    workingMediaBudget: 50_000,
+    campaignFlightDays: 30,
+    geography: "United States",
+    planningSettings: settings(),
+  });
+  const first = buildMediaRecommendationPlan(facts).evaluatedCandidates[0];
+  const signal = {
+    channelId: first.product.id,
+    components: { kpiAndFunnelFit: 80, audienceAndPersonaFit: 80, incrementalGapCoverage: 80, dataReadiness: 80, creativeReadiness: 80, measurementFit: 80 },
+    gapAddressed: "g", evidence: [], activationGuidance: "a", measurementApproach: "m", tradeoffs: [], allocationRationale: "r", decisionRule: "d",
+  };
+
+  const plan = buildMediaRecommendationPlan(facts, [signal as any]);
+
+  const assessed = plan.evaluatedCandidates.filter((candidate) => candidate.aiAssessed).map((candidate) => candidate.product.id);
+  assert.deepEqual(assessed, [first.product.id]);
+});

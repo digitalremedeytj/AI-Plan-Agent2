@@ -138,6 +138,13 @@ export interface AiCandidateSignal {
 }
 
 export interface EvaluatedMediaCandidate {
+  /**
+   * True when the scores and rationale came from the AI reasoning layer. False means the
+   * engine's formula defaults filled them in; the server refuses to build a plan that way for
+   * any eligible product, so false only appears on ineligible products, and the UI must not
+   * present their numbers or text as analysis.
+   */
+  aiAssessed: boolean;
   product: MediaProductRecord;
   status: RecommendationStatus;
   recommendationScore: number;
