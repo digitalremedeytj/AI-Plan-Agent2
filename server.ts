@@ -37,6 +37,7 @@ import {
   pushAlert,
   removeModeledCharts,
   reportChartsNotFound,
+  reportChartsRemovedByRemediation,
   type GenerationAlert,
 } from "./src/qa/generationIntegrity";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
@@ -3703,6 +3704,7 @@ Please correct the profile to resolve all issues.`
     const isMediaPlanUploaded = Boolean(selectedPlanOptions && selectedPlanOptions.length > 0);
     for (const alert of checkPersonas(finalProfile, { mediaPlanUploaded: isMediaPlanUploaded })) pushAlert(generationAlerts, alert);
     delete finalProfile.expansionReachPercent;
+    for (const alert of reportChartsRemovedByRemediation(originalData, finalProfile)) pushAlert(generationAlerts, alert);
     for (const alert of reportChartsNotFound(finalProfile, generationAlerts)) pushAlert(generationAlerts, alert);
     finalProfile.generationAlerts = generationAlerts;
 

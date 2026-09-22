@@ -6,6 +6,7 @@ import {
   mergeRemediatedProfile,
   removeModeledCharts,
   reportChartsNotFound,
+  reportChartsRemovedByRemediation,
 } from "./generationIntegrity";
 
 const researched = (source = "Pew Research 2025") => ({ isModeled: false, source });
@@ -120,4 +121,22 @@ test("without an uploaded plan a user-specified persona keeps its label and the 
   checkPersonas(profile, { mediaPlanUploaded: false });
 
   assert.deepEqual(profile.personas.map((p: any) => p.sourceType), ["User", "ScoutAI", "ScoutAI", "ScoutAI"]);
+});
+
+test("a chart remediation deleted is reported as removed by QA, not as missing from the research", () => {
+  const before = profileWithCharts();
+  const after = profileWithCharts();
+  after.deviceTypeIndex.chartData = [];
+
+  const removed = reportChartsRemovedByRemediation(before, after);
+  const notFound = reportChartsNotFound(after, removed);
+
+  assert.equal(removed.length, 1);
+  assert.match(removed[0].message, /Device split: removed during QA auto-remediation/);
+  assert.deepEqual(notFound, [], "the removal already explains the empty chart");
+});
+
+test("without a remediation rewrite nothing is reported as removed", () => {
+  const profile = profileWithCharts();
+  assert.deepEqual(reportChartsRemovedByRemediation(profile, profile), []);
 });

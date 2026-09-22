@@ -93,6 +93,29 @@ export function removeModeledCharts(profile: any): GenerationAlert[] {
   return alerts;
 }
 
+/**
+ * Charts the synthesis built from research but auto-remediation then removed, because the QA
+ * review found them unsupported (typically a split stitched together from studies with
+ * different denominators). Reported as removed, not as "not found": the research had figures,
+ * they just did not hold up.
+ */
+export function reportChartsRemovedByRemediation(before: any, after: any): GenerationAlert[] {
+  const alerts: GenerationAlert[] = [];
+  if (!before || before === after) return alerts;
+  for (const chart of PROFILE_CHARTS) {
+    const had = before?.[chart.section]?.[chart.key];
+    const has = after?.[chart.section]?.[chart.key];
+    if (Array.isArray(had) && had.length > 0 && (!Array.isArray(has) || has.length === 0)) {
+      pushAlert(alerts, {
+        section: chart.section,
+        severity: "flagged",
+        message: `${chart.label}: removed during QA auto-remediation because the QA review found the figures were not supported by a single comparable source. See the QA red flags.`,
+      });
+    }
+  }
+  return alerts;
+}
+
 /** One alert per chart the research did not cover, so an empty chart is never mistaken for a rendering bug. */
 export function reportChartsNotFound(profile: any, existing: GenerationAlert[] = []): GenerationAlert[] {
   const alerts: GenerationAlert[] = [];
