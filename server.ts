@@ -120,6 +120,7 @@ const TIMEOUT_SEGMENTS_HIGH_MS = 90000;
 const TIMEOUT_SEGMENTS_FALLBACK_MS = 60000;
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
 const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
+const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
 // Per-redirect budget when turning grounding links back into publisher URLs. Deliberately short:
 // this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
@@ -3329,11 +3330,12 @@ Advertiser / Campaign Context:
 TASK: Write a concise, professional 1-paragraph analysis (3-5 sentences) assessing how well the listed audiences in the uploaded media plan align with the advertiser, their brand positioning, and their target consumer.
 Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
 
-          const analysisResp = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: analysisPrompt,
+          const analysisResp = await generateText(ai, {
+            input: analysisPrompt,
+            thinkingLevel: "low",
+            timeoutMs: TIMEOUT_AUDIENCE_ANALYSIS_MS,
           });
-          const analysisParagraph = analysisResp.text?.trim();
+          const analysisParagraph = analysisResp.text.trim();
           if (analysisParagraph) {
             originalData.audienceAnalysis = analysisParagraph;
           }
