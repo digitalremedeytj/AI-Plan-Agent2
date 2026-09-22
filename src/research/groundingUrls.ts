@@ -1,7 +1,8 @@
 /**
  * Google Search Grounding hands back opaque redirects, not publisher URLs.
- * `groundingChunks[].web.uri` is always a `vertexaisearch.cloud.google.com/grounding-api-redirect/…`
- * link and the only trace of the real publisher is `web.title`, which carries a bare domain.
+ * On Gemini 3.8 every `url_citation` annotation's `url` is a
+ * `vertexaisearch.cloud.google.com/grounding-api-redirect/…` link (as `groundingChunks[].web.uri`
+ * was on 2.5), and the only trace of the real publisher is `title`, which carries a bare domain.
  *
  * That was quietly poisoning the whole citation chain. Synthesis is told to cite exact deep links
  * from the discovered pool, but the pool had none to give; the QA scorer then red-flagged the

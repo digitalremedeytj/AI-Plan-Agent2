@@ -98,6 +98,7 @@ import {
 } from "./src/research/segmentRecommendations";
 import {
   generateStructuredJson,
+  generateGroundedText,
   generateStructuredJsonWithFallback,
   generateText,
   GEMINI_FLASH_MODEL,
@@ -135,6 +136,12 @@ const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
 // this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
 const URL_RESOLUTION_CONCURRENCY = 12;
+
+// Research dossiers run at high thinking. In the spike, high returned roughly twice as many
+// unique cited sources as medium (144 vs ~75 across the four dossiers, against 84 on 2.5) with
+// longer, more specific briefs, in ~50s of the 90s budget. Medium had short-changed the
+// Digital Touchpoints dossier in particular.
+const RESEARCH_THINKING_LEVEL: GeminiThinkingLevel = "high";
 
 // Synthesis runs at high thinking. On gemini-3.8-flash, medium reported zero thinking tokens
 // for this call in every spike run, and with raw grounding links it mis-copied most of the
@@ -2970,27 +2977,15 @@ INSTRUCTIONS:
     const runResearchCall = async (prompt: string, label: string) => {
       try {
         console.log(`Starting parallel research query for: ${label}...`);
-        const subResponse = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: prompt,
-          config: {
-            systemInstruction: "You are an expert audience research analyst. Provide a highly detailed, fact-packed research brief. Always find and cite real stats, percentages, and sources.",
-            tools: [{ googleSearch: {} }],
-            temperature: 0.2,
-          }
+        const research = await generateGroundedText(ai, {
+          systemInstruction: "You are an expert audience research analyst. Provide a highly detailed, fact-packed research brief. Always find and cite real stats, percentages, and sources.",
+          input: prompt,
+          thinkingLevel: RESEARCH_THINKING_LEVEL,
+          timeoutMs: TIMEOUT_PARALLEL_RESEARCH_MS,
         });
 
-        const text = subResponse.text || `[Failed to retrieve detailed ${label} research text]`;
-        const chunks = subResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-        const sources = chunks.map((chunk: any) => {
-          if (chunk.web) {
-            return {
-              title: chunk.web.title || label,
-              uri: chunk.web.uri
-            };
-          }
-          return null;
-        }).filter(Boolean);
+        const text = research.text || `[Failed to retrieve detailed ${label} research text]`;
+        const sources = research.sources;
 
         console.log(`Completed parallel research query for: ${label}. Found ${sources.length} sources.`);
         return { label, text, sources };
