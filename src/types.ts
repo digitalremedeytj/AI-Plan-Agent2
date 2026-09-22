@@ -227,6 +227,18 @@ export interface RfpAnalysis {
   additionalNotes?: string;
 }
 
+/**
+ * Something in the plan that failed, was not found in the research, or needs a reader's
+ * attention. Carried on the profile (and saved with it) instead of being papered over with
+ * placeholder content.
+ */
+export interface GenerationAlert {
+  /** Profile section the alert belongs to, e.g. "demographics", "channelStrategy", "qa". */
+  section: string;
+  severity: "failed" | "not_found" | "flagged";
+  message: string;
+}
+
 export interface AudienceProfile {
   intro: string;
   audienceAnalysis?: string;
@@ -246,6 +258,7 @@ export interface AudienceProfile {
   auditResult?: AuditResult;
   channelStrategy?: ChannelStrategyData;
   additionalRfpRequirements?: RfpAnalysis;
+  generationAlerts?: GenerationAlert[];
 }
 
 export interface GenerateProfileResponse {

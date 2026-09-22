@@ -30,6 +30,15 @@ import {
 import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import { applyProgrammaticSanityChecks } from "./src/qa/chartSanity";
 import { resolveGroundingUrls } from "./src/research/groundingUrls";
+import {
+  checkPersonas,
+  clearSectionsForFailedDossiers,
+  mergeRemediatedProfile,
+  pushAlert,
+  removeModeledCharts,
+  reportChartsNotFound,
+  type GenerationAlert,
+} from "./src/qa/generationIntegrity";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
 import {
   companyOverview,
@@ -367,12 +376,8 @@ const audienceProfileSchema = {
           narrative: { type: Type.STRING, description: "A highly realistic narrative paragraph describing their motivations, lifestyle, and media activation context." },
           sourceType: { type: Type.STRING, description: "Must be 'User' if persona was explicitly specified by the user in the brief, 'RFP' if derived from uploaded media plan listed audiences, or 'ScoutAI' if it is an AI recommended / expansion audience by ScoutAI." }
         },
-        required: ["name", "gender", "income", "age", "watch", "browse", "buy", "narrative"]
+        required: ["name", "gender", "income", "age", "watch", "browse", "buy", "narrative", "sourceType"]
       }
-    },
-    expansionReachPercent: {
-      type: Type.NUMBER,
-      description: "When a media plan is uploaded, the estimated percentage increase in addressable reach achieved by including the ScoutAI expansion persona(s) (e.g. 25-45)."
     },
     takeaways: {
       type: Type.ARRAY,
@@ -399,15 +404,15 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Paragraph overview of browser/web reach and top domain affinity." },
         chartData: {
           type: Type.ARRAY,
-          description: "Data for top relevant domains by audience share or traffic share. Between 5 and 8 items.",
+          description: "Top relevant domains by affinity index, 5 to 8 items, taken from the dossiers. Empty array if the dossiers report no domain affinity figures.",
           items: {
             type: Type.OBJECT,
             properties: {
               domain: { type: Type.STRING, description: "e.g., twitch.tv, nytimes.com, ign.com" },
               value: { type: Type.NUMBER, description: "The Affinity Index percentage value where 100% is average likelihood (e.g. 150 for 150%)" },
               metricType: { type: Type.STRING, description: "Must be 'Affinity Index'" },
-              isModeled: { type: Type.BOOLEAN, description: "Whether this is a modeled planning proxy or syndicated data" },
-              source: { type: Type.STRING, description: "Source name/date, e.g., 'Similarweb May 2026' or 'Modeled Planning Proxy'" }
+              isModeled: { type: Type.BOOLEAN, description: "Must be false: every value comes from a research dossier." },
+              source: { type: Type.STRING, description: "The dossier source for this value, e.g., 'Similarweb May 2026'" }
             },
             required: ["domain", "value", "metricType", "isModeled", "source"]
           }
@@ -422,13 +427,13 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Short explanation of device/platform behavior distinguishing CTV, console, desktop/PC, mobile, tablet." },
         chartData: {
           type: Type.ARRAY,
-          description: "Device/platform composition share. Values are percentages of one denominator - this audience's device usage occasions - and MUST sum to 100. Never index values: this chart renders as a pie and an index would be redrawn as a share. 4 to 6 items.",
+          description: "Device/platform composition share. Values are percentages of one denominator - this audience's device usage occasions - and MUST sum to 100. Never index values: this chart renders as a pie and an index would be redrawn as a share. 4 to 6 items, or an empty array if the dossiers report no device split.",
           items: {
             type: Type.OBJECT,
             properties: {
               device: { type: Type.STRING, description: "e.g., CTV, Mobile, Desktop/PC, Tablet, Game Console" },
               value: { type: Type.NUMBER, description: "Share of this audience's device usage occasions, as a percentage. All items must sum to 100." },
-              isModeled: { type: Type.BOOLEAN, description: "Whether this is modeled planning proxy" },
+              isModeled: { type: Type.BOOLEAN, description: "Must be false: every value comes from a research dossier." },
               source: { type: Type.STRING, description: "e.g. 'MRI-Simmons 2025' or 'eMarketer 2025'" }
             },
             required: ["device", "value", "isModeled", "source"]
@@ -444,7 +449,7 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Paragraph overview of the demographics (age, gender, income, geo)." },
         ageChartData: {
           type: Type.ARRAY,
-          description: "Age bracket split percentage data. Sums to ~100.",
+          description: "Age bracket split percentage data from the dossiers. Sums to ~100. Empty array if not reported.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -458,7 +463,7 @@ const audienceProfileSchema = {
         },
         genderChartData: {
           type: Type.ARRAY,
-          description: "Gender split percentage data. Sums to ~100.",
+          description: "Gender split percentage data from the dossiers. Sums to ~100. Empty array if not reported.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -472,7 +477,7 @@ const audienceProfileSchema = {
         },
         incomeChartData: {
           type: Type.ARRAY,
-          description: "Income bracket split percentage data.",
+          description: "Income bracket split percentage data from the dossiers. Empty array if not reported.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -494,7 +499,7 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Paragraph overview of digital/browsing vs CTV viewing temporal patterns." },
         dayOfWeekChartData: {
           type: Type.ARRAY,
-          description: "Activity index/percentage by Day of Week. 7 items (Mon-Sun).",
+          description: "Activity index/percentage by Day of Week (Mon-Sun) from the dossiers. Empty array if the dossiers report no day-of-week figures.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -508,7 +513,7 @@ const audienceProfileSchema = {
         },
         hourOfDayChartData: {
           type: Type.ARRAY,
-          description: "Activity index/percentage by general hour block. 6 to 12 items.",
+          description: "Activity index/percentage by hour block from the dossiers. Empty array if the dossiers report no hour-of-day figures.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -729,14 +734,18 @@ const candidateSignalResponseSchema = {
   required: ["signals"],
 };
 
+// The products the AI reasoning layer must score. Built from the effective catalog, not the raw
+// registry: a product disabled in settings must not reach the model, and a custom media type must.
+function aiCandidateProducts(settings: any) {
+  return resolveEffectiveProducts(settings)
+    .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live");
+}
+
 async function generateCandidateSignals(audienceProfile: any, facts: any): Promise<AiCandidateSignal[]> {
-  // Built from the effective catalog, not the raw registry: a product disabled in
-  // settings must not reach the model, and a custom media type must.
   const customNotes = new Map(
     (facts?.settings?.customProducts || []).map((product: any) => [product.productId, product.planningNotes]),
   );
-  const candidates = resolveEffectiveProducts(facts.settings)
-    .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live")
+  const candidates = aiCandidateProducts(facts.settings)
     .map((product) => {
       const custom = isCustomProductId(product.id);
       return {
@@ -796,9 +805,10 @@ ${JSON.stringify(candidates, null, 2)}
 
 Return one signal object per allowed candidate and no other products.`;
 
-  try {
-    // Medium, not high: in testing high took ~49s of this 60s budget for near-identical scores,
-    // and a timeout here silently drops the AI reasoning for the whole plan.
+  // Medium, not high: in testing high took ~49s of this 60s budget for near-identical scores.
+  // A failure throws: the channel strategy is then reported as failed rather than built from
+  // formula scores that would read as AI analysis.
+  {
     const response: any = await withTimeout(
       generateStructuredJson(getAiClient(), {
         input: prompt,
@@ -811,14 +821,10 @@ Return one signal object per allowed candidate and no other products.`;
     );
     const parsed = response?.signals;
     if (!Array.isArray(parsed)) {
-      console.warn("[PLANNING] AI candidate reasoning unavailable (no signals returned); using deterministic fallback scores and explanations.");
-      return [];
+      throw new Error(`AI candidate reasoning returned no signals (timed out after ${TIMEOUT_SCORING_MS / 1000}s or failed).`);
     }
     const allowedIds = new Set(candidates.map((candidate) => candidate.channelId));
     return parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId));
-  } catch (error) {
-    console.warn("[PLANNING] AI candidate reasoning unavailable; using deterministic fallback scores and explanations.", error);
-    return [];
   }
 }
 
@@ -879,11 +885,19 @@ async function buildChannelStrategy(
   });
   // Must match the catalog the candidates were generated from, or scores for custom
   // media types get silently dropped and they fall back to heuristic defaults.
-  const allowedSignalIds = new Set(resolveEffectiveProducts(planningSettings).map((product) => product.id));
+  const candidateIds = aiCandidateProducts(planningSettings).map((product) => product.id);
+  const allowedSignalIds = new Set(candidateIds);
   const suppliedSignals = Array.isArray(options?.candidateSignals)
     ? options.candidateSignals.filter((signal) => signal && allowedSignalIds.has(signal.channelId))
     : [];
   const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts);
+  // Every candidate must carry real AI reasoning. The engine can score a product without one,
+  // but those formula scores and stock rationales would be shown as analysis.
+  const signalled = new Set(aiSignals.map((signal) => signal.channelId));
+  const unscored = candidateIds.filter((id) => !signalled.has(id));
+  if (unscored.length > 0) {
+    throw new Error(`AI candidate reasoning is missing for ${unscored.length} of ${candidateIds.length} media types (${unscored.join(", ")}).`);
+  }
   const mediaPlan = buildMediaRecommendationPlan(facts, aiSignals);
 
   const toLegacyEvaluation = (candidate: any) => {
@@ -2120,15 +2134,31 @@ app.post("/api/personas/generate-slide", async (req, res) => {
       mode = "portfolio", // "portfolio" (4-in-1) | "spotlight" (1 persona)
       personaIndex = 0,
       personas = [],
-      advertiserName = "Brand",
+      advertiserName = "",
       campaignFocus = "",
-      geography = "National (US)",
+      geography = "",
       style = "corporate_light", // "corporate_light" | "modern_dark" | "minimal_slate"
       customNotes = "",
     } = req.body || {};
 
     if (!Array.isArray(personas) || personas.length === 0) {
       res.status(400).json({ error: "Personas array is required to generate presentation slide." });
+      return;
+    }
+    // A slide is drawn from the persona exactly as generated. A missing field is refused rather
+    // than filled with a stock age, income or narrative that would be rendered as fact.
+    const REQUIRED_PERSONA_FIELDS = ["name", "age", "gender", "income", "watch", "browse", "buy", "narrative"];
+    const slidePersonas = mode === "spotlight"
+      ? [personas[Math.max(0, Math.min(personaIndex, personas.length - 1))]]
+      : personas.slice(0, 4);
+    const incomplete = slidePersonas
+      .map((persona: any) => ({ name: persona?.name || "(unnamed persona)", missing: REQUIRED_PERSONA_FIELDS.filter((field) => !String(persona?.[field] ?? "").trim()) }))
+      .filter((entry: any) => entry.missing.length > 0);
+    if (incomplete.length > 0) {
+      res.status(400).json({
+        error: "A persona is missing details the slide needs.",
+        details: incomplete.map((entry: any) => `${entry.name}: missing ${entry.missing.join(", ")}`).join("; "),
+      });
       return;
     }
 
@@ -2140,7 +2170,6 @@ app.post("/api/personas/generate-slide", async (req, res) => {
       return;
     }
 
-    const brand = advertiserName ? String(advertiserName).trim() : "Brand";
     console.log(`[API /api/personas/generate-slide] Starting slide generation. Mode: '${mode}', Style: '${style}', Personas count: ${personas.length}`);
 
     // EXACT BRAND DESIGN GUIDE (Mandatory across all slide layouts)
@@ -2176,7 +2205,7 @@ CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
     if (mode === "spotlight") {
       const pIdx = Math.max(0, Math.min(personaIndex, personas.length - 1));
       const targetPersona = personas[pIdx] || personas[0];
-      const personaName = targetPersona.name || `Persona Archetype ${pIdx + 1}`;
+      const personaName = targetPersona.name;
       const roleTag = targetPersona.sourceType === "User"
         ? "Target Specific Persona"
         : targetPersona.sourceType === "RFP"
@@ -2212,27 +2241,27 @@ BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespa
 The entire image consists purely of the two-column slide body cards:
 
 LEFT COLUMN (~38% of width):
-- Photographic Studio Portrait: A large, high-definition photorealistic studio headshot portrait of ${personaName} (${targetPersona.age || "35"} year old ${targetPersona.gender || "individual"}). Warm, approachable, professional studio portrait lighting, facing camera. CRITICAL: For this spotlight layout, the persona image MUST NOT BE ROUND — instead, use what framing works best for the layout (e.g., an elegant vertical portrait or rectangular studio framing with natural soft corners that fills the top of the card). There must be NO border around the persona image (completely borderless, seamless photo placement with no stroke, outline, or border ring).
+- Photographic Studio Portrait: A large, high-definition photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}). Warm, approachable, professional studio portrait lighting, facing camera. CRITICAL: For this spotlight layout, the persona image MUST NOT BE ROUND — instead, use what framing works best for the layout (e.g., an elegant vertical portrait or rectangular studio framing with natural soft corners that fills the top of the card). There must be NO border around the persona image (completely borderless, seamless photo placement with no stroke, outline, or border ring).
 - Demographic Card directly beneath the portrait:
   • Eyebrow Label: "${roleTag.toUpperCase()}" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
   • Persona Name: "${personaName}" (Lexend Bold with tight 1.05 leading and -0.02em tracking, prominent title in card)
-  • Demographic Pill Badges: Age: ${targetPersona.age || "25-45"} (teal #0e8f86) | Gender: ${targetPersona.gender || "Balanced"} (indigo #6b63e6) | HHI: ${targetPersona.income || "$85,000+"} (lime #a6cf56 accent)
-  • Primary Geography: ${geography || "National (US)"}
+  • Demographic Pill Badges: Age: ${targetPersona.age} (teal #0e8f86) | Gender: ${targetPersona.gender} (indigo #6b63e6) | HHI: ${targetPersona.income} (lime #a6cf56 accent)
+${geography ? `  • Primary Geography: ${geography}` : ""}
 
 RIGHT COLUMN (~62% of width):
 - Executive Persona Narrative Card:
   • Eyebrow Label: "AUDIENCE ARCHETYPE NARRATIVE" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
-  • Narrative Text: "${targetPersona.narrative || "Representative consumer archetype exhibiting distinct digital media engagement, high brand affinity, and measurable commercial purchase intent."}" (Lexend Regular at 1.5 leading in #0c1e24)
+  • Narrative Text: "${targetPersona.narrative}" (Lexend Regular at 1.5 leading in #0c1e24)
 - Three Structured Insight Blocks:
   1. 📺 Connected TV & Viewing Patterns:
      • Eyebrow: "CONNECTED TV & STREAMING" in teal #0e8f86 (Lexend SemiBold, 0.08em tracking)
-     • Body: "${targetPersona.watch || "Ad-supported Connected TV, premium streaming, and prime-time OTT"}" (Lexend Regular at 1.5 leading in #0c1e24)
+     • Body: "${targetPersona.watch}" (Lexend Regular at 1.5 leading in #0c1e24)
   2. 🌐 Digital, Mobile & Web Affinity:
      • Eyebrow: "DIGITAL & MOBILE BEHAVIOR" in teal #0e8f86 (Lexend SemiBold, 0.08em tracking)
-     • Body: "${targetPersona.browse || "High-affinity digital news, lifestyle apps, and social platforms"}" (Lexend Regular at 1.5 leading in #0c1e24)
+     • Body: "${targetPersona.browse}" (Lexend Regular at 1.5 leading in #0c1e24)
   3. 🛍️ Purchase Drivers & Commerce Behavior:
      • Eyebrow: "COMMERCE & PURCHASE DRIVERS" in teal #0e8f86 (Lexend SemiBold, 0.08em tracking)
-     • Body: "${targetPersona.buy || "Direct-to-consumer goods, high e-commerce propensity, responsive to digital offers"}" (Lexend Regular at 1.5 leading in #0c1e24)
+     • Body: "${targetPersona.buy}" (Lexend Regular at 1.5 leading in #0c1e24)
 - Media Planning Activation Recommendation:
   • Container: Deep teal (#0e3b42) or cool slate surface with subtle cool-tinted shadow and 1px border.
   • Eyebrow: "STRATEGIC ACTIVATION RECOMMENDATION" in teal #0e8f86 with a small lime #a6cf56 accent tag.
@@ -2284,14 +2313,14 @@ The entire image consists purely of exactly 4 distinct, equal vertical persona c
 
 ${candidatePersonas.map((p: any, idx: number) => `
 CARD ${idx + 1}:
-• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait at the top showing a realistic ${p.age || "35"} year old ${p.gender || "adult"} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).
+• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait at the top showing a realistic ${p.age} year old ${p.gender} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).
 • Eyebrow Tag: "${p.sourceType === "User" ? "TARGET SPECIFIC PERSONA" : p.sourceType === "RFP" ? "CORE RFP TARGET" : "SCOUTAI GROWTH SEGMENT"}" in teal #0e8f86 (Lexend SemiBold in uppercase with 0.08em tracking).
-• Persona Name: "${p.name || `Persona Archetype ${idx + 1}`}" (Lexend Bold with tight 1.05 leading and -0.02em tracking).
-• Demographic Pills: "${p.gender || "Balanced"} | Age ${p.age || "25-45"} | HHI ${p.income || "$85k+"}" (Teal #0e8f86, secondary indigo #6b63e6, and subtle lime #a6cf56 accents).
+• Persona Name: "${p.name}" (Lexend Bold with tight 1.05 leading and -0.02em tracking).
+• Demographic Pills: "${p.gender} | Age ${p.age} | HHI ${p.income}" (Teal #0e8f86, secondary indigo #6b63e6, and subtle lime #a6cf56 accents).
 • 3 Key Media & Purchasing Behaviors (Lexend Regular text at 1.5 leading in #0c1e24):
-  - 📺 Watch: ${p.watch || "Connected TV & Streaming"}
-  - 🌐 Browse: ${p.browse || "Digital news & mobile apps"}
-  - 🛍️ Buy: ${p.buy || "E-commerce & retail"}
+  - 📺 Watch: ${p.watch}
+  - 🌐 Browse: ${p.browse}
+  - 🛍️ Buy: ${p.buy}
 • Summary Highlight: "${(p.narrative || "").slice(0, 100)}..." (Lexend Regular in #0c1e24)
 `).join("\n")}
 
@@ -2393,9 +2422,9 @@ app.post("/api/channels/generate-slide", async (req, res) => {
       workingMediaBudget = 0,
       flightDays = 30,
       appliedBudgetTier = "",
-      advertiserName = "Brand",
+      advertiserName = "",
       campaignFocus = "",
-      geography = "National (US)",
+      geography = "",
       style = "corporate_light", // "corporate_light" | "modern_dark" | "minimal_slate"
       customNotes = "",
       executiveInsight = "",
@@ -2414,8 +2443,7 @@ app.post("/api/channels/generate-slide", async (req, res) => {
       return;
     }
 
-    const brand = advertiserName ? String(advertiserName).trim() : "Brand";
-    console.log(`[API /api/channels/generate-slide] Starting channel slide generation. Mode: '${mode}', Style: '${style}', Active channels count: ${channels.length}`);
+        console.log(`[API /api/channels/generate-slide] Starting channel slide generation. Mode: '${mode}', Style: '${style}', Active channels count: ${channels.length}`);
 
     // EXACT BRAND DESIGN GUIDE (Mandatory across all slide layouts)
     const brandDesignGuide = `
@@ -2445,27 +2473,27 @@ CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
       const allocDollars = targetChannel.allocationDollars ? `$${Math.round(targetChannel.allocationDollars).toLocaleString()}` : "";
       const cpmRange = targetChannel.typicalCpmLow && targetChannel.typicalCpmHigh 
         ? `$${targetChannel.typicalCpmLow} – $${targetChannel.typicalCpmHigh} CPM` 
-        : targetChannel.typicalCpmLow ? `$${targetChannel.typicalCpmLow} CPM` : "Standard Benchmark CPM";
-      const score = targetChannel.recommendationScore ? targetChannel.recommendationScore.toFixed(1) : "9.0";
-      const confidence = targetChannel.confidence || "HIGH";
+        : targetChannel.typicalCpmLow ? `$${targetChannel.typicalCpmLow} CPM` : "CPM not specified in the plan";
+      const score = targetChannel.recommendationScore ? targetChannel.recommendationScore.toFixed(1) : "n/a";
+      const confidence = targetChannel.confidence || "Not assessed";
       const status = targetChannel.status === "TEST" ? "TACTICAL TEST" : "RECOMMENDED CORE";
 
       // Extract tactics & publishers
       const tactics = Array.isArray(targetChannel.targetingTactics) && targetChannel.targetingTactics.length > 0
         ? targetChannel.targetingTactics.slice(0, 3).map((t: any) => t.displayName || t.id).join(", ")
-        : "First-party audience matching, behavioral segment targeting, geographic radius optimization";
+        : "Not specified in the plan";
 
       const publishers = Array.isArray(targetChannel.publishers) && targetChannel.publishers.length > 0
         ? targetChannel.publishers.slice(0, 4).map((p: any) => p.displayName || p.id).join(", ")
-        : "Premium direct publisher inventory and verified private marketplaces";
+        : "Not specified in the plan";
 
       const enhancements = Array.isArray(targetChannel.creativeEnhancements) && targetChannel.creativeEnhancements.length > 0
         ? targetChannel.creativeEnhancements.slice(0, 3).map((e: any) => e.displayName || e.id).join(", ")
-        : "Interactive video overlays, dynamic creative optimization, frequency capping";
+        : "Not specified in the plan";
 
       const measurement = Array.isArray(targetChannel.measurementCapabilities) && targetChannel.measurementCapabilities.length > 0
         ? targetChannel.measurementCapabilities.slice(0, 3).map((m: any) => m.displayName || m.id).join(", ")
-        : "Multi-touch attribution, brand lift studies, real-time conversion tracking";
+        : "Not specified in the plan";
 
       prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing a single media channel strategy spotlight deep dive, designed to be placed directly onto a white background presentation slide.
 
@@ -2485,7 +2513,7 @@ LEFT COLUMN (~36% of width):
 - Prominent Channel Overview Card:
   • Eyebrow Label: "${status}" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
   • Channel Name: "${channelName}" (Lexend Bold with tight 1.05 leading and -0.02em tracking, prominent title in card)
-  • Strategic Role: "${targetChannel.role || "Primary Awareness & Full-Funnel Demand Driver"}" (Lexend Regular, #0c1e24)
+  • Strategic Role: "${targetChannel.role || "Not specified in the plan"}" (Lexend Regular, #0c1e24)
   • Primary Allocation Metric Callout (Deep teal #0e3b42 background card with lime #a6cf56 accent):
     - Percentage: "${allocPct}% of Total Budget" (Large bold display)
     - Dollars: "${allocDollars}" (Prominent secondary figure)
@@ -2494,7 +2522,7 @@ LEFT COLUMN (~36% of width):
     - Fit Score: "${score}/100" (Indigo #6b63e6 pill)
     - Confidence: "${confidence}" (Lime #a6cf56 accent badge)
     - Flight Duration: "${flightDays} Days"
-  • Gap Addressed Callout: "${targetChannel.gapAddressed || "Delivers verified incremental household reach and high-attention engagement."}"
+  • Gap Addressed Callout: "${targetChannel.gapAddressed || "Not specified in the plan"}"
 
 RIGHT COLUMN (~64% of width):
 - Four Structured Tactical Execution Cards in a clean 2x2 grid:
@@ -2513,7 +2541,7 @@ RIGHT COLUMN (~64% of width):
 - Bottom Strategic Rationale Container:
   • Container: Light cool slate container (#F8FAFC) with subtle 1px border (#E2E8F0)
   • Eyebrow: "STRATEGIC ALLOCATION RATIONALE" in teal #0e8f86
-  • Text: "${targetChannel.allocationRationale || "Allocated based on strong cross-device synergies, proven audience affinity, and predictable cost efficiency."}" (Lexend Regular in #0c1e24)
+  • Text: "${targetChannel.allocationRationale || "Not specified in the plan"}" (Lexend Regular in #0c1e24)
 
 DESIGN & EXECUTION DIRECTIVES:
 - Follow all directives in the CORE BRAND DESIGN GUIDE above.
@@ -2595,11 +2623,11 @@ ACTIVE CHANNEL PORTFOLIO CARDS (${numChannels} cards arranged according to the a
 ${activeChannels.map((c: any, idx: number) => {
   const pct = c.allocationPercent != null ? Math.round(c.allocationPercent) : 0;
   const dollars = c.allocationDollars ? `$${Math.round(c.allocationDollars).toLocaleString()}` : "";
-  const cpm = c.typicalCpmLow && c.typicalCpmHigh ? `$${c.typicalCpmLow}–$${c.typicalCpmHigh} CPM` : "Benchmark CPM";
+  const cpm = c.typicalCpmLow && c.typicalCpmHigh ? `$${c.typicalCpmLow}–$${c.typicalCpmHigh} CPM` : "CPM not specified";
   const score = c.recommendationScore ? c.recommendationScore.toFixed(1) : "9.0";
   const pubText = Array.isArray(c.publishers) && c.publishers.length > 0
     ? c.publishers.slice(0, 2).map((p: any) => p.displayName || p.id).join(", ")
-    : "Premium ad-supported networks";
+    : "Not specified in the plan";
   const statusLabel = c.status === "TEST" ? "TACTICAL TEST" : "CORE STRATEGY";
 
   if (densityLevel === "spacious") {
@@ -2608,10 +2636,10 @@ CARD ${idx + 1}: ${c.channelName}
 • Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold uppercase)
 • Channel Title: "${c.channelName}" (Lexend Bold)
 • Allocation Callout: "${pct}%" / "${dollars}" (Large bold metric with lime #a6cf56 highlight)
-• Strategic Role: "${c.role || "Targeted Reach & Engagement"}" (Lexend Regular in #0c1e24)
+• Strategic Role: "${c.role || "Not specified in the plan"}" (Lexend Regular in #0c1e24)
 • Key Benchmark: "${cpm}" | Fit Score: "${score}/100" (Teal & Indigo badges)
 • Key Publishers / Environments: "${pubText}"
-• Core Tactic: "${c.gapAddressed || "Captures high-attention target audiences"}"
+• Core Tactic: "${c.gapAddressed || "Not specified in the plan"}"
 `;
   }
 
@@ -2621,7 +2649,7 @@ CARD ${idx + 1}: ${c.channelName}
 • Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold uppercase)
 • Channel Title: "${c.channelName}" (Lexend Bold)
 • Allocation Callout: "${pct}%" / "${dollars}" (Large bold metric with lime #a6cf56 highlight)
-• Strategic Role: "${c.role || "Targeted Reach & Engagement"}" (Lexend Regular, 1 concise sentence)
+• Strategic Role: "${c.role || "Not specified in the plan"}" (Lexend Regular, 1 concise sentence)
 • Key Benchmark: "${cpm}"
 • Key Environment: "${pubText}"
 (Selective Content Fit: Tactical paragraphs excluded to preserve vertical breathing space)`;
@@ -2633,7 +2661,7 @@ CARD ${idx + 1}: ${c.channelName}
 • Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold)
 • Channel Title: "${c.channelName}" (Lexend Bold)
 • Allocation Callout: "${pct}%" / "${dollars}" (Prominent bold metric with lime #a6cf56 highlight)
-• Strategic Objective: "${c.role || "Targeted Reach & Engagement"}" (Concise single phrase)
+• Strategic Objective: "${c.role || "Not specified in the plan"}" (Concise single phrase)
 • Key Benchmark: "${cpm}"
 (Selective Content Fit: Publishers list and narrative excluded so all ${numChannels} cards fit cleanly into the 2-row grid with high legibility)`;
   }
@@ -2643,7 +2671,7 @@ CARD ${idx + 1}: ${c.channelName}
 CARD ${idx + 1}: ${c.channelName}
 • Channel Title: "${c.channelName}" (Lexend Bold) [${statusLabel}]
 • Allocation Callout: "${pct}%" / "${dollars}" (Prominent bold metric with lime #a6cf56 highlight)
-• Primary Objective: "${c.role || "Reach & Conversion"}" (Brief 1-phrase summary)
+• Primary Objective: "${c.role || "Not specified in the plan"}" (Brief 1-phrase summary)
 (Selective Content Fit: Streamlined core metrics so all ${numChannels} channels fit effortlessly with generous spacing)`;
 }).join("\n")}
 
@@ -2744,35 +2772,13 @@ ${trimmed}`;
       console.log(`[AI SUMMARIZER] Successfully summarized to ${summaryText.split(/\s+/).length} words (${summaryText.length} chars).`);
       res.json({ summary: summaryText, reduced: true });
     } else {
-      // Fallback: Smart sentence truncation
-      const sentences = trimmed.match(/[^.!?]+[.!?]+/g) || [trimmed];
-      let acc = "";
-      for (const s of sentences) {
-        if ((acc + s).length <= maxCharacters && (acc + s).split(/\s+/).length <= maxWords) {
-          acc += (acc ? " " : "") + s.trim();
-        } else {
-          break;
-        }
-      }
-      res.json({ summary: acc || words.slice(0, maxWords).join(" ") + "...", reduced: true });
+      console.warn(`[AI SUMMARIZER] Model returned no usable summary (${summaryText.length} chars).`);
+      res.status(502).json({ error: "The publisher insight could not be summarized.", details: "The model returned no usable summary." });
     }
   } catch (err: any) {
     console.error("[AI SUMMARIZER] Error summarizing publisher insights:", err);
-    // Graceful fallback: Smart sentence truncation
-    const trimmed = (req.body?.text || "").trim();
-    const maxW = req.body?.maxWords || 65;
-    const maxC = req.body?.maxCharacters || 450;
-    const words = trimmed.split(/\s+/);
-    let fallback = "";
-    const sentences = trimmed.match(/[^.!?]+[.!?]+/g) || [trimmed];
-    for (const s of sentences) {
-      if ((fallback + s).length <= maxC && (fallback + s).split(/\s+/).length <= maxW) {
-        fallback += (fallback ? " " : "") + s.trim();
-      } else {
-        break;
-      }
-    }
-    res.json({ summary: fallback || words.slice(0, maxW).join(" ") + "...", reduced: true, fallback: true });
+    // No sentence-truncation fallback: a clipped paragraph reads as a finished summary.
+    res.status(502).json({ error: "The publisher insight could not be summarized.", details: err?.message || String(err) });
   }
 });
 
@@ -2862,10 +2868,16 @@ app.post("/api/generate-profile", async (req, res) => {
     const audienceSnippet = cleanAudienceDesc ? `"${cleanAudienceDesc.slice(0, 50)}${cleanAudienceDesc.length > 50 ? '...' : ''}"` : "Target Audience";
     sendEvent("status", { message: `Initializing campaign parameters for ${audienceSnippet} in ${geography || 'United States'}...` });
 
+    // Everything that failed or was not found, carried on the delivered profile.
+    const generationAlerts: GenerationAlert[] = [];
+
     let crawledPageText = "";
     if (url) {
       sendEvent("status", { message: `Crawling website ${url} to extract brand positioning, offering details, and market context...` });
       crawledPageText = await fetchUrlText(url);
+      if (crawledPageText.startsWith("[Note: Direct website crawl failed")) {
+        pushAlert(generationAlerts, { section: "research", severity: "failed", message: `The website crawl of ${url} failed, so the profile is grounded in search research only.` });
+      }
       sendEvent("status", { message: `Crawl complete: Extracted brand text snippet (${crawledPageText.length} chars) to ground audience analysis.` });
     }
 
@@ -2973,8 +2985,13 @@ INSTRUCTIONS:
 
     const ai = getAiClient();
 
+    // What synthesis sees in place of a failed dossier. It is an instruction, not content: the
+    // topic stays empty in the plan and the plan carries an alert saying so.
+    const researchUnavailable = (label: string) =>
+      `[RESEARCH UNAVAILABLE: the ${label} research did not complete. Provide no figures, chart values or claims for this topic; leave its charts empty.]`;
+
     // Helper to run research sub-calls in parallel with search grounding enabled
-    const runResearchCall = async (prompt: string, label: string) => {
+    const runResearchCall = async (prompt: string, label: string): Promise<{ label: string; text: string; sources: any[]; failed?: boolean; reason?: string }> => {
       try {
         console.log(`Starting parallel research query for: ${label}...`);
         const research = await generateGroundedText(ai, {
@@ -2991,7 +3008,7 @@ INSTRUCTIONS:
         return { label, text, sources };
       } catch (err: any) {
         console.error(`Research sub-call for ${label} failed:`, err);
-        return { label, text: `[Note: Grounding research query for ${label} encountered a search grounding limit. Standard baseline market data will be modeled during synthesis.]`, sources: [] };
+        return { label, text: researchUnavailable(label), sources: [] as any[], failed: true, reason: err?.message || String(err) };
       }
     };
 
@@ -3000,19 +3017,21 @@ INSTRUCTIONS:
       sendEvent("status", { message: statusMsg });
       
       const researchPromise = runResearchCall(prompt, label);
-      const fallbackResult = {
+      const timedOut = {
         label,
-        text: `[Note: Research query for ${label} exceeded ${TIMEOUT_PARALLEL_RESEARCH_MS / 1000}s. Safe fallback baseline data will be modeled during synthesis.]`,
-        sources: [] as any[]
+        text: researchUnavailable(label),
+        sources: [] as any[],
+        failed: true,
+        reason: `timed out after ${TIMEOUT_PARALLEL_RESEARCH_MS / 1000}s`,
       };
-      
-      const result = await withTimeout(researchPromise, TIMEOUT_PARALLEL_RESEARCH_MS, fallbackResult);
-      
-      const blurb = extractFindingBlurb(result.text, label);
+
+      const result = await withTimeout(researchPromise, TIMEOUT_PARALLEL_RESEARCH_MS, timedOut);
+
       sendEvent("research_result", {
         label,
         sources: result.sources,
-        blurb
+        failed: Boolean(result.failed),
+        blurb: result.failed ? `Research failed (${result.reason}).` : extractFindingBlurb(result.text, label),
       });
       return result;
     };
@@ -3027,6 +3046,15 @@ INSTRUCTIONS:
       handleResearchStep(promptDevices, "CTV & Devices", `Analyzing eMarketer, Nielsen & Wurl streaming shares across Smart TVs & streaming hardware...`),
       handleResearchStep(promptTemporalPurchase, "Temporal & Purchase", `Tracking daypart peaks, streaming hours & purchasing triggers in ${geography}...`)
     ]);
+
+    const researchResults = [demoResult, webResult, deviceResult, temporalResult];
+    const failedDossiers = researchResults.filter((result) => result.failed).map((result) => result.label);
+    if (failedDossiers.length === researchResults.length) {
+      throw new Error(`All four research dossiers failed (${researchResults.map((r) => `${r.label}: ${r.reason}`).join("; ")}), so there is nothing to ground a profile in.`);
+    }
+    for (const result of researchResults) {
+      if (result.failed) console.warn(`[RESEARCH] ${result.label} dossier failed: ${result.reason}`);
+    }
 
     // Aggregate and deduplicate the search grounding links collected from all parallel operations
     const allCitations = [
@@ -3134,29 +3162,20 @@ Your response must be a single, perfectly structured JSON object adhering exactl
 CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 1. COHESION & INTEGRATED STORYTELLING: Do not stitch together unrelated facts in silos. Create a single, unified audience story where all metrics and descriptions align.
    - If a persona is described as having specific device preferences, that device must dominate or represent a substantial percentage in 'deviceTypeIndex.chartData'.
-   - If Saturday/Sunday evenings are described as viewing or activity peaks, Saturdays and Sundays MUST have a high activity index (e.g. index > 100, such as 108 - 120) in 'temporalPatterns.dayOfWeekChartData' and 'temporalPatterns.hourOfDayChartData'. Contradictions between narrative text and numeric indices are strictly forbidden.
+   - If Saturday/Sunday evenings are described as viewing or activity peaks, the day and hour charts MUST show those peaks. Contradictions between narrative text and numeric indices are strictly forbidden. If a chart is empty because the research had no figures for it, the narrative must not describe numeric peaks for it either.
 2. STATISTICAL PLAUSIBILITY & REAL-WORLD BOUNDS: Absolutely no statistically impossible claims.
    - Connected TV (CTV) QR code scan rates hover strictly between 0.01% and 0.5% in real campaign environments. Scan conversion or purchase rates are in low single digits (typically under 8%). You are STRICTLY FORBIDDEN from generating double-digit QR code scan rates or absurd purchase rates (such as "83% open to scanning and 92% of scanners likely to complete a purchase").
-   - Broad/mass-market audiences (such as general gaming, mobile gaming, casual shoppers, etc.) MUST have realistic Household Income (HHI) splits aligning with national averages. Households earning over $100,000 HHI MUST NOT exceed 33-35% in aggregate for general populations. Do not apply a high HHI skew of a niche sub-segment (e.g. premium hardware buyers earning >$100k) to the entire general population breakdown.
-   - Ground all other media benchmarks (display ad CTRs, video view-through rates/VCRs, social conversion percentages) in real trade-press baselines (e.g., programmatic display CTR is around 0.05% - 0.20%; CTV video completion rate is around 90% - 95%).
+   - Do not apply the income skew of a niche sub-segment (e.g. premium hardware buyers earning >$100k) to the whole audience. If the dossiers only report a sub-segment's income split, say so in the overview and leave 'incomeChartData' empty rather than presenting it as the audience's split.
+   - Media performance rates (CTR, VCR/VTR, conversion rates) may only appear where a dossier reports them. Do not quote typical or benchmark rates from general knowledge.
 3. MUTUALLY EXCLUSIVE DEVICE BREAKDOWNS: Correctly map the Connected TV and digital ecosystem as a fragmented but mutually exclusive environment. Explicitly distribute viewing share across Smart TVs, Streaming Devices (Roku/FireTV), Consoles, Smartphones, and Desktops so that there is no double-counting, and ensure percentage splits sum to approximately 100%.
 4. Be highly precise with definitions: composition vs index vs reach vs penetration. Clearly distinguish percentage split from activity index (average = 100).
 5. Do not call an audience segment "affluent", "young", "tech-savvy", etc. unless the research supportively proves it with metrics.
-6. Ensure demographic charts, device charts, web share charts, and day/hour charts are fully populated with exact numbers. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'. Provide realistic index values (e.g. 120%, 150%, 210%, 280% depending on target audience domain affinity).
-7. Use current ${currentYear} data. Match geography: ${geography}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
+6. CHART DATA COMES ONLY FROM THE DOSSIERS. Populate a chart only with figures a dossier actually reports, and name that source in each item's 'source'. Every item's 'isModeled' MUST be false. If the dossiers do not contain the figures a chart needs, return that chart as an EMPTY array - never estimate, model, extrapolate, or fill it from general knowledge. An empty chart is shown to the planner as "not found in research"; an invented one is presented to a client as fact. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'.
+7. Use current ${currentYear} data. Match geography: ${geography}. If the dossiers have no data for this geography, say so in the relevant overview; do not adapt national figures into a regional estimate.
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
    - You are STRICTLY PROHIBITED from fabricating, guessing, or making up consumer desire/sentiment figures, survey percentages, or market statistics (such as "85% of gamers express a desire to see product recommendations on their TV home screens").
    - Every single statistic or percentage mentioned in the recommendations ('recommendations.why' or 'recommendations.action') or core takeaways ('takeaways') MUST be directly grounded and cross-referenced from the provided parallel research dossiers.
-   - APPROVED FALLBACK INDUSTRY BASELINES: If a specific statistic cannot be verified in the search dossiers, do NOT invent any numbers. Instead, you MUST fall back to standard, well-documented qualitative descriptions OR use these exact industry-accepted benchmarks. When doing so, you MUST explicitly prefix or tag them with "[Industry Baseline: <Stat>]" or "[Modeled Baseline: <Stat>]" or use the direct phrasing "According to industry standards/benchmarks...":
-     * Connected TV (CTV) QR-Code Scan Rates: 0.02% - 0.15% scan rate.
-     * CTV Scan-to-Conversion/Purchase Rate: 1% - 3% purchase conversion rate among those who scan.
-     * Smart TV Streaming Share: ~55% of video-streaming gamers stream video directly through Smart TV apps.
-     * Programmatic Video View-Through/Completion Rate (VTR/VCR) on CTV: 85% - 92%.
-     * Programmatic Display Ad Click-Through Rate (CTR): 0.05% - 0.12%.
-     * Smart TV Home Screen Ad Reach: Home screen native display placements reach up to 15% - 20% of active daily Smart TV users.
-     * Mobile Ad CTR: 0.3% - 0.6% for general display/in-app.
-     * Search Ad Conversion Rate: 2% - 5%.
-     * General Digital Video Completion Rate (VCR): 70% - 85% for standard non-skip skippable digital video.
+   - If a statistic cannot be verified in the dossiers, leave it out. Do not substitute an industry benchmark, a "typical" rate, or a modeled figure, and do not tag an invented number as a baseline to make it acceptable.
 
 ${ctvPublishersSection}
 
@@ -3177,7 +3196,6 @@ ${cleanTargetPersonas.map((p, idx) => `     * Persona Slot ${idx + 1}: "${p}" (M
      * Up to 3 personas MUST be derived directly from the listed target audiences in the uploaded media plan RFP (set 'sourceType': 'RFP' for these personas).
      * At least 1 persona MUST be a ScoutAI recommended "expansion persona" targeting a high-potential complementary audience segment not explicitly in the RFP that expands total addressable reach (set 'sourceType': 'ScoutAI' for this expansion persona).
      * If the uploaded media plan lists fewer than 3 audiences (e.g., 2, 1, or 0), generate as many ScoutAI expansion personas ('sourceType': 'ScoutAI') as needed so the total array length is EXACTLY 4.`}
-     * Provide 'expansionReachPercent' as a number between 25 and 45 representing the estimated percentage increase in addressable reach achieved by including the ScoutAI expansion persona(s) (e.g. 35).
 
 11. UPLOADED MEDIA PLAN AUDIENCE ANALYSIS (MANDATORY WHEN MEDIA PLAN CONTAINS AUDIENCES):
     If an uploaded media plan is provided and includes audience target specifications (e.g. listed audience segments in plan placements), you MUST populate 'audienceAnalysis' with a detailed, professional paragraph evaluating how well the listed audiences in the plan align with the advertiser, their brand positioning, product offering, and campaign goals.
@@ -3238,6 +3256,8 @@ ${cleanTargetPersonas.map((p, i) => `  Slot ${i + 1}: "${p}"`).join('\n')}
 (You MUST preserve these exact persona archetypes in the first ${cleanTargetPersonas.length} persona slots with sourceType 'User')` : ""}
 ${contextGuidance}
 
+${failedDossiers.length > 0 ? `RESEARCH THAT FAILED (leave every chart and figure for these topics empty): ${failedDossiers.join(", ")}
+` : ""}
 --------------------------------------------------
 DOSSIER 1: DEMOGRAPHICS
 ${demoResult.text}
@@ -3361,8 +3381,9 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
           if (analysisParagraph) {
             originalData.audienceAnalysis = analysisParagraph;
           }
-        } catch (err) {
+        } catch (err: any) {
           console.error("Error generating fallback audience analysis:", err);
+          pushAlert(generationAlerts, { section: "audienceAnalysis", severity: "failed", message: `The uploaded-plan audience analysis could not be written (${err?.message || err}).` });
         }
       }
     } else {
@@ -3393,13 +3414,26 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         sendEvent("status", { message: "Media portfolio and allocation constraints validated successfully." });
       } catch (channelErr: any) {
         console.error("Error generating media recommendation plan:", channelErr);
-        sendEvent("status", { message: "Note: Media recommendation allocation encountered an issue. Proceeding with the audience profile and no unvalidated allocation." });
+        pushAlert(generationAlerts, { section: "channelStrategy", severity: "failed", message: `The media plan could not be built: ${channelErr?.message || channelErr}` });
+        sendEvent("status", { message: "Media plan failed. The profile will be delivered without a channel strategy and marked accordingly." });
       }
     }
 
     // The scorer is a different model with a different training cutoff, so it has no idea what
     // "now" is. Left unanchored it read current-year figures as future-dated fabrications and
     // charged them to Data Integrity.
+    // Run the research-integrity rules before scoring, so QA grades the profile we will ship
+    // rather than values that are about to be removed. They run again after remediation.
+    const integrityCorrections: string[] = [];
+    const enforceResearchIntegrity = (profile: any) => {
+      for (const alert of clearSectionsForFailedDossiers(profile, failedDossiers)) pushAlert(generationAlerts, alert);
+      for (const alert of removeModeledCharts(profile)) pushAlert(generationAlerts, alert);
+      const sanity = applyProgrammaticSanityChecks(profile, req.body);
+      for (const alert of sanity.alerts) pushAlert(generationAlerts, alert);
+      integrityCorrections.push(...sanity.corrections);
+    };
+    enforceResearchIntegrity(originalData);
+
     const scoringToday = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
     // Only claim the engine owns the budget when it actually ran. A profile generated without a
     // working-media budget has no channelStrategy, and pointing the scorer at an absent object
@@ -3430,6 +3464,7 @@ You MUST score across these five categories (0 to 20 points each):
 CONTEXT YOU MUST APPLY BEFORE SCORING:
 - Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
 ${channelStrategyGuidance}
+- An empty chart array means the research did not report those figures. That is a correct outcome, not a defect: do not score it as missing data or ask for it to be filled, and never recommend estimated, modeled or benchmark values.
 - 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
 
 Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
@@ -3482,6 +3517,7 @@ Your output must be a perfectly formatted JSON matching the required schema. Ens
     if (!auditResult) {
       qaBypassed = true;
       console.warn(`[QA BYPASS] OpenAI QA Scoring Agent timed out or failed. This profile was NOT independently scored.`);
+      pushAlert(generationAlerts, { section: "qa", severity: "failed", message: "QA scoring did not run (timed out or failed), so this profile has not been independently scored." });
       const notEvaluated = "Not evaluated - QA scoring agent unavailable";
       auditResult = {
         executiveSummary: "The independent QA scoring agent was unavailable, so this profile has not been externally verified. The figures below are the synthesis output as generated - review them before client presentation.",
@@ -3523,7 +3559,7 @@ You have been given an audience profile and a list of critical red flags or corr
 Your task is to rewrite and update the audience profile to:
 1. Resolve every single red flag/issue identified by the QA specialist.
 2. Ensure all percentages sum to 100% and there are no mathematical or logical contradictions.
-3. Bring all CTR/QR/conversion rates within standard industry-accepted trade benchmarks.
+3. Where a figure is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate, and never add chart values that are not already in the input profile - an empty chart is acceptable, an invented one is not.
 4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
 5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
 6. USER-SPECIFIED PERSONAS ARE PROTECTED: If the input profile contains personas with sourceType 'User' (or personas matching user-specified targets), you MUST strictly preserve their exact names and 'sourceType': 'User'. Do NOT rename, delete, swap, or overwrite user-specified personas.
@@ -3579,15 +3615,19 @@ Please correct the profile to resolve all issues.`
           if (!corrected || typeof corrected !== "object" || Array.isArray(corrected)) {
             throw new Error("Correction response did not contain a usable 'correctedProfile' object.");
           }
-          finalProfile = corrected;
-          profileRewritten = true;
-          if (originalData.channelStrategy) finalProfile.channelStrategy = originalData.channelStrategy;
           // Citations are evidence, not prose. The correction agent used to answer a sourcing red
           // flag by discarding the researched registry and substituting URLs from its own memory -
           // none of which appeared in the grounding pool - so the profile ended up citing sources
           // that had never been consulted. It may rewrite the analysis; it may not rewrite what
-          // the analysis was based on.
-          if (Array.isArray(originalData.sources)) finalProfile.sources = originalData.sources;
+          // the analysis was based on, and it may not delete sections: a rewrite that dropped
+          // personas once shipped "Persona Archetype" stand-ins.
+          const merged = mergeRemediatedProfile(originalData, corrected);
+          finalProfile = merged.profile;
+          profileRewritten = true;
+          if (merged.restored.length > 0) {
+            console.warn(`[REMEDIATION] Correction omitted ${merged.restored.join(", ")}; kept the synthesized version.`);
+            pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: `Auto-remediation left out ${merged.restored.join(", ")}; the synthesized version of ${merged.restored.length === 1 ? "that section is" : "those sections are"} shown instead.` });
+          }
           // Guardrail: Ensure user-specified personas are never lost or altered by remediation
           if (cleanTargetPersonas.length > 0 && Array.isArray(finalProfile.personas)) {
             cleanTargetPersonas.forEach((targetName, idx) => {
@@ -3605,27 +3645,21 @@ Please correct the profile to resolve all issues.`
             });
           }
           console.log(`AI Auto-Remediation complete. Applied ${autoFixesList.length} patches.`);
-        } catch (e) {
+        } catch (e: any) {
           console.error("Failed to parse correction data, keeping original profile:", e);
-          autoFixesList.push({
-            issue: "Auto-remediation parsing error",
-            resolution: "Skipped remediation stage due to parsing error. Delivering initial high-fidelity profile directly."
-          });
+          pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: `QA fixes were not applied: the auto-remediation response could not be used (${e?.message || e}). The profile is shown as synthesized; review the QA red flags before presenting.` });
         }
       } else {
         console.warn(`[TIMEOUT] OpenAI AI Auto-Remediation call timed out after ${TIMEOUT_CORRECTION_MS / 1000}s. Bypassing correction step.`);
-        autoFixesList.push({
-          issue: "Auto-remediation timeout",
-          resolution: `The correction agent timed out (exceeded ${TIMEOUT_CORRECTION_MS / 1000}s). Delivering initial high-fidelity profile directly.`
-        });
+        pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: `QA fixes were not applied: auto-remediation timed out after ${TIMEOUT_CORRECTION_MS / 1000}s. The profile is shown as synthesized; review the QA red flags before presenting.` });
       }
     } else {
       sendEvent("status", { message: `QA Scorecard Verified: Perfect ${auditResult.totalScore}/100! All parameters verified within media benchmarks.` });
     }
 
-    // Apply fallback programmatic checks on final data as an extra guardrail
-    const progCorrections = applyProgrammaticSanityChecks(finalProfile, req.body);
-    for (const corr of progCorrections) {
+    // Remediation can reintroduce what the first pass removed, so the rules run again on what ships.
+    enforceResearchIntegrity(finalProfile);
+    for (const corr of integrityCorrections) {
       autoFixesList.push({
         issue: "Programmatic metric verification mismatch",
         resolution: corr
@@ -3665,60 +3699,12 @@ Please correct the profile to resolve all issues.`
       finalProfile.sources.unshift({ ...DIGITAL_REMEDY_SOURCE });
     }
 
-    // Enforce EXACTLY 4 personas in finalProfile
-    if (!Array.isArray(finalProfile.personas)) {
-      finalProfile.personas = [];
-    }
-
+    // Personas are shown as generated - never padded to four, never relabelled by position.
     const isMediaPlanUploaded = Boolean(selectedPlanOptions && selectedPlanOptions.length > 0);
-
-    while (finalProfile.personas.length < 4) {
-      const count = finalProfile.personas.length + 1;
-      finalProfile.personas.push({
-        name: `Persona Archetype ${count}`,
-        gender: "Balanced (50/50)",
-        income: "$75,000 - $125,000",
-        age: count === 1 ? "18 - 34" : count === 2 ? "35 - 54" : count === 3 ? "25 - 44" : "55+",
-        watch: "Ad-supported Connected TV, YouTube, Live Sports & OTT",
-        browse: "High-affinity digital news, lifestyle, and social media platforms",
-        buy: "E-commerce, direct-to-consumer goods, and everyday retail",
-        narrative: `Representative consumer archetype ${count} representing core target demographic segment with distinct media engagement patterns.`,
-        sourceType: isMediaPlanUploaded && count <= Math.min(3, Math.max(1, planAudiences.length)) ? 'RFP' : 'ScoutAI'
-      });
-    }
-    if (finalProfile.personas.length > 4) {
-      finalProfile.personas = finalProfile.personas.slice(0, 4);
-    }
-
-    // Assign / normalize sourceType for all 4 personas
-    if (isMediaPlanUploaded) {
-      // Up to 3 from RFP plan, at least 1 (or more if plan has fewer audiences) ScoutAI expansion
-      const rfpLimit = Math.min(3, planAudiences.length > 0 ? planAudiences.length : 1);
-      finalProfile.personas.forEach((p: any, idx: number) => {
-        if (!p.sourceType || (p.sourceType !== 'RFP' && p.sourceType !== 'ScoutAI')) {
-          p.sourceType = idx < rfpLimit ? 'RFP' : 'ScoutAI';
-        }
-        p.isExpansion = p.sourceType === 'ScoutAI';
-      });
-
-      // Ensure at least 1 persona is ScoutAI expansion
-      const scoutCount = finalProfile.personas.filter((p: any) => p.sourceType === 'ScoutAI').length;
-      if (scoutCount === 0) {
-        finalProfile.personas[3].sourceType = 'ScoutAI';
-        finalProfile.personas[3].isExpansion = true;
-      }
-
-      if (typeof finalProfile.expansionReachPercent !== 'number' || finalProfile.expansionReachPercent <= 0) {
-        finalProfile.expansionReachPercent = 35;
-      }
-    } else {
-      // Standard mode: no media plan uploaded
-      finalProfile.personas.forEach((p: any) => {
-        p.sourceType = 'ScoutAI';
-        p.isExpansion = false;
-      });
-      finalProfile.expansionReachPercent = undefined;
-    }
+    for (const alert of checkPersonas(finalProfile, { mediaPlanUploaded: isMediaPlanUploaded })) pushAlert(generationAlerts, alert);
+    delete finalProfile.expansionReachPercent;
+    for (const alert of reportChartsNotFound(finalProfile, generationAlerts)) pushAlert(generationAlerts, alert);
+    finalProfile.generationAlerts = generationAlerts;
 
     // Persona headshots are deliberately NOT generated here. Four sequential image calls
     // (45s timeout plus one retry each) could add up to 360s to a request the browser is
@@ -3735,6 +3721,10 @@ Please correct the profile to resolve all issues.`
       }
     } else {
       sendEvent("status", { message: "QA Audit Complete: All metrics, device splits, and temporal indices verified within realistic media buyer benchmarks." });
+    }
+
+    for (const alert of generationAlerts) {
+      sendEvent("status", { message: `• [${alert.severity === "failed" ? "FAILED" : alert.severity === "not_found" ? "NOT FOUND" : "CHECK"}] ${alert.message}` });
     }
 
     // Return structured profile and citations

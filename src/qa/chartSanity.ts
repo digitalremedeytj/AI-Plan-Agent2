@@ -11,27 +11,50 @@
 //     client-facing auto-fix list, so rounding drift reported as a "verification mismatch" makes
 //     a clean profile look remediated.
 //
-// Mutates `data` in place and returns one human-readable note per material correction.
+//   * Never substitute numbers. A chart that is not what it claims to be is removed and the
+//     plan says so; it is not rescaled into a different shape or pulled toward a benchmark.
+//
+// Mutates `data` in place. Returns one note per cosmetic correction (rounding drift) and one
+// alert per chart that was removed or needs a reader's attention.
 
-export function applyProgrammaticSanityChecks(data: any, reqBody: any): string[] {
+import type { GenerationAlert } from "../types";
+
+// A composition that misses 100 by more than this is not rounding: it is overlapping or
+// mixed-denominator data, and rescaling it would invent a split nobody measured.
+const MAX_RESCALABLE_DRIFT_PTS = 10;
+
+// Classifies an income bracket by where it starts. Matching on "100k" anywhere in the label
+// counted "$75k-$100k" as a six-figure bracket.
+function bracketLowerBoundThousands(bracket: string): number | null {
+  if (/^\s*(<|under|less than|below)/i.test(bracket)) return 0;
+  const match = bracket.replace(/,000\b/g, "k").match(/(\d+(?:\.\d+)?)\s*(k)?/i);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return match[2] ? value : value >= 1000 ? value / 1000 : value;
+}
+
+export function applyProgrammaticSanityChecks(data: any, reqBody: any): { corrections: string[]; alerts: GenerationAlert[] } {
   const programmaticCorrections: string[] = [];
+  const alerts: GenerationAlert[] = [];
 
   // 1. Percentage-based chart normalizations helper
   // Sub-2pt drift is the model rounding its own composition shares, not a data-integrity
   // problem. It is still corrected, but silently: reporting it padded the auto-fix list on
   // effectively every run, which made a clean profile read as heavily remediated.
   const REPORTABLE_DRIFT_PTS = 2;
-  const normalizePercentages = (
-    arr: any[],
-    valueKey: string,
-    chartName: string,
-    // Lets a caller describe the correction in its own terms when "the split did not sum to
-    // 100" understates what actually happened - see the device chart below.
-    describe?: (sum: number) => string,
-  ) => {
+  const normalizePercentages = (arr: any[], valueKey: string, chartName: string, section: string) => {
     if (!arr || arr.length === 0) return;
     const sum = arr.reduce((acc, item) => acc + (Number(item[valueKey]) || 0), 0);
     if (sum === 0) return;
+    if (Math.abs(sum - 100) > MAX_RESCALABLE_DRIFT_PTS) {
+      arr.length = 0;
+      alerts.push({
+        section,
+        severity: "flagged",
+        message: `${chartName}: removed because its shares summed to ${sum.toFixed(1)}% instead of 100%, so the figures are not one comparable split.`,
+      });
+      return;
+    }
     if (Math.abs(sum - 100) > 0.05) {
       let runningSum = 0;
       arr.forEach((item, idx) => {
@@ -44,11 +67,7 @@ export function applyProgrammaticSanityChecks(data: any, reqBody: any): string[]
         }
       });
       if (Math.abs(sum - 100) > REPORTABLE_DRIFT_PTS) {
-        programmaticCorrections.push(
-          describe
-            ? describe(sum)
-            : `Programmatically normalized ${chartName} percentage split to sum to exactly 100% (was ${sum.toFixed(1)}%).`,
-        );
+        programmaticCorrections.push(`Programmatically normalized ${chartName} percentage split to sum to exactly 100% (was ${sum.toFixed(1)}%).`);
       }
     }
   };
@@ -56,13 +75,13 @@ export function applyProgrammaticSanityChecks(data: any, reqBody: any): string[]
   // Run normalizations
   if (data.demographics) {
     if (data.demographics.ageChartData) {
-      normalizePercentages(data.demographics.ageChartData, "value", "Age Demographic");
+      normalizePercentages(data.demographics.ageChartData, "value", "Age distribution", "demographics");
     }
     if (data.demographics.genderChartData) {
-      normalizePercentages(data.demographics.genderChartData, "value", "Gender Demographic");
+      normalizePercentages(data.demographics.genderChartData, "value", "Gender split", "demographics");
     }
     if (data.demographics.incomeChartData) {
-      normalizePercentages(data.demographics.incomeChartData, "value", "Household Income");
+      normalizePercentages(data.demographics.incomeChartData, "value", "Household income", "demographics");
     }
   }
   // The device chart is consumed as a composition share everywhere downstream - a pie in
@@ -70,13 +89,10 @@ export function applyProgrammaticSanityChecks(data: any, reqBody: any): string[]
   // index-valued chart cannot be rendered honestly no matter what the caption says. The
   // remediation agent used to reframe it as non-comparable indices, which left a table
   // renormalized to 100% sitting directly under an overview insisting it did not sum to 100.
-  // Normalize it back to shares and say so when the input was not share-shaped at all.
+  // Index values that arrive here are removed rather than converted: turning an index into a
+  // share manufactures a split the research never reported.
   if (data.deviceTypeIndex && data.deviceTypeIndex.chartData) {
-    normalizePercentages(data.deviceTypeIndex.chartData, "value", "Device Type Split", (sum) =>
-      sum > 150
-        ? `Device Type Split arrived as index values summing to ${sum.toFixed(1)}% and was converted back to a composition share; this chart renders as a share of device usage occasions and cannot carry index values.`
-        : `Programmatically normalized Device Type Split percentage split to sum to exactly 100% (was ${sum.toFixed(1)}%).`,
-    );
+    normalizePercentages(data.deviceTypeIndex.chartData, "value", "Device split", "deviceTypeIndex");
   }
 
   // 2. Domain chart metric labelling
@@ -123,61 +139,22 @@ export function applyProgrammaticSanityChecks(data: any, reqBody: any): string[]
   const isLuxuryAudience = luxuryKeywords.some(keyword => searchStr.includes(keyword));
 
   if (!isLuxuryAudience && data.demographics && data.demographics.incomeChartData) {
-    const incomeData = data.demographics.incomeChartData;
-    // Identify brackets representing $100k+
-    const highIncomeIndexes: number[] = [];
-    const lowIncomeIndexes: number[] = [];
     let highIncomeSum = 0;
+    for (const item of data.demographics.incomeChartData) {
+      const lowerBound = bracketLowerBoundThousands(String(item.bracket || ""));
+      if (lowerBound !== null && lowerBound >= 100) highIncomeSum += Number(item.value) || 0;
+    }
 
-    incomeData.forEach((item: any, idx: number) => {
-      const bracketName = (item.bracket || "").toLowerCase();
-      const isHigh = bracketName.includes("100k") || bracketName.includes("150k") || bracketName.includes("200k") || bracketName.includes("100,000") || bracketName.includes("150,000");
-      if (isHigh) {
-        highIncomeIndexes.push(idx);
-        highIncomeSum += Number(item.value) || 0;
-      } else {
-        lowIncomeIndexes.push(idx);
-      }
-    });
-
-    // If no luxury keywords exist, but generated $100k+ total exceeds 40%, it is a demographic skew hallucination
-    if (highIncomeSum > 40 && highIncomeIndexes.length > 0) {
-      const targetHighSum = 34.0;
-      const targetLowSum = 66.0;
-      const currentLowSum = 100 - highIncomeSum;
-
-      if (currentLowSum > 0) {
-        const highScale = targetHighSum / highIncomeSum;
-        const lowScale = targetLowSum / currentLowSum;
-
-        highIncomeIndexes.forEach(idx => {
-          incomeData[idx].value = Math.round((Number(incomeData[idx].value) || 0) * highScale * 10) / 10;
-        });
-
-        lowIncomeIndexes.forEach(idx => {
-          incomeData[idx].value = Math.round((Number(incomeData[idx].value) || 0) * lowScale * 10) / 10;
-        });
-
-        // Run final normalization to ensure they sum to exactly 100%
-        let finalSum = 0;
-        incomeData.forEach((item: any) => finalSum += Number(item.value) || 0);
-        if (Math.abs(finalSum - 100) > 0.01) {
-          let runningSum = 0;
-          incomeData.forEach((item: any, idx: number) => {
-            if (idx === incomeData.length - 1) {
-              item.value = Math.round((100 - runningSum) * 10) / 10;
-            } else {
-              const val = Math.round((Number(item.value) / finalSum * 100) * 10) / 10;
-              item.value = val;
-              runningSum += val;
-            }
-          });
-        }
-
-        programmaticCorrections.push(`Detected general mass-market audience HHI skew (previously ${highIncomeSum.toFixed(0)}% earning >$100k). Reverted Household Income distribution back to realistic national benchmarks (totaling ~34% over $100k HHI) to avoid sub-segment skew hallucinations.`);
-      }
+    // Flagged, not rewritten. This used to rescale the researched split to a fixed "national
+    // benchmark" of 34% over $100k, which put a number in the plan that no source reported.
+    if (highIncomeSum > 40) {
+      alerts.push({
+        section: "demographics",
+        severity: "flagged",
+        message: `Household income: ${highIncomeSum.toFixed(0)}% of this audience is shown earning over $100k, which is high for a brief that does not describe an affluent audience. Check the cited source before presenting.`,
+      });
     }
   }
 
-  return programmaticCorrections;
+  return { corrections: programmaticCorrections, alerts };
 }
