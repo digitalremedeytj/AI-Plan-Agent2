@@ -158,12 +158,29 @@ Make one commit per step, so any single call site can be reverted.
 
 | Risk | Mitigation |
 | --- | --- |
-| **Latency.** 3.8 "can use more tokens on longer running and complex tasks, by design". The pipeline's worst case (90 + 120 + 60 + 90s ≈ 360s) already exceeds Cloud Run's 300s default, and the SSE watchdog kills a stream after 240s without an event. | Measure in the spike. Prefer `medium` for research and synthesis. Keep every `withTimeout`. Pass the SDK `timeout` equal to the stage budget, with `maxRetries: 0`. Don't raise stage timeouts without re-checking the total. |
+| **Latency.** 3.8 "can use more tokens on longer running and complex tasks, by design". The Cloud Run service is configured with `timeoutSeconds: 900`, so the platform is not the binding limit; the client aborts at 600s (`CLIENT_GENERATION_TIMEOUT_MS`) and the SSE watchdog kills a stream after 240s without an event. | Measure in the spike. Keep every `withTimeout`. Pass the SDK `timeout` equal to the stage budget, with `maxRetries: 0`. Don't raise stage timeouts without re-checking the total against the 600s client cap and the 240s watchdog gap. |
 | **Large-schema rejection** of `audienceProfileSchema`. | Found in the spike, not in production. If it's rejected: first try removing `description` text from deep leaves, then as a last resort split synthesis into two structured calls. Don't fall back to unschema'd JSON, because `chartSanity` and the QA stages depend on the exact shape. |
 | **Citation pool changes** (count or shape). Synthesis is told to curate 8–12 sources from the pool, and the QA scorer penalizes opaque sourcing. | Compare the `Found N sources` counts with the baseline. If the pool shrinks badly, add `{ type: "url_context" }` alongside `google_search` (docs ~line 3707) or adjust the research prompts. Never let the model invent URLs (see the `groundingUrls.ts` header for why). |
 | **No `temperature`**, so output is less deterministic. | Judge by the QA score and red flags against the baseline, not by exact output diffs. |
 | **Cost.** Intro pricing is $0.75 / $3.75 per 1M input/output tokens through 2026-12-31, then $1.50 / $7.50 from 2027-01-01. | Note it in the PR description. `low` thinking on the small calls keeps it down. |
 | **2.5 access.** The docs say 2.5 isn't deprecated, only restricted to existing users. | There's no forced deadline, so don't rush the verification. |
+
+## 5a. Outcome (2026-09-22)
+
+The spike and the three README runs led to these settings, which supersede the "Target thinking"
+column in section 2:
+
+| # | Call site | Thinking | Budget |
+| --- | --- | --- | --- |
+| 1 | Research dossiers | `high` | 90s each |
+| 2 | Synthesis | `high`, one `medium` fallback | 120s + 60s |
+| 3 | Uploaded-plan audience analysis | `low` | 30s |
+| 4 | Candidate signals | `medium` | 60s |
+| 5 | Publisher-insight summary | `low` | 30s |
+
+Why: `medium` synthesis used zero thinking tokens; `high` research roughly doubled the cited source
+pool (84 -> ~150). Measured totals were 250-259s against 230-279s on 2.5. Worst case with every
+stage at its limit is ~570s, inside the 600s client cap.
 
 ## 6. Verification checklist
 
