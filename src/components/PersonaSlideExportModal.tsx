@@ -62,9 +62,9 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
   personas = [],
   channelStrategy,
   mediaPlan,
-  advertiserName = "Brand",
+  advertiserName = "",
   campaignFocus = "",
-  geography = "National (US)",
+  geography = "",
   api,
 }) => {
   // Current active section dropdown: "personas" | "channels"
@@ -330,7 +330,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             channelIndex: 0,
             channels: fundedChannels,
             workingMediaBudget: effectiveMediaPlan?.workingMediaBudget || channelStrategy?.totalRfpBudget || 0,
-            flightDays: effectiveMediaPlan?.flightDays || 30,
+            flightDays: effectiveMediaPlan?.flightDays ?? null,
             appliedBudgetTier: effectiveMediaPlan?.appliedBudgetTier || "",
             advertiserName,
             campaignFocus,
@@ -389,7 +389,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
               channelIndex: cIdx,
               channels: fundedChannels,
               workingMediaBudget: effectiveMediaPlan?.workingMediaBudget || channelStrategy?.totalRfpBudget || 0,
-              flightDays: effectiveMediaPlan?.flightDays || 30,
+              flightDays: effectiveMediaPlan?.flightDays ?? null,
               appliedBudgetTier: effectiveMediaPlan?.appliedBudgetTier || "",
               advertiserName,
               campaignFocus,
@@ -713,7 +713,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                 </div>
                 {effectiveMediaPlan && (
                   <span className="hidden sm:inline-flex px-2 py-0.5 rounded-md bg-white border border-teal-200 text-[11px] font-semibold text-[#0e8f86]">
-                    Budget: ${Math.round(effectiveMediaPlan.workingMediaBudget || 0).toLocaleString()} • {effectiveMediaPlan.flightDays || 30} Days
+                    Budget: ${Math.round(effectiveMediaPlan.workingMediaBudget || 0).toLocaleString()} • {effectiveMediaPlan.flightDays ? `${effectiveMediaPlan.flightDays} Days` : "Flight not set"}
                   </span>
                 )}
               </div>

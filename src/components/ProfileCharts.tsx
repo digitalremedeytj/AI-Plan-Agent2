@@ -64,7 +64,7 @@ export function ChartCard({ title, source, isModeled, children, tableData, table
         {/* Source Footer */}
         {!hideSourceFooter && (
           <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center text-[11px] text-slate-400 font-mono">
-            <span>Source: {source || "Syndicated media source"}</span>
+            <span>{source ? `Source: ${source}` : "Source not stated"}</span>
             {isModeled && <span>*Estimated for planning purposes</span>}
           </div>
         )}
@@ -111,7 +111,7 @@ export function ChartCard({ title, source, isModeled, children, tableData, table
 // 1. Top Domains Chart Component
 export function DomainsChart({ data, source }: { data: DomainMetric[]; source: string }) {
   if (!data || data.length === 0) {
-    return <div className="text-sm text-slate-400 italic">No domain affinity data available</div>;
+    return <div className="text-sm text-slate-400 italic">Not found in research</div>;
   }
 
   const isModeled = data.some(d => d.isModeled);
@@ -171,7 +171,7 @@ export function DomainsChart({ data, source }: { data: DomainMetric[]; source: s
 // 2. Device Split Chart Component
 export function DeviceChart({ data, source }: { data: DeviceMetric[]; source: string }) {
   if (!data || data.length === 0) {
-    return <div className="text-sm text-slate-400 italic">No device distribution data available</div>;
+    return <div className="text-sm text-slate-400 italic">Not found in research</div>;
   }
 
   const isModeled = data.some(d => d.isModeled);
@@ -230,7 +230,7 @@ export function DeviceChart({ data, source }: { data: DeviceMetric[]; source: st
 // 3. Age Demographic Chart Component
 export function AgeChart({ data, source }: { data: AgeMetric[]; source: string }) {
   if (!data || data.length === 0) {
-    return <div className="text-sm text-slate-400 italic">No age demographics available</div>;
+    return <div className="text-sm text-slate-400 italic">Not found in research</div>;
   }
 
   const isModeled = data.some(d => d.isModeled);
@@ -268,7 +268,7 @@ export function AgeChart({ data, source }: { data: AgeMetric[]; source: string }
 // 4. Gender Demographic Chart Component
 export function GenderChart({ data, source }: { data: GenderMetric[]; source: string }) {
   if (!data || data.length === 0) {
-    return <div className="text-sm text-slate-400 italic">No gender demographics available</div>;
+    return <div className="text-sm text-slate-400 italic">Not found in research</div>;
   }
 
   const isModeled = data.some(d => d.isModeled);
@@ -318,7 +318,7 @@ export function GenderChart({ data, source }: { data: GenderMetric[]; source: st
 // 5. Income Demographic Chart Component
 export function IncomeChart({ data, source }: { data: IncomeMetric[]; source: string }) {
   if (!data || data.length === 0) {
-    return <div className="text-sm text-slate-400 italic">No household income data available</div>;
+    return <div className="text-sm text-slate-400 italic">Not found in research</div>;
   }
 
   const isModeled = data.some(d => d.isModeled);
@@ -356,7 +356,7 @@ export function IncomeChart({ data, source }: { data: IncomeMetric[]; source: st
 // 6. Day of Week Temporal Activation Chart
 export function DayOfWeekChart({ data, source }: { data: TemporalMetric[]; source: string }) {
   if (!data || data.length === 0) {
-    return <div className="text-sm text-slate-400 italic">No day-of-week data available</div>;
+    return <div className="text-sm text-slate-400 italic">Not found in research</div>;
   }
 
   const isModeled = data.some(d => d.isModeled);
@@ -399,7 +399,7 @@ export function DayOfWeekChart({ data, source }: { data: TemporalMetric[]; sourc
 // 7. Hour of Day Temporal Activation Chart
 export function HourOfDayChart({ data, source }: { data: TemporalMetric[]; source: string }) {
   if (!data || data.length === 0) {
-    return <div className="text-sm text-slate-400 italic">No hourly temporal data available</div>;
+    return <div className="text-sm text-slate-400 italic">Not found in research</div>;
   }
 
   const isModeled = data.some(d => d.isModeled);

@@ -6,7 +6,6 @@ import { type CtvPublisherSetting, getPublisherLogo } from '../planning/knowledg
 export interface CtvSlideExportViewProps {
   publishers: CtvPublisherRecommendation[];
   publisherInsights?: string;
-  defaultPublisherInsights: string;
   customPublishers?: CtvPublisherSetting[];
   maxCharacters?: number;
   maxWords?: number;
@@ -18,7 +17,6 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
     {
       publishers,
       publisherInsights,
-      defaultPublisherInsights,
       customPublishers,
       maxCharacters = 450,
       maxWords = 65,
@@ -33,7 +31,7 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
     const displayedPublishers = publishers.slice(0, maxCards);
     const overflowCount = totalCount > maxCards ? totalCount - maxCards : 0;
 
-    const rawText = (publisherInsights || defaultPublisherInsights || '').trim();
+    const rawText = (publisherInsights || '').trim();
     const [aiSummarizedText, setAiSummarizedText] = useState<string | null>(null);
 
     // Basic export has a more spacious right column; allow up to 110 words and 780 characters so it fills comfortably
@@ -77,29 +75,13 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
       }
     }, [rawText, effectiveMaxCharacters, effectiveMaxWords]);
 
-    // Computed text to display: use AI summary if available, or instant sentence truncation fallback if over limit
-    const displayText = useMemo(() => {
-      if (!rawText) return '';
-      const wordCount = rawText.split(/\s+/).length;
-      if (rawText.length <= effectiveMaxCharacters && wordCount <= effectiveMaxWords) {
-        return rawText;
-      }
-      if (aiSummarizedText) {
-        return aiSummarizedText;
-      }
-      // Instant smart fallback at sentence boundary while AI summary loads
-      const sentences = rawText.match(/[^.!?]+[.!?]+/g) || [rawText];
-      let acc = '';
-      for (const s of sentences) {
-        const candidate = acc ? `${acc} ${s.trim()}` : s.trim();
-        if (candidate.length <= effectiveMaxCharacters && candidate.split(/\s+/).length <= effectiveMaxWords) {
-          acc = candidate;
-        } else {
-          break;
-        }
-      }
-      return acc || rawText.split(/\s+/).slice(0, effectiveMaxWords).join(' ') + '...';
-    }, [rawText, aiSummarizedText, effectiveMaxCharacters, effectiveMaxWords]);
+    // The AI summary when one exists, otherwise the full text. No clipped-sentence fallback: the
+    // exporter refuses to capture an over-long insight it could not summarize, so a truncated
+    // paragraph never ships as if it were the finished insight.
+    const displayText = useMemo(
+      () => aiSummarizedText || rawText || 'Publisher insights were not generated for this plan.',
+      [rawText, aiSummarizedText],
+    );
 
     return (
       <div
@@ -473,42 +455,6 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                 </p>
               </div>
 
-              {/* Bottom Callout: Media Planning Tip */}
-              <div
-                style={{
-                  backgroundColor: '#f8fafc',
-                  border: '1.5px solid #edf2f7',
-                  borderRadius: '24px',
-                  padding: '30px 34px',
-                  marginTop: 'auto',
-                  flexShrink: 0,
-                  boxSizing: 'border-box',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    fontWeight: '700',
-                    color: '#0f172a',
-                    fontSize: '18px',
-                    marginBottom: '10px',
-                  }}
-                >
-                  <Sparkles style={{ width: '22px', height: '22px', color: '#4f46e5', marginRight: '12px' }} />
-                  <span>Media Planning Tip</span>
-                </div>
-                <p
-                  style={{
-                    fontSize: '16px',
-                    lineHeight: '1.65',
-                    color: '#64748b',
-                    margin: 0,
-                  }}
-                >
-                  Maximize reach by distributing spots evenly across SVOD apps, FAST channels, and high-impact smart TV OS home banners.
-                </p>
-              </div>
             </div>
           ) : (
             /* DETAILED EXPORT: Enclosed White Bento Card */
@@ -578,41 +524,6 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                 </p>
               </div>
 
-              {/* Bottom Callout: Media Planning Tip */}
-              <div
-                style={{
-                  backgroundColor: '#f8fafc',
-                  border: '1px solid #f1f5f9',
-                  borderRadius: '16px',
-                  padding: '24px 26px',
-                  marginTop: 'auto',
-                  flexShrink: 0,
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    fontWeight: '700',
-                    color: '#1e293b',
-                    fontSize: '16px',
-                    marginBottom: '8px',
-                  }}
-                >
-                  <Sparkles style={{ width: '20px', height: '20px', color: '#4f46e5', marginRight: '10px' }} />
-                  <span>Media Planning Tip</span>
-                </div>
-                <p
-                  style={{
-                    fontSize: '14.5px',
-                    lineHeight: '1.6',
-                    color: '#64748b',
-                    margin: 0,
-                  }}
-                >
-                  Maximize reach by distributing spots evenly across SVOD apps, FAST channels, and high-impact smart TV OS home banners.
-                </p>
-              </div>
             </div>
           )}
         </div>

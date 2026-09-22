@@ -211,3 +211,56 @@ test("MediaTypeDetails renders fallback 'Creative enhancements: None suggested.'
 });
 
 
+
+test("a CTV line with no recommended publishers shows none rather than a canned Hulu/Disney+/Roku/ESPN list", () => {
+  const facts = buildCampaignFacts({
+    kpis: ["awareness"],
+    audienceDescriptions: ["TV and digital consumers"],
+    workingMediaBudget: 150_000,
+    campaignFlightDays: 30,
+    geography: "United States",
+    planningSettings: clonePlanningSettings(DEFAULT_PLANNING_SETTINGS),
+  });
+  const data = {
+    rfpChannels: [], scoutAiRecommendedChannels: [], executiveInsight: "", budgetStrategyMode: "reallocation",
+    totalRfpBudget: 150_000, analyzedPlanNames: [], generatedAt: "2026-09-22T00:00:00.000Z",
+    manualIncludedChannelIds: [], manualExcludedChannelIds: [], mediaPlan: buildMediaRecommendationPlan(facts),
+  } as unknown as ChannelStrategyData;
+
+  const markup = renderToStaticMarkup(
+    <ChannelStrategySection data={data} initialExpandedChannels={["channel.ctv", "channel.performance_tv"]} />,
+  );
+
+  assert.doesNotMatch(markup, /Co-viewing hub matching family oriented household profiles/);
+  assert.doesNotMatch(markup, /Recommended CTV publisher \(/);
+});
+
+test("a product ScoutAI did not assess shows no score, breakdown or stock rationale", () => {
+  const markup = renderToStaticMarkup(
+    <MediaTypeDetails
+      detailsId="unassessed"
+      gapAddressed="Stock gap text"
+      planningRationale="Stock rationale"
+      activationGuidance="Stock activation"
+      measurementApproach="Stock measurement"
+      targetingTactics={[]}
+      publishers={[]}
+      creativeEnhancements={[]}
+      inventoryControls={[]}
+      measurementCapabilities={[]}
+      evidence={[]}
+      scoreComponents={{ kpiAndFunnelFit: 60, audienceAndPersonaFit: 60, incrementalGapCoverage: 72, dataReadiness: 78, creativeReadiness: 78, measurementFit: 65 }}
+      decisionRule="Stock rule"
+      eligibilityFailures={["Product status is beta; only live products can receive allocation."]}
+      minimumAllocationPercent={5}
+      maximumAllocationPercent={30}
+      minimumTotalSpend={5000}
+      typicalCpmLow={null}
+      typicalCpmHigh={null}
+      aiAssessed={false}
+    />,
+  );
+
+  assert.match(markup, /Not assessed by ScoutAI - not eligible: Product status is beta/);
+  assert.doesNotMatch(markup, /Score breakdown|Stock gap text|Stock rationale|Stock activation|Stock measurement|Stock rule/);
+});

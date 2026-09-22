@@ -11,13 +11,6 @@ import {
   type AllocationBasisPoints,
 } from '../planning/manualAllocations';
 
-export const DEFAULT_CTV_PUBLISHERS: Array<{ publisher: string; category?: string; why?: string }> = [
-  { publisher: 'Hulu', category: 'App', why: 'High penetration among prime-time streaming audiences with premium ad-supported options.' },
-  { publisher: 'Disney+', category: 'App', why: 'Co-viewing hub matching family oriented household profiles perfectly.' },
-  { publisher: 'The Roku Channel', category: 'OS', why: 'Dominant CTV operating system offering native home screen high-impact display slots.' },
-  { publisher: 'ESPN', category: 'Network', why: 'Essential for capturing live sports and highly engaged co-viewing audiences.' },
-];
-
 export const isCtvOrPerformanceTvChannel = (
   channelId?: string,
   channelName?: string,
@@ -133,6 +126,8 @@ interface MediaTypeDetailsProps {
   monthlyEquivalentSpend?: number;
   fundingSource?: string;
   isPreview?: boolean;
+  /** False when ScoutAI did not assess this product; its formula scores and stock text are then withheld. */
+  aiAssessed?: boolean;
 }
 
 const planningRecordNames = (records: AttachedPlanningRecord[] | undefined, fallback: string) =>
@@ -164,6 +159,7 @@ export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
   monthlyEquivalentSpend,
   fundingSource,
   isPreview = false,
+  aiAssessed = true,
 }) => {
   const warnings = Array.from(new Set([...(eligibilityFailures || []), ...(prerequisites || []), ...(tradeoffs || [])]));
   const scoreLabels: Array<[keyof CandidateScoreComponents, string]> = [
@@ -183,11 +179,17 @@ export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
         </div>
       )}
 
+      {!aiAssessed && (
+        <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          Not assessed by ScoutAI{eligibilityFailures.length > 0 ? ` - not eligible: ${eligibilityFailures.join(' ')}` : '.'}
+        </div>
+      )}
+
       <div className="grid gap-3 text-xs md:grid-cols-2">
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Gap addressed: </span><span className="text-slate-700">{gapAddressed}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Planning rationale: </span><span className="text-slate-700">{planningRationale}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Activation guidance: </span><span className="text-slate-700">{activationGuidance}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Targeting tactics: </span><span className="text-slate-700">{planningRecordNames(targetingTactics, 'Use channel-compatible targeting after readiness confirmation.')}</span></div>
+        {aiAssessed && gapAddressed && <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Gap addressed: </span><span className="text-slate-700">{gapAddressed}</span></div>}
+        {aiAssessed && planningRationale && <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Planning rationale: </span><span className="text-slate-700">{planningRationale}</span></div>}
+        {aiAssessed && activationGuidance && <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Activation guidance: </span><span className="text-slate-700">{activationGuidance}</span></div>}
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Targeting tactics: </span><span className="text-slate-700">{planningRecordNames(targetingTactics, 'None specified.')}</span></div>
         <div className="rounded-xl bg-slate-50 p-3">
           <span className="font-bold text-slate-900">Publishers: </span>
           <span className="text-slate-700">
@@ -198,19 +200,19 @@ export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
                 </span>
               ))
             ) : (
-              'Open inventory; no publisher-specific guidance triggered.'
+              'None specified.'
             )}
           </span>
         </div>
         <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Creative enhancements: </span><span className="text-slate-700">{planningRecordNames(creativeEnhancements, 'None suggested.')}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Inventory controls: </span><span className="text-slate-700">{planningRecordNames(inventoryControls, 'Apply standard platform safeguards.')}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement approach: </span><span className="text-slate-700">{measurementApproach}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement capabilities: </span><span className="text-slate-700">{planningRecordNames(measurementCapabilities, 'Confirm an eligible measurement capability.')}</span></div>
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Inventory controls: </span><span className="text-slate-700">{planningRecordNames(inventoryControls, 'None specified.')}</span></div>
+        {aiAssessed && measurementApproach && <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement approach: </span><span className="text-slate-700">{measurementApproach}</span></div>}
+        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement capabilities: </span><span className="text-slate-700">{planningRecordNames(measurementCapabilities, 'None specified.')}</span></div>
         <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Evidence: </span><span className="text-slate-700">{evidence.slice(0, 2).map((item) => item.detail).join(' ') || 'No additional evidence was supplied.'}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3 md:col-span-2"><span className="font-bold text-slate-900">Decision rule: </span><span className="text-slate-700">{decisionRule}</span></div>
+        {aiAssessed && decisionRule && <div className="rounded-xl bg-slate-50 p-3 md:col-span-2"><span className="font-bold text-slate-900">Decision rule: </span><span className="text-slate-700">{decisionRule}</span></div>}
       </div>
 
-      {scoreComponents && (
+      {aiAssessed && scoreComponents && (
         <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
           <div className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">Score breakdown</div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
@@ -257,11 +259,11 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   onOpenSlideStudio,
   readOnly = false,
 }) => {
+  // The plan's own AI-selected publishers, or none. There is no canned fallback list: a CTV line
+  // with no publishers says so rather than showing a generic Hulu/Disney+/Roku/ESPN set.
   const effectiveCtvPublishers = (ctvPublishers && ctvPublishers.length > 0)
     ? ctvPublishers
-    : (data?.ctvPublishers && data.ctvPublishers.length > 0)
-    ? data.ctvPublishers
-    : DEFAULT_CTV_PUBLISHERS;
+    : (data?.ctvPublishers ?? []);
 
   const resolvePublishers = (
     channelId: string,
@@ -269,11 +271,11 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     canonicalId?: string,
     existingPublishers?: AttachedPlanningRecord[]
   ): AttachedPlanningRecord[] => {
-    if (isCtvOrPerformanceTvChannel(channelId, channelName, canonicalId)) {
+    if (isCtvOrPerformanceTvChannel(channelId, channelName, canonicalId) && effectiveCtvPublishers.length > 0) {
       return effectiveCtvPublishers.map((pub) => ({
         id: `publisher.ctv.${pub.publisher.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
         displayName: pub.publisher,
-        rationale: pub.why || `Recommended CTV publisher (${pub.category || 'Targeted'}).`,
+        rationale: pub.why || '',
       }));
     }
     return existingPublishers || [];
@@ -893,8 +895,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                         detailsId={detailsId}
                         gapAddressed={channel.gapAddressed}
                         planningRationale={channel.allocationRationale}
-                        activationGuidance={evaluatedCandidate?.activationGuidance || `Activate ${channel.channelName} with channel-compatible targeting and creative.`}
-                        measurementApproach={evaluatedCandidate?.measurementApproach || 'Use the best eligible measurement capability for the primary KPI.'}
+                        activationGuidance={evaluatedCandidate?.activationGuidance || ''}
+                        measurementApproach={evaluatedCandidate?.measurementApproach || ''}
                         targetingTactics={channel.targetingTactics}
                         publishers={resolvePublishers(channel.channelId, channel.channelName, evaluatedCandidate?.product.legacyCanonicalId, channel.publishers)}
                         creativeEnhancements={channel.creativeEnhancements}
@@ -1001,10 +1003,17 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                                   <p className="mt-1 text-xs leading-5 text-slate-600">{reason}</p>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-3">
-                                  <div className={`min-w-[72px] rounded-lg border px-2.5 py-1.5 text-center ${getRecommendationScoreBg(candidate.recommendationScore)}`}>
-                                    <div className="text-[10px] font-bold uppercase tracking-wider opacity-75">Score</div>
-                                    <div className="font-extrabold leading-tight">{candidate.recommendationScore}<span className="text-[10px] font-semibold opacity-90">/100</span></div>
-                                  </div>
+                                  {candidate.aiAssessed === false ? (
+                                    <div className="min-w-[72px] rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-center text-slate-500">
+                                      <div className="text-[10px] font-bold uppercase tracking-wider opacity-75">Score</div>
+                                      <div className="text-[11px] font-bold leading-tight">Not assessed</div>
+                                    </div>
+                                  ) : (
+                                    <div className={`min-w-[72px] rounded-lg border px-2.5 py-1.5 text-center ${getRecommendationScoreBg(candidate.recommendationScore)}`}>
+                                      <div className="text-[10px] font-bold uppercase tracking-wider opacity-75">Score</div>
+                                      <div className="font-extrabold leading-tight">{candidate.recommendationScore}<span className="text-[10px] font-semibold opacity-90">/100</span></div>
+                                    </div>
+                                  )}
                                   <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${expandedChannels.has(candidate.product.id) ? 'rotate-180' : ''}`} />
                                 </div>
                               </button>
@@ -1034,6 +1043,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                                 measurementCapabilities={candidate.measurementCapabilities || []}
                                 evidence={candidate.evidence}
                                 scoreComponents={candidate.components}
+                                aiAssessed={candidate.aiAssessed !== false}
                                 decisionRule={candidate.decisionRule}
                                 prerequisites={candidate.prerequisites}
                                 tradeoffs={candidate.tradeoffs}

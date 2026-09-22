@@ -2420,7 +2420,7 @@ app.post("/api/channels/generate-slide", async (req, res) => {
       channelIndex = 0,
       channels = [],
       workingMediaBudget = 0,
-      flightDays = 30,
+      flightDays = null,
       appliedBudgetTier = "",
       advertiserName = "",
       campaignFocus = "",
@@ -2521,7 +2521,7 @@ LEFT COLUMN (~36% of width):
     - Benchmark CPM: "${cpmRange}" (Teal #0e8f86 pill)
     - Fit Score: "${score}/100" (Indigo #6b63e6 pill)
     - Confidence: "${confidence}" (Lime #a6cf56 accent badge)
-    - Flight Duration: "${flightDays} Days"
+    - Flight Duration: "${flightDays ? `${flightDays} Days` : "Not set in the plan"}"
   • Gap Addressed Callout: "${targetChannel.gapAddressed || "Not specified in the plan"}"
 
 RIGHT COLUMN (~64% of width):
@@ -2614,7 +2614,7 @@ The entire image consists purely of the executive media allocation portfolio car
 TOP SUMMARY STRIP:
 - High-level allocation summary bar displaying:
   • Working Media Budget: "${totalBudgetFormatted}" (Bold Lexend display with lime #a6cf56 accent)
-  • Flight Duration: "${flightDays} Days" (Lexend SemiBold)
+  • Flight Duration: "${flightDays ? `${flightDays} Days` : "Not set in the plan"}" (Lexend SemiBold)
   • Channels: "${numChannels} Channels" (Indigo #6b63e6 pill)
   (STRICT: Exclude Budget Tier completely from the slide export summary. Do NOT display any "Budget Tier" pill, label, or tier name. Only show Working Media Budget, Flight Duration, and Channels count.)
 - Horizontal proportional color-segmented allocation bar visually representing the budget split across all ${numChannels} channels.

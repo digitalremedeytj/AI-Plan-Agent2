@@ -228,10 +228,18 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
 
   const metricVisibility = new Map(metricSettings.map((metric) => [metric.id, metric.show]));
 
+  // The ScoutAI comparison is only offered against something the user uploaded. With nothing
+  // uploaded there is no plan to compare to, and every figure other than the budget would come
+  // from the constants above rather than from the plan, so only the budget is shown.
+  const hasUploadedContent = selectedOptions.length > 0 || safeExtractedPlacements.length > 0 || Boolean(rfpAnalysis);
+
   // Filter out hidden metrics and values unavailable due to limited information
-  const availableMetrics = metricsList.filter(
-    (m) => (metricVisibility.get(m.id as OverviewMetricSetting["id"]) ?? true) && m.plannedFormatted !== null && m.aiFormatted !== null
-  );
+  const availableMetrics = hasUploadedContent
+    ? metricsList.filter(
+        (m) => (metricVisibility.get(m.id as OverviewMetricSetting["id"]) ?? true) && m.plannedFormatted !== null && m.aiFormatted !== null
+      )
+    : [];
+  const budgetOnly = !hasUploadedContent && plannedBudget > 0 && (metricVisibility.get("budget") ?? true);
 
   const scoutAllocation = profileData?.channelStrategy?.mediaPlan?.channels || [];
   const uploadedAllocationGroups = new Map<string, number>();
@@ -254,7 +262,7 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
         .sort((a, b) => b.value - a.value);
   const allocationSource = scoutAllocation.length > 0 ? "ScoutAI recommended allocation" : "Uploaded plan allocation";
 
-  if (availableMetrics.length === 0 && allocationData.length === 0) {
+  if (availableMetrics.length === 0 && !budgetOnly && allocationData.length === 0) {
     return (
       <div className="py-8 px-4 text-center space-y-3 bg-slate-50/60 rounded-xl border border-slate-200/80">
         <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
@@ -274,6 +282,18 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
 
   return (
     <div className="space-y-3 font-sans">
+      {budgetOnly && (
+        <div className="p-2 rounded-xl bg-slate-50/50 border border-slate-100/80 flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 bg-blue-50 text-blue-600">
+            <TrendingUp className="w-4 h-4 stroke-[2.25]" />
+          </div>
+          <div className="flex-1 min-w-0 flex items-center justify-between gap-1.5">
+            <span className="text-xs font-bold text-slate-800 truncate">Working Media Budget</span>
+            <span className="text-xs font-extrabold text-slate-900 tracking-tight shrink-0">{formatCurrency(plannedBudget)}</span>
+          </div>
+        </div>
+      )}
+
       {availableMetrics.length > 0 && (
         <>
           {/* Header Badge */}

@@ -133,17 +133,14 @@ const normalizeAndValidateSettings = (s: unknown): PlanningSettings => {
   return validated.valid && validated.settings ? validated.settings : clonePlanningSettings(s as PlanningSettings);
 };
 
+// Shown wherever research did not supply a section's figures. Summaries never fall back to
+// sample numbers: a collapsed header with invented stats reads exactly like a real one.
+const NOT_FOUND_IN_RESEARCH = "Not found in research";
+
 // Summary highlight extractor for Device Share (Option C: Tag + Metric Chips)
 function getDeviceShareSummary(deviceData?: any[]) {
   if (!deviceData || deviceData.length === 0) {
-    return {
-      tag: "Multi-Device Mix",
-      chips: [
-        { label: "CTV", value: "45%", icon: "tv" },
-        { label: "Mobile", value: "35%", icon: "mobile" },
-        { label: "Desktop", value: "20%", icon: "desktop" },
-      ]
-    };
+    return { tag: NOT_FOUND_IN_RESEARCH, chips: [] };
   }
 
   const sorted = [...deviceData].sort((a, b) => (b.value || 0) - (a.value || 0));
@@ -189,19 +186,13 @@ function getDeviceShareSummary(deviceData?: any[]) {
 
 // Summary highlight extractor for Demographics (Option C: Tag + Metric Chips)
 function getDemographicsSummary(demo?: any) {
-  if (!demo) {
-    return {
-      tag: "Core Target Cohort",
-      chips: [
-        { label: "Age 25–44", value: "62%", icon: "users" },
-        { label: "Gender", value: "54% F / 46% M", icon: "gender" },
-        { label: "HHI $100k+", value: "58%", icon: "income" },
-      ]
-    };
+  const hasAny = ["ageChartData", "genderChartData", "incomeChartData"].some((key) => Array.isArray(demo?.[key]) && demo[key].length > 0);
+  if (!hasAny) {
+    return { tag: NOT_FOUND_IN_RESEARCH, chips: [] };
   }
 
   // Age calculation
-  let ageTag = "25–54 Core";
+  let ageTag = "Demographic Profile";
   let ageChipVal = "";
   if (demo.ageChartData && demo.ageChartData.length > 0) {
     const sortedAge = [...demo.ageChartData].sort((a, b) => (b.value || 0) - (a.value || 0));
@@ -256,7 +247,7 @@ function getDemographicsSummary(demo?: any) {
   const tag = isAffluent ? "Affluent Core Audience" : ageTag;
 
   const chips = [
-    { label: "Age", value: ageChipVal || "25–44 Focus", icon: "users" },
+    ...(ageChipVal ? [{ label: "Age", value: ageChipVal, icon: "users" }] : []),
     ...(genderChipVal ? [{ label: "Gender", value: genderChipVal, icon: "gender" }] : []),
     ...(incomeChipVal ? [{ label: "Income", value: incomeChipVal, icon: "income" }] : []),
   ];
@@ -266,18 +257,14 @@ function getDemographicsSummary(demo?: any) {
 
 // Summary highlight extractor for Temporal Patterns (Option C: Tag + Metric Chips)
 function getTemporalSummary(temp?: any) {
-  if (!temp) {
-    return {
-      tag: "Primetime & Weekend Peak",
-      chips: [
-        { label: "Peak Days", value: "Thu–Sun (Avg Idx 128)", icon: "calendar" },
-        { label: "Top Hours", value: "7 PM–11 PM (Idx 136)", icon: "clock" },
-      ]
-    };
+  const hasDays = Array.isArray(temp?.dayOfWeekChartData) && temp.dayOfWeekChartData.length > 0;
+  const hasHours = Array.isArray(temp?.hourOfDayChartData) && temp.hourOfDayChartData.length > 0;
+  if (!hasDays && !hasHours) {
+    return { tag: NOT_FOUND_IN_RESEARCH, chips: [] };
   }
 
   // Peak Days calculation
-  let daysVal = "Thu–Sun (High Index)";
+  let daysVal = "";
   if (temp.dayOfWeekChartData && temp.dayOfWeekChartData.length > 0) {
     const sortedDays = [...temp.dayOfWeekChartData].sort((a: any, b: any) => (b.index || 0) - (a.index || 0));
     const topDays = sortedDays.slice(0, 3).map((d: any) => d.day);
@@ -287,7 +274,7 @@ function getTemporalSummary(temp?: any) {
   }
 
   // Peak Hours calculation
-  let hoursVal = "7 PM–11 PM (Primetime)";
+  let hoursVal = "";
   if (temp.hourOfDayChartData && temp.hourOfDayChartData.length > 0) {
     const sortedHours = [...temp.hourOfDayChartData].sort((a: any, b: any) => (b.index || 0) - (a.index || 0));
     const topHour = sortedHours[0];
@@ -297,10 +284,10 @@ function getTemporalSummary(temp?: any) {
   }
 
   return {
-    tag: "Primetime & High-Index Windows",
+    tag: "Peak Activity Windows",
     chips: [
-      { label: "Days", value: daysVal, icon: "calendar" },
-      { label: "Hours", value: hoursVal, icon: "clock" },
+      ...(daysVal ? [{ label: "Days", value: daysVal, icon: "calendar" }] : []),
+      ...(hoursVal ? [{ label: "Hours", value: hoursVal, icon: "clock" }] : []),
     ]
   };
 }
@@ -308,27 +295,22 @@ function getTemporalSummary(temp?: any) {
 // Summary highlight extractor for Domain Affinity (Top 3 Domains + Index values)
 function getDomainAffinitySummary(browserAndReach?: any) {
   if (!browserAndReach || !browserAndReach.chartData || browserAndReach.chartData.length === 0) {
-    return {
-      tag: "Top Domains",
-      chips: [
-        { label: "example.com", value: "Idx 145" },
-        { label: "domain2.com", value: "Idx 138" },
-        { label: "domain3.com", value: "Idx 132" },
-      ],
-      top3: []
-    };
+    return { tag: NOT_FOUND_IN_RESEARCH, chips: [], top3: [] };
   }
 
-  const sorted = [...browserAndReach.chartData].sort((a: any, b: any) => (b.index || 0) - (a.index || 0));
+  // Domain items carry their affinity index in `value`; reading `index` sorted nothing and
+  // labelled every chip "Idx 0".
+  const affinity = (d: any) => Number(d.value ?? d.index) || 0;
+  const sorted = [...browserAndReach.chartData].sort((a: any, b: any) => affinity(b) - affinity(a));
   const top3 = sorted.slice(0, 3);
   
   const chips = top3.map((d: any) => {
     const cleanDomain = (d.domain || "").replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/.*$/, "");
     return {
       label: cleanDomain || "Domain",
-      value: `Idx ${Math.round(d.index || 0)}`,
+      value: `Idx ${Math.round(affinity(d))}`,
       domain: d.domain,
-      index: d.index
+      index: affinity(d)
     };
   });
 
@@ -465,14 +447,6 @@ const extractMetadata = (rows: any[][]) => {
   });
 };
 
-const defaultCtvPublishers = [
-  { publisher: "Hulu", category: "App", why: "High penetration among prime-time streaming audiences with premium ad-supported options." },
-  { publisher: "Disney+", category: "App", why: "Co-viewing hub matching family oriented household profiles perfectly." },
-  { publisher: "The Roku Channel", category: "OS", why: "Dominant CTV operating system offering native home screen high-impact display slots." },
-  { publisher: "ESPN", category: "Network", why: "Essential for capturing live sports and highly engaged co-viewing audiences." }
-];
-
-const defaultPublisherInsights = "The recommended CTV publisher mix targets high-impact, ad-supported environments where our audience actively streams content. By combining premium subscription video-on-demand (SVOD) apps, free ad-supported streaming TV (FAST) platforms, and native Smart TV OS display banners, the campaign secures maximum reach and frequency while maintaining brand safety.";
 
 // Hard client-side deadline for a generation run. The server heartbeats every 4s, so the
 // socket never idles out on its own; without this an interrupted run spins indefinitely.
@@ -1005,6 +979,9 @@ export default function App() {
   const [profileData, setProfileData] = useState<AudienceProfile | null>(null);
   const [groundingSources, setGroundingSources] = useState<Array<{ title: string; uri: string }> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Failures of actions taken on a delivered plan (re-analysis, slide export). Shown above the
+  // plan, since the brief panel that carries `error` is usually collapsed by then.
+  const [actionError, setActionError] = useState<string | null>(null);
   const [personaPage, setPersonaPage] = useState<number>(0);
   const [arePersonasExpanded, setArePersonasExpanded] = useState<boolean>(false);
   const [isDeviceShareExpanded, setIsDeviceShareExpanded] = useState<boolean>(false);
@@ -1025,6 +1002,7 @@ export default function App() {
     label?: string;
     sources?: Array<{ title: string; uri: string }>;
     blurb?: string;
+    failed?: boolean;
   }>>([]);
 
   const logContainerRef = React.useRef<HTMLDivElement>(null);
@@ -1071,6 +1049,11 @@ export default function App() {
 
   // Track indices of persona avatars actively generating portraits in the background or on demand
   const [generatingAvatarIndices, setGeneratingAvatarIndices] = useState<number[]>([]);
+  // Headshots that failed to generate or load, shown as failed rather than as an empty frame.
+  const [failedAvatarIndices, setFailedAvatarIndices] = useState<number[]>([]);
+  const markAvatarFailed = React.useCallback((index: number, failed: boolean) => {
+    setFailedAvatarIndices((prev) => failed ? Array.from(new Set([...prev, index])) : prev.filter((i) => i !== index));
+  }, []);
 
   // Persona portraits are generated off the critical path. The server returns the profile
   // as soon as it is ready and the client fills in headshots as they arrive, in parallel,
@@ -1091,6 +1074,7 @@ export default function App() {
 
     personas.forEach((persona, index) => {
       if (persona?.avatarUrl && persona.avatarUrl.startsWith("data:image/")) return;
+      markAvatarFailed(index, false);
       api.authFetch("/api/generate-persona-avatar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1098,7 +1082,10 @@ export default function App() {
       })
         .then((res) => res.json())
         .then(async (data) => {
-          if (!data?.success || !data.avatarUrl) return;
+          if (!data?.success || !data.avatarUrl) {
+            markAvatarFailed(index, true);
+            return;
+          }
           const compressed = await compressAvatarUrl(data.avatarUrl);
           const finalAvatar = compressed || data.avatarUrl;
           setProfileData((prev) => {
@@ -1108,51 +1095,30 @@ export default function App() {
             return { ...prev, personas: updated };
           });
         })
-        .catch((err) => console.error("Error generating persona headshot:", err))
+        .catch((err) => {
+          console.error("Error generating persona headshot:", err);
+          markAvatarFailed(index, true);
+        })
         .finally(() => {
           setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index));
         });
     });
-  }, []);
+  }, [markAvatarFailed]);
 
-  // Queue and simulated thought ticker Effect
+  // Queue and live-log ticker Effect
   React.useEffect(() => {
     if (!loading) return;
 
-    const audienceLabel = audienceDescription
-      ? `"${audienceDescription.slice(0, 35)}${audienceDescription.length > 35 ? '...' : ''}"`
-      : (url ? `visitors of ${url.replace(/^https?:\/\/(www\.)?/, '')}` : 'target audience');
-    const geoLabel = geography || 'United States';
-    const focusLabel = campaignFocus || 'campaign objectives';
-
-    const dynamicThoughts = [
-      `Scoping age distribution & household income cohorts for ${audienceLabel} in ${geoLabel}...`,
-      `Cross-referencing Comscore & Similarweb domain affinity clusters for ${focusLabel}...`,
-      `Analyzing Connected TV (CTV) viewing share across Smart TV OS platforms & FAST channels...`,
-      `Retrieving category search volumes, digital touchpoint indices, and brand affinity benchmarks...`,
-      `Measuring daypart streaming peaks and hour-of-day engagement patterns in ${geoLabel}...`,
-      `Evaluating publisher ad insertion feeds (DAI) and co-viewing multipliers for ${audienceLabel}...`,
-      `Synthesizing temporal purchase frequency models with campaign goal: ${focusLabel}...`,
-      `Validating source trust indexes and filtering deduplicated market research citations...`,
-      `Auditing persona attributes and media consumption triggers against syndicated audience baselines...`,
-      `Cross-checking Household Income (HHI) bounds and CTV completion benchmarks for audience plausibility...`
-    ];
-
-    if (planOptions && planOptions.some(p => p.selected)) {
-      const selectedCount = planOptions.filter(p => p.selected).length;
-      dynamicThoughts.push(`Auditing ${selectedCount} selected media plan scenario(s) against recommended CTV publisher mix...`);
-      dynamicThoughts.push(`Evaluating CPM efficiency and channel reallocation potential across placement line items...`);
-    }
-
-    if (url) {
-      dynamicThoughts.push(`Grounding brand value proposition and product positioning from ${url}...`);
-    }
-
-    let thoughtIndex = 0;
+    // Only real server events are logged. This used to fill quiet stretches with invented
+    // steps ("Cross-referencing Comscore & Similarweb...") that never happened; a quiet stretch
+    // now gets an honest elapsed-time line instead.
+    const startedAt = Date.now();
+    let lastLogAt = Date.now();
 
     const interval = setInterval(() => {
       // If there are real pending logs from the server stream, process the next one!
       if (pendingLogsRef.current.length > 0) {
+        lastLogAt = Date.now();
         const nextLog = pendingLogsRef.current.shift();
         setResearchLogs(prev => [
           ...prev,
@@ -1199,17 +1165,15 @@ export default function App() {
           }
         }, 100);
       }
-      // If the server is still working and we have no pending logs to show, inject a dynamic contextual thought!
-      else {
-        const thought = dynamicThoughts[thoughtIndex % dynamicThoughts.length];
-        thoughtIndex++;
+      else if (Date.now() - lastLogAt >= 15000) {
+        lastLogAt = Date.now();
         setResearchLogs(prev => [
           ...prev,
           {
             id: Math.random().toString(),
             timestamp: new Date().toLocaleTimeString(),
             type: "status",
-            message: thought
+            message: `Still working... ${Math.round((Date.now() - startedAt) / 1000)}s elapsed.`
           }
         ]);
       }
@@ -1228,6 +1192,7 @@ export default function App() {
   const handleRegenerateAvatar = async (personaIndex: number) => {
     if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return;
     setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, personaIndex])));
+    markAvatarFailed(personaIndex, false);
     try {
       const targetPersona = profileData.personas[personaIndex];
       const res = await api.authFetch("/api/generate-persona-avatar", {
@@ -1252,9 +1217,12 @@ export default function App() {
         // Deliberately not written back to the shared plan. Regenerating a headshot is a
         // local, exploratory action; pushing it straight to the server would change a
         // shared plan for everyone without anyone choosing to save.
+      } else {
+        markAvatarFailed(personaIndex, true);
       }
     } catch (err) {
       console.error("Failed to regenerate persona headshot photo:", err);
+      markAvatarFailed(personaIndex, true);
     } finally {
       setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== personaIndex));
     }
@@ -1401,9 +1369,7 @@ export default function App() {
   React.useEffect(() => {
     setSummarizedPublisherInsights(null);
     if (profileData && initialCtvPublishersRef.current === null) {
-      initialCtvPublishersRef.current = profileData.ctvPublishers && profileData.ctvPublishers.length > 0
-        ? profileData.ctvPublishers
-        : defaultCtvPublishers;
+      initialCtvPublishersRef.current = profileData.ctvPublishers ?? [];
     }
   }, [profileData]);
 
@@ -1821,9 +1787,13 @@ export default function App() {
       setTargetPersonas(["", "", "", ""]);
       setIsAdvancedPersonaOpen(false);
     }
-    setBudget(body.budget || "$10,000");
-    setCampaignLength(body.campaignLength || "30");
+    // A saved plan without a budget reloads without one; defaulting it would change the
+    // per-market figures shown in the plan.
+    setBudget(body.budget || "");
+    setCampaignLength(body.campaignLength || "");
     resetSegmentSession();
+    setFailedAvatarIndices([]);
+    setActionError(null);
     setProfileData(body.profile);
     setGroundingSources(body.groundingSources || null);
     if (body.extractedPlacements) setExtractedPlacements(body.extractedPlacements);
@@ -2342,6 +2312,8 @@ export default function App() {
     setIsDomainAffinityExpanded(false);
     setGeneratingAvatarIndices([]);
     resetSegmentSession();
+    setFailedAvatarIndices([]);
+    setActionError(null);
 
     // Reset the queue reference and server completion state
     pendingLogsRef.current = [];
@@ -2453,7 +2425,8 @@ export default function App() {
               type: "research_result",
               label: event.label,
               sources: event.sources,
-              blurb: event.blurb
+              blurb: event.blurb,
+              failed: Boolean(event.failed)
             });
           } else if (event.type === "complete") {
             sawComplete = true;
@@ -2530,6 +2503,8 @@ export default function App() {
 
     // Reset active profile output & generation states
     resetSegmentSession();
+    setFailedAvatarIndices([]);
+    setActionError(null);
     setProfileData(null);
     setGroundingSources(null);
     setError(null);
@@ -2630,9 +2605,13 @@ export default function App() {
       const data = await res.json();
       if (data.success && data.channelStrategy) {
         setProfileData(prev => prev ? { ...prev, channelStrategy: data.channelStrategy } : null);
+        setActionError(null);
+      } else {
+        throw new Error(data.details || data.error || "The media plan could not be re-analyzed.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to re-analyze channel strategy for budget mode toggle:", err);
+      setActionError(`The budget mode changed, but the media plan could not be re-analyzed, so the channel strategy shown is still the previous one: ${err?.message || err}`);
     }
   };
 
@@ -2741,9 +2720,8 @@ export default function App() {
   };
 
   const handleResetCtvPublishers = () => {
-    const toRestore = initialCtvPublishersRef.current && initialCtvPublishersRef.current.length > 0
-      ? initialCtvPublishersRef.current
-      : defaultCtvPublishers;
+    // Reset restores the plan's own AI selection - or none, never a canned list.
+    const toRestore = initialCtvPublishersRef.current ?? [];
     handleUpdateCtvPublishers(toRestore);
   };
 
@@ -3023,7 +3001,7 @@ export default function App() {
 
     try {
       // Ensure AI summarizes publisher insights if over limits (basic has a larger column than detailed)
-      const rawInsights = (profileData?.publisherInsights || defaultPublisherInsights || "").trim();
+      const rawInsights = (profileData?.publisherInsights || "").trim();
       const maxWords = variant === 'basic' ? 110 : 65;
       const maxCharacters = variant === 'basic' ? 780 : 450;
       const wordCount = rawInsights.split(/\s+/).length;
@@ -3039,16 +3017,20 @@ export default function App() {
               maxCharacters,
             }),
           });
-          if (sumRes.ok) {
-            const sumData = await sumRes.json();
-            if (sumData.summary) {
-              setSummarizedPublisherInsights(sumData.summary);
-              // Wait for React to flush state to the DOM
-              await new Promise((resolve) => setTimeout(resolve, 200));
-            }
+          const sumData = await sumRes.json().catch(() => ({}));
+          if (sumRes.ok && sumData.summary) {
+            setSummarizedPublisherInsights(sumData.summary);
+            // Wait for React to flush state to the DOM
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          } else {
+            throw new Error(sumData.details || sumData.error || "The publisher insight could not be summarized.");
           }
-        } catch (sumErr) {
-          console.warn("AI summarization pre-export notice:", sumErr);
+        } catch (sumErr: any) {
+          // No clipped-text fallback: exporting a truncated paragraph would present it as the
+          // finished insight. The export stops and says why.
+          console.warn("AI summarization failed before export:", sumErr);
+          setActionError(`The CTV slide was not exported: the publisher insight is too long for the slide and could not be summarized (${sumErr?.message || sumErr}).`);
+          return;
         }
       }
 
@@ -3094,8 +3076,9 @@ export default function App() {
         setCtvSlideExportSuccess(true);
         setTimeout(() => setCtvSlideExportSuccess(false), 3500);
       }, "image/png");
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to export CTV slide image:", err);
+      setActionError(`The CTV slide could not be exported: ${err?.message || err}`);
     } finally {
       setIsExportingCtvSlide(false);
       setExportingVariant(null);
@@ -4251,16 +4234,16 @@ export default function App() {
                     )}
 
                     {/* Market Budget Density & Fragmentation Advisory */}
-                    {geoTargets.length > 0 && (
+                    {geoTargets.length > 0 && parseCurrencyInput(budget) > 0 && (
                       <div className="pt-1">
                         <div className="flex items-center justify-between text-[11px] px-3 py-2 bg-indigo-50/50 rounded-xl border border-indigo-100/60 text-slate-700">
                           <span className="font-medium text-slate-600">Est. Budget per Market</span>
                           <span className="font-bold text-indigo-700 font-mono">
-                            ~${Math.round((parseCurrencyInput(budget) || 10000) / geoTargets.length).toLocaleString()} / {geographyType === "State" ? "state" : "DMA"}
+                            ~${Math.round((parseCurrencyInput(budget) || 0) / geoTargets.length).toLocaleString()} / {geographyType === "State" ? "state" : "DMA"}
                           </span>
                         </div>
 
-                        {Math.round((parseCurrencyInput(budget) || 10000) / geoTargets.length) < 500 && (
+                        {Math.round((parseCurrencyInput(budget) || 0) / geoTargets.length) < 500 && (
                           <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200/80 rounded-xl text-[10px] text-amber-800 flex items-start gap-1.5">
                             <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
                             <span>
@@ -4779,9 +4762,9 @@ export default function App() {
 
                     {/* Research Result Log */}
                     {log.type === "research_result" && (
-                      <div className="space-y-2.5 pl-3 border-l border-emerald-500/40">
-                        <p className="text-emerald-400 font-bold">
-                          Successfully analyzed sector parameters for: {log.label}
+                      <div className={`space-y-2.5 pl-3 border-l ${log.failed ? "border-rose-500/50" : "border-emerald-500/40"}`}>
+                        <p className={log.failed ? "text-rose-400 font-bold" : "text-emerald-400 font-bold"}>
+                          {log.failed ? `Research failed for: ${log.label}` : `Research complete for: ${log.label}`}
                         </p>
                         
                         {/* Visited Sources links */}
@@ -4939,9 +4922,39 @@ export default function App() {
                   </div>
                   <div className="text-left sm:text-right font-mono text-[9px] text-slate-500 flex sm:flex-col gap-2 sm:gap-0.5 border-t border-slate-800/60 sm:border-0 pt-3 sm:pt-0 w-full sm:w-auto shrink-0 justify-between">
                     <div>Date: {new Date().toLocaleDateString()}</div>
-                    <div>Ref: {profileData.personas[0]?.name ? profileData.personas[0].name.slice(0, 3).toUpperCase() : "GEN"}-{Math.floor(1000 + Math.random() * 9000)}</div>
+                    {activeSavedId && <div>Ref: {activeSavedId.slice(0, 8).toUpperCase()}</div>}
                   </div>
                 </div>
+
+                {actionError && (
+                  <div role="alert" className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+                    <span className="flex-1 leading-relaxed">{actionError}</span>
+                    <button type="button" onClick={() => setActionError(null)} className="text-rose-500 hover:text-rose-700 cursor-pointer" aria-label="Dismiss">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Generation alerts: what failed or was not found, instead of placeholder content */}
+                {profileData.generationAlerts && profileData.generationAlerts.length > 0 && (
+                  <div role="status" className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 md:p-5">
+                    <div className="flex items-center gap-2 text-amber-800 text-xs font-bold uppercase tracking-wider mb-2.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-600" />
+                      <span>{profileData.generationAlerts.length} item{profileData.generationAlerts.length === 1 ? "" : "s"} in this plan did not complete</span>
+                    </div>
+                    <ul className="space-y-1.5">
+                      {profileData.generationAlerts.map((alert, idx) => (
+                        <li key={idx} className="flex items-start gap-2 text-xs leading-relaxed text-slate-700">
+                          <span className={`shrink-0 mt-px px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${alert.severity === "failed" ? "bg-rose-100 text-rose-700" : alert.severity === "not_found" ? "bg-slate-200 text-slate-600" : "bg-amber-100 text-amber-800"}`}>
+                            {alert.severity === "failed" ? "Failed" : alert.severity === "not_found" ? "Not found" : "Check"}
+                          </span>
+                          <span>{alert.message}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 {/* Introduction Summary */}
                 <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
@@ -5009,7 +5022,8 @@ export default function App() {
                     const personas = profileData.personas || [];
                     const hasRfpPersonas = personas.some(p => p.sourceType === 'RFP');
                     const isUploadedPlanMode = briefMode === "upload" || hasRfpPersonas || (planOptions && planOptions.length > 0 && planOptions.some(p => p.selected));
-                    const reachBoost = profileData.expansionReachPercent || 35;
+                    // Only plans saved before the reach estimate was removed still carry a figure.
+                    const reachBoost = typeof profileData.expansionReachPercent === "number" && profileData.expansionReachPercent > 0 ? profileData.expansionReachPercent : null;
 
                     return (
                       <div className="space-y-4">
@@ -5019,7 +5033,7 @@ export default function App() {
                             <Sparkles className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5 sm:mt-0 animate-pulse" />
                             <div className="leading-relaxed">
                               <span className="font-bold text-indigo-900 mr-1">Audience Expansion Note:</span>
-                              ScoutAI are recommended expansion audiences increases addressable reach by approximately {reachBoost}%.
+                              Personas marked ScoutAI are recommended expansion audiences beyond those listed in the uploaded plan{reachBoost !== null ? `, estimated to increase addressable reach by approximately ${reachBoost}%` : ""}.
                             </div>
                           </div>
                         )}
@@ -5027,6 +5041,7 @@ export default function App() {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                           {personas.map((persona, globalIndex) => {
                             const isGeneratingThis = generatingAvatarIndices.includes(globalIndex);
+                            const avatarFailed = failedAvatarIndices.includes(globalIndex);
                             const hasValidAvatar = Boolean(persona.avatarUrl && !persona.avatarUrl.includes("example.com"));
                             const isUserTarget = persona.sourceType === 'User';
                             const isRfp = persona.sourceType === 'RFP';
@@ -5048,23 +5063,22 @@ export default function App() {
                                             <Loader2 className="w-5 h-5 animate-spin mb-1 text-indigo-600" />
                                             <span className="text-[9px] font-bold tracking-tight text-indigo-700">Creating...</span>
                                           </div>
-                                        ) : hasValidAvatar ? (
+                                        ) : hasValidAvatar && !avatarFailed ? (
                                           <img
                                             src={persona.avatarUrl}
                                             alt={persona.name}
                                             className="w-full h-full object-cover object-center aspect-square transition-transform duration-300 group-hover:scale-105"
-                                            onError={(e) => {
-                                              (e.currentTarget as HTMLImageElement).style.display = "none";
-                                            }}
+                                            onError={() => markAvatarFailed(globalIndex, true)}
                                           />
                                         ) : (
                                           <div className="flex flex-col items-center justify-center text-slate-400 p-2 text-center">
                                             <User className="w-7 h-7 mb-0.5 text-slate-300" />
+                                            {avatarFailed && <span className="text-[8px] font-bold text-rose-600 leading-tight">Photo failed</span>}
                                             <button
                                               onClick={() => handleRegenerateAvatar(globalIndex)}
                                               className="text-[9px] font-bold text-indigo-600 hover:underline cursor-pointer"
                                             >
-                                              + Photo
+                                              {avatarFailed ? "Retry" : "+ Photo"}
                                             </button>
                                           </div>
                                         )}
@@ -5336,11 +5350,11 @@ export default function App() {
                       <div className="flex items-center justify-between">
                         <h3 className="text-base font-display font-bold text-slate-800">CTV Publishers to Target</h3>
                         <span className="text-xs font-semibold text-slate-500">
-                          {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).length} Targeted
+                          {(profileData.ctvPublishers ?? []).length} Targeted
                         </span>
                       </div>
                       
-                      {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).length === 0 ? (
+                      {(profileData.ctvPublishers ?? []).length === 0 ? (
                         <div className="p-8 text-center bg-slate-50/70 rounded-xl border border-dashed border-slate-200">
                           <Tv className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                           <p className="text-sm font-semibold text-slate-700">No CTV publishers selected</p>
@@ -5357,7 +5371,7 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).map((pub, idx) => (
+                          {(profileData.ctvPublishers ?? []).map((pub, idx) => (
                             <CtvPublisherCard
                               key={`${pub.publisher}-${idx}`}
                               pub={pub}
@@ -5377,12 +5391,8 @@ export default function App() {
                         </div>
                         <h3 className="text-base font-display font-bold text-slate-800 mb-3">Publisher Alignment</h3>
                         <p className="text-xs text-slate-600 leading-relaxed mb-4">
-                          {profileData.publisherInsights || defaultPublisherInsights}
+                          {profileData.publisherInsights || <span className="italic text-slate-400">Publisher insights were not generated for this plan.</span>}
                         </p>
-                      </div>
-                      <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
-                        <span className="font-bold text-slate-700 block mb-1">💡 Media Planning Tip</span>
-                        Maximize reach by distributing spots evenly across SVOD apps, FAST channels, and high-impact smart TV OS home banners.
                       </div>
                     </div>
                   </div>
@@ -5461,13 +5471,6 @@ export default function App() {
                                       {profileData.browserAndReach.overview}
                                     </p>
                                   </div>
-                                  <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
-                                    <span className="flex items-center gap-1.5 font-bold text-slate-700 mb-1">
-                                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                                      <span>Media Planning Tip</span>
-                                    </span>
-                                    Contextual web alignments on these index affinity domains can serve as direct lower-funnel retargeting environments.
-                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -5510,11 +5513,11 @@ export default function App() {
                         <div className="flex items-center justify-between">
                           <h3 className="text-base font-display font-bold text-slate-800">CTV Publishers to Target</h3>
                           <span className="text-xs font-semibold text-slate-500">
-                            {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).length} Targeted
+                            {(profileData.ctvPublishers ?? []).length} Targeted
                           </span>
                         </div>
                         
-                        {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).length === 0 ? (
+                        {(profileData.ctvPublishers ?? []).length === 0 ? (
                           <div className="p-8 text-center bg-slate-50/70 rounded-xl border border-dashed border-slate-200">
                             <Tv className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                             <p className="text-sm font-semibold text-slate-700">No CTV publishers selected</p>
@@ -5531,7 +5534,7 @@ export default function App() {
                           </div>
                         ) : (
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {(profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers).map((pub, idx) => (
+                            {(profileData.ctvPublishers ?? []).map((pub, idx) => (
                               <CtvPublisherCard
                                 key={`${pub.publisher}-${idx}`}
                                 pub={pub}
@@ -5551,15 +5554,8 @@ export default function App() {
                           </div>
                           <h3 className="text-base font-display font-bold text-slate-800 mb-3">Publisher Alignment</h3>
                           <p className="text-xs text-slate-600 leading-relaxed mb-4">
-                            {profileData.publisherInsights || defaultPublisherInsights}
+                            {profileData.publisherInsights || <span className="italic text-slate-400">Publisher insights were not generated for this plan.</span>}
                           </p>
-                        </div>
-                        <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
-                          <span className="flex items-center gap-1.5 font-bold text-slate-700 mb-1">
-                            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                            <span>Media Planning Tip</span>
-                          </span>
-                          Maximize reach by distributing spots evenly across SVOD apps, FAST channels, and high-impact smart TV OS home banners.
                         </div>
                       </div>
                     </div>
@@ -5637,13 +5633,6 @@ export default function App() {
                                     {profileData.browserAndReach.overview}
                                   </p>
                                 </div>
-                                <div className="p-4 bg-slate-50 rounded-xl border border-slate-100/50 text-[11px] text-slate-500">
-                                  <span className="flex items-center gap-1.5 font-bold text-slate-700 mb-1">
-                                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                                    <span>Media Planning Tip</span>
-                                  </span>
-                                  Contextual web alignments on these index affinity domains can serve as direct lower-funnel retargeting environments.
-                                </div>
                               </div>
                             </div>
                           </div>
@@ -5714,13 +5703,6 @@ export default function App() {
                               <p className="text-xs text-slate-600 leading-relaxed">
                                 {profileData.deviceTypeIndex.overview}
                               </p>
-                              <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 text-[11px] text-slate-600 flex items-start gap-2.5">
-                                <Tv className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
-                                <div>
-                                  <span className="font-bold text-slate-800 block mb-1">Multi-Screen Activation</span>
-                                  Coordinate CTV spots with simultaneous, real-time mobile app push/display placements on related publishers for elevated purchase recall.
-                                </div>
-                              </div>
                             </div>
                           </div>
                         </div>
@@ -5784,15 +5766,15 @@ export default function App() {
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
                             <AgeChart
                               data={profileData.demographics.ageChartData}
-                              source={profileData.demographics.ageChartData[0]?.source || "Syndicated Sources"}
+                              source={profileData.demographics.ageChartData[0]?.source || ""}
                             />
                             <GenderChart
                               data={profileData.demographics.genderChartData}
-                              source={profileData.demographics.genderChartData[0]?.source || "Syndicated Sources"}
+                              source={profileData.demographics.genderChartData[0]?.source || ""}
                             />
                             <IncomeChart
                               data={profileData.demographics.incomeChartData}
-                              source={profileData.demographics.incomeChartData[0]?.source || "Syndicated Sources"}
+                              source={profileData.demographics.incomeChartData[0]?.source || ""}
                             />
                           </div>
 
@@ -5815,9 +5797,11 @@ export default function App() {
                                 <div className="space-y-1.5">
                                   <div className="flex items-center justify-between text-[10px] font-semibold text-slate-600">
                                     <span>Target Market Coverage:</span>
-                                    <span className="text-slate-400 font-mono text-[9px]">
-                                      ~${Math.round((parseCurrencyInput(budget) || 10000) / geoTargets.length).toLocaleString()} / market
-                                    </span>
+                                    {parseCurrencyInput(budget) > 0 && (
+                                      <span className="text-slate-400 font-mono text-[9px]">
+                                        ~${Math.round(parseCurrencyInput(budget) / geoTargets.length).toLocaleString()} / market
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto custom-scrollbar p-2 bg-white rounded-lg border border-slate-200/60">
                                     {geoTargets.map((market, i) => (
@@ -5912,11 +5896,11 @@ export default function App() {
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                   <DayOfWeekChart
                                     data={profileData.temporalPatterns.dayOfWeekChartData}
-                                    source={profileData.temporalPatterns.dayOfWeekChartData[0]?.source || "Modeled planning indices"}
+                                    source={profileData.temporalPatterns.dayOfWeekChartData[0]?.source || ""}
                                   />
                                   <HourOfDayChart
                                     data={profileData.temporalPatterns.hourOfDayChartData}
-                                    source={profileData.temporalPatterns.hourOfDayChartData[0]?.source || "Modeled planning indices"}
+                                    source={profileData.temporalPatterns.hourOfDayChartData[0]?.source || ""}
                                   />
                                 </div>
                               </div>
@@ -5932,7 +5916,7 @@ export default function App() {
                 {profileData.channelStrategy && (
                   <ChannelStrategySection
                     data={profileData.channelStrategy}
-                    ctvPublishers={profileData.ctvPublishers || defaultCtvPublishers}
+                    ctvPublishers={profileData.ctvPublishers ?? []}
                     internalOnly={internalOnlyVisibility}
                     onToggleBudgetMode={handleToggleBudgetMode}
                     onManualMediaTypeChange={handleManualMediaTypeChange}
@@ -7242,7 +7226,7 @@ export default function App() {
         <CtvPublishersModal
           isOpen={isCtvPublishersModalOpen}
           onClose={() => setIsCtvPublishersModalOpen(false)}
-          selectedPublishers={profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers}
+          selectedPublishers={profileData.ctvPublishers ?? []}
           onUpdatePublishers={handleUpdateCtvPublishers}
           onResetToDefault={handleResetCtvPublishers}
           catalogPublishers={ctvPublishers}
@@ -7258,9 +7242,9 @@ export default function App() {
           personas={profileData.personas || []}
           channelStrategy={profileData.channelStrategy}
           mediaPlan={profileData.channelStrategy?.mediaPlan}
-          advertiserName={advertiserName || "Brand"}
+          advertiserName={advertiserName}
           campaignFocus={campaignFocus || ""}
-          geography={geographyType || "National (US)"}
+          geography={geography}
           api={api}
         />
       )}
@@ -7295,9 +7279,8 @@ export default function App() {
             <CtvSlideExportView
               ref={ctvSlideDetailedExportRef}
               layoutVariant="detailed"
-              publishers={profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers}
+              publishers={profileData.ctvPublishers ?? []}
               publisherInsights={summarizedPublisherInsights || profileData.publisherInsights}
-              defaultPublisherInsights={defaultPublisherInsights}
               customPublishers={ctvPublishers}
             />
           </div>
@@ -7319,9 +7302,8 @@ export default function App() {
             <CtvSlideExportView
               ref={ctvSlideBasicExportRef}
               layoutVariant="basic"
-              publishers={profileData.ctvPublishers !== undefined ? profileData.ctvPublishers : defaultCtvPublishers}
+              publishers={profileData.ctvPublishers ?? []}
               publisherInsights={summarizedPublisherInsights || profileData.publisherInsights}
-              defaultPublisherInsights={defaultPublisherInsights}
               customPublishers={ctvPublishers}
             />
           </div>

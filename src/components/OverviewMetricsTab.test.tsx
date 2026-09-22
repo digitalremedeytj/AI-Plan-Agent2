@@ -18,16 +18,22 @@ const profileWithAllocation = {
   },
 } as unknown as AudienceProfile;
 
-test("overview applies requested metric defaults and renders the media allocation legend", () => {
+const uploadedPlan = [{
+  id: "p1", name: "Uploaded plan", selected: true, budget: 100_000, rawChannels: ["CTV"], lineItemsCount: 1,
+  placements: [{ mediaType: "CTV", budget: 100_000, impressions: 5_000_000 }],
+}] as any;
+
+test("with a plan uploaded, overview applies requested metric defaults and renders the media allocation legend", () => {
   const markup = renderToStaticMarkup(
     <OverviewMetricsTab
       extractedPlacements={[]}
-      planOptions={[]}
+      planOptions={uploadedPlan}
       rfpAnalysis={null}
       profileData={profileWithAllocation}
       metricSettings={DEFAULT_OVERVIEW_METRICS}
     />,
   );
+  assert.match(markup, /Plan vs\. AI Scout/);
   assert.match(markup, /Planned Budget/);
   assert.match(markup, /Estimated Impressions/);
   assert.match(markup, /Completed Views/);
@@ -42,12 +48,29 @@ test("overview applies requested metric defaults and renders the media allocatio
   assert.match(markup, /40\.0%/);
 });
 
+test("with nothing uploaded there is no ScoutAI comparison and no metric built from constants", () => {
+  const markup = renderToStaticMarkup(
+    <OverviewMetricsTab
+      extractedPlacements={[]}
+      planOptions={[]}
+      rfpAnalysis={null}
+      profileData={profileWithAllocation}
+      metricSettings={DEFAULT_OVERVIEW_METRICS}
+    />,
+  );
+  assert.doesNotMatch(markup, /AI Scout/);
+  assert.doesNotMatch(markup, /Estimated Impressions|Completed Views|Estimated Reach|Avg Frequency/);
+  assert.match(markup, /Working Media Budget/);
+  assert.match(markup, /\$100,000/);
+  assert.match(markup, /Media Type Allocation/);
+});
+
 test("overview visibility settings can show a previously hidden metric", () => {
   const metricSettings = DEFAULT_OVERVIEW_METRICS.map((metric) => ({ ...metric, show: metric.id === "ecpm" }));
   const markup = renderToStaticMarkup(
     <OverviewMetricsTab
       extractedPlacements={[]}
-      planOptions={[]}
+      planOptions={uploadedPlan}
       rfpAnalysis={null}
       profileData={profileWithAllocation}
       metricSettings={metricSettings}
