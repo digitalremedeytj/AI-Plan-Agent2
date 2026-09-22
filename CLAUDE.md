@@ -64,6 +64,7 @@ src/planning/           Deterministic planning engine + knowledge base
                         (settings, product registry, CTV publishers).
 src/storage/            Shared server-side persistence. See below.
 src/server/session.ts   Signed-cookie auth, requireAuth / requireAdmin middleware.
+src/server/geminiInteractions.ts  Every Gemini text call goes through here (3.8, Interactions API).
 src/qa/                 Deterministic chart guardrails applied after the QA scoring and
                         auto-remediation agents. Read the header comment before editing:
                         these run last, so a check that misreads a chart's metric type

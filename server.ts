@@ -96,7 +96,15 @@ import {
   normalizeSegments,
   sanitizeSegmentRequest,
 } from "./src/research/segmentRecommendations";
-import { generateStructuredJsonWithFallback, GEMINI_FLASH_MODEL } from "./src/server/geminiInteractions";
+import {
+  generateStructuredJson,
+  generateGroundedText,
+  generateStructuredJsonWithFallback,
+  generateText,
+  GEMINI_FLASH_MODEL,
+  toGeminiJsonSchema,
+  type GeminiThinkingLevel,
+} from "./src/server/geminiInteractions";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: false, quiet: true });
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: false, quiet: true });
@@ -111,23 +119,40 @@ const upload = multer({ dest: os.tmpdir() });
 // --- CONFIGURABLE TIMEOUTS FOR LLM & GROUNDING CALLS (in milliseconds) ---
 // Adjust these values to increase/decrease the allowed time for each step:
 const TIMEOUT_PARALLEL_RESEARCH_MS = 90000; // 90 seconds per parallel research thread (Option A)
-const TIMEOUT_SYNTHESIS_MS = 120000;          // 120 seconds for the main synthesis call (Option B)
+// Synthesis gets 120s at high thinking plus one 60s medium-thinking fallback (see SYNTHESIS_ATTEMPTS).
+const TIMEOUT_SYNTHESIS_HIGH_MS = 120000;
+const TIMEOUT_SYNTHESIS_FALLBACK_MS = 60000;
+const TIMEOUT_SYNTHESIS_MS = TIMEOUT_SYNTHESIS_HIGH_MS + TIMEOUT_SYNTHESIS_FALLBACK_MS;
 const TIMEOUT_SCORING_MS = 60000;            // 60 seconds for QA scorecard evaluation (Option B)
 const TIMEOUT_CORRECTION_MS = 90000;         // 90 seconds for auto-remediation rewrite (Option B)
 // Segment recommendations run after the profile is delivered, so they favour quality: high
 // thinking first, one medium-thinking fallback. Together they stay inside Cloud Run's 300s.
 const TIMEOUT_SEGMENTS_HIGH_MS = 90000;
 const TIMEOUT_SEGMENTS_FALLBACK_MS = 60000;
+// Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
+const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
+const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
 // Per-redirect budget when turning grounding links back into publisher URLs. Deliberately short:
 // this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
 const URL_RESOLUTION_CONCURRENCY = 12;
 
-// Thinking budget for the main synthesis call. gemini-2.5-flash defaults to DYNAMIC thinking,
-// which can add tens of thousands of invisible output tokens and is the largest single source
-// of variance in synthesis latency. Bounded here so the stage fits inside TIMEOUT_SYNTHESIS_MS.
-// Raise toward 24576 (or set to -1 for dynamic) if synthesis quality regresses; 0 disables thinking.
-const SYNTHESIS_THINKING_BUDGET = 4096;
+// Research dossiers run at high thinking. In the spike, high returned roughly twice as many
+// unique cited sources as medium (144 vs ~75 across the four dossiers, against 84 on 2.5) with
+// longer, more specific briefs, in ~50s of the 90s budget. Medium had short-changed the
+// Digital Touchpoints dossier in particular.
+const RESEARCH_THINKING_LEVEL: GeminiThinkingLevel = "high";
+
+// Synthesis runs at high thinking. On gemini-3.8-flash, medium reported zero thinking tokens
+// for this call in every spike run, and with raw grounding links it mis-copied most of the
+// citation URLs it chose; high thought for 8-14K tokens and copied them exactly. High took
+// 55-78s, so 120s leaves headroom, and a medium retry means a slow run still ships a profile
+// instead of an error. Cloud Run allows 900s per request; the binding limits are the client's
+// 600s cap and the 240s SSE watchdog, and 180s here stays inside both.
+const SYNTHESIS_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: number }> = [
+  { thinkingLevel: "high", timeoutMs: TIMEOUT_SYNTHESIS_HIGH_MS },
+  { thinkingLevel: "medium", timeoutMs: TIMEOUT_SYNTHESIS_FALLBACK_MS },
+];
 
 // First-party campaign evidence, listed ahead of the researched public sources.
 const DIGITAL_REMEDY_SOURCE = {
@@ -592,6 +617,10 @@ const audienceProfileSchema = {
   ]
 };
 
+// 3.8 takes standard lowercase JSON Schema. Converted once at startup so a schema the converter
+// cannot map fails the boot, not the first generation.
+const audienceProfileJsonSchema = toGeminiJsonSchema(audienceProfileSchema);
+
 const auditResultSchema = {
   type: Type.OBJECT,
   properties: {
@@ -692,6 +721,13 @@ const candidateSignalSchema = {
     required: ["channelId", "components", "gapAddressed", "evidence", "activationGuidance", "measurementApproach", "tradeoffs", "allocationRationale", "decisionRule"],
   },
 };
+// Wrapped in an object rather than sent as a top-level array: the 3.8 structured-output docs
+// only show object roots, and this call has a deterministic fallback we would rather not trip.
+const candidateSignalResponseSchema = {
+  type: "object",
+  properties: { signals: toGeminiJsonSchema(candidateSignalSchema) },
+  required: ["signals"],
+};
 
 async function generateCandidateSignals(audienceProfile: any, facts: any): Promise<AiCandidateSignal[]> {
   // Built from the effective catalog, not the raw registry: a product disabled in
@@ -761,25 +797,25 @@ ${JSON.stringify(candidates, null, 2)}
 Return one signal object per allowed candidate and no other products.`;
 
   try {
-    const response = await withTimeout(
-      getAiClient().models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: candidateSignalSchema,
-          temperature: 0.1,
-        },
+    // Medium, not high: in testing high took ~49s of this 60s budget for near-identical scores,
+    // and a timeout here silently drops the AI reasoning for the whole plan.
+    const response: any = await withTimeout(
+      generateStructuredJson(getAiClient(), {
+        input: prompt,
+        schema: candidateSignalResponseSchema,
+        thinkingLevel: "medium",
+        timeoutMs: TIMEOUT_SCORING_MS,
       }),
       TIMEOUT_SCORING_MS,
-      null as any,
+      null,
     );
-    if (!response?.text) return [];
-    const parsed = JSON.parse(response.text);
+    const parsed = response?.signals;
+    if (!Array.isArray(parsed)) {
+      console.warn("[PLANNING] AI candidate reasoning unavailable (no signals returned); using deterministic fallback scores and explanations.");
+      return [];
+    }
     const allowedIds = new Set(candidates.map((candidate) => candidate.channelId));
-    return Array.isArray(parsed)
-      ? parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId))
-      : [];
+    return parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId));
   } catch (error) {
     console.warn("[PLANNING] AI candidate reasoning unavailable; using deterministic fallback scores and explanations.", error);
     return [];
@@ -2696,15 +2732,13 @@ STRICT REQUIREMENTS:
 Original text:
 ${trimmed}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        temperature: 0.2,
-      },
+    const response = await generateText(ai, {
+      input: prompt,
+      thinkingLevel: "low",
+      timeoutMs: TIMEOUT_SUMMARIZE_INSIGHTS_MS,
     });
 
-    const summaryText = (response.text || "").trim().replace(/^["']|["']$/g, "").trim();
+    const summaryText = response.text.trim().replace(/^["']|["']$/g, "").trim();
 
     if (summaryText && summaryText.length > 20) {
       console.log(`[AI SUMMARIZER] Successfully summarized to ${summaryText.split(/\s+/).length} words (${summaryText.length} chars).`);
@@ -2943,27 +2977,15 @@ INSTRUCTIONS:
     const runResearchCall = async (prompt: string, label: string) => {
       try {
         console.log(`Starting parallel research query for: ${label}...`);
-        const subResponse = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: prompt,
-          config: {
-            systemInstruction: "You are an expert audience research analyst. Provide a highly detailed, fact-packed research brief. Always find and cite real stats, percentages, and sources.",
-            tools: [{ googleSearch: {} }],
-            temperature: 0.2,
-          }
+        const research = await generateGroundedText(ai, {
+          systemInstruction: "You are an expert audience research analyst. Provide a highly detailed, fact-packed research brief. Always find and cite real stats, percentages, and sources.",
+          input: prompt,
+          thinkingLevel: RESEARCH_THINKING_LEVEL,
+          timeoutMs: TIMEOUT_PARALLEL_RESEARCH_MS,
         });
 
-        const text = subResponse.text || `[Failed to retrieve detailed ${label} research text]`;
-        const chunks = subResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-        const sources = chunks.map((chunk: any) => {
-          if (chunk.web) {
-            return {
-              title: chunk.web.title || label,
-              uri: chunk.web.uri
-            };
-          }
-          return null;
-        }).filter(Boolean);
+        const text = research.text || `[Failed to retrieve detailed ${label} research text]`;
+        const sources = research.sources;
 
         console.log(`Completed parallel research query for: ${label}. Found ${sources.length} sources.`);
         return { label, text, sources };
@@ -3264,16 +3286,16 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
 
     sendEvent("status", { message: "Synthesizing research dossiers and mapping audience indices..." });
     console.log("Launching final Synthesis Call to build the comprehensive profile JSON...");
-    const synthesisPromise = ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: synthesisUserPrompt,
-      config: {
-        systemInstruction: synthesisSystemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: audienceProfileSchema,
-        temperature: 0.1,
-        thinkingConfig: { thinkingBudget: SYNTHESIS_THINKING_BUDGET },
-      }
+    const synthesisStartedAt = Date.now();
+    const synthesisPromise = generateStructuredJsonWithFallback(
+      ai,
+      { systemInstruction: synthesisSystemInstruction, input: synthesisUserPrompt, schema: audienceProfileJsonSchema },
+      SYNTHESIS_ATTEMPTS,
+      (failed, next) => sendEvent("status", { message: `Deep synthesis (${failed} reasoning) ran long; retrying with ${next} reasoning...` }),
+    ).catch((err) => {
+      // Timeouts get the user-facing message below; anything else is a real failure to surface.
+      if (/timed? ?out|timeout|abort/i.test(`${err?.name} ${err?.message || err}`)) return null;
+      throw err;
     });
 
     const synthesisResult = await withTimeout(
@@ -3282,12 +3304,13 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
       null
     );
 
-    if (!synthesisResult || !synthesisResult.text) {
+    if (!synthesisResult) {
       throw new Error(`Synthesis stage exceeded the safety limit of ${TIMEOUT_SYNTHESIS_MS / 1000}s. Please simplify your input parameters and try again.`);
     }
+    console.log(`Synthesis complete via ${GEMINI_FLASH_MODEL} (${synthesisResult.thinkingLevel} thinking) in ${((Date.now() - synthesisStartedAt) / 1000).toFixed(1)}s.`);
 
     sendEvent("status", { message: "Evaluating audience profile using media planning scoring agent..." });
-    const originalData = JSON.parse(synthesisResult.text);
+    const originalData = synthesisResult.data as any;
 
     // Fallback/merge RFP requirements if rfpAnalysis was supplied
     if (rfpAnalysis) {
@@ -3329,11 +3352,12 @@ Advertiser / Campaign Context:
 TASK: Write a concise, professional 1-paragraph analysis (3-5 sentences) assessing how well the listed audiences in the uploaded media plan align with the advertiser, their brand positioning, and their target consumer.
 Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
 
-          const analysisResp = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: analysisPrompt,
+          const analysisResp = await generateText(ai, {
+            input: analysisPrompt,
+            thinkingLevel: "low",
+            timeoutMs: TIMEOUT_AUDIENCE_ANALYSIS_MS,
           });
-          const analysisParagraph = analysisResp.text?.trim();
+          const analysisParagraph = analysisResp.text.trim();
           if (analysisParagraph) {
             originalData.audienceAnalysis = analysisParagraph;
           }
