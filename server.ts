@@ -96,7 +96,7 @@ import {
   normalizeSegments,
   sanitizeSegmentRequest,
 } from "./src/research/segmentRecommendations";
-import { generateStructuredJsonWithFallback, GEMINI_FLASH_MODEL } from "./src/server/geminiInteractions";
+import { generateStructuredJsonWithFallback, generateText, GEMINI_FLASH_MODEL } from "./src/server/geminiInteractions";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: false, quiet: true });
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: false, quiet: true });
@@ -118,6 +118,8 @@ const TIMEOUT_CORRECTION_MS = 90000;         // 90 seconds for auto-remediation 
 // thinking first, one medium-thinking fallback. Together they stay inside Cloud Run's 300s.
 const TIMEOUT_SEGMENTS_HIGH_MS = 90000;
 const TIMEOUT_SEGMENTS_FALLBACK_MS = 60000;
+// Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
+const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
 // Per-redirect budget when turning grounding links back into publisher URLs. Deliberately short:
 // this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
@@ -2696,15 +2698,13 @@ STRICT REQUIREMENTS:
 Original text:
 ${trimmed}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        temperature: 0.2,
-      },
+    const response = await generateText(ai, {
+      input: prompt,
+      thinkingLevel: "low",
+      timeoutMs: TIMEOUT_SUMMARIZE_INSIGHTS_MS,
     });
 
-    const summaryText = (response.text || "").trim().replace(/^["']|["']$/g, "").trim();
+    const summaryText = response.text.trim().replace(/^["']|["']$/g, "").trim();
 
     if (summaryText && summaryText.length > 20) {
       console.log(`[AI SUMMARIZER] Successfully summarized to ${summaryText.split(/\s+/).length} words (${summaryText.length} chars).`);
