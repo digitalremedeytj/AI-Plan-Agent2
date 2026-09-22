@@ -1,6 +1,6 @@
 # Audience Profile Builder
 
-A full-stack, research-backed digital media strategy and audience research tool built using React, Express, and Google Gemini 3.5 with Search Grounding. 
+A full-stack, research-backed digital media strategy and audience research tool built using React, Express, and Google Gemini 3.8 Flash with Search Grounding. 
 
 Audience Profile Builder generates high-quality, media-planning-ready consumer audience profiles and CTV-first tactical recommendations based on live web research. It can analyze direct textual descriptions or reverse-engineer audience metrics from brand/advertiser landing page URLs.
 
@@ -22,7 +22,7 @@ Audience Profile Builder generates high-quality, media-planning-ready consumer a
 - **Frontend**: React 19, Tailwind CSS, Recharts (for charts), Lucide React (for icons)
 - **Backend**: Express (Node.js), TypeScript, tsx, esbuild (for server builds)
 - **AI Core**: `@google/genai` TypeScript SDK
-- **Model**: `gemini-3.5-flash` with Google Search Grounding and structured JSON Schema output
+- **Model**: `gemini-3.8-flash` on the Interactions API, with Google Search Grounding and structured JSON Schema output (persona headshots use `gemini-3.1-flash-image`)
 
 ---
 
