@@ -93,6 +93,35 @@ export function removeModeledCharts(profile: any): GenerationAlert[] {
   return alerts;
 }
 
+// Normalizes a source label so trivial differences ("Pew Research 2025" vs "pew research 2025.")
+// do not read as two sources.
+const normalizeSource = (source: unknown) => String(source ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * Removes any chart whose items cite more than one source. A composition assembled from
+ * several studies has no common denominator, so it is not a real split however carefully each
+ * number was copied; synthesis is told to use one source per chart, and this enforces it.
+ */
+export function removeMixedSourceCharts(profile: any): GenerationAlert[] {
+  const alerts: GenerationAlert[] = [];
+  for (const chart of PROFILE_CHARTS) {
+    const data = profile?.[chart.section]?.[chart.key];
+    if (!Array.isArray(data) || data.length === 0) continue;
+    const sources = new Set(data.map((point: any) => normalizeSource(point?.source)));
+    if (sources.size > 1 || sources.has("")) {
+      profile[chart.section][chart.key] = [];
+      pushAlert(alerts, {
+        section: chart.section,
+        severity: "not_found",
+        message: sources.has("")
+          ? `${chart.label}: removed because some values did not name their source.`
+          : `${chart.label}: removed because it combined figures from ${sources.size} different sources instead of one study's breakdown.`,
+      });
+    }
+  }
+  return alerts;
+}
+
 /**
  * Charts the synthesis built from research but auto-remediation then removed, because the QA
  * review found them unsupported (typically a split stitched together from studies with

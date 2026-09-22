@@ -35,6 +35,7 @@ import {
   clearSectionsForFailedDossiers,
   mergeRemediatedProfile,
   pushAlert,
+  removeMixedSourceCharts,
   removeModeledCharts,
   reportChartsNotFound,
   reportChartsRemovedByRemediation,
@@ -3162,16 +3163,16 @@ Your response must be a single, perfectly structured JSON object adhering exactl
 
 CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 1. COHESION & INTEGRATED STORYTELLING: Do not stitch together unrelated facts in silos. Create a single, unified audience story where all metrics and descriptions align.
-   - If a persona is described as having specific device preferences, that device must dominate or represent a substantial percentage in 'deviceTypeIndex.chartData'.
+   - The narrative follows the charts, never the reverse: do not describe a device, day or daypart as dominant unless the chart (or a cited dossier figure) shows it.
    - If Saturday/Sunday evenings are described as viewing or activity peaks, the day and hour charts MUST show those peaks. Contradictions between narrative text and numeric indices are strictly forbidden. If a chart is empty because the research had no figures for it, the narrative must not describe numeric peaks for it either.
 2. STATISTICAL PLAUSIBILITY & REAL-WORLD BOUNDS: Absolutely no statistically impossible claims.
    - Connected TV (CTV) QR code scan rates hover strictly between 0.01% and 0.5% in real campaign environments. Scan conversion or purchase rates are in low single digits (typically under 8%). You are STRICTLY FORBIDDEN from generating double-digit QR code scan rates or absurd purchase rates (such as "83% open to scanning and 92% of scanners likely to complete a purchase").
    - Do not apply the income skew of a niche sub-segment (e.g. premium hardware buyers earning >$100k) to the whole audience. If the dossiers only report a sub-segment's income split, say so in the overview and leave 'incomeChartData' empty rather than presenting it as the audience's split.
    - Media performance rates (CTR, VCR/VTR, conversion rates) may only appear where a dossier reports them. Do not quote typical or benchmark rates from general knowledge.
-3. MUTUALLY EXCLUSIVE DEVICE BREAKDOWNS: Correctly map the Connected TV and digital ecosystem as a fragmented but mutually exclusive environment. Explicitly distribute viewing share across Smart TVs, Streaming Devices (Roku/FireTV), Consoles, Smartphones, and Desktops so that there is no double-counting, and ensure percentage splits sum to approximately 100%.
+3. DEVICE BREAKDOWNS: 'deviceTypeIndex.chartData' is one source's device composition for this audience (mutually exclusive shares summing to ~100). Use it only if a single dossier source reports such a split; do not assemble one by distributing share across devices yourself.
 4. Be highly precise with definitions: composition vs index vs reach vs penetration. Clearly distinguish percentage split from activity index (average = 100).
 5. Do not call an audience segment "affluent", "young", "tech-savvy", etc. unless the research supportively proves it with metrics.
-6. CHART DATA COMES ONLY FROM THE DOSSIERS. Populate a chart only with figures a dossier actually reports, and name that source in each item's 'source'. Every item's 'isModeled' MUST be false. If the dossiers do not contain the figures a chart needs, return that chart as an EMPTY array - never estimate, model, extrapolate, or fill it from general knowledge. An empty chart is shown to the planner as "not found in research"; an invented one is presented to a client as fact. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'.
+6. CHART DATA COMES ONLY FROM THE DOSSIERS, AND EACH CHART FROM ONE SOURCE. Populate a chart only when a single source in the dossiers reports the whole breakdown on one base (one study, one population, one date) - for example one survey's age split of this audience. NEVER combine figures from different studies, years, populations or metrics into one chart: a split stitched together from several reports has no common denominator and is not a real composition. Every item in a chart MUST carry the identical 'source' string (the study name and year), and that chart's 'chartSource' must name the same study. Every item's 'isModeled' MUST be false. If the dossiers do not contain the figures a chart needs, return that chart as an EMPTY array - never estimate, model, extrapolate, or fill it from general knowledge. An empty chart is shown to the planner as "not found in research"; an invented one is presented to a client as fact. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'.
 7. Use current ${currentYear} data. Match geography: ${geography}. If the dossiers have no data for this geography, say so in the relevant overview; do not adapt national figures into a regional estimate.
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
    - You are STRICTLY PROHIBITED from fabricating, guessing, or making up consumer desire/sentiment figures, survey percentages, or market statistics (such as "85% of gamers express a desire to see product recommendations on their TV home screens").
@@ -3429,6 +3430,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     const enforceResearchIntegrity = (profile: any) => {
       for (const alert of clearSectionsForFailedDossiers(profile, failedDossiers)) pushAlert(generationAlerts, alert);
       for (const alert of removeModeledCharts(profile)) pushAlert(generationAlerts, alert);
+      for (const alert of removeMixedSourceCharts(profile)) pushAlert(generationAlerts, alert);
       const sanity = applyProgrammaticSanityChecks(profile, req.body);
       for (const alert of sanity.alerts) pushAlert(generationAlerts, alert);
       integrityCorrections.push(...sanity.corrections);

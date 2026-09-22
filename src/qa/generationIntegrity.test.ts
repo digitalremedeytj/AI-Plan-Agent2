@@ -4,6 +4,7 @@ import {
   checkPersonas,
   clearSectionsForFailedDossiers,
   mergeRemediatedProfile,
+  removeMixedSourceCharts,
   removeModeledCharts,
   reportChartsNotFound,
   reportChartsRemovedByRemediation,
@@ -139,4 +140,37 @@ test("a chart remediation deleted is reported as removed by QA, not as missing f
 test("without a remediation rewrite nothing is reported as removed", () => {
   const profile = profileWithCharts();
   assert.deepEqual(reportChartsRemovedByRemediation(profile, profile), []);
+});
+
+test("a chart stitched together from several studies is removed rather than shown as one split", () => {
+  const profile = profileWithCharts();
+  profile.deviceTypeIndex.chartData = [
+    { device: "CTV", value: 45, isModeled: false, source: "Nielsen Gauge 2026" },
+    { device: "Mobile", value: 35, isModeled: false, source: "Comscore 2025" },
+    { device: "Desktop", value: 20, isModeled: false, source: "Nielsen Gauge 2026" },
+  ];
+
+  const alerts = removeMixedSourceCharts(profile);
+
+  assert.deepEqual(profile.deviceTypeIndex.chartData, []);
+  assert.match(alerts[0].message, /Device split: removed because it combined figures from 2 different sources/);
+  assert.equal(profile.demographics.ageChartData.length, 2, "single-source charts stay");
+});
+
+test("one study's breakdown is kept even when its label differs only in case or punctuation", () => {
+  const profile = profileWithCharts();
+  profile.demographics.ageChartData[1].source = "pew research 2025.";
+
+  assert.deepEqual(removeMixedSourceCharts(profile), []);
+  assert.equal(profile.demographics.ageChartData.length, 2);
+});
+
+test("a chart with an unsourced value is removed", () => {
+  const profile = profileWithCharts();
+  profile.demographics.genderChartData[0].source = "";
+
+  const alerts = removeMixedSourceCharts(profile);
+
+  assert.deepEqual(profile.demographics.genderChartData, []);
+  assert.match(alerts[0].message, /did not name their source/);
 });
