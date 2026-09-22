@@ -16,6 +16,28 @@ export interface Persona {
   isExpansion?: boolean;
 }
 
+export type SegmentDimension = "Demographics" | "In-Market / Intent" | "Interest & Affinity" | "Behavioral";
+export type SegmentDataSignal =
+  | "Transaction & Purchase Data"
+  | "ACR TV Viewership"
+  | "Household & Life-Stage Records"
+  | "High-Intent Digital Behavior";
+export type SegmentTier = "Core" | "Expansion" | "Experimental";
+
+export interface SegmentRecommendation {
+  id: string;
+  name: string;
+  dimension: SegmentDimension;
+  justification: string;
+  taxonomyPath?: string;
+  dataSignal?: SegmentDataSignal;
+  tier?: SegmentTier;
+  /** Positions in `AudienceProfile.personas` this segment serves. */
+  personaIndices: number[];
+  /** 'RFP' marks a segment translated from an audience named in the uploaded media plan. */
+  source: 'ScoutAI' | 'RFP' | 'User';
+}
+
 export interface Recommendation {
   title: string;
   action: string;
@@ -209,6 +231,7 @@ export interface AudienceProfile {
   intro: string;
   audienceAnalysis?: string;
   personas: Persona[];
+  segmentRecommendations?: SegmentRecommendation[];
   expansionReachPercent?: number;
   takeaways: string[];
   recommendations: Recommendation[];

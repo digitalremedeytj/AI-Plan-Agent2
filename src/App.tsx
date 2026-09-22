@@ -81,6 +81,17 @@ import { CtvPublisherCard } from "./components/CtvPublisherCard";
 import { CtvSlideExportView } from "./components/CtvSlideExportView";
 import { CtvExportDropdown } from "./components/CtvExportDropdown";
 import { PersonaSlideExportModal } from "./components/PersonaSlideExportModal";
+import { SegmentRecommendations, SEGMENT_DIMENSION_STYLES, type SegmentStatus } from "./components/SegmentRecommendations";
+import {
+  createUserSegment,
+  extractPlanAudiences,
+  MAX_TOTAL_SEGMENTS,
+  profileBaselineFingerprint,
+  segmentKey,
+  segmentsToCsv,
+  topUpCount,
+} from "./research/segmentRecommendations";
+import type { SegmentRecommendation } from "./types";
 import { captureElementToCanvas } from "./utils/html2canvasPolyfill";
 import { CtvPublisherRecommendation } from "./types";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
@@ -1022,6 +1033,21 @@ export default function App() {
   const pendingLogsRef = React.useRef<any[]>([]);
   const [serverCompleteData, setServerCompleteData] = useState<{ profile: any; groundingSources: any } | null>(null);
 
+  // Segment recommendations. They are requested after the profile renders (like headshots),
+  // live on profileData.segmentRecommendations, and auto-save onto an already-saved plan.
+  const [segmentStatus, setSegmentStatus] = useState<SegmentStatus>("idle");
+  const [isToppingUpSegments, setIsToppingUpSegments] = useState(false);
+  const [segmentError, setSegmentError] = useState<string | null>(null);
+  const [segmentAutoSaveError, setSegmentAutoSaveError] = useState<string | null>(null);
+  const [segmentUndoName, setSegmentUndoName] = useState<string | null>(null);
+  const [hoveredSegment, setHoveredSegment] = useState<SegmentRecommendation | null>(null);
+  /** Session-only removal history: powers Undo and keeps "Suggest more" from re-offering them. */
+  const removedSegmentsRef = React.useRef<Array<{ segment: SegmentRecommendation; index: number }>>([]);
+  const segmentUndoTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Bumped whenever the workspace switches profile, so a late response cannot land on the wrong plan. */
+  const segmentRequestTokenRef = React.useRef(0);
+  const requestSegmentsRef = React.useRef<(mode: "initial" | "top-up", profileOverride?: AudienceProfile) => void>(() => {});
+
   // Derived QA audit state from logs
   const isQAStarted = researchLogs.some(log => 
     log.message?.toLowerCase().includes("programmatic validation") || 
@@ -1157,6 +1183,7 @@ export default function App() {
         } else {
           setProfileData(rawProfile);
         }
+        if (rawProfile) requestSegmentsRef.current("initial", rawProfile);
         setGroundingSources(serverCompleteData.groundingSources);
         setPersonaPage(0);
         setArePersonasExpanded(false);
@@ -1432,6 +1459,205 @@ export default function App() {
     groundingSources: groundingSources || undefined,
   });
 
+  // --- Segment recommendations -------------------------------------------------------
+
+  /**
+   * The plan exactly as the server last returned it. Segment auto-save writes onto this
+   * record rather than the live workspace, so it never sweeps unrelated unsaved edits (or a
+   * regenerated profile) into the saved plan.
+   */
+  const lastPersistedPlanRef = React.useRef<api.StoredPlan | null>(null);
+  const activePlanRevisionRef = React.useRef<number | null>(activePlanRevision);
+  activePlanRevisionRef.current = activePlanRevision;
+  const segmentsDirtyRef = React.useRef(false);
+  const segmentAutoSaveQueueRef = React.useRef<Promise<void>>(Promise.resolve());
+
+  const markPlanPersisted = (plan: api.StoredPlan) => {
+    lastPersistedPlanRef.current = plan;
+    activePlanRevisionRef.current = plan.revision;
+    setActivePlanRevision(plan.revision);
+  };
+
+  const resetSegmentSession = () => {
+    segmentRequestTokenRef.current += 1;
+    removedSegmentsRef.current = [];
+    segmentsDirtyRef.current = false;
+    if (segmentUndoTimerRef.current) clearTimeout(segmentUndoTimerRef.current);
+    setSegmentUndoName(null);
+    setSegmentStatus("idle");
+    setIsToppingUpSegments(false);
+    setSegmentError(null);
+    setSegmentAutoSaveError(null);
+    setHoveredSegment(null);
+  };
+
+  const updateSegments = (update: (current: SegmentRecommendation[]) => SegmentRecommendation[]) => {
+    segmentsDirtyRef.current = true;
+    setProfileData((prev) => (prev ? { ...prev, segmentRecommendations: update(prev.segmentRecommendations ?? []) } : prev));
+  };
+
+  const requestSegments = async (mode: "initial" | "top-up", profileOverride?: AudienceProfile) => {
+    const profile = profileOverride ?? profileData;
+    if (!profile || isShareView) return;
+    const existing = profile.segmentRecommendations ?? [];
+    const count = mode === "top-up" ? topUpCount(existing.length) : 0;
+    if (mode === "top-up" && count <= 0) return;
+
+    const token = segmentRequestTokenRef.current;
+    setSegmentStatus("loading");
+    setIsToppingUpSegments(mode === "top-up");
+    setSegmentError(null);
+
+    try {
+      const response = await api.authFetch("/api/generate-segments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          count,
+          advertiserName,
+          audienceDescription,
+          url,
+          geography,
+          campaignFocus,
+          kpis: kpis.filter((k) => k.trim().length > 0),
+          // Headshots are large data URLs and say nothing about targeting.
+          personas: (profile.personas || []).map(({ avatarUrl: _avatar, ...persona }) => persona),
+          profileContext: {
+            intro: profile.intro,
+            executiveSummary: profile.executiveSummary,
+            takeaways: profile.takeaways,
+            recommendations: (profile.recommendations || []).map((r) => r.title),
+          },
+          planAudiences: extractPlanAudiences((planOptions || []).filter((p) => p.selected)),
+          existingSegments: existing.map(({ name, dimension }) => ({ name, dimension })),
+          removedNames: removedSegmentsRef.current.map((entry) => entry.segment.name),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (token !== segmentRequestTokenRef.current) return;
+      if (!response.ok || !Array.isArray(data.segments)) {
+        throw new Error(data.error || "Segment recommendations could not be generated.");
+      }
+
+      updateSegments((current) => {
+        // Planner edits made while the request was in flight win over the response.
+        const taken = new Set(current.map((s) => segmentKey(s.name)));
+        const additions = (data.segments as SegmentRecommendation[]).filter((s) => !taken.has(segmentKey(s.name)));
+        return [...current, ...additions].slice(0, MAX_TOTAL_SEGMENTS);
+      });
+      setSegmentStatus("idle");
+    } catch (err: any) {
+      if (token !== segmentRequestTokenRef.current) return;
+      console.error("Could not generate segment recommendations:", err);
+      setSegmentError(err?.message || "Segment recommendations could not be generated.");
+      setSegmentStatus("error");
+    } finally {
+      if (token === segmentRequestTokenRef.current) setIsToppingUpSegments(false);
+    }
+  };
+  requestSegmentsRef.current = requestSegments;
+
+  const handleRemoveSegment = (id: string) => {
+    const list = profileData?.segmentRecommendations ?? [];
+    const index = list.findIndex((s) => s.id === id);
+    if (index < 0) return;
+    const removed = list[index];
+    removedSegmentsRef.current.push({ segment: removed, index });
+    updateSegments((current) => current.filter((s) => s.id !== id));
+    setHoveredSegment(null);
+    setSegmentUndoName(removed.name);
+    if (segmentUndoTimerRef.current) clearTimeout(segmentUndoTimerRef.current);
+    segmentUndoTimerRef.current = setTimeout(() => setSegmentUndoName(null), 6000);
+  };
+
+  const handleUndoRemoveSegment = () => {
+    const last = removedSegmentsRef.current.pop();
+    if (segmentUndoTimerRef.current) clearTimeout(segmentUndoTimerRef.current);
+    setSegmentUndoName(null);
+    if (!last) return;
+    updateSegments((current) => {
+      if (current.length >= MAX_TOTAL_SEGMENTS || current.some((s) => segmentKey(s.name) === segmentKey(last.segment.name))) {
+        return current;
+      }
+      const next = [...current];
+      next.splice(Math.min(last.index, next.length), 0, last.segment);
+      return next;
+    });
+  };
+
+  const handleAddSegment = (input: { name: string; dimension: string; justification: string }): string | null => {
+    const result = createUserSegment(input, profileData?.segmentRecommendations ?? []);
+    if (!result.segment) return result.error;
+    const added = result.segment;
+    updateSegments((current) => [...current, added]);
+    return null;
+  };
+
+  const handleExportSegmentsCsv = () => {
+    const segments = profileData?.segmentRecommendations ?? [];
+    if (!profileData || segments.length === 0) return;
+    const base = (advertiserName.trim() || profileData.personas?.[0]?.name || "audience")
+      .replace(/[^a-z0-9]+/gi, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase() || "audience";
+    const blob = new Blob([segmentsToCsv(segments, profileData.personas || [])], { type: "text/csv;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = `${base}_segment_recommendations.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  };
+
+  // Auto-save segment edits onto an already-saved plan. Unsaved plans pick the segments up on
+  // their first manual save. Saves are queued so two quick edits never race each other into
+  // a self-inflicted revision conflict.
+  React.useEffect(() => {
+    if (!segmentsDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
+    const planId = activeSavedId;
+    const segments = profileData.segmentRecommendations ?? [];
+    const liveFingerprint = profileBaselineFingerprint(profileData);
+
+    const timer = setTimeout(() => {
+      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
+        const persisted = lastPersistedPlanRef.current;
+        const revision = activePlanRevisionRef.current;
+        if (!segmentsDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
+        // A regenerated or otherwise edited profile is not the saved plan; writing its segments
+        // onto the saved one would mismatch them, so they wait for the planner's next Save.
+        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) {
+          setSegmentAutoSaveError("Other parts of this plan have unsaved changes, so segment changes will be saved with your next Save.");
+          return;
+        }
+
+        segmentsDirtyRef.current = false;
+        try {
+          const updated = await api.updatePlan(planId, revision, {
+            title: persisted.title,
+            advertiserName: persisted.advertiserName,
+            settingsRevision: persisted.settingsRevision,
+            payload: { ...persisted.payload, profile: { ...persisted.payload.profile, segmentRecommendations: segments } },
+          });
+          markPlanPersisted(updated);
+          setSegmentAutoSaveError(null);
+        } catch (err: any) {
+          console.error("Could not auto-save segment changes:", err);
+          segmentsDirtyRef.current = true;
+          setSegmentAutoSaveError(
+            err instanceof ApiError && err.isConflict
+              ? "Someone else updated this plan, so segment changes were not auto-saved. Reload it from the saved list to continue."
+              : "Segment changes could not be auto-saved. Use Save to try again.",
+          );
+        }
+      });
+    }, 1200);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileData?.segmentRecommendations, activeSavedId, isShareView]);
+
   /**
    * Save to the shared store. An existing plan is updated against the revision we last
    * read; if somebody else saved in the meantime the server refuses with a conflict and
@@ -1445,21 +1671,26 @@ export default function App() {
     setSaveError(null);
 
     try {
+      // An in-flight segment auto-save would otherwise bump the revision underneath us.
+      await segmentAutoSaveQueueRef.current;
       const input = {
         title: titleToSave,
         advertiserName: advertiserName || undefined,
         settingsRevision,
         payload: buildPlanPayload(),
       };
+      const expectedRevision = activePlanRevisionRef.current;
 
-      if (activeSavedId && activePlanRevision !== null) {
-        const updated = await api.updatePlan(activeSavedId, activePlanRevision, input);
-        setActivePlanRevision(updated.revision);
+      if (activeSavedId && expectedRevision !== null) {
+        const updated = await api.updatePlan(activeSavedId, expectedRevision, input);
+        markPlanPersisted(updated);
       } else {
         const created = await api.createPlan(input);
         setActiveSavedId(created.id);
-        setActivePlanRevision(created.revision);
+        markPlanPersisted(created);
       }
+      segmentsDirtyRef.current = false;
+      setSegmentAutoSaveError(null);
 
       await refreshPlans();
       setIsSaving(false);
@@ -1514,7 +1745,8 @@ export default function App() {
         targetShareToken = created.shareToken;
         targetIsShared = Boolean(created.isShared);
         setActiveSavedId(created.id);
-        setActivePlanRevision(created.revision);
+        markPlanPersisted(created);
+        segmentsDirtyRef.current = false;
         await refreshPlans();
       } catch (err: any) {
         console.error("Could not auto-save plan prior to sharing:", err);
@@ -1591,13 +1823,14 @@ export default function App() {
     }
     setBudget(body.budget || "$10,000");
     setCampaignLength(body.campaignLength || "30");
+    resetSegmentSession();
     setProfileData(body.profile);
     setGroundingSources(body.groundingSources || null);
     if (body.extractedPlacements) setExtractedPlacements(body.extractedPlacements);
     if (body.planOptions) setPlanOptions(body.planOptions);
     if (body.rfpAnalysis) setRfpAnalysis(body.rfpAnalysis);
     setActiveSavedId(saved.id);
-    setActivePlanRevision(saved.revision);
+    markPlanPersisted(saved);
     setError(null);
     setPersonaPage(0);
     setArePersonasExpanded(false);
@@ -1749,7 +1982,7 @@ export default function App() {
         settingsRevision: existing.settingsRevision,
         payload: existing.payload,
       });
-      if (activeSavedId === id) setActivePlanRevision(updated.revision);
+      if (activeSavedId === id) markPlanPersisted(updated);
       await refreshPlans();
     } catch (err: any) {
       console.error("Could not rename plan:", err);
@@ -2108,7 +2341,8 @@ export default function App() {
     setArePersonasExpanded(false);
     setIsDomainAffinityExpanded(false);
     setGeneratingAvatarIndices([]);
-    
+    resetSegmentSession();
+
     // Reset the queue reference and server completion state
     pendingLogsRef.current = [];
     setServerCompleteData(null);
@@ -2295,6 +2529,7 @@ export default function App() {
     if (mediaPlanFileInputRef.current) mediaPlanFileInputRef.current.value = "";
 
     // Reset active profile output & generation states
+    resetSegmentSession();
     setProfileData(null);
     setGroundingSources(null);
     setError(null);
@@ -4796,9 +5031,12 @@ export default function App() {
                             const isUserTarget = persona.sourceType === 'User';
                             const isRfp = persona.sourceType === 'RFP';
                             const isExpanded = arePersonasExpanded;
+                            const segmentHighlight = hoveredSegment?.personaIndices.includes(globalIndex)
+                              ? SEGMENT_DIMENSION_STYLES[hoveredSegment.dimension].ring
+                              : "";
 
                             return (
-                              <div key={globalIndex} className="bg-white rounded-2xl border border-slate-100 p-5 shadow-xs flex flex-col justify-between hover:shadow-md transition-all duration-200">
+                              <div key={globalIndex} className={`bg-white rounded-2xl border border-slate-100 p-5 shadow-xs flex flex-col justify-between hover:shadow-md transition-all duration-200 ${segmentHighlight}`}>
                                 <div>
                                   {/* Headshot Photo & Name Header */}
                                   <div className="flex items-center gap-3.5 mb-4">
@@ -4946,6 +5184,24 @@ export default function App() {
                             );
                           })}
                         </div>
+
+                        <SegmentRecommendations
+                          segments={profileData.segmentRecommendations}
+                          personas={personas}
+                          status={segmentStatus}
+                          isToppingUp={isToppingUpSegments}
+                          error={segmentError}
+                          autoSaveError={segmentAutoSaveError}
+                          readOnly={isShareView}
+                          undoName={segmentUndoName}
+                          onRemove={handleRemoveSegment}
+                          onUndo={handleUndoRemoveSegment}
+                          onAdd={handleAddSegment}
+                          onSuggestMore={() => requestSegments("top-up")}
+                          onGenerate={() => requestSegments("initial")}
+                          onExportCsv={handleExportSegmentsCsv}
+                          onHoverSegment={setHoveredSegment}
+                        />
                       </div>
                     );
                   })()}

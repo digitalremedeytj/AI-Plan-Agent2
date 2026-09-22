@@ -87,30 +87,16 @@ function saveMediaPlanCacheToDisk(map: Map<string, CachedParsedPlan>) {
 
 const mediaPlanParseCache = loadMediaPlanCacheFromDisk();
 import { summarizeSelectedPlansForPrompt } from "./src/utils/planPromptOptimizer";
-
-// Helper: Extract unique non-empty audience targets from uploaded media plan options
-function extractPlanAudiences(selectedPlanOptions: any[]): string[] {
-  if (!selectedPlanOptions || !Array.isArray(selectedPlanOptions) || selectedPlanOptions.length === 0) return [];
-  const audienceSet = new Set<string>();
-  for (const opt of selectedPlanOptions) {
-    if (opt.placements && Array.isArray(opt.placements)) {
-      for (const p of opt.placements) {
-        if (p.audience) {
-          const trimmed = String(p.audience).trim();
-          if (
-            trimmed &&
-            trimmed.toLowerCase() !== 'n/a' &&
-            trimmed.toLowerCase() !== 'none' &&
-            trimmed.toLowerCase() !== 'unspecified'
-          ) {
-            audienceSet.add(trimmed);
-          }
-        }
-      }
-    }
-  }
-  return Array.from(audienceSet);
-}
+import {
+  buildSegmentPrompt,
+  buildSegmentResponseSchema,
+  extractPlanAudiences,
+  MAX_AI_SEGMENTS,
+  MIN_AI_SEGMENTS,
+  normalizeSegments,
+  sanitizeSegmentRequest,
+} from "./src/research/segmentRecommendations";
+import { generateStructuredJsonWithFallback, GEMINI_FLASH_MODEL } from "./src/server/geminiInteractions";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: false, quiet: true });
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: false, quiet: true });
@@ -128,6 +114,10 @@ const TIMEOUT_PARALLEL_RESEARCH_MS = 90000; // 90 seconds per parallel research 
 const TIMEOUT_SYNTHESIS_MS = 120000;          // 120 seconds for the main synthesis call (Option B)
 const TIMEOUT_SCORING_MS = 60000;            // 60 seconds for QA scorecard evaluation (Option B)
 const TIMEOUT_CORRECTION_MS = 90000;         // 90 seconds for auto-remediation rewrite (Option B)
+// Segment recommendations run after the profile is delivered, so they favour quality: high
+// thinking first, one medium-thinking fallback. Together they stay inside Cloud Run's 300s.
+const TIMEOUT_SEGMENTS_HIGH_MS = 90000;
+const TIMEOUT_SEGMENTS_FALLBACK_MS = 60000;
 // Per-redirect budget when turning grounding links back into publisher URLs. Deliberately short:
 // this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
@@ -2031,6 +2021,56 @@ app.post("/api/generate-persona-avatar", async (req, res) => {
   } catch (err: any) {
     console.error("Error in /api/generate-persona-avatar:", err);
     res.status(500).json({ error: "Failed to generate persona headshot.", details: err.message || err });
+  }
+});
+
+// API: Segment recommendations for a finished profile. Called by the client once the
+// profile has rendered - like the headshots - so the final, post-remediation personas are
+// the input and none of this time lands on the generate-profile deadline.
+app.post("/api/generate-segments", async (req, res) => {
+  try {
+    const request = sanitizeSegmentRequest(req.body);
+    const usablePersonaIndices = request.personas
+      .map((persona, index) => (persona ? index : -1))
+      .filter((index) => index >= 0);
+
+    // Top-up asks for a little slack because the normalizer may still drop a duplicate.
+    const [minItems, maxItems, maxCount] = request.mode === "initial"
+      ? [MIN_AI_SEGMENTS, MAX_AI_SEGMENTS, MAX_AI_SEGMENTS]
+      : [request.count, Math.min(MAX_AI_SEGMENTS, request.count + 2), request.count];
+
+    const { systemInstruction, input } = buildSegmentPrompt(request);
+    const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+      getAiClient(),
+      {
+        systemInstruction,
+        input,
+        schema: buildSegmentResponseSchema(minItems, maxItems, request.personas.length),
+      },
+      [
+        { thinkingLevel: "high", timeoutMs: TIMEOUT_SEGMENTS_HIGH_MS },
+        { thinkingLevel: "medium", timeoutMs: TIMEOUT_SEGMENTS_FALLBACK_MS },
+      ],
+    );
+
+    const segments = normalizeSegments(data, {
+      usablePersonaIndices,
+      reservedNames: [...request.existingSegments.map((s) => s.name), ...request.removedNames],
+      existingDimensions: request.existingSegments.map((s) => s.dimension),
+      planAudiences: request.planAudiences,
+      maxCount,
+    });
+
+    if (segments.length === 0) {
+      res.status(502).json({ error: "The model returned no usable segment recommendations. Please try again." });
+      return;
+    }
+
+    console.log(`[API /api/generate-segments] ${request.mode}: ${segments.length} segment(s) via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
+    res.json({ segments, model: GEMINI_FLASH_MODEL, thinkingLevel });
+  } catch (err: any) {
+    console.error("Error in /api/generate-segments:", err);
+    res.status(502).json({ error: "Could not generate segment recommendations.", details: err?.message || String(err) });
   }
 });
 
