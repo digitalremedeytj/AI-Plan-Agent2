@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Sparkles, Copy, Check, Info, ArrowLeftRight, TrendingUp, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2, Download } from 'lucide-react';
-import { ChannelStrategyData, CtvPublisherRecommendation } from '../types';
+import { ChannelStrategyData, CtvPublisherRecommendation, ChannelPanelOverride, ChannelOverridesMap } from '../types';
+import { EditableDetailCard } from './EditableDetailCard';
+import { SectionVisibilityButton } from './SectionVisibilityButton';
 import type { AttachedPlanningRecord, CandidateScoreComponents } from '../planning/types';
 import { isNonMediaItem } from '../utils/mediaTaxonomy';
 import {
@@ -63,6 +65,9 @@ export interface ChannelStrategySectionProps {
   canUndoPlanChange?: boolean;
   onOpenSlideStudio?: () => void;
   readOnly?: boolean;
+  onUpdateChannelOverrides?: (overrides: ChannelOverridesMap) => void;
+  isInactive?: boolean;
+  onToggleActive?: (inactive: boolean) => void;
 }
 
 export interface InternalOnlyVisibility {
@@ -101,6 +106,10 @@ const parseAllocationNumber = (value: string): number => Number(value.replace(/[
 const displayRecommendationStatus = (status: string) => status === 'CONDITIONAL' ? 'TEST' : status;
 
 interface MediaTypeDetailsProps {
+  channelId?: string;
+  overrides?: ChannelPanelOverride;
+  onUpdateOverride?: (channelId: string, override: ChannelPanelOverride) => void;
+  readOnly?: boolean;
   detailsId: string;
   gapAddressed: string;
   planningRationale: string;
@@ -134,6 +143,10 @@ const planningRecordNames = (records: AttachedPlanningRecord[] | undefined, fall
   records?.map((item) => item.displayName).join(', ') || fallback;
 
 export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
+  channelId,
+  overrides,
+  onUpdateOverride,
+  readOnly = false,
   detailsId,
   gapAddressed,
   planningRationale,
@@ -171,6 +184,56 @@ export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
     ['measurementFit', 'Measurement'],
   ];
 
+  const hiddenPanels = overrides?.hiddenPanels || [];
+  const fieldEdits = overrides?.fieldEdits || {};
+  const hasAnyOverrides = Boolean(
+    (overrides?.hiddenPanels && overrides.hiddenPanels.length > 0) ||
+    (overrides?.fieldEdits && Object.keys(overrides.fieldEdits).length > 0)
+  );
+
+  const handleTogglePanel = (panelKey: string, inactive: boolean) => {
+    if (!onUpdateOverride || !channelId) return;
+    const nextHidden = inactive
+      ? Array.from(new Set([...hiddenPanels, panelKey]))
+      : hiddenPanels.filter((p) => p !== panelKey);
+    onUpdateOverride(channelId, {
+      ...overrides,
+      hiddenPanels: nextHidden,
+    });
+  };
+
+  const handleSavePanel = (panelKey: string, title: string, content: string) => {
+    if (!onUpdateOverride || !channelId) return;
+    onUpdateOverride(channelId, {
+      ...overrides,
+      fieldEdits: {
+        ...fieldEdits,
+        [panelKey]: { title, content },
+      },
+    });
+  };
+
+  const handleResetPanel = (panelKey: string) => {
+    if (!onUpdateOverride || !channelId) return;
+    const nextEdits = { ...fieldEdits };
+    delete nextEdits[panelKey];
+    const nextHidden = hiddenPanels.filter((p) => p !== panelKey);
+    onUpdateOverride(channelId, {
+      ...overrides,
+      fieldEdits: nextEdits,
+      hiddenPanels: nextHidden,
+    });
+  };
+
+  const handleResetAllChannelPanels = () => {
+    if (!onUpdateOverride || !channelId) return;
+    onUpdateOverride(channelId, {
+      ...overrides,
+      fieldEdits: {},
+      hiddenPanels: [],
+    });
+  };
+
   return (
     <div id={detailsId} className="mt-4 border-t border-slate-100 pt-4">
       {isPreview && (
@@ -186,14 +249,82 @@ export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
       )}
 
       <div className="grid gap-3 text-xs md:grid-cols-2">
-        {aiAssessed && gapAddressed && <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Gap addressed: </span><span className="text-slate-700">{gapAddressed}</span></div>}
-        {aiAssessed && planningRationale && <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Planning rationale: </span><span className="text-slate-700">{planningRationale}</span></div>}
-        {aiAssessed && activationGuidance && <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Activation guidance: </span><span className="text-slate-700">{activationGuidance}</span></div>}
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Targeting tactics: </span><span className="text-slate-700">{planningRecordNames(targetingTactics, 'None specified.')}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3">
-          <span className="font-bold text-slate-900">Publishers: </span>
-          <span className="text-slate-700">
-            {publishers && publishers.length > 0 ? (
+        {aiAssessed && (gapAddressed || fieldEdits['gapAddressed'] || !readOnly) && (
+          <EditableDetailCard
+            panelKey="gapAddressed"
+            defaultTitle="Gap addressed"
+            defaultContent={gapAddressed}
+            titleOverride={fieldEdits['gapAddressed']?.title}
+            contentOverride={fieldEdits['gapAddressed']?.content}
+            isInactive={hiddenPanels.includes('gapAddressed')}
+            readOnly={readOnly}
+            onToggleActive={(inactive) => handleTogglePanel('gapAddressed', inactive)}
+            onSave={(title, content) => handleSavePanel('gapAddressed', title, content)}
+            onReset={() => handleResetPanel('gapAddressed')}
+            hasOverride={Boolean(fieldEdits['gapAddressed'] || hiddenPanels.includes('gapAddressed'))}
+          />
+        )}
+
+        {aiAssessed && (planningRationale || fieldEdits['planningRationale'] || !readOnly) && (
+          <EditableDetailCard
+            panelKey="planningRationale"
+            defaultTitle="Planning rationale"
+            defaultContent={planningRationale}
+            titleOverride={fieldEdits['planningRationale']?.title}
+            contentOverride={fieldEdits['planningRationale']?.content}
+            isInactive={hiddenPanels.includes('planningRationale')}
+            readOnly={readOnly}
+            onToggleActive={(inactive) => handleTogglePanel('planningRationale', inactive)}
+            onSave={(title, content) => handleSavePanel('planningRationale', title, content)}
+            onReset={() => handleResetPanel('planningRationale')}
+            hasOverride={Boolean(fieldEdits['planningRationale'] || hiddenPanels.includes('planningRationale'))}
+          />
+        )}
+
+        {aiAssessed && (activationGuidance || fieldEdits['activationGuidance'] || !readOnly) && (
+          <EditableDetailCard
+            panelKey="activationGuidance"
+            defaultTitle="Activation guidance"
+            defaultContent={activationGuidance}
+            titleOverride={fieldEdits['activationGuidance']?.title}
+            contentOverride={fieldEdits['activationGuidance']?.content}
+            isInactive={hiddenPanels.includes('activationGuidance')}
+            readOnly={readOnly}
+            onToggleActive={(inactive) => handleTogglePanel('activationGuidance', inactive)}
+            onSave={(title, content) => handleSavePanel('activationGuidance', title, content)}
+            onReset={() => handleResetPanel('activationGuidance')}
+            hasOverride={Boolean(fieldEdits['activationGuidance'] || hiddenPanels.includes('activationGuidance'))}
+          />
+        )}
+
+        <EditableDetailCard
+          panelKey="targetingTactics"
+          defaultTitle="Targeting tactics"
+          defaultContent={planningRecordNames(targetingTactics, 'None specified.')}
+          titleOverride={fieldEdits['targetingTactics']?.title}
+          contentOverride={fieldEdits['targetingTactics']?.content}
+          isInactive={hiddenPanels.includes('targetingTactics')}
+          readOnly={readOnly}
+          onToggleActive={(inactive) => handleTogglePanel('targetingTactics', inactive)}
+          onSave={(title, content) => handleSavePanel('targetingTactics', title, content)}
+          onReset={() => handleResetPanel('targetingTactics')}
+          hasOverride={Boolean(fieldEdits['targetingTactics'] || hiddenPanels.includes('targetingTactics'))}
+        />
+
+        <EditableDetailCard
+          panelKey="publishers"
+          defaultTitle="Publishers"
+          defaultContent={publishers && publishers.length > 0 ? publishers.map((p) => p.displayName).join(', ') : 'None specified.'}
+          titleOverride={fieldEdits['publishers']?.title}
+          contentOverride={fieldEdits['publishers']?.content}
+          isInactive={hiddenPanels.includes('publishers')}
+          readOnly={readOnly}
+          onToggleActive={(inactive) => handleTogglePanel('publishers', inactive)}
+          onSave={(title, content) => handleSavePanel('publishers', title, content)}
+          onReset={() => handleResetPanel('publishers')}
+          hasOverride={Boolean(fieldEdits['publishers'] || hiddenPanels.includes('publishers'))}
+          customView={
+            publishers && publishers.length > 0 ? (
               publishers.map((item, idx) => (
                 <span key={item.id || idx} title={item.rationale || undefined}>
                   {item.displayName}{idx < publishers.length - 1 ? ', ' : ''}
@@ -201,16 +332,112 @@ export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
               ))
             ) : (
               'None specified.'
-            )}
-          </span>
-        </div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Creative enhancements: </span><span className="text-slate-700">{planningRecordNames(creativeEnhancements, 'None suggested.')}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Inventory controls: </span><span className="text-slate-700">{planningRecordNames(inventoryControls, 'None specified.')}</span></div>
-        {aiAssessed && measurementApproach && <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement approach: </span><span className="text-slate-700">{measurementApproach}</span></div>}
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Measurement capabilities: </span><span className="text-slate-700">{planningRecordNames(measurementCapabilities, 'None specified.')}</span></div>
-        <div className="rounded-xl bg-slate-50 p-3"><span className="font-bold text-slate-900">Evidence: </span><span className="text-slate-700">{evidence.slice(0, 2).map((item) => item.detail).join(' ') || 'No additional evidence was supplied.'}</span></div>
-        {aiAssessed && decisionRule && <div className="rounded-xl bg-slate-50 p-3 md:col-span-2"><span className="font-bold text-slate-900">Decision rule: </span><span className="text-slate-700">{decisionRule}</span></div>}
+            )
+          }
+        />
+
+        <EditableDetailCard
+          panelKey="creativeEnhancements"
+          defaultTitle="Creative enhancements"
+          defaultContent={planningRecordNames(creativeEnhancements, 'None suggested.')}
+          titleOverride={fieldEdits['creativeEnhancements']?.title}
+          contentOverride={fieldEdits['creativeEnhancements']?.content}
+          isInactive={hiddenPanels.includes('creativeEnhancements')}
+          readOnly={readOnly}
+          onToggleActive={(inactive) => handleTogglePanel('creativeEnhancements', inactive)}
+          onSave={(title, content) => handleSavePanel('creativeEnhancements', title, content)}
+          onReset={() => handleResetPanel('creativeEnhancements')}
+          hasOverride={Boolean(fieldEdits['creativeEnhancements'] || hiddenPanels.includes('creativeEnhancements'))}
+        />
+
+        <EditableDetailCard
+          panelKey="inventoryControls"
+          defaultTitle="Inventory controls"
+          defaultContent={planningRecordNames(inventoryControls, 'None specified.')}
+          titleOverride={fieldEdits['inventoryControls']?.title}
+          contentOverride={fieldEdits['inventoryControls']?.content}
+          isInactive={hiddenPanels.includes('inventoryControls')}
+          readOnly={readOnly}
+          onToggleActive={(inactive) => handleTogglePanel('inventoryControls', inactive)}
+          onSave={(title, content) => handleSavePanel('inventoryControls', title, content)}
+          onReset={() => handleResetPanel('inventoryControls')}
+          hasOverride={Boolean(fieldEdits['inventoryControls'] || hiddenPanels.includes('inventoryControls'))}
+        />
+
+        {aiAssessed && (measurementApproach || fieldEdits['measurementApproach'] || !readOnly) && (
+          <EditableDetailCard
+            panelKey="measurementApproach"
+            defaultTitle="Measurement approach"
+            defaultContent={measurementApproach}
+            titleOverride={fieldEdits['measurementApproach']?.title}
+            contentOverride={fieldEdits['measurementApproach']?.content}
+            isInactive={hiddenPanels.includes('measurementApproach')}
+            readOnly={readOnly}
+            onToggleActive={(inactive) => handleTogglePanel('measurementApproach', inactive)}
+            onSave={(title, content) => handleSavePanel('measurementApproach', title, content)}
+            onReset={() => handleResetPanel('measurementApproach')}
+            hasOverride={Boolean(fieldEdits['measurementApproach'] || hiddenPanels.includes('measurementApproach'))}
+          />
+        )}
+
+        <EditableDetailCard
+          panelKey="measurementCapabilities"
+          defaultTitle="Measurement capabilities"
+          defaultContent={planningRecordNames(measurementCapabilities, 'None specified.')}
+          titleOverride={fieldEdits['measurementCapabilities']?.title}
+          contentOverride={fieldEdits['measurementCapabilities']?.content}
+          isInactive={hiddenPanels.includes('measurementCapabilities')}
+          readOnly={readOnly}
+          onToggleActive={(inactive) => handleTogglePanel('measurementCapabilities', inactive)}
+          onSave={(title, content) => handleSavePanel('measurementCapabilities', title, content)}
+          onReset={() => handleResetPanel('measurementCapabilities')}
+          hasOverride={Boolean(fieldEdits['measurementCapabilities'] || hiddenPanels.includes('measurementCapabilities'))}
+        />
+
+        <EditableDetailCard
+          panelKey="evidence"
+          defaultTitle="Evidence"
+          defaultContent={evidence.slice(0, 2).map((item) => item.detail).join(' ') || 'No additional evidence was supplied.'}
+          titleOverride={fieldEdits['evidence']?.title}
+          contentOverride={fieldEdits['evidence']?.content}
+          isInactive={hiddenPanels.includes('evidence')}
+          readOnly={readOnly}
+          onToggleActive={(inactive) => handleTogglePanel('evidence', inactive)}
+          onSave={(title, content) => handleSavePanel('evidence', title, content)}
+          onReset={() => handleResetPanel('evidence')}
+          hasOverride={Boolean(fieldEdits['evidence'] || hiddenPanels.includes('evidence'))}
+        />
+
+        {aiAssessed && (decisionRule || fieldEdits['decisionRule'] || !readOnly) && (
+          <EditableDetailCard
+            panelKey="decisionRule"
+            defaultTitle="Decision rule"
+            defaultContent={decisionRule}
+            titleOverride={fieldEdits['decisionRule']?.title}
+            contentOverride={fieldEdits['decisionRule']?.content}
+            isInactive={hiddenPanels.includes('decisionRule')}
+            readOnly={readOnly}
+            fullWidth
+            onToggleActive={(inactive) => handleTogglePanel('decisionRule', inactive)}
+            onSave={(title, content) => handleSavePanel('decisionRule', title, content)}
+            onReset={() => handleResetPanel('decisionRule')}
+            hasOverride={Boolean(fieldEdits['decisionRule'] || hiddenPanels.includes('decisionRule'))}
+          />
+        )}
       </div>
+
+      {!readOnly && hasAnyOverrides && (
+        <div className="mt-2.5 flex items-center justify-end">
+          <button
+            type="button"
+            onClick={handleResetAllChannelPanels}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Reset all card edits for this channel
+          </button>
+        </div>
+      )}
 
       {aiAssessed && scoreComponents && (
         <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
@@ -258,7 +485,18 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   canUndoPlanChange = false,
   onOpenSlideStudio,
   readOnly = false,
+  onUpdateChannelOverrides,
+  isInactive = false,
+  onToggleActive,
 }) => {
+  const handleUpdateChannelOverride = (channelId: string, override: ChannelPanelOverride) => {
+    if (!onUpdateChannelOverrides) return;
+    const nextOverrides: ChannelOverridesMap = {
+      ...(data.channelOverrides || {}),
+      [channelId]: override,
+    };
+    onUpdateChannelOverrides(nextOverrides);
+  };
   // The plan's own AI-selected publishers, or none. There is no canned fallback list: a CTV line
   // with no publishers says so rather than showing a generic Hulu/Disney+/Roku/ESPN set.
   const effectiveCtvPublishers = (ctvPublishers && ctvPublishers.length > 0)
@@ -314,6 +552,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   }, [data?.generatedAt]);
 
   if (!data) return null;
+  if (readOnly && isInactive) return null;
   const mediaPlan = data.mediaPlan;
   const manualIncludedIds = new Set(data.manualIncludedChannelIds || []);
   const selectedChannelIds = new Set(mediaPlan?.channels.map((channel) => channel.channelId) || []);
@@ -540,7 +779,13 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   const rfpChannelNames = (data.rfpChannels || []).map(c => c.channelName).join(', ');
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8 my-8 font-sans">
+    <div
+      className={`group relative rounded-2xl border p-6 md:p-8 my-8 font-sans transition-all ${
+        isInactive
+          ? 'border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70'
+          : 'border-slate-200 bg-white shadow-sm'
+      }`}
+    >
       {/* Header Bar */}
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 pb-6 border-b border-slate-100">
         <div>
@@ -564,6 +809,14 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-3">
+          {!readOnly && onToggleActive && (
+            <SectionVisibilityButton
+              sectionKey="channels"
+              isInactive={isInactive}
+              onToggle={(_, inactive) => onToggleActive(inactive)}
+            />
+          )}
+
           {/* Budget Strategy Mode Toggle */}
           {mediaPlan?.planningMode !== 'greenfield' && <div className="inline-flex rounded-lg p-1 bg-slate-100 border border-slate-200 text-xs font-medium">
             <button
@@ -892,6 +1145,10 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
                     {expandedChannels.has(channel.channelId) && (
                       <MediaTypeDetails
+                        channelId={channel.channelId}
+                        overrides={data.channelOverrides?.[channel.channelId]}
+                        onUpdateOverride={handleUpdateChannelOverride}
+                        readOnly={readOnly}
                         detailsId={detailsId}
                         gapAddressed={channel.gapAddressed}
                         planningRationale={channel.allocationRationale}
@@ -1031,6 +1288,10 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
                             {expandedChannels.has(candidate.product.id) && (
                               <MediaTypeDetails
+                                channelId={candidate.product.id}
+                                overrides={data.channelOverrides?.[candidate.product.id]}
+                                onUpdateOverride={handleUpdateChannelOverride}
+                                readOnly={readOnly}
                                 detailsId={detailsId}
                                 gapAddressed={candidate.gapAddressed}
                                 planningRationale={candidate.allocationRationale}

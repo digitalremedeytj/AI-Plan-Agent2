@@ -568,14 +568,20 @@ export function createUserSegment(
  */
 export function profileBaselineFingerprint(profile: Record<string, any> | null | undefined): string {
   if (!profile) return "";
-  const { segmentRecommendations: _segments, personas, ...rest } = profile;
+  const { segmentRecommendations: _segments, personas, channelStrategy, hiddenSections: _hiddenSections, ...rest } = profile;
   const personaCore = Array.isArray(personas)
     ? personas.map((p: any) => {
       const { avatarUrl: _avatar, ...core } = p || {};
       return core;
     })
     : personas;
-  return JSON.stringify({ ...rest, personas: personaCore });
+  // If channelStrategy exists, strip channelOverrides from baseline check so overrides auto-save seamlessly
+  let cleanChannelStrategy = channelStrategy;
+  if (channelStrategy && typeof channelStrategy === "object") {
+    const { channelOverrides: _overrides, ...csRest } = channelStrategy;
+    cleanChannelStrategy = csRest;
+  }
+  return JSON.stringify({ ...rest, personas: personaCore, channelStrategy: cleanChannelStrategy });
 }
 
 // --- CSV export -----------------------------------------------------------------------
