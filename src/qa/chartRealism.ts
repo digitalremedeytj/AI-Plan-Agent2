@@ -1,10 +1,12 @@
 // Charts may carry model estimates where the research has no figure. Two things keep those
 // honest and believable:
 //
-//   * Labelling. A point whose number is not written anywhere in the research is marked
-//     isModeled, so the UI shows the chart as estimated. The check only ever adds the label:
-//     a number that merely appears somewhere in the dossiers is not proof it was sourced, so a
-//     point the model itself called modeled stays modeled.
+//   * Labelling. A chart counts as sourced only when the research states every one of its
+//     values (a share as a percentage). Otherwise every point is marked isModeled, so the UI
+//     shows the chart as estimated. Checking points one at a time was too lax: small numbers
+//     such as 12 or 27 appear somewhere in any long research text, so invented splits passed
+//     as sourced. The check only ever adds the label; a point the model itself called modeled
+//     stays modeled.
 //   * Shape. Estimated series drift toward tidy patterns - a straight climb through the day,
 //     evenly spaced affinity indices, every share a multiple of five. Real audience data is
 //     lumpier. `findUnrealisticCharts` names those patterns so the server can ask for one
@@ -21,6 +23,14 @@ export function numbersInText(text: string): number[] {
     .filter((value) => Number.isFinite(value));
 }
 
+// Numbers written as percentages ("27%", "27 percent"), for share charts.
+export function percentagesInText(text: string): number[] {
+  return (text.match(/\d+(?:\.\d+)?(?=\s*(?:%|percent\b))/gi) || []).map(Number).filter((value) => Number.isFinite(value));
+}
+
+// Charts whose values are shares of 100; the rest are indices.
+const SHARE_CHARTS = new Set(["age", "gender", "income", "device"]);
+
 // Synthesis may round a reported 50.6% to 51; that still counts as the reported figure.
 const SOURCED_TOLERANCE = 0.5;
 
@@ -34,17 +44,19 @@ const looksLabelledAsEstimate = (source: unknown) => /estimat|model|proxy|direct
  * rescaling moves them away from the reported numbers.
  */
 export function labelEstimatedPoints(profile: any, researchText: string, onlyChartIds?: Set<string>): number {
-  const reported = numbersInText(researchText);
-  const isReported = (value: number) => reported.some((n) => Math.abs(n - value) <= SOURCED_TOLERANCE);
+  const numbers = numbersInText(researchText);
+  const percentages = percentagesInText(researchText);
   let labelled = 0;
   for (const chart of PROFILE_CHARTS) {
     if (onlyChartIds && !onlyChartIds.has(chart.id)) continue;
     const data = profile?.[chart.section]?.[chart.key];
     if (!Array.isArray(data)) continue;
+    const reported = SHARE_CHARTS.has(chart.id) ? percentages : numbers;
+    const isReported = (value: number) => Number.isFinite(value) && reported.some((n) => Math.abs(n - value) <= SOURCED_TOLERANCE);
+    const chartIsSourced = data.length > 0 && data.every((point: any) => point?.isModeled !== true && isReported(pointValue(point)));
+    if (chartIsSourced) continue;
     for (const point of data) {
       if (!point || point.isModeled === true) continue;
-      const value = pointValue(point);
-      if (Number.isFinite(value) && isReported(value)) continue;
       point.isModeled = true;
       if (!looksLabelledAsEstimate(point.source)) {
         point.source = point.source ? `ScoutAI estimate (informed by ${point.source})` : "ScoutAI estimate";

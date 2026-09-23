@@ -3458,17 +3458,27 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
           systemInstruction: "You estimate how a target audience differs from the U.S. national population. For each bracket or time period you give an index: 100 = same as the national baseline, 150 = 1.5x as likely, 60 = 0.6x. Base every skew on the research and on well-established facts about this kind of audience; where there is no reason to differ, use 100 and say so. Do not flatten differences that the research supports, and do not invent sharp skews it does not. Use the exact labels given.",
           input: `AUDIENCE: ${cleanAudienceDesc || cleanUrl}\nGEOGRAPHY: ${geography}\nCAMPAIGN FOCUS: ${campaignFocus}\n\nNATIONAL BASELINES TO ADJUST:\n${describeBaselines(baselineIds)}\n\nFor day-of-week and hour-of-day, skew each period for this audience's own routine (work schedule, life stage, when they stream or browse) - the baseline is national TV viewing.\n\nRESEARCH - DEMOGRAPHICS:\n${dossierExcerpt("Demographics")}\n\nRESEARCH - TEMPORAL & PURCHASE:\n${dossierExcerpt("Temporal & Purchase")}\n\nReturn one index per label for each chart listed.`,
           schema: audienceSkewSchema(baselineIds),
-          thinkingLevel: "medium",
+          // Low: at medium this call hit its 45s budget in a live run; it is a small, structured
+          // judgement per bracket, and the revision calls at low returned in 2-4s.
+          thinkingLevel: "low",
           timeoutMs: TIMEOUT_BASELINE_SKEWS_MS,
+        }).catch((err: any) => {
+          console.warn(`[BASELINE] Skew call failed; using unadjusted national baselines (${err?.message || err}).`);
+          pushAlert(generationAlerts, { section: "demographics", severity: "flagged", message: `Audience adjustments for the Census/BLS baseline charts could not be computed (${err?.message || err}); those charts show the unadjusted U.S. national baseline.` });
+          return null;
         });
         for (const id of baselineIds) {
           const chart = PROFILE_CHARTS.find((spec) => spec.id === id)!;
           const baseline = NATIONAL_BASELINES[id];
-          const points = applyAudienceSkews(baseline, skews?.[id], `ScoutAI estimate: ${baseline.source}, adjusted for this audience`);
+          let points = skews ? applyAudienceSkews(baseline, skews[id], `ScoutAI estimate: ${baseline.source}, adjusted for this audience`) : null;
           if (!points) {
-            console.warn(`[BASELINE] ${chart.label}: skews did not cover every bracket; keeping the synthesized estimate.`);
-            continue;
+            // A published national distribution, labelled as such, is still real data - better
+            // than an invented split or an empty chart.
+            const labels = baseline.kind === "share" ? baseline.brackets.map((b) => b.label) : baseline.periods.map((p) => p.label);
+            points = applyAudienceSkews(baseline, labels.map((label) => ({ label, index: 100 })), `U.S. national baseline, not adjusted for this audience: ${baseline.source}`);
+            if (skews) console.warn(`[BASELINE] ${chart.label}: skews did not cover every bracket; showing the unadjusted national baseline.`);
           }
+          if (!points) continue;
           if (!originalData[chart.section] || typeof originalData[chart.section] !== "object") originalData[chart.section] = {};
           originalData[chart.section][chart.key] = points;
           builtFromBaseline.add(id);

@@ -9,22 +9,34 @@ test("numbers are read from research text including percentages, decimals and th
   assert.deepEqual(numbersInText("51% female, 23.5% aged 25-34, 1,250 respondents, index 225"), [51, 23.5, 25, 34, 1250, 225]);
 });
 
-test("a point the research does not state is labelled as an estimate, and a reported one is not", () => {
+test("a chart counts as sourced only when the research states every value", () => {
   const profile: any = {
     demographics: {
       genderChartData: [
         { gender: "Female", value: 51, isModeled: false, source: "Pew 2025" },
         { gender: "Male", value: 47, isModeled: false, source: "Pew 2025" },
       ],
+      ageChartData: [
+        { range: "18-34", value: 38, isModeled: false, source: "Pew 2025" },
+        { range: "35+", value: 62, isModeled: false, source: "Pew 2025" },
+      ],
     },
   };
 
-  const labelled = labelEstimatedPoints(profile, "Pew: 50.6% of players are women.");
+  const labelled = labelEstimatedPoints(profile, "Pew: 50.6% of players are women. 38% are 18-34 and 62% are 35 or older.");
 
-  assert.equal(labelled, 1);
-  assert.equal(profile.demographics.genderChartData[0].isModeled, false, "50.6 rounds to 51, so it is sourced");
-  assert.equal(profile.demographics.genderChartData[1].isModeled, true);
+  assert.deepEqual(profile.demographics.ageChartData.map((p: any) => p.isModeled), [false, false], "every age value is stated");
+  assert.deepEqual(profile.demographics.genderChartData.map((p: any) => p.isModeled), [true, true], "47% is not in the research, so the whole split is an estimate");
   assert.equal(profile.demographics.genderChartData[1].source, "ScoutAI estimate (informed by Pew 2025)");
+  assert.equal(labelled, 2);
+});
+
+test("a share that appears only as a bare number, not a percentage, is not treated as sourced", () => {
+  const profile: any = { demographics: { ageChartData: [{ range: "25-34", value: 27, isModeled: false }, { range: "35+", value: 73, isModeled: false }] } };
+
+  labelEstimatedPoints(profile, "27 respondents and 73 stores were surveyed.");
+
+  assert.ok(profile.demographics.ageChartData.every((p: any) => p.isModeled === true));
 });
 
 test("a point the model called modeled stays modeled even if the number happens to appear in the research", () => {
