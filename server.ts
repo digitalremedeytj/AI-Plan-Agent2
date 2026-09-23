@@ -31,6 +31,8 @@ import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import { applyProgrammaticSanityChecks } from "./src/qa/chartSanity";
 import { resolveGroundingUrls } from "./src/research/groundingUrls";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
+import { applyAudienceSkews, audienceSkewSchema, chartsNeedingBaselineEstimates, describeBaselines } from "./src/qa/baselineEstimates";
+import { NATIONAL_BASELINES } from "./src/planning/knowledge/nationalBaselines";
 import {
   PROFILE_CHARTS,
   checkPersonas,
@@ -148,6 +150,8 @@ const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
 // Low thinking: reshaping one small array needs little reasoning, and at medium the domain
 // chart revision timed out at 30s in live runs.
 const TIMEOUT_CHART_REVISION_MS = 40000;
+// One call returning audience skews for every chart built from a national baseline.
+const TIMEOUT_BASELINE_SKEWS_MS = 45000;
 // Per-redirect budget when turning grounding links back into publisher URLs. Deliberately short:
 // this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
@@ -456,7 +460,7 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Paragraph overview of the demographics (age, gender, income, geo)." },
         ageChartData: {
           type: Type.ARRAY,
-          description: "Age bracket split percentage data. Sums to ~100.",
+          description: "Age bracket split percentage data. Sums to ~100. Empty array if no dossier reports this audience's split (the server then estimates it from Census baselines).",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -470,7 +474,7 @@ const audienceProfileSchema = {
         },
         genderChartData: {
           type: Type.ARRAY,
-          description: "Gender split percentage data. Sums to ~100.",
+          description: "Gender split percentage data. Sums to ~100. Empty array if no dossier reports this audience's split.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -484,7 +488,7 @@ const audienceProfileSchema = {
         },
         incomeChartData: {
           type: Type.ARRAY,
-          description: "Income bracket split percentage data.",
+          description: "Income bracket split percentage data. Empty array if no dossier reports this audience's split.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -506,7 +510,7 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Paragraph overview of digital/browsing vs CTV viewing temporal patterns." },
         dayOfWeekChartData: {
           type: Type.ARRAY,
-          description: "Activity index/percentage by Day of Week. 7 items (Mon-Sun).",
+          description: "Activity index/percentage by Day of Week. 7 items (Mon-Sun), or an empty array if no dossier reports it for this audience.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -520,7 +524,7 @@ const audienceProfileSchema = {
         },
         hourOfDayChartData: {
           type: Type.ARRAY,
-          description: "Activity index/percentage by general hour block. 6 to 12 items.",
+          description: "Activity index/percentage by general hour block. 6 to 12 items, or an empty array if no dossier reports it for this audience.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -3180,6 +3184,7 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 6. Ensure demographic charts, device charts, web share charts, and day/hour charts are fully populated with exact numbers. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'. Provide realistic index values (e.g. 120%, 150%, 210%, 280% depending on target audience domain affinity).
 7. Use current ${currentYear} data. Match geography: ${geography}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
 7b. REALISTIC, LABELLED ESTIMATES: Where a chart value comes from a dossier, copy it as reported and name that source. Where the dossiers have no figure and you estimate one, set 'isModeled' to true and make the source say it is an estimate (e.g. 'ScoutAI estimate informed by Nielsen 2025'). Estimates must look like real audience data, not a formula: day-of-week and hour-of-day series are uneven (hour-of-day has an early-morning low, a smaller daytime bump, a prime-time peak and an audience-specific late-night tail - never a straight climb; adjacent days never rise in a straight line), domain affinity indices have uneven gaps and precise values (e.g. 312, 287, 243 - never all multiples of 5 or 10), and shares are precise numbers (e.g. 43, 27, 14) rather than multiples of 5. The server checks for straight runs, even spacing, round numbers and repeated values and sends offending charts back for revision.
+7c. NATIONAL-BASELINE CHARTS: For 'demographics.ageChartData', 'demographics.genderChartData', 'demographics.incomeChartData', 'temporalPatterns.dayOfWeekChartData' and 'temporalPatterns.hourOfDayChartData', use figures only if a dossier reports THIS audience's split, and copy them as reported. If it does not, return that chart as an EMPTY array and do not quote numbers for it in the narrative: the server builds it from U.S. Census and BLS national baselines adjusted for this audience. The narrative may still describe the audience's skew qualitatively (e.g. "skews younger than the U.S. adult population").
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
    - You are STRICTLY PROHIBITED from fabricating, guessing, or making up consumer desire/sentiment figures, survey percentages, or market statistics (such as "85% of gamers express a desire to see product recommendations on their TV home screens").
    - Every single statistic or percentage mentioned in the recommendations ('recommendations.why' or 'recommendations.action') or core takeaways ('takeaways') MUST be directly grounded and cross-referenced from the provided parallel research dossiers.
@@ -3433,7 +3438,51 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // estimate. All of it runs on the values as synthesis wrote them, before rescaling.
     for (const alert of clearSectionsForFailedDossiers(originalData, failedDossiers)) pushAlert(generationAlerts, alert);
     const researchText = researchResults.filter((result) => !result.failed).map((result) => result.text).join("\n");
-    const unrealistic = findUnrealisticCharts(originalData);
+    // Label what the research did not state first, so the baseline step can tell a chart that
+    // reports this audience's figures (kept) from one that is estimated anyway (rebuilt).
+    labelEstimatedPoints(originalData, researchText);
+
+    // Age, gender, income, day and hour charts without research figures are built from U.S.
+    // Census / BLS national baselines: the model supplies only how this audience differs from
+    // the nation and code applies it, so the estimate keeps a real shape.
+    const builtFromBaseline = new Set<string>();
+    const baselineIds = chartsNeedingBaselineEstimates(originalData, failedDossiers);
+    if (baselineIds.length > 0) {
+      sendEvent("status", { message: `Estimating ${baselineIds.length} chart${baselineIds.length === 1 ? "" : "s"} from U.S. Census and BLS national baselines...` });
+      const dossierExcerpt = (label: string) => {
+        const dossier = researchResults.find((result) => result.label === label);
+        return dossier && !dossier.failed ? dossier.text.slice(0, 4000) : "(not available)";
+      };
+      try {
+        const skews: any = await generateStructuredJson(ai, {
+          systemInstruction: "You estimate how a target audience differs from the U.S. national population. For each bracket or time period you give an index: 100 = same as the national baseline, 150 = 1.5x as likely, 60 = 0.6x. Base every skew on the research and on well-established facts about this kind of audience; where there is no reason to differ, use 100 and say so. Do not flatten differences that the research supports, and do not invent sharp skews it does not. Use the exact labels given.",
+          input: `AUDIENCE: ${cleanAudienceDesc || cleanUrl}\nGEOGRAPHY: ${geography}\nCAMPAIGN FOCUS: ${campaignFocus}\n\nNATIONAL BASELINES TO ADJUST:\n${describeBaselines(baselineIds)}\n\nFor day-of-week and hour-of-day, skew each period for this audience's own routine (work schedule, life stage, when they stream or browse) - the baseline is national TV viewing.\n\nRESEARCH - DEMOGRAPHICS:\n${dossierExcerpt("Demographics")}\n\nRESEARCH - TEMPORAL & PURCHASE:\n${dossierExcerpt("Temporal & Purchase")}\n\nReturn one index per label for each chart listed.`,
+          schema: audienceSkewSchema(baselineIds),
+          thinkingLevel: "medium",
+          timeoutMs: TIMEOUT_BASELINE_SKEWS_MS,
+        });
+        for (const id of baselineIds) {
+          const chart = PROFILE_CHARTS.find((spec) => spec.id === id)!;
+          const baseline = NATIONAL_BASELINES[id];
+          const points = applyAudienceSkews(baseline, skews?.[id], `ScoutAI estimate: ${baseline.source}, adjusted for this audience`);
+          if (!points) {
+            console.warn(`[BASELINE] ${chart.label}: skews did not cover every bracket; keeping the synthesized estimate.`);
+            continue;
+          }
+          if (!originalData[chart.section] || typeof originalData[chart.section] !== "object") originalData[chart.section] = {};
+          originalData[chart.section][chart.key] = points;
+          builtFromBaseline.add(id);
+        }
+        console.log(`[BASELINE] Built ${builtFromBaseline.size}/${baselineIds.length} charts from national baselines: ${[...builtFromBaseline].join(", ")}.`);
+      } catch (err: any) {
+        console.warn(`[BASELINE] Skew call failed; keeping synthesized estimates (${err?.message || err}).`);
+        pushAlert(generationAlerts, { section: "demographics", severity: "flagged", message: `Estimated demographic and timing charts could not be built from U.S. Census/BLS baselines (${err?.message || err}); the model's own estimates are shown instead.` });
+      }
+    }
+
+    // Charts built from a baseline keep its real shape (TV viewing does climb all day to an
+    // 8-9 PM peak), so they are not sent back for "looking" too steady.
+    const unrealistic = findUnrealisticCharts(originalData).filter(({ chart }) => !builtFromBaseline.has(chart.id));
     if (unrealistic.length > 0) {
       sendEvent("status", { message: `Refining ${unrealistic.length} chart${unrealistic.length === 1 ? "" : "s"} whose estimates looked unrealistic...` });
       await Promise.all(unrealistic.map(async ({ chart, problems }) => {
@@ -3513,7 +3562,7 @@ You MUST score across these five categories (0 to 20 points each):
 CONTEXT YOU MUST APPLY BEFORE SCORING:
 - Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
 ${channelStrategyGuidance}
-- Chart values marked 'isModeled: true' are labelled planning estimates, shown to the reader as estimated. Judge them on plausibility and consistency with the narrative, not on the absence of a published source. Share charts are rescaled to 100 by the server, so do not flag rounding.
+- Chart values marked 'isModeled: true' are labelled planning estimates, shown to the reader as estimated. Judge them on plausibility and consistency with the narrative, not on the absence of a published source. Charts whose source reads 'ScoutAI estimate: U.S. Census Bureau ...' or '... Bureau of Labor Statistics ...' are published national distributions adjusted for this audience; national TV viewing genuinely rises through the day to an 8-9 PM peak. Share charts are rescaled to 100 by the server, so do not flag rounding.
 - 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
 
 Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
@@ -3717,6 +3766,11 @@ Please correct the profile to resolve all issues.`
       const before = chartsBeforeRemediation.get(chart.id);
       const after = finalProfile?.[chart.section]?.[chart.key];
       if (JSON.stringify(after ?? null) === before) continue;
+      if (builtFromBaseline.has(chart.id) && before && before !== "null") {
+        // Built from published baselines by code; remediation rewrites prose, not these.
+        finalProfile[chart.section][chart.key] = JSON.parse(before);
+        continue;
+      }
       const problems = chartRealismProblems(chart, after);
       if (problems.length > 0 && before && before !== "null") {
         console.warn(`[CHART REALISM] ${chart.label}: remediation's rewrite looked generated (${problems.join("; ")}); kept the pre-remediation chart.`);
