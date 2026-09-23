@@ -41,7 +41,26 @@ import {
   type BriefOfRecord,
 } from "./src/research/briefOfRecord";
 import { filterCitationPool, RESEARCH_SOURCE_GUIDANCE } from "./src/research/sourceFilter";
-import { restorePublisherSelection, settlePublisherSelection } from "./src/qa/publisherSelection";
+import { settlePublisherSelection } from "./src/qa/publisherSelection";
+import { buildClaimLedger, formatClaimLedger } from "./src/qa/claimLedger";
+import { describeChannelPlan, describeCharts, describePersonas, researchForPrompt } from "./src/qa/planContext";
+import {
+  AUDIT_CATEGORIES,
+  PROSE_OWNERS,
+  auditSystemInstruction,
+  buildAuditInput,
+  normalizeAudit,
+  normalizeVerify,
+  openFindingsAsFlags,
+  planForAudit,
+  verifySystemInstruction,
+  type AuditFinding,
+  type NormalizedAudit,
+  type NormalizedVerify,
+} from "./src/qa/planAudit";
+import { REMEDIATION_SYSTEM_INSTRUCTION, applyPatches, buildRemediationInput, describeAppliedFixes, remediationSchema, type AppliedPatch } from "./src/qa/planRemediation";
+import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeSchema } from "./src/research/planNarrative";
+import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
 import { applyAudienceSkews, audienceSkewSchema, chartsNeedingBaselineEstimates, describeBaselines } from "./src/qa/baselineEstimates";
 import { NATIONAL_BASELINES } from "./src/planning/knowledge/nationalBaselines";
@@ -49,10 +68,8 @@ import {
   PROFILE_CHARTS,
   checkPersonas,
   clearSectionsForFailedDossiers,
-  mergeRemediatedProfile,
   pushAlert,
   reportChartsNotFound,
-  restoreDeletedCharts,
   type GenerationAlert,
 } from "./src/qa/generationIntegrity";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
@@ -148,8 +165,29 @@ const TIMEOUT_PARALLEL_RESEARCH_MS = 90000; // 90 seconds per parallel research 
 const TIMEOUT_SYNTHESIS_HIGH_MS = 120000;
 const TIMEOUT_SYNTHESIS_FALLBACK_MS = 60000;
 const TIMEOUT_SYNTHESIS_MS = TIMEOUT_SYNTHESIS_HIGH_MS + TIMEOUT_SYNTHESIS_FALLBACK_MS;
-const TIMEOUT_SCORING_MS = 60000;            // 60 seconds for QA scorecard evaluation (Option B)
-const TIMEOUT_CORRECTION_MS = 90000;         // 90 seconds for auto-remediation rewrite (Option B)
+const TIMEOUT_SCORING_MS = 60000;            // candidate-signal reasoning
+// QA runs on a different provider from the writer so the two do not share blind spots. Chosen
+// from a side-by-side run on a saved PetSmart plan (2026-09-23): Sol at high found real issues
+// medium missed in 92-123s; xhigh took 142-183s for no clearly better findings.
+const AUDIT_MODEL = "gpt-6-sol";
+const AUDIT_EFFORT: OpenAiEffort = "high";
+// Verify re-scores a plan it has already reviewed; medium scored in the same range at ~40s.
+const VERIFY_EFFORT: OpenAiEffort = "medium";
+const TIMEOUT_AUDIT_MS = 180000;
+const TIMEOUT_FIX_MS = 90000;
+const TIMEOUT_VERIFY_MS = 120000;
+const NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
+  { thinkingLevel: "high", timeoutMs: 100000 },
+  { thinkingLevel: "medium", timeoutMs: 50000 },
+];
+const TIMEOUT_NARRATIVE_MS = NARRATIVE_ATTEMPTS.reduce((sum, attempt) => sum + attempt.timeoutMs, 0);
+// Per-dossier research excerpt each later stage reads.
+const NARRATIVE_RESEARCH_CHARS = 12000;
+const AUDIT_RESEARCH_CHARS = 12000;
+const FIX_RESEARCH_CHARS = 6000;
+// The whole generation must finish inside Cloud Run's 900s request timeout. Late stages check
+// what is left and step aside (with an alert) rather than be cut off mid-response.
+const RUN_BUDGET_MS = 870000;
 // Segment recommendations run after the profile is delivered, so they favour quality: high
 // thinking first, one medium-thinking fallback. Together they stay inside Cloud Run's 300s.
 const TIMEOUT_SEGMENTS_HIGH_MS = 90000;
@@ -605,66 +643,6 @@ const audienceProfileSchema = {
 // 3.8 takes standard lowercase JSON Schema. Converted once at startup so a schema the converter
 // cannot map fails the boot, not the first generation.
 const audienceProfileJsonSchema = toGeminiJsonSchema(audienceProfileSchema);
-
-const auditResultSchema = {
-  type: Type.OBJECT,
-  properties: {
-    executiveSummary: {
-      type: Type.STRING,
-      description: "A 2-3 sentence candid assessment of the profile's readiness for a client presentation."
-    },
-    scorecard: {
-      type: Type.ARRAY,
-      description: "Scores for each of the five categories. Must include exactly all 5: 'Data Integrity', 'Strategic Viability', 'Platform Context', 'Audience Segmentation', 'Structural Clarity'. Each out of 20.",
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          category: { type: Type.STRING, description: "Category name" },
-          score: { type: Type.NUMBER, description: "Category score from 0 to 20" },
-          notes: { type: Type.STRING, description: "Brief reason" }
-        },
-        required: ["category", "score", "notes"]
-      }
-    },
-    totalScore: { type: Type.NUMBER, description: "Total score (0-100)" },
-    criticalRedFlags: {
-      type: Type.ARRAY,
-      description: "Statistical hallucinations, math errors, or impossible claims. Empty array if none.",
-      items: { type: Type.STRING }
-    },
-    strategicHighlights: {
-      type: Type.ARRAY,
-      description: "Actionable, smart media-buying recommendations praised.",
-      items: { type: Type.STRING }
-    },
-    fixItChecklist: {
-      type: Type.ARRAY,
-      description: "Instructions on what needs to be changed in the profile.",
-      items: { type: Type.STRING }
-    }
-  },
-  required: ["executiveSummary", "scorecard", "totalScore", "criticalRedFlags", "strategicHighlights", "fixItChecklist"]
-};
-
-const profileCorrectionSchema = {
-  type: Type.OBJECT,
-  properties: {
-    correctedProfile: audienceProfileSchema,
-    autoFixes: {
-      type: Type.ARRAY,
-      description: "All changes made to fix the red flags.",
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          issue: { type: Type.STRING, description: "The issue or red flag." },
-          resolution: { type: Type.STRING, description: "How it was corrected." }
-        },
-        required: ["issue", "resolution"]
-      }
-    }
-  },
-  required: ["correctedProfile", "autoFixes"]
-};
 
 const candidateSignalSchema = {
   type: Type.ARRAY,
@@ -2768,6 +2746,7 @@ ${trimmed}`;
 app.post("/api/generate-profile", async (req, res) => {
   // Prevent Express or Node from timing out socket connections on this long-running streaming endpoint
   req.socket.setTimeout(0);
+  const runStartedAt = Date.now();
   
   const {
     advertiserName,
@@ -3381,7 +3360,6 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
     // Publisher picks are settled here, before the channel strategy snapshots them: in the
     // enabled pool, each once, with the admin's category.
     for (const alert of settlePublisherSelection(originalData, enabledPublishers, targetPublisherCount)) pushAlert(generationAlerts, alert);
-    const settledPublishers = JSON.parse(JSON.stringify(originalData.ctvPublishers || []));
 
     // Fallback/merge RFP requirements if rfpAnalysis was supplied
     if (rfpAnalysis) {
@@ -3574,258 +3552,174 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       integrityCorrections.push(...sanity.corrections);
     };
     enforceResearchIntegrity(originalData);
-    // What the charts looked like going into QA, to spot (and if need be undo) remediation's changes.
-    const chartsBeforeRemediation = new Map(PROFILE_CHARTS.map((chart) => [chart.id, JSON.stringify(originalData?.[chart.section]?.[chart.key] ?? null)]));
+    // ---- Everything below reads the settled plan: charts, publishers and the channel plan. ----
+    const researchDossiers = researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) }));
+    const planInputs = { workingMediaBudget: Number(originalData.channelStrategy?.mediaPlan?.workingMediaBudget ?? workingMediaBudget) || 0, flightDays: Number(campaignFlightDays) || null };
+    const campaignLine = `CAMPAIGN: advertiser ${cleanAdvertiserName || cleanUrl || "not specified"}; KPIs: ${cleanKpis.join("; ") || "not specified"}; campaign focus: ${campaignFocus || "not specified"}; geography: ${geography}; working media budget $${Number(workingMediaBudget || 0).toLocaleString()} over ${campaignFlightDays || "an unspecified number of"} days; planner-named personas: ${cleanTargetPersonas.join("; ") || "none"}; uploaded media plan: ${selectedPlanOptions?.length ? "yes" : "none"}${rfpAnalysis ? "; an RFP was uploaded" : ""}.`;
+    const publishersLine = (profile: any) => `CTV PUBLISHERS (chosen from the enabled list; the selection is settled): ${(profile.ctvPublishers || []).map((p: any) => `${p.publisher} (${p.category})`).join(", ") || "none"}`;
+    const alertsLine = () => generationAlerts.length > 0
+      ? `GENERATION ALERTS (already shown to the planner):\n${generationAlerts.map((a) => `- [${a.severity}] ${a.message}`).join("\n")}`
+      : "GENERATION ALERTS: none.";
+    const ledgerFor = (profile: any) => formatClaimLedger(buildClaimLedger(profile, researchDossiers, planInputs));
+    const remainingMs = () => RUN_BUDGET_MS - (Date.now() - runStartedAt);
 
-    // The scorer is a different model with a different training cutoff, so it has no idea what
-    // "now" is. Left unanchored it read current-year figures as future-dated fabrications and
-    // charged them to Data Integrity.
-    const scoringToday = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-    // Only claim the engine owns the budget when it actually ran. A profile generated without a
-    // working-media budget has no channelStrategy, and pointing the scorer at an absent object
-    // would excuse the very gap it should be flagging.
-    const channelStrategyGuidance = originalData.channelStrategy
-      ? `- The 'channelStrategy' object is not a model output. It is produced by a deterministic planning engine from a validated Digital Remedy product catalog, and it owns budget allocation, media-type selection, product eligibility and prerequisites. Score the profile's actionability against what is in 'channelStrategy' - allocations, activation methods, measurement products, scale/stop rules and prerequisites all live there, not in the narrative recommendations. Never ask the narrative to restate or re-derive an allocation; two competing budget splits in one document is itself the defect.`
-      : `- This profile was generated without a working-media budget, so it carries no 'channelStrategy' and no allocation is expected. Score actionability on the specificity of the targeting, platform and measurement direction rather than on the absence of a budget split.`;
-
-    // 2. Scoring Agent Evaluation
-    // Deliberately sequenced after the channel strategy above. Running the two concurrently
-    // meant the QA agent's input was serialized before `originalData.channelStrategy` existed,
-    // so it scored a profile with no media plan in it and marked the profile down for omitting
-    // budget allocations, DSP routes and measurement design that the deterministic engine had
-    // in fact produced. Worse, the remediation agent then took that checklist at face value and
-    // invented a second, contradictory budget split alongside the engine's real one. The
-    // concurrency was worth roughly one buildChannelStrategy call; a scorecard that grades the
-    // document we actually ship is worth more.
-    const scoringSystemInstruction = `You are an elite Media Planning Director and Data QA Specialist at a top-tier digital advertising agency.
-Your task is to ruthlessly evaluate AI-generated "Audience Profiles" for Connected TV (CTV) and digital media campaigns and score them out of 100 points.
-
-You MUST score across these five categories (0 to 20 points each):
-1. Data Integrity & Mathematical Logic: check for statistical hallucinations (e.g. overinflated HHI, double-digit CTV QR scan rates or purchase rates). CTV QR scan rates MUST hover between 0.01% and 0.5% in reality.
-2. Strategic Viability & Media Actionability: programmatic DSP platforms, specific CTV hardware, or retail media target options mentioned instead of vague concepts.
-3. Platform & Device Context: Smart TV hardware vs mobile browsing hardware, dual-screening behaviors.
-4. Audience Segmentation & Persona Quality: mutual exclusivity of personas, logical ecommerce purchasing behaviors.
-5. Structural Formatting & Clarity: clear table labels, no contradictions between narrative text and charts (e.g. narrative says weekends peak, but Sunday index is low).
-
-CONTEXT YOU MUST APPLY BEFORE SCORING:
-- Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
-${channelStrategyGuidance}
-${briefOfRecord ? `- The profile's 'briefOfRecord' is the settled definition of who this campaign is for, written from the advertiser's own offering before any research ran. Judge audience fit against it. A persona, chart or recommendation serving a group listed in 'includedSegments' is on-target - do not flag it or ask for it to be removed. Flag only content aimed at a group outside the brief of record, or content that contradicts it.
-` : ""}- Chart values marked 'isModeled: true' are labelled planning estimates, shown to the reader as estimated. Judge them on plausibility and consistency with the narrative, not on the absence of a published source. Charts whose source reads 'ScoutAI estimate: U.S. Census Bureau ...' or '... Bureau of Labor Statistics ...' are published national distributions adjusted for this audience; national TV viewing genuinely rises through the day to an 8-9 PM peak. Share charts are rescaled to 100 by the server, so do not flag rounding.
-- 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
-
-Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
-
-    sendEvent("status", { message: "Evaluating audience profile using media planning scoring agent..." });
-    console.log("Launching OpenAI Scoring Agent Call (gpt-5.6-terra) over the profile including its channel strategy...");
-    const openai = getOpenaiClient();
-    // Resolving a rejection to null routes API failures into the same bypass path that
-    // timeouts already use, so a 429 degrades to an unverified profile rather than killing
-    // the run.
-    const scoringPromise = openai.responses.create({
-      model: "gpt-5.6-terra",
-      reasoning: { effort: "medium" },
-      input: [
-        {
-          role: "system",
-          content: `${scoringSystemInstruction}\n\nYou must return a valid JSON object matching this schema:\n${JSON.stringify(auditResultSchema, null, 2)}`
-        },
-        {
-          role: "user",
-          content: `Please ruthlessly evaluate and score this audience profile:\n${JSON.stringify(originalData, null, 2)}`
-        }
-      ],
-      text: {
-        format: { type: "json_object" }
-      }
-    }).catch((err: any) => {
-      console.error("OpenAI QA Scoring Agent call failed:", err?.message || err);
-      return null;
-    });
-
-    const scoringResult = await withTimeout(
-      scoringPromise,
-      TIMEOUT_SCORING_MS,
-      null
-    );
-
-    let auditResult: any = null;
-    if (scoringResult && scoringResult.output_text) {
+    // The narrative is written last, by one writer, with the settled plan in front of it. Skipped
+    // (keeping synthesis's draft) only when the run is short of time, so the audit always runs.
+    if (remainingMs() > TIMEOUT_NARRATIVE_MS + TIMEOUT_AUDIT_MS) {
+      sendEvent("status", { message: "Writing the final plan narrative against the settled charts, channel plan and research..." });
+      const narrativeStartedAt = Date.now();
       try {
-        auditResult = JSON.parse(scoringResult.output_text);
-      } catch (e) {
-        console.error("Failed to parse scoring JSON, bypassing scorecard:", e);
-      }
-    }
-
-    // When the QA agent does not answer, the profile is UNVERIFIED. It previously reported a
-    // fabricated 100/100 "Passed automatically" scorecard, which both hid the outage and
-    // suppressed remediation. Represent it honestly instead and flag it for the UI.
-    let qaBypassed = false;
-    if (!auditResult) {
-      qaBypassed = true;
-      console.warn(`[QA BYPASS] OpenAI QA Scoring Agent timed out or failed. This profile was NOT independently scored.`);
-      pushAlert(generationAlerts, { section: "qa", severity: "failed", message: "QA scoring did not run (timed out or failed), so this profile has not been independently scored." });
-      const notEvaluated = "Not evaluated - QA scoring agent unavailable";
-      auditResult = {
-        executiveSummary: "The independent QA scoring agent was unavailable, so this profile has not been externally verified. The figures below are the synthesis output as generated - review them before client presentation.",
-        scorecard: [
-          { category: "Data Integrity", score: 0, notes: notEvaluated },
-          { category: "Strategic Viability", score: 0, notes: notEvaluated },
-          { category: "Platform Context", score: 0, notes: notEvaluated },
-          { category: "Audience Segmentation", score: 0, notes: notEvaluated },
-          { category: "Structural Clarity", score: 0, notes: notEvaluated }
-        ],
-        totalScore: 0,
-        criticalRedFlags: [],
-        strategicHighlights: [],
-        fixItChecklist: []
-      };
-    }
-
-    console.log(qaBypassed
-      ? "Scoring Agent bypassed - profile delivered unverified."
-      : `Scoring Agent evaluation complete. Score: ${auditResult.totalScore}/100. Red Flags Count: ${auditResult.criticalRedFlags?.length || 0}`);
-
-    let finalProfile = originalData;
-    let autoFixesList: Array<{ issue: string; resolution: string }> = [];
-    // Tracked separately from autoFixesList because the correction agent can return a rewritten
-    // profile with an empty fix list. The profile we ship is then a rewrite with no audit trail,
-    // which is exactly the case the reader most needs told about.
-    let profileRewritten = false;
-
-    // 2. Auto-Fix Remediation Call (Triggered if score < 100 or red flags found)
-    // Skipped entirely when scoring was bypassed: there is no scorecard to remediate against,
-    // and the zeroed placeholder score would otherwise trigger a pointless 90s rewrite.
-    if (qaBypassed) {
-      sendEvent("status", { message: "QA scoring agent unavailable - delivering the profile unverified. Please review before presenting." });
-    } else if (((auditResult.criticalRedFlags && auditResult.criticalRedFlags.length > 0) || auditResult.totalScore < 95) && auditResult.totalScore < 100) {
-      sendEvent("status", { message: `QA Scorecard Issued: ${auditResult.totalScore}/100. Initializing Auto-Remediation agent to resolve red flags...` });
-
-      const correctionSystemInstruction = `You are an expert digital media planner and senior audience profile QA rewriter.
-You have been given an audience profile and a list of critical red flags or corrections to make.
-Your task is to rewrite and update the audience profile to:
-1. Resolve every single red flag/issue identified by the QA specialist.
-2. Ensure all percentages sum to 100% and there are no mathematical or logical contradictions.
-3. Where a figure in the prose is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate. Do NOT change chart arrays (any 'chartData' or '...ChartData' field): the server settles chart figures before QA and restores them as they were. Keep the prose consistent with the charts as given.
-4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
-5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
-6a. THE BRIEF OF RECORD IS SETTLED: When the profile carries 'briefOfRecord', it defines who the campaign is for, and the channel strategy and publisher picks were built for that audience. Never narrow, widen or redefine it, and never remove, replace or add a persona to change which groups the plan targets. You may sharpen a persona's details. If a red flag asks for an audience change, leave the audience as it is and say so in 'autoFixes'.
-6b. CTV PUBLISHER SELECTION IS SETTLED: Keep the same publishers in 'ctvPublishers', in the same order, with the same categories. You may rewrite a publisher's 'why'. The server restores the selection as it was.
-6. USER-SPECIFIED PERSONAS ARE PROTECTED: If the input profile contains personas with sourceType 'User' (or personas matching user-specified targets), you MUST strictly preserve their exact names and 'sourceType': 'User'. Do NOT rename, delete, swap, or overwrite user-specified personas.
-7. 'deviceTypeIndex.chartData' MUST stay a composition share summing to 100 - it renders as a pie chart and as a "Split Share %" table, so index values get redrawn as shares and contradict whatever the overview says. Fix a broken device chart by correcting the shares and their stated denominator, never by reframing it as an index. 'browserAndReach.chartData' stays an affinity index with metricType 'Affinity Index'.
-
-You must return a JSON matching the profile correction schema. It contains:
-1. 'correctedProfile': the updated AudienceProfile JSON.
-2. 'autoFixes': an array of { issue, resolution } describing what you corrected.
-Return ONLY the JSON. No markdown wraps.`;
-
-      console.log("Launching OpenAI AI Auto-Remediation Call (gpt-5.6-terra)...");
-      const correctionPromise = openai.responses.create({
-        model: "gpt-5.6-terra",
-        reasoning: { effort: "medium" },
-        input: [
+        const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+          ai,
           {
-            role: "system",
-            content: `${correctionSystemInstruction}\n\nYou must return a valid JSON object matching this schema:\n${JSON.stringify(profileCorrectionSchema, null, 2)}`
+            systemInstruction: NARRATIVE_SYSTEM_INSTRUCTION,
+            input: buildNarrativeInput({
+              briefBlock,
+              campaign: campaignLine,
+              personas: describePersonas(originalData),
+              charts: describeCharts(originalData),
+              channelPlan: describeChannelPlan(originalData),
+              publishers: publishersLine(originalData),
+              ledger: ledgerFor(originalData),
+              research: researchForPrompt(researchDossiers, NARRATIVE_RESEARCH_CHARS),
+              draft: currentNarrative(originalData),
+            }),
+            schema: narrativeSchema,
           },
-          {
-            role: "user",
-            content: `Here is the original profile:
-${JSON.stringify(originalData, null, 2)}
-
-Here is the QA Specialist's Scorecard & Checklist:
-- Executive Summary: ${auditResult.executiveSummary}
-- Scorecard: ${JSON.stringify(auditResult.scorecard)}
-- Critical Red Flags: ${JSON.stringify(auditResult.criticalRedFlags)}
-- Fix-It Checklist: ${JSON.stringify(auditResult.fixItChecklist)}
-
-Please correct the profile to resolve all issues.`
-          }
-        ],
-        text: {
-          format: { type: "json_object" }
-        }
-      });
-
-      const correctionResult = await withTimeout(
-        correctionPromise,
-        TIMEOUT_CORRECTION_MS,
-        null
-      );
-
-      if (correctionResult && correctionResult.output_text) {
-        try {
-          const correctionData = JSON.parse(correctionResult.output_text);
-          // Validate BEFORE reassigning. Assigning first meant a correction that parsed but
-          // omitted 'correctedProfile' left finalProfile undefined, and the catch below could
-          // no longer honour its promise to keep the original - the run then died later on
-          // `finalProfile.auditResult = ...` with a TypeError.
-          const corrected = correctionData?.correctedProfile;
-          if (!corrected || typeof corrected !== "object" || Array.isArray(corrected)) {
-            throw new Error("Correction response did not contain a usable 'correctedProfile' object.");
-          }
-          // Citations are evidence, not prose. The correction agent used to answer a sourcing red
-          // flag by discarding the researched registry and substituting URLs from its own memory -
-          // none of which appeared in the grounding pool - so the profile ended up citing sources
-          // that had never been consulted. It may rewrite the analysis; it may not rewrite what
-          // the analysis was based on, and it may not delete sections: a rewrite that dropped
-          // personas once shipped "Persona Archetype" stand-ins.
-          const merged = mergeRemediatedProfile(originalData, corrected);
-          finalProfile = merged.profile;
-          restoreDeletedCharts(finalProfile, originalData);
-          if (restorePublisherSelection(finalProfile, settledPublishers).changed) {
-            console.log("[PUBLISHERS] Remediation changed the CTV publisher selection; kept the settled picks and any rewritten rationale.");
-          }
-          profileRewritten = true;
-          if (merged.restored.length > 0) {
-            console.warn(`[REMEDIATION] Correction omitted ${merged.restored.join(", ")}; kept the synthesized version.`);
-            pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: `Auto-remediation left out ${merged.restored.join(", ")}; the synthesized version of ${merged.restored.length === 1 ? "that section is" : "those sections are"} shown instead.` });
-          }
-          // Guardrail: Ensure user-specified personas are never lost or altered by remediation
-          if (cleanTargetPersonas.length > 0 && Array.isArray(finalProfile.personas)) {
-            cleanTargetPersonas.forEach((targetName, idx) => {
-              if (finalProfile.personas[idx]) {
-                finalProfile.personas[idx].name = targetName;
-                finalProfile.personas[idx].sourceType = 'User';
-              }
-            });
-          }
-          autoFixesList = Array.isArray(correctionData.autoFixes) ? correctionData.autoFixes : [];
-          if (autoFixesList.length === 0) {
-            autoFixesList.push({
-              issue: "Auto-remediation returned no itemized changes",
-              resolution: "The correction agent rewrote the profile against the QA checklist but did not describe what it changed. Compare against the red flags below before presenting."
-            });
-          }
-          console.log(`AI Auto-Remediation complete. Applied ${autoFixesList.length} patches.`);
-        } catch (e: any) {
-          console.error("Failed to parse correction data, keeping original profile:", e);
-          pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: `QA fixes were not applied: the auto-remediation response could not be used (${e?.message || e}). The profile is shown as synthesized; review the QA red flags before presenting.` });
-        }
-      } else {
-        console.warn(`[TIMEOUT] OpenAI AI Auto-Remediation call timed out after ${TIMEOUT_CORRECTION_MS / 1000}s. Bypassing correction step.`);
-        pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: `QA fixes were not applied: auto-remediation timed out after ${TIMEOUT_CORRECTION_MS / 1000}s. The profile is shown as synthesized; review the QA red flags before presenting.` });
+          NARRATIVE_ATTEMPTS,
+          (failed, next) => sendEvent("status", { message: `Narrative writing (${failed} reasoning) ran long; retrying with ${next} reasoning...` }),
+        );
+        const replaced = applyNarrative(originalData, data);
+        console.log(`[NARRATIVE] Rewrote ${replaced.length} field(s) at ${thinkingLevel} thinking in ${((Date.now() - narrativeStartedAt) / 1000).toFixed(1)}s.`);
+        if (replaced.length === 0) throw new Error("the model returned no usable narrative");
+      } catch (err: any) {
+        console.warn(`[NARRATIVE] Failed; keeping the synthesis draft (${err?.message || err}).`);
+        pushAlert(generationAlerts, { section: "narrative", severity: "flagged", message: `The final narrative pass did not complete (${err?.message || err}), so the narrative is synthesis's draft, written before the charts and channel plan were settled. Check it against them before presenting.` });
       }
     } else {
-      sendEvent("status", { message: `QA Scorecard Verified: Perfect ${auditResult.totalScore}/100! All parameters verified within media benchmarks.` });
+      pushAlert(generationAlerts, { section: "narrative", severity: "flagged", message: "The run was short of time, so the final narrative pass was skipped and the narrative is synthesis's draft. Check it against the charts and channel plan before presenting." });
     }
 
-    // Remediation can reintroduce what the first pass removed, so the rules run again on what ships.
-    // Chart figures are settled before QA - research figures kept, estimates labelled, Census/BLS
-    // baselines applied, generated-looking shapes revised - so remediation rewrites prose only.
-    // In live runs it flattened charts to 100, deleted them, and replaced research-built
-    // demographics with its own "planning proxy" numbers; QA's chart notes stay visible in the
-    // red flags instead.
-    for (const chart of PROFILE_CHARTS) {
-      const before = chartsBeforeRemediation.get(chart.id);
-      if (before === undefined || before === "null") continue;
-      if (JSON.stringify(finalProfile?.[chart.section]?.[chart.key] ?? null) === before) continue;
-      if (!finalProfile[chart.section] || typeof finalProfile[chart.section] !== "object") finalProfile[chart.section] = { ...originalData[chart.section] };
-      finalProfile[chart.section][chart.key] = JSON.parse(before);
-      console.log(`[CHARTS] ${chart.label}: kept the pre-remediation chart; remediation edits prose only.`);
+    // ---- QA: audit (GPT-6 Sol), targeted fixes (Gemini), verify (GPT-6 Sol). ----
+    // The scorer is a different model with a different training cutoff, so it has no idea what
+    // "now" is. Left unanchored it read current-year figures as future-dated fabrications.
+    const auditToday = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    const auditContext = (profile: any) => ({
+      briefBlock,
+      campaign: campaignLine,
+      planJson: planForAudit(profile),
+      personas: describePersonas(profile),
+      charts: describeCharts(profile),
+      channelPlan: describeChannelPlan(profile),
+      publishers: publishersLine(profile),
+      ledger: ledgerFor(profile),
+      alerts: alertsLine(),
+      research: researchForPrompt(researchDossiers, AUDIT_RESEARCH_CHARS),
+    });
+    const stageTimeout = (budget: number) => Math.max(15000, Math.min(budget, remainingMs() - 10000));
+
+    let audit: NormalizedAudit | null = null;
+    let qaBypassed = false;
+    if (remainingMs() > 60000) {
+      sendEvent("status", { message: `Auditing the plan with ${AUDIT_MODEL} (${AUDIT_EFFORT} reasoning): evidence, brief fit, cohesion, strategy and client readiness...` });
+      try {
+        const openai = getOpenaiClient();
+        const result = await openAiJson(openai, {
+          model: AUDIT_MODEL,
+          effort: AUDIT_EFFORT,
+          system: auditSystemInstruction(auditToday, currentYear),
+          input: buildAuditInput(auditContext(originalData)),
+          timeoutMs: stageTimeout(TIMEOUT_AUDIT_MS),
+          label: "QA audit",
+        });
+        audit = normalizeAudit(result.data);
+        if (!audit) throw new Error("the audit response had no usable scorecard");
+      } catch (err: any) {
+        console.error("QA audit failed:", err?.message || err);
+        audit = null;
+      }
     }
-    enforceResearchIntegrity(finalProfile);
+    if (!audit) {
+      qaBypassed = true;
+      console.warn("[QA BYPASS] The QA audit did not run. This profile was NOT independently scored.");
+      pushAlert(generationAlerts, { section: "qa", severity: "failed", message: "QA scoring did not run (timed out or failed), so this profile has not been independently scored." });
+      sendEvent("status", { message: "QA audit unavailable - delivering the profile unverified. Please review before presenting." });
+    }
+
+    let findings: AuditFinding[] = audit ? audit.findings : [];
+    let verify: NormalizedVerify | null = null;
+    let autoFixesList: Array<{ issue: string; resolution: string }> = [];
+    if (audit) {
+      const fixable = audit.findings.filter((f) => PROSE_OWNERS.has(f.owner));
+      sendEvent("status", { message: `QA Scorecard Issued: ${audit.totalScore}/100 with ${audit.findings.length} finding(s); ${fixable.length} can be fixed in the text, ${audit.findings.length - fixable.length} need a channel, chart or planner change.` });
+
+      let applied: AppliedPatch[] = [];
+      if (fixable.length > 0 && remainingMs() > TIMEOUT_FIX_MS + 30000) {
+        sendEvent("status", { message: `Applying targeted fixes for ${fixable.length} finding(s)...` });
+        try {
+          const fix: any = await generateStructuredJson(ai, {
+            systemInstruction: REMEDIATION_SYSTEM_INSTRUCTION,
+            input: buildRemediationInput(fixable, originalData, [
+              briefBlock,
+              describePersonas(originalData),
+              describeCharts(originalData),
+              describeChannelPlan(originalData),
+              publishersLine(originalData),
+              ledgerFor(originalData),
+              researchForPrompt(researchDossiers, FIX_RESEARCH_CHARS),
+            ].filter(Boolean).join("\n\n")),
+            schema: remediationSchema,
+            thinkingLevel: "medium",
+            timeoutMs: stageTimeout(TIMEOUT_FIX_MS),
+          });
+          const result = applyPatches(originalData, fix?.patches, audit.findings);
+          applied = result.applied;
+          autoFixesList = describeAppliedFixes(audit.findings, applied, fix?.notes);
+          console.log(`[REMEDIATION] Applied ${applied.length} patch(es) across ${autoFixesList.length} finding(s); rejected ${result.rejected.length}.`);
+          for (const r of result.rejected) console.log(`[REMEDIATION] Rejected ${r.findingId} ${r.path}: ${r.reason}.`);
+        } catch (err: any) {
+          console.error("Targeted fixes failed:", err?.message || err);
+          pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: `QA fixes were not applied (${err?.message || err}). The plan is shown as written; review the QA findings before presenting.` });
+        }
+      } else if (fixable.length > 0) {
+        pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: "The run was short of time, so QA fixes were not applied. Review the QA findings before presenting." });
+      }
+
+      // Re-scored only when something changed: otherwise the audit's score already describes
+      // the plan that ships.
+      if (applied.length > 0 && remainingMs() > 45000) {
+        sendEvent("status", { message: "Verifying the fixes and re-scoring the plan..." });
+        try {
+          const result = await openAiJson(getOpenaiClient(), {
+            model: AUDIT_MODEL,
+            effort: VERIFY_EFFORT,
+            system: verifySystemInstruction(auditToday, currentYear),
+            input: buildAuditInput(auditContext(originalData), [
+              "EARLIER FINDINGS:",
+              JSON.stringify(audit.findings.map(({ id, severity, owner, paths, issue, fix }) => ({ id, severity, owner, paths, issue, fix })), null, 1),
+              "CHANGES APPLIED SINCE (field: before -> after):",
+              JSON.stringify(applied.map(({ findingId, path, before, value }) => ({ findingId, path, before, after: value })), null, 1),
+            ].join("\n")),
+            timeoutMs: stageTimeout(TIMEOUT_VERIFY_MS),
+            label: "QA verify",
+          });
+          verify = normalizeVerify(result.data);
+          if (!verify) throw new Error("the verify response had no usable scorecard");
+        } catch (err: any) {
+          console.error("QA verify failed:", err?.message || err);
+          pushAlert(generationAlerts, { section: "qa", severity: "flagged", message: `Fixes were applied but not re-verified (${err?.message || err}); the score shown is from before the fixes.` });
+        }
+      }
+      if (verify) {
+        const statuses = verify.findingStatus;
+        findings = [
+          ...audit.findings.map((f) => ({ ...f, ...(statuses.get(f.id) ? { status: statuses.get(f.id)!.status, verifyNote: statuses.get(f.id)!.note } : {}) })),
+          ...verify.findings,
+        ];
+      }
+    }
+    const finalProfile = originalData;
+
     for (const corr of integrityCorrections) {
       autoFixesList.push({
         issue: "Programmatic metric verification mismatch",
@@ -3833,26 +3727,24 @@ Please correct the profile to resolve all issues.`
       });
     }
 
-    // Create the final structured audit result payload
+    const scored = verify ?? audit;
+    const openFlags = openFindingsAsFlags(findings);
     const finalAuditResult = {
-      executiveSummary: auditResult.executiveSummary,
-      scorecard: auditResult.scorecard,
-      originalScore: auditResult.totalScore,
-      // The audited score, not a synthesized one. This used to report 100 whenever the
-      // auto-fix list was non-empty, and the domain-chart check guaranteed it was non-empty,
-      // so every run scored a perfect 100 while the per-category bars beside it still showed
-      // the real total. Nothing re-scores the profile after remediation, so there is no
-      // higher number we are entitled to claim: report what the QA agent actually gave and
-      // let `remediationApplied` carry the fact that the flagged issues were addressed.
-      finalScore: qaBypassed ? 0 : auditResult.totalScore,
-      remediationApplied: profileRewritten || autoFixesList.length > 0,
-      criticalRedFlags: auditResult.criticalRedFlags && auditResult.criticalRedFlags.length > 0
-        ? auditResult.criticalRedFlags
-        : (qaBypassed
-          ? ["QA scoring did not run - this profile has not been independently verified."]
-          : ["Clean - No major data hallucinations detected."]),
-      strategicHighlights: auditResult.strategicHighlights || [],
+      executiveSummary: scored?.executiveSummary || "The independent QA audit was unavailable, so this profile has not been externally verified. Review it before client presentation.",
+      scorecard: scored?.scorecard ?? AUDIT_CATEGORIES.map((category) => ({ category, score: 0, notes: "Not evaluated - QA audit unavailable" })),
+      originalScore: audit?.totalScore ?? 0,
+      // The verified score when fixes were re-scored; otherwise the audit's own score, which
+      // then describes the plan as shipped because nothing changed after it.
+      finalScore: scored?.totalScore ?? 0,
+      verified: Boolean(verify),
+      remediationApplied: autoFixesList.length > 0,
+      criticalRedFlags: qaBypassed
+        ? ["QA scoring did not run - this profile has not been independently verified."]
+        : openFlags.length > 0 ? openFlags : ["Clean - no open major issues."],
+      strategicHighlights: scored?.strategicHighlights || [],
       autoFixes: autoFixesList,
+      findings,
+      auditModel: `${AUDIT_MODEL} (${AUDIT_EFFORT})`,
       qaBypassed
     };
 
@@ -3889,14 +3781,13 @@ Please correct the profile to resolve all issues.`
     // the profile has rendered, so image latency no longer gates the result.
     sendEvent("status", { message: "Profile complete. Studio persona portraits will render as they finish generating..." });
 
-    // Stream logs for applied fixes so the live terminal console receives and prints them
-    if (autoFixesList.length > 0) {
-      sendEvent("status", { message: `QA Audit Complete. Automatically applied ${autoFixesList.length} auto-fix patch(es) for client-ready presentation:` });
-      for (const fix of autoFixesList) {
-        sendEvent("status", { message: `• [AUTO-FIXED] ${fix.issue}: ${fix.resolution}` });
-      }
-    } else {
-      sendEvent("status", { message: "QA Audit Complete: All metrics, device splits, and temporal indices verified within realistic media buyer benchmarks." });
+    // Stream the QA outcome so the live console shows what changed and what is still open.
+    if (!qaBypassed) {
+      sendEvent("status", { message: verify
+        ? `QA Audit Complete: ${finalAuditResult.originalScore}/100 before fixes, ${finalAuditResult.finalScore}/100 after (verified). ${autoFixesList.length} fix(es) applied.`
+        : `QA Audit Complete: ${finalAuditResult.finalScore}/100. ${autoFixesList.length} fix(es) applied.` });
+      for (const fix of autoFixesList) sendEvent("status", { message: `• [AUTO-FIXED] ${fix.issue}: ${fix.resolution}` });
+      for (const flag of openFlags) sendEvent("status", { message: `• [OPEN] ${flag}` });
     }
 
     for (const alert of generationAlerts) {

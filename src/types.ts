@@ -148,6 +148,26 @@ export interface AuditResult {
   remediationApplied?: boolean;
   /** True when the QA scoring agent was unavailable and the profile went out unverified. */
   qaBypassed?: boolean;
+  /** True when the plan was re-scored after fixes, so finalScore describes the shipped plan. */
+  verified?: boolean;
+  /** Structured audit findings, with their status after verification. Absent on older plans. */
+  findings?: AuditFindingRecord[];
+  /** e.g. "gpt-6-sol (high)". */
+  auditModel?: string;
+}
+
+export interface AuditFindingRecord {
+  id: string;
+  severity: "critical" | "major" | "minor";
+  category: string;
+  /** Who can fix it: the text fixer (narrative, personas, publisherRationale) or a person. */
+  owner: "narrative" | "personas" | "publisherRationale" | "chart" | "channelStrategy" | "planner";
+  paths: string[];
+  issue: string;
+  evidence: string;
+  fix: string;
+  status?: "resolved" | "partially_resolved" | "unresolved";
+  verifyNote?: string;
 }
 
 export interface CtvPublisherRecommendation {

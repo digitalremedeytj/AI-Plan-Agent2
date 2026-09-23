@@ -122,6 +122,7 @@ import * as api from "./api/client";
 import { ApiError, type PlanSummary, type SessionUser } from "./api/client";
 import { migrateLocalPlans } from "./api/migrateLocalPlans";
 import { BriefOfRecordCard } from "./components/BriefOfRecordCard";
+import { QaFindings } from "./components/QaFindings";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
 const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
@@ -451,7 +452,8 @@ const extractMetadata = (rows: any[][]) => {
 
 // Hard client-side deadline for a generation run. The server heartbeats every 4s, so the
 // socket never idles out on its own; without this an interrupted run spins indefinitely.
-const CLIENT_GENERATION_TIMEOUT_MS = 600000; // 10 minutes
+// Matches the server's 870s run budget plus margin, inside Cloud Run's 900s request timeout.
+const CLIENT_GENERATION_TIMEOUT_MS = 900000; // 15 minutes
 
 // Helper to compress base64 avatar images using Canvas with object-cover center cropping
 async function compressAvatarUrl(url?: string, maxDim = 120, quality = 0.65): Promise<string | undefined> {
@@ -6159,7 +6161,12 @@ export default function App() {
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
-                          {profileData.auditResult.autoFixes && profileData.auditResult.autoFixes.length > 0 ? (
+                          {profileData.auditResult.findings?.some((f) => f.status !== "resolved" && f.severity !== "minor") ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200">
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                              Open Issues to Review
+                            </span>
+                          ) : profileData.auditResult.autoFixes && profileData.auditResult.autoFixes.length > 0 ? (
                             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200">
                               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                               Auto-Corrected
@@ -6230,12 +6237,20 @@ export default function App() {
                               )}
                             </div>
                           </div>
-                          {/* The score is the audit as issued; the profile is not re-scored after
-                              remediation, so this says what was fixed rather than implying a new score. */}
-                          {!profileData.auditResult.qaBypassed && profileData.auditResult.remediationApplied && (
+                          {/* Verified plans are re-scored after fixes, so the score is the shipped plan's.
+                              Otherwise it is the audit as issued, and this says what changed after it. */}
+                          {!profileData.auditResult.qaBypassed && profileData.auditResult.verified && (
+                            <p className="text-[10px] text-indigo-300/80 font-mono">
+                              {profileData.auditResult.originalScore} before fixes · re-verified
+                            </p>
+                          )}
+                          {!profileData.auditResult.qaBypassed && !profileData.auditResult.verified && profileData.auditResult.remediationApplied && (
                             <p className="text-[10px] text-indigo-300/80 font-mono">
                               {profileData.auditResult.autoFixes.length} fix{profileData.auditResult.autoFixes.length === 1 ? "" : "es"} applied after audit
                             </p>
+                          )}
+                          {profileData.auditResult.auditModel && (
+                            <p className="text-[9px] text-slate-500 font-mono">Audited by {profileData.auditResult.auditModel}</p>
                           )}
                           <p className={`text-[11px] leading-relaxed px-2 font-medium ${profileData.auditResult.qaBypassed ? "text-amber-300" : "text-slate-300"}`}>
                             {profileData.auditResult.qaBypassed
@@ -6310,30 +6325,10 @@ export default function App() {
                           <div className="flex items-center gap-1.5 text-indigo-800 border-b border-indigo-100 pb-2">
                             <AlertTriangle className="w-4 h-4 text-indigo-500" />
                             <h4 className="text-xs font-bold uppercase tracking-wider">
-                              🚨 Critical Red Flags & Auto-Fixes
+                              🚨 Findings & Fixes
                             </h4>
                           </div>
-                          <div className="space-y-3">
-                            {profileData.auditResult.autoFixes && profileData.auditResult.autoFixes.length > 0 ? (
-                              <div className="space-y-2.5 max-h-[160px] overflow-y-auto custom-scrollbar">
-                                {profileData.auditResult.autoFixes.map((fix, i) => (
-                                  <div key={i} className="text-xs border-b border-indigo-100/30 pb-2.5 last:border-0 last:pb-0 space-y-1">
-                                    <p className="text-indigo-900 font-bold flex items-start gap-1">
-                                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0 mt-1"></span>
-                                      <span><strong>Issue:</strong> {fix.issue}</span>
-                                    </p>
-                                    <p className="text-slate-600 pl-3 leading-normal italic">
-                                      <strong>AI Fix:</strong> {fix.resolution}
-                                    </p>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-xs text-slate-500 italic pl-1">
-                                Clean - No major data hallucinations or metric contradictions detected. Verified perfect alignment.
-                              </p>
-                            )}
-                          </div>
+                          <QaFindings audit={profileData.auditResult} />
                         </div>
                       </div>
                     </div>
