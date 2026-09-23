@@ -568,10 +568,10 @@ export function createUserSegment(
  */
 export function profileBaselineFingerprint(profile: Record<string, any> | null | undefined): string {
   if (!profile) return "";
-  const { segmentRecommendations: _segments, personas, channelStrategy, hiddenSections: _hiddenSections, ...rest } = profile;
+  const { segmentRecommendations: _segments, personas, channelStrategy, hiddenSections: _hiddenSections, slideExports: _slideExports, ...rest } = profile;
   const personaCore = Array.isArray(personas)
     ? personas.map((p: any) => {
-      const { avatarUrl: _avatar, ...core } = p || {};
+      const { avatarUrl: _avatar, avatarHistory: _history, ...core } = p || {};
       return core;
     })
     : personas;

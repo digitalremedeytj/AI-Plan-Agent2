@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   X,
   Sparkles,
@@ -25,6 +25,32 @@ import {
 import type { ChannelStrategyData, SegmentRecommendation } from "../types";
 import type { MediaRecommendationPlan, ChannelPlanRecommendation } from "../planning/types";
 import { isNonMediaItem } from "../utils/mediaTaxonomy";
+
+export type SlideAspectRatio = "21:9" | "2:1" | "16:9" | "3:2" | "4:3" | "1:1" | "3:4" | "2:3" | "9:16";
+
+export interface AspectRatioOption {
+  value: SlideAspectRatio;
+  label: string;
+  name: string;
+  category: "Horizontal" | "Square" | "Vertical";
+  width: number;
+  height: number;
+  // Bounding box for visual icon: max dimension 28px
+  boxWidth: number;
+  boxHeight: number;
+}
+
+export const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = [
+  { value: "21:9", label: "21:9", name: "Ultrawide (21:9)", category: "Horizontal", width: 2560, height: 1088, boxWidth: 28, boxHeight: 12 },
+  { value: "2:1",  label: "2:1",  name: "Univisium (2:1)",  category: "Horizontal", width: 2560, height: 1280, boxWidth: 26, boxHeight: 13 },
+  { value: "16:9", label: "16:9", name: "Widescreen (16:9)", category: "Horizontal", width: 2560, height: 1440, boxWidth: 24, boxHeight: 13.5 },
+  { value: "3:2",  label: "3:2",  name: "Classic Photo (3:2)", category: "Horizontal", width: 2160, height: 1440, boxWidth: 21, boxHeight: 14 },
+  { value: "4:3",  label: "4:3",  name: "Standard Deck (4:3)", category: "Horizontal", width: 1920, height: 1440, boxWidth: 20, boxHeight: 15 },
+  { value: "1:1",  label: "1:1",  name: "Square Grid (1:1)", category: "Square", width: 2048, height: 2048, boxWidth: 16, boxHeight: 16 },
+  { value: "3:4",  label: "3:4",  name: "Portrait Deck (3:4)", category: "Vertical", width: 1440, height: 1920, boxWidth: 15, boxHeight: 20 },
+  { value: "2:3",  label: "2:3",  name: "Portrait Photo (2:3)", category: "Vertical", width: 1440, height: 2160, boxWidth: 14, boxHeight: 21 },
+  { value: "9:16", label: "9:16", name: "Vertical / Mobile (9:16)", category: "Vertical", width: 1440, height: 2560, boxWidth: 13.5, boxHeight: 24 },
+];
 
 export interface PresentationSlideStudioModalProps {
   isOpen: boolean;
@@ -54,6 +80,8 @@ interface GeneratedSlide {
   channelName?: string;
   imageUrl: string;
   style: "corporate_light" | "modern_dark" | "minimal_slate";
+  aspectRatio?: SlideAspectRatio;
+  dimensions?: { width: number; height: number };
   timestamp: Date;
 }
 
@@ -72,6 +100,11 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
 }) => {
   // Current active section dropdown: "personas" | "channels" | "segments"
   const [section, setSection] = useState<"personas" | "channels" | "segments">(initialSection);
+
+  // Aspect ratio state (16:9 is default)
+  const [aspectRatio, setAspectRatio] = useState<SlideAspectRatio>("16:9");
+  const [isRatioDropdownOpen, setIsRatioDropdownOpen] = useState<boolean>(false);
+  const ratioDropdownRef = useRef<HTMLDivElement>(null);
 
   // Mode state for Personas
   const [personaMode, setPersonaMode] = useState<"portfolio" | "spotlight">("portfolio");
@@ -105,6 +138,21 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
   const [isCopied, setIsCopied] = useState<boolean>(false);
   const [isZoomed, setIsZoomed] = useState<boolean>(false);
 
+  // Close ratio dropdown on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (ratioDropdownRef.current && !ratioDropdownRef.current.contains(e.target as Node)) {
+        setIsRatioDropdownOpen(false);
+      }
+    };
+    if (isRatioDropdownOpen) {
+      document.addEventListener("mousedown", handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [isRatioDropdownOpen]);
+
   // Sync initial section when modal opens
   useEffect(() => {
     if (isOpen && initialSection) {
@@ -125,7 +173,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
   // Step labels for channel generation
   const channelSteps = [
     "Auditing active plan allocations & budget parameters...",
-    "Formatting channel cards, CPMs, and targeting tactics...",
+    "Formatting channel cards and targeting tactics...",
     "Arranging high-impact 16:9 widescreen layout...",
     "Composing visual allocation distribution and metrics...",
     "Finalizing high-resolution presentation layout..."
@@ -176,6 +224,9 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
   const hasChannels = fundedChannels.length > 0;
   const hasSegments = candidateSegments.length > 0;
 
+  // Selected aspect ratio configuration
+  const currentRatioOption = ASPECT_RATIO_OPTIONS.find((o) => o.value === aspectRatio) || ASPECT_RATIO_OPTIONS[2];
+
   // Active slide references depending on current section
   const currentSlides = section === "personas" ? personaSlides : section === "channels" ? channelSlides : segmentSlides;
   const currentActiveIndex = section === "personas" ? activePersonaSlideIndex : section === "channels" ? activeChannelSlideIndex : activeSegmentSlideIndex;
@@ -203,6 +254,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             campaignFocus,
             geography,
             style,
+            aspectRatio,
             customNotes: customNotes.trim(),
           };
 
@@ -229,6 +281,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             personaName: "All 4 Personas",
             imageUrl: data.imageUrl,
             style,
+            aspectRatio,
+            dimensions: data.dimensions,
             timestamp: new Date(),
           };
 
@@ -258,6 +312,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
               campaignFocus,
               geography,
               style,
+              aspectRatio,
               customNotes: customNotes.trim(),
             };
 
@@ -285,6 +340,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
               personaName: targetPersona?.name || `Persona ${pIdx + 1}`,
               imageUrl: data.imageUrl,
               style,
+              aspectRatio,
+              dimensions: data.dimensions,
               timestamp: new Date(),
             };
 
@@ -353,6 +410,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             campaignFocus,
             geography,
             style,
+            aspectRatio,
             customNotes: customNotes.trim(),
             executiveInsight: channelStrategy?.executiveInsight || "",
           };
@@ -380,6 +438,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             channelName: "Media Mix Overview",
             imageUrl: data.imageUrl,
             style,
+            aspectRatio,
+            dimensions: data.dimensions,
             timestamp: new Date(),
           };
 
@@ -412,6 +472,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
               campaignFocus,
               geography,
               style,
+              aspectRatio,
               customNotes: customNotes.trim(),
               executiveInsight: channelStrategy?.executiveInsight || "",
             };
@@ -440,6 +501,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
               channelName: targetChannel?.channelName || `Channel ${cIdx + 1}`,
               imageUrl: data.imageUrl,
               style,
+              aspectRatio,
+              dimensions: data.dimensions,
               timestamp: new Date(),
             };
 
@@ -496,6 +559,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
           campaignFocus,
           geography,
           style,
+          aspectRatio,
           customNotes: customNotes.trim(),
         };
 
@@ -521,6 +585,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
           mode: "overview",
           imageUrl: data.imageUrl,
           style,
+          aspectRatio,
+          dimensions: data.dimensions,
           timestamp: new Date(),
         };
 
@@ -553,7 +619,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
       namePart = "audience-segment-recommendations";
     }
 
-    const filename = `${cleanBrand}-${namePart}-16x9.png`;
+    const ratioSuffix = (slide.aspectRatio || aspectRatio || "16:9").replace(":", "x");
+    const filename = `${cleanBrand}-${namePart}-${ratioSuffix}.png`;
 
     const link = document.createElement("a");
     link.href = slide.imageUrl;
@@ -618,8 +685,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                 <h2 className="text-base font-bold text-slate-900">
                   Export Presentation Slide Studio
                 </h2>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-700">
-                  16:9 (1536×864)
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700">
+                  {currentRatioOption.label} ({currentRatioOption.width}×{currentRatioOption.height})
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
@@ -628,11 +695,114 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             </div>
           </div>
 
-          {/* Right controls: Section Dropdown + Close X */}
-          <div className="flex items-center gap-3">
+          {/* Right controls: Aspect Ratio Dropdown + Section Dropdown + Close X */}
+          <div className="flex items-center gap-2.5 sm:gap-3">
+            {/* Aspect Ratio Custom Dropdown */}
+            <div className="relative" ref={ratioDropdownRef}>
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <span className="text-xs font-semibold text-slate-500 hidden sm:inline">
+                  Ratio:
+                </span>
+                <button
+                  type="button"
+                  id="btn-select-aspect-ratio"
+                  onClick={() => !isGenerating && setIsRatioDropdownOpen((prev) => !prev)}
+                  disabled={isGenerating}
+                  className="flex items-center gap-2 pl-2 pr-2 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 hover:border-slate-400 focus:outline-hidden focus:ring-2 focus:ring-[#0e8f86] cursor-pointer shadow-2xs transition-colors disabled:opacity-50"
+                  title="Select slide aspect ratio"
+                  aria-haspopup="listbox"
+                  aria-expanded={isRatioDropdownOpen}
+                >
+                  <div className="w-6 h-5 flex items-center justify-center bg-slate-50 rounded-[2px] border border-slate-200 shrink-0">
+                    <div
+                      style={{
+                        width: `${Math.max(4, Math.round(currentRatioOption.boxWidth * 0.7))}px`,
+                        height: `${Math.max(4, Math.round(currentRatioOption.boxHeight * 0.7))}px`,
+                      }}
+                      className="border border-[#0e8f86] bg-[#0e8f86]/25 rounded-[1px]"
+                    />
+                  </div>
+                  <span className="font-bold text-slate-900">{aspectRatio}</span>
+                  <ChevronDown className={`w-3.5 h-3.5 text-slate-500 transition-transform ${isRatioDropdownOpen ? "rotate-180" : ""}`} />
+                </button>
+              </div>
+
+              {/* Aspect Ratio Menu with visual preview boxes */}
+              {isRatioDropdownOpen && (
+                <div
+                  id="menu-aspect-ratio-options"
+                  className="absolute right-0 top-full mt-1.5 w-64 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 overflow-hidden animate-in fade-in zoom-in-95 duration-100"
+                  role="listbox"
+                  aria-label="Slide aspect ratios"
+                >
+                  <div className="px-3 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                    Select Aspect Ratio
+                  </div>
+                  <div className="max-h-80 overflow-y-auto py-1 divide-y divide-slate-100/60">
+                    {ASPECT_RATIO_OPTIONS.map((opt) => {
+                      const isSelected = opt.value === aspectRatio;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          id={`option-ratio-${opt.value.replace(":", "-")}`}
+                          role="option"
+                          aria-selected={isSelected}
+                          onClick={() => {
+                            setAspectRatio(opt.value);
+                            setIsRatioDropdownOpen(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left flex items-center justify-between gap-2.5 hover:bg-slate-50 transition-colors cursor-pointer ${
+                            isSelected ? "bg-teal-50/70 text-[#0e8f86]" : "text-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            {/* Visual Box in the option's specific ratio */}
+                            <div className="w-8 h-7 flex items-center justify-center bg-slate-100 rounded border border-slate-200 shrink-0">
+                              <div
+                                style={{
+                                  width: `${opt.boxWidth}px`,
+                                  height: `${opt.boxHeight}px`,
+                                }}
+                                className={`rounded-[1.5px] transition-all ${
+                                  isSelected
+                                    ? "border-2 border-[#0e8f86] bg-[#0e8f86]/30 shadow-2xs"
+                                    : "border border-slate-400 bg-white"
+                                }`}
+                              />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-bold text-slate-900">
+                                  {opt.label}
+                                </span>
+                                {opt.value === "16:9" && (
+                                  <span className="text-[9px] font-semibold px-1.5 py-0.2 rounded bg-slate-200 text-slate-700">
+                                    Default
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-500 leading-tight">
+                                {opt.name.split(" (")[0]} • {opt.width}×{opt.height}
+                              </div>
+                            </div>
+                          </div>
+
+                          {isSelected && (
+                            <Check className="w-4 h-4 text-[#0e8f86] shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Section Dropdown */}
             <div className="flex items-center gap-1.5 sm:gap-2">
               <span className="text-xs font-semibold text-slate-500 hidden sm:inline">
-                Export Section:
+                Section:
               </span>
               <div className="relative">
                 <select
@@ -851,7 +1021,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                       </span>
                     </div>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Generates all {fundedChannels.length} channel spotlight slides at once (1 tactical deep dive per active channel in your plan), tabbed side-by-side. Details targeting tactics, CPM benchmarks, publishers, and attribution.
+                      Generates all {fundedChannels.length} channel spotlight slides at once (1 deep dive per active channel in your plan), tabbed side-by-side. Details targeting tactics, publishers, and attribution.
                     </p>
                   </div>
 
@@ -884,7 +1054,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   </span>
                 </div>
                 <p className="text-xs text-slate-600 leading-relaxed mb-3">
-                  Renders your entire curated audience segment recommendations onto a single executive 16:9 widescreen slide. Segments are structured into bento columns by strategic dimension (In-Market / Intent, Behavioral, Interest &amp; Affinity, Demographics), displaying targeting tiers (Core, Expansion, Experimental), data signals, and concise activation rationales. Zero headers or footers.
+                  Renders your entire curated audience segment recommendations onto a single image to drop in a presentation slide. Segments are structured into bento columns by strategic dimension (In-Market / Intent, Behavioral, Interest & Affinity, Demographics), displaying targeting tiers (Core, Expansion, Experimental), data signals, and concise activation rationales. Zero headers or footers.
                 </p>
                 <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-200/60">
                   {["In-Market / Intent", "Behavioral", "Interest & Affinity", "Demographics"].map((dim) => {
@@ -946,18 +1116,18 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             <div className="text-xs text-slate-500">
               {section === "personas" ? (
                 personaMode === "portfolio" ? (
-                  <span>Creates 1 comprehensive 16:9 slide with all 4 personas</span>
+                  <span>Creates 1 comprehensive {aspectRatio} slide with all 4 personas</span>
                 ) : (
-                  <span>Creates 4 individual 16:9 spotlight slides tabbed side-by-side</span>
+                  <span>Creates 4 individual {aspectRatio} spotlight slides tabbed side-by-side</span>
                 )
               ) : section === "channels" ? (
                 channelMode === "overview" ? (
-                  <span>Creates 1 comprehensive 16:9 slide with all {fundedChannels.length} active channels</span>
+                  <span>Creates 1 comprehensive {aspectRatio} slide with all {fundedChannels.length} active channels</span>
                 ) : (
-                  <span>Creates {fundedChannels.length} individual 16:9 spotlight slides tabbed side-by-side</span>
+                  <span>Creates {fundedChannels.length} individual {aspectRatio} spotlight slides tabbed side-by-side</span>
                 )
               ) : (
-                <span>Creates 1 comprehensive 16:9 slide with all {candidateSegments.length} recommended segments</span>
+                <span>Creates 1 comprehensive {aspectRatio} slide with all {candidateSegments.length} recommended segments</span>
               )}
             </div>
 
@@ -993,13 +1163,13 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   <span>
                     {section === "personas"
                       ? personaMode === "spotlight"
-                        ? (personaSlides.length > 0 ? "Regenerate All 4 Spotlight Slides" : "Generate All 4 Spotlight Slides (16:9)")
-                        : (personaSlides.length > 0 ? "Regenerate All 4 Personas on 1 Slide" : "Generate All 4 Personas on 1 Slide (16:9)")
+                        ? (personaSlides.length > 0 ? "Regenerate All 4 Spotlight Slides" : `Generate All 4 Spotlight Slides (${aspectRatio})`)
+                        : (personaSlides.length > 0 ? "Regenerate All 4 Personas on 1 Slide" : `Generate All 4 Personas on 1 Slide (${aspectRatio})`)
                       : section === "channels"
                         ? channelMode === "spotlight"
-                          ? (channelSlides.length > 0 ? `Regenerate All ${fundedChannels.length} Channel Slides` : `Generate All ${fundedChannels.length} Channel Slides (16:9)`)
-                          : (channelSlides.length > 0 ? "Regenerate Media Mix Overview Slide" : "Generate Media Mix Overview Slide (16:9)")
-                        : (segmentSlides.length > 0 ? "Regenerate Audience Segments Slide" : "Generate Audience Segments Slide (16:9)")}
+                          ? (channelSlides.length > 0 ? `Regenerate All ${fundedChannels.length} Channel Slides` : `Generate All ${fundedChannels.length} Channel Slides (${aspectRatio})`)
+                          : (channelSlides.length > 0 ? "Regenerate Media Mix Overview Slide" : `Generate Media Mix Overview Slide (${aspectRatio})`)
+                        : (segmentSlides.length > 0 ? "Regenerate Audience Segments Slide" : `Generate Audience Segments Slide (${aspectRatio})`)}
                   </span>
                 </>
               )}
@@ -1026,7 +1196,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                 </div>
                 <div className="flex items-center gap-1 text-slate-500 font-normal">
                   <Clock className="w-3.5 h-3.5" />
-                  <span>~30–45s for 16:9 ultra-high fidelity</span>
+                  <span>~30–45s for {aspectRatio} ultra-high fidelity</span>
                 </div>
               </div>
 
@@ -1134,27 +1304,36 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
               {/* Active Slide Display */}
               {activeSlide && (
                 <div className="space-y-3">
-                  {/* Slide Container 16:9 with light gray border and 4px border-radius */}
-                  <div className="relative group bg-white rounded-[4px] overflow-hidden shadow-xs border border-gray-200 aspect-video flex items-center justify-center">
-                    <img
-                      id="generated-slide-image"
-                      src={activeSlide.imageUrl}
-                      alt="Generated Presentation Slide"
-                      className="w-full h-full object-contain rounded-[4px]"
-                    />
+                  {/* Slide Container with dynamic aspect ratio, light gray border and 4px border-radius */}
+                  <div className="flex justify-center w-full">
+                    <div
+                      className="relative group bg-white rounded-[4px] overflow-hidden shadow-xs border border-gray-200 flex items-center justify-center p-1 sm:p-2"
+                      style={{
+                        aspectRatio: (activeSlide.aspectRatio || aspectRatio).replace(":", "/"),
+                        maxHeight: "520px",
+                        maxWidth: "100%",
+                      }}
+                    >
+                      <img
+                        id="generated-slide-image"
+                        src={activeSlide.imageUrl}
+                        alt="Generated Presentation Slide"
+                        className="max-w-full max-h-full object-contain rounded-[4px]"
+                      />
 
-                    {/* Overlay Action Pills */}
-                    <div className="absolute top-2.5 right-2.5 flex items-center gap-2 opacity-90 group-hover:opacity-100 transition-opacity">
-                      <button
-                        type="button"
-                        id="btn-zoom-slide"
-                        onClick={() => setIsZoomed(true)}
-                        className="p-1.5 rounded-[4px] bg-slate-900/80 hover:bg-slate-900 text-white backdrop-blur-xs text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
-                        title="View Fullscreen"
-                      >
-                        <Maximize2 className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline text-[11px]">Inspect Full</span>
-                      </button>
+                      {/* Overlay Action Pills */}
+                      <div className="absolute top-2.5 right-2.5 flex items-center gap-2 opacity-90 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          id="btn-zoom-slide"
+                          onClick={() => setIsZoomed(true)}
+                          className="p-1.5 rounded-[4px] bg-slate-900/80 hover:bg-slate-900 text-white backdrop-blur-xs text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                          title="View Fullscreen"
+                        >
+                          <Maximize2 className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline text-[11px]">Inspect Full</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -1163,11 +1342,15 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                     <div className="text-xs text-slate-600">
                       <span className="font-semibold text-slate-900">
                         {activeSlide.section === "personas"
-                          ? activeSlide.mode === "portfolio" ? "All 4 Personas on 1 Slide" : `Spotlight: ${activeSlide.personaName}`
-                          : activeSlide.mode === "overview" ? "Media Mix Overview" : `Spotlight: ${activeSlide.channelName}`}
+                          ? (activeSlide.mode === "portfolio" ? "All 4 Personas on 1 Slide" : `Spotlight: ${activeSlide.personaName}`)
+                          : activeSlide.section === "channels"
+                            ? (activeSlide.mode === "overview" ? "Media Mix Overview" : `Spotlight: ${activeSlide.channelName}`)
+                            : "Audience Segments Matrix"}
                       </span>
                       <span className="text-slate-400 mx-1.5">•</span>
-                      <span>1536×864 PNG (16:9)</span>
+                      <span>
+                        {activeSlide.dimensions ? `${activeSlide.dimensions.width}×${activeSlide.dimensions.height}` : `${currentRatioOption.width}×${currentRatioOption.height}`} PNG ({activeSlide.aspectRatio || aspectRatio})
+                      </span>
                       <span className="text-slate-400 mx-1.5">•</span>
                       <span className="text-emerald-700 font-medium">Slide Deck Ready (No Headers/Footers)</span>
                     </div>
@@ -1201,7 +1384,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                         className="px-4 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs"
                       >
                         <Download className="w-3.5 h-3.5" />
-                        <span>Download 16:9 PNG</span>
+                        <span>Download {activeSlide.aspectRatio || aspectRatio} PNG</span>
                       </button>
 
                       {/* Download All Slides if multiple */}
@@ -1235,8 +1418,10 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
           <div className="flex items-center justify-between pb-3 text-white">
             <span className="text-sm font-semibold">
               {activeSlide.section === "personas"
-                ? activeSlide.mode === "portfolio" ? "All 4 Personas" : `Spotlight: ${activeSlide.personaName}`
-                : activeSlide.mode === "overview" ? "Media Mix Overview" : `Spotlight: ${activeSlide.channelName}`} (1536×864)
+                ? (activeSlide.mode === "portfolio" ? "All 4 Personas" : `Spotlight: ${activeSlide.personaName}`)
+                : activeSlide.section === "channels"
+                  ? (activeSlide.mode === "overview" ? "Media Mix Overview" : `Spotlight: ${activeSlide.channelName}`)
+                  : "Audience Segments Matrix"} ({activeSlide.aspectRatio || aspectRatio})
             </span>
             <button
               type="button"

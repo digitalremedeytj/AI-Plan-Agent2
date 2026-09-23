@@ -2092,7 +2092,7 @@ app.post("/api/plans/:id/unshare", async (req, res) => {
 });
 
 // Helper: Generate a realistic profile photo headshot using Gemini 3.1 Flash Image (Nano Banana 2)
-async function generatePersonaHeadshot(persona: any, retryCount: number = 0): Promise<string | null> {
+async function generatePersonaHeadshot(persona: any, instruction?: string, retryCount: number = 0): Promise<string | null> {
   try {
     const ai = getAiClient();
     
@@ -2101,9 +2101,13 @@ async function generatePersonaHeadshot(persona: any, retryCount: number = 0): Pr
     const rawAge = persona.age ? String(persona.age).trim() : "35";
     const personaName = persona.name || "Audience Persona";
 
-    const prompt = `A clean, authentic, high-quality 1:1 square photographic studio headshot portrait of a ${rawAge} year old ${rawGender}, styled as ${personaName}. Professional portrait lighting, neutral soft-focus studio background, warm, confident, approachable facial expression facing directly toward camera. Single subject, tightly centered on head and shoulders.`;
+    const customDirective = instruction && instruction.trim()
+      ? ` Creative instructions & styling directive: ${instruction.trim()}.`
+      : "";
 
-    console.log(`[GEMINI IMAGE GEN] Generating headshot photo for persona: '${personaName}' (attempt ${retryCount + 1})...`);
+    const prompt = `A clean, authentic, high-quality 1:1 square photographic studio headshot portrait of a ${rawAge} year old ${rawGender}, styled as ${personaName}.${customDirective} Professional portrait lighting, neutral soft-focus studio background, warm, confident, approachable facial expression facing directly toward camera. Single subject, tightly centered on head and shoulders.`;
+
+    console.log(`[GEMINI IMAGE GEN] Generating headshot photo for persona: '${personaName}' (attempt ${retryCount + 1})${instruction ? ` [Instruction: ${instruction.slice(0, 60)}]` : ""}...`);
     
     const response: any = await withTimeout(
       ai.models.generateContent({
@@ -2128,7 +2132,7 @@ async function generatePersonaHeadshot(persona: any, retryCount: number = 0): Pr
       console.warn(`[GEMINI IMAGE GEN] Timed out for persona '${personaName}'.`);
       if (retryCount === 0) {
         console.log(`[GEMINI IMAGE GEN] Retrying headshot for persona '${personaName}'...`);
-        return await generatePersonaHeadshot(persona, retryCount + 1);
+        return await generatePersonaHeadshot(persona, instruction, retryCount + 1);
       }
       return null;
     }
@@ -2144,13 +2148,13 @@ async function generatePersonaHeadshot(persona: any, retryCount: number = 0): Pr
     }
     console.warn(`[GEMINI IMAGE GEN] No image data found in response for persona '${personaName}'.`);
     if (retryCount === 0) {
-      return await generatePersonaHeadshot(persona, retryCount + 1);
+      return await generatePersonaHeadshot(persona, instruction, retryCount + 1);
     }
   } catch (err: any) {
     console.error(`[GEMINI IMAGE GEN ERROR] Failed to generate headshot for persona '${persona?.name}':`, err?.message || err);
     if (retryCount === 0) {
       console.log(`[GEMINI IMAGE GEN] Retrying after error for persona '${persona?.name}'...`);
-      return await generatePersonaHeadshot(persona, retryCount + 1);
+      return await generatePersonaHeadshot(persona, instruction, retryCount + 1);
     }
   }
   return null;
@@ -2159,13 +2163,13 @@ async function generatePersonaHeadshot(persona: any, retryCount: number = 0): Pr
 // API: Generate individual persona headshot avatar on demand
 app.post("/api/generate-persona-avatar", async (req, res) => {
   try {
-    const { persona } = req.body;
+    const { persona, instruction } = req.body;
     if (!persona || !persona.name) {
       res.status(400).json({ error: "Persona details required." });
       return;
     }
-    console.log(`[API /api/generate-persona-avatar] Generating headshot for ${persona.name}...`);
-    const avatarUrl = await generatePersonaHeadshot(persona);
+    console.log(`[API /api/generate-persona-avatar] Generating headshot for ${persona.name}${instruction ? ` with custom instruction` : ""}...`);
+    const avatarUrl = await generatePersonaHeadshot(persona, instruction);
     if (avatarUrl) {
       res.json({ success: true, avatarUrl });
     } else {
@@ -2227,7 +2231,48 @@ app.post("/api/generate-segments", async (req, res) => {
   }
 });
 
-// API: Generate 16:9 Presentation Slides for Personas using gpt-image-2.5-sunburst
+// Configuration for Presentation Slide Studio Aspect Ratios (gpt-image-2.5-sunburst)
+// All sizes adhere to width and height being multiples of 16, within 655,360 - 8,294,400 pixels
+const SLIDE_ASPECT_RATIO_CONFIG: Record<
+  string,
+  { size: string; width: number; height: number; type: "horizontal" | "square" | "vertical"; name: string }
+> = {
+  "21:9": { size: "2560x1088", width: 2560, height: 1088, type: "horizontal", name: "Ultrawide" },
+  "2:1":  { size: "2560x1280", width: 2560, height: 1280, type: "horizontal", name: "Univisium" },
+  "16:9": { size: "2560x1440", width: 2560, height: 1440, type: "horizontal", name: "Widescreen" },
+  "3:2":  { size: "2160x1440", width: 2160, height: 1440, type: "horizontal", name: "Classic 3:2" },
+  "4:3":  { size: "1920x1440", width: 1920, height: 1440, type: "horizontal", name: "Standard 4:3" },
+  "1:1":  { size: "2048x2048", width: 2048, height: 2048, type: "square", name: "Square" },
+  "3:4":  { size: "1440x1920", width: 1440, height: 1920, type: "vertical", name: "Portrait 3:4" },
+  "2:3":  { size: "1440x2160", width: 1440, height: 2160, type: "vertical", name: "Portrait 2:3" },
+  "9:16": { size: "1440x2560", width: 1440, height: 2560, type: "vertical", name: "Vertical / Mobile" },
+};
+
+/**
+ * Persists a high-resolution base64 PNG slide to disk under /assets/slides/
+ * and returns the static asset URL path (/assets/slides/<filename>.png).
+ * This prevents multi-megabyte image payloads from inflating Firestore documents.
+ */
+function persistSlidePngToDisk(base64Data: string, prefix: string = "slide"): string {
+  try {
+    const slidesDir = path.join(process.cwd(), "assets", "slides");
+    if (!fs.existsSync(slidesDir)) {
+      fs.mkdirSync(slidesDir, { recursive: true });
+    }
+    const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, "");
+    const buffer = Buffer.from(cleanBase64, "base64");
+    const filename = `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.png`;
+    const fullPath = path.join(slidesDir, filename);
+    fs.writeFileSync(fullPath, buffer);
+    return `/assets/slides/${filename}`;
+  } catch (err) {
+    console.error("[persistSlidePngToDisk] Could not write slide PNG to disk:", err);
+    // Graceful fallback to data URL if writing fails
+    return base64Data.startsWith("data:") ? base64Data : `data:image/png;base64,${base64Data}`;
+  }
+}
+
+// API: Generate Presentation Slides for Personas using gpt-image-2.5-sunburst
 app.post("/api/personas/generate-slide", async (req, res) => {
   // Prevent socket timeout on long-running image generation
   req.socket.setTimeout(0);
@@ -2241,6 +2286,7 @@ app.post("/api/personas/generate-slide", async (req, res) => {
       campaignFocus = "",
       geography = "",
       style = "corporate_light", // "corporate_light" | "modern_dark" | "minimal_slate"
+      aspectRatio = "16:9",
       customNotes = "",
     } = req.body || {};
 
@@ -2273,7 +2319,10 @@ app.post("/api/personas/generate-slide", async (req, res) => {
       return;
     }
 
-    console.log(`[API /api/personas/generate-slide] Starting slide generation. Mode: '${mode}', Style: '${style}', Personas count: ${personas.length}`);
+    const ratioInfo = SLIDE_ASPECT_RATIO_CONFIG[aspectRatio] || SLIDE_ASPECT_RATIO_CONFIG["16:9"];
+    const targetSize = ratioInfo.size;
+
+    console.log(`[API /api/personas/generate-slide] Starting slide generation. Mode: '${mode}', Style: '${style}', Ratio: '${aspectRatio} (${ratioInfo.name} - ${targetSize})', Personas count: ${personas.length}`);
 
     // EXACT BRAND DESIGN GUIDE (Mandatory across all slide layouts)
     const brandDesignGuide = `
@@ -2330,17 +2379,54 @@ CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
         }
       }
 
-      prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing an audience persona spotlight, designed to be placed directly onto a white background presentation slide.
+      const layoutSection = ratioInfo.type === "vertical"
+        ? `BODY CONTENT & COMPOSITION (Fills the ${aspectRatio} vertical canvas cleanly with generous vertical spacing):
+The entire image consists purely of the vertically stacked spotlight body cards arranged from top to bottom:
 
-CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
-- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
-- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
-- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
-- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+TOP SECTION:
+- Prominent Persona Portrait & Demographics:
+  • Photographic Studio Portrait: A large, high-definition photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}). Warm, approachable studio lighting. No border around the photo (completely borderless photo with no stroke, outline, or border ring).
+  • Eyebrow Label: "${roleTag.toUpperCase()}" in teal #0e8f86 (Lexend SemiBold)
+  • Persona Name: "${personaName}" (Lexend Bold)
+  • Demographic Pill Badges: Age: ${targetPersona.age} (teal #0e8f86) | Gender: ${targetPersona.gender} (indigo #6b63e6) | HHI: ${targetPersona.income} (lime #a6cf56)
+${geography ? `  • Primary Geography: ${geography}` : ""}
 
-${brandDesignGuide}
+MIDDLE SECTION:
+- Three Structured Insight Blocks:
+  1. 📺 Connected TV & Viewing Patterns:
+     • Eyebrow: "CONNECTED TV & STREAMING" in teal #0e8f86 (Lexend SemiBold)
+     • Body: "${targetPersona.watch}" (Lexend Regular in #0c1e24)
+  2. 🌐 Digital, Mobile & Web Affinity:
+     • Eyebrow: "DIGITAL & MOBILE BEHAVIOR" in teal #0e8f86 (Lexend SemiBold)
+     • Body: "${targetPersona.browse}" (Lexend Regular in #0c1e24)
+  3. 🛍️ Purchase Drivers & Commerce Behavior:
+     • Eyebrow: "COMMERCE & PURCHASE DRIVERS" in teal #0e8f86 (Lexend SemiBold)
+     • Body: "${targetPersona.buy}" (Lexend Regular in #0c1e24)
 
-BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+BOTTOM SECTION:
+- Executive Persona Narrative & Strategic Recommendation:
+  • Narrative Text: "${targetPersona.narrative}" (Lexend Regular in #0c1e24)
+  • Strategic Activation Recommendation: "Deploy targeted CTV video creative and synchronized cross-device retargeting to engage ${personaName} during high-attention evening and weekend dayparts."`
+        : ratioInfo.type === "square"
+        ? `BODY CONTENT & COMPOSITION (Fills the 1:1 square canvas cleanly with balanced spacing):
+The entire image consists purely of the balanced spotlight presentation cards:
+
+LEFT SECTION:
+- Photographic Studio Portrait & Demographics:
+  • Photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}) with natural soft corners and NO border.
+  • Eyebrow Label: "${roleTag.toUpperCase()}" (Lexend SemiBold in teal #0e8f86)
+  • Persona Name: "${personaName}" (Lexend Bold)
+  • Demographic Badges: Age: ${targetPersona.age} | Gender: ${targetPersona.gender} | HHI: ${targetPersona.income}
+${geography ? `  • Primary Geography: ${geography}` : ""}
+
+RIGHT SECTION:
+- Executive Narrative & Behavioral Habits:
+  • Narrative: "${targetPersona.narrative}"
+  • 📺 Watch: ${targetPersona.watch}
+  • 🌐 Browse: ${targetPersona.browse}
+  • 🛍️ Buy: ${targetPersona.buy}
+- Strategic Activation Recommendation container at the bottom.`
+        : `BODY CONTENT & COMPOSITION (Fills the ${aspectRatio} canvas cleanly with generous whitespace for a premium executive feel):
 The entire image consists purely of the two-column slide body cards:
 
 LEFT COLUMN (~38% of width):
@@ -2368,7 +2454,19 @@ RIGHT COLUMN (~62% of width):
 - Media Planning Activation Recommendation:
   • Container: Deep teal (#0e3b42) or cool slate surface with subtle cool-tinted shadow and 1px border.
   • Eyebrow: "STRATEGIC ACTIVATION RECOMMENDATION" in teal #0e8f86 with a small lime #a6cf56 accent tag.
-  • Recommendation Text: "Deploy targeted CTV video creative and synchronized cross-device retargeting to engage ${personaName} during high-attention evening and weekend dayparts." (Lexend Regular in #0c1e24 or crisp white if on deep teal)
+  • Recommendation Text: "Deploy targeted CTV video creative and synchronized cross-device retargeting to engage ${personaName} during high-attention evening and weekend dayparts." (Lexend Regular in #0c1e24 or crisp white if on deep teal)`;
+
+      prompt = `A modern, modular slide body graphic in ${aspectRatio} format (${targetSize}) showcasing an audience persona spotlight, designed to be placed directly onto a white background presentation slide.
+
+CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
+- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
+- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
+- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+
+${brandDesignGuide}
+
+${layoutSection}
 
 DESIGN & EXECUTION DIRECTIVES:
 - Follow all directives in the CORE BRAND DESIGN GUIDE above.
@@ -2401,17 +2499,50 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
       }
       console.log(`[API /api/personas/generate-slide] Added ${referenceFiles.length} avatar reference(s) for portfolio slide.`);
 
-      prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing 4 audience persona cards side-by-side, designed to be placed directly onto a white background presentation slide.
+      let layoutSection = "";
+      if (ratioInfo.type === "vertical") {
+        // Vertical format: 4 personas vertically stacked as 4 rows from top to bottom
+        layoutSection = `LAYOUT DIRECTIVE: VERTICAL STACK FORMAT (${aspectRatio} ratio, ${targetSize}).
+The entire image consists purely of exactly 4 distinct, equal horizontal persona cards vertically stacked one above the other in a single vertical column running from top to bottom across the canvas:
+Each stacked card is a full-width horizontal card container featuring:
+- On the left: A crisp ROUND (circular) borderless headshot portrait
+- In the center and right: Eyebrow tag, Persona Name, Demographics pill badges, 3 Key Media & Purchasing Behaviors (Watch / Browse / Buy), and summary highlight.
 
-CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
-- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
-- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
-- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
-- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+${candidatePersonas.map((p: any, idx: number) => `
+STACKED ROW CARD ${idx + 1}:
+• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait on the left side of the card showing a realistic ${p.age} year old ${p.gender} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).
+• Eyebrow Tag: "${p.sourceType === "User" ? "TARGET SPECIFIC PERSONA" : p.sourceType === "RFP" ? "CORE RFP TARGET" : "SCOUTAI GROWTH SEGMENT"}" in teal #0e8f86 (Lexend SemiBold in uppercase with 0.08em tracking).
+• Persona Name: "${p.name}" (Lexend Bold with tight 1.05 leading and -0.02em tracking).
+• Demographic Pills: "${p.gender} | Age ${p.age} | HHI ${p.income}" (Teal #0e8f86, secondary indigo #6b63e6, and subtle lime #a6cf56 accents).
+• 3 Key Media & Purchasing Behaviors (Lexend Regular text at 1.5 leading in #0c1e24):
+  - 📺 Watch: ${p.watch}
+  - 🌐 Browse: ${p.browse}
+  - 🛍️ Buy: ${p.buy}
+• Summary Highlight: "${(p.narrative || "").slice(0, 100)}..." (Lexend Regular in #0c1e24)
+`).join("\n")}`;
+      } else if (ratioInfo.type === "square") {
+        // Square format: 2x2 balanced grid
+        layoutSection = `LAYOUT DIRECTIVE: 2x2 BALANCED GRID FORMAT (1:1 ratio, ${targetSize}).
+The entire image consists purely of exactly 4 distinct persona cards arranged in a clean, balanced 2x2 grid (2 columns by 2 rows) filling the square canvas with clean margins and equal quadrants:
+Each quadrant card features:
+- A crisp ROUND (circular) borderless headshot portrait at the top
+- Eyebrow tag, Persona Name, Demographics pill badges, 3 Key Media & Purchasing Behaviors (Watch / Browse / Buy), and summary highlight.
 
-${brandDesignGuide}
-
-BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+${candidatePersonas.map((p: any, idx: number) => `
+QUADRANT CARD ${idx + 1} (Quadrant ${idx === 0 ? "Top-Left" : idx === 1 ? "Top-Right" : idx === 2 ? "Bottom-Left" : "Bottom-Right"}):
+• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait at the top showing a realistic ${p.age} year old ${p.gender} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).
+• Eyebrow Tag: "${p.sourceType === "User" ? "TARGET SPECIFIC PERSONA" : p.sourceType === "RFP" ? "CORE RFP TARGET" : "SCOUTAI GROWTH SEGMENT"}" in teal #0e8f86 (Lexend SemiBold in uppercase with 0.08em tracking).
+• Persona Name: "${p.name}" (Lexend Bold with tight 1.05 leading and -0.02em tracking).
+• Demographic Pills: "${p.gender} | Age ${p.age} | HHI ${p.income}" (Teal #0e8f86, secondary indigo #6b63e6, and subtle lime #a6cf56 accents).
+• 3 Key Media & Purchasing Behaviors (Lexend Regular text at 1.5 leading in #0c1e24):
+  - 📺 Watch: ${p.watch}
+  - 🌐 Browse: ${p.browse}
+  - 🛍️ Buy: ${p.buy}
+• Summary Highlight: "${(p.narrative || "").slice(0, 100)}..." (Lexend Regular in #0c1e24)
+`).join("\n")}`;
+      } else {
+        // Horizontal format: 4 cards side-by-side
+        layoutSection = `LAYOUT DIRECTIVE: HORIZONTAL 4-COLUMN FORMAT (${aspectRatio} ratio, ${targetSize}).
 The entire image consists purely of exactly 4 distinct, equal vertical persona cards arranged horizontally side-by-side across the slide:
 
 ${candidatePersonas.map((p: any, idx: number) => `
@@ -2425,12 +2556,25 @@ CARD ${idx + 1}:
   - 🌐 Browse: ${p.browse}
   - 🛍️ Buy: ${p.buy}
 • Summary Highlight: "${(p.narrative || "").slice(0, 100)}..." (Lexend Regular in #0c1e24)
-`).join("\n")}
+`).join("\n")}`;
+      }
+
+      prompt = `A modern, modular slide body graphic in ${aspectRatio} format (${targetSize}) showcasing 4 audience persona cards, designed to be placed directly onto a white background presentation slide.
+
+CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
+- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
+- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
+- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+
+${brandDesignGuide}
+
+${layoutSection}
 
 DESIGN & EXECUTION DIRECTIVES:
 - Follow all directives in the CORE BRAND DESIGN GUIDE above.
 - Round persona images with no border: All 4 persona portrait photos MUST BE ROUND (perfect circular avatars) with absolutely NO border around them (completely borderless circular photos with no outer stroke, ring, or outline).
-- 4 clean vertical cards with cool slate-tinted neutral container backgrounds (#F8FAFC), subtle 1px cool borders (#E2E8F0), and cool-tinted low-contrast shadows on a pure white (#FFFFFF) canvas.
+- Clean card containers with cool slate-tinted neutral backgrounds (#F8FAFC), subtle 1px cool borders (#E2E8F0), and cool-tinted low-contrast shadows on a pure white (#FFFFFF) canvas.
 - Deep teal #0e3b42 used for prominent card accents or dark surfaces, primary teal #0e8f86 for active tags, indigo #6b63e6 for secondary badges, and lime #a6cf56 for limited high-impact accents.
 - All body copy strictly in #0c1e24.
 - Generous whitespace between cards and within containers ensuring an uncluttered, high-end executive look.
@@ -2439,7 +2583,7 @@ DESIGN & EXECUTION DIRECTIVES:
 ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     }
 
-    console.log(`[API /api/personas/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: 1536x864)...`);
+    console.log(`[API /api/personas/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: ${targetSize})...`);
 
     let resultImageBase64: string | null = null;
     let revisedPrompt: string | undefined = undefined;
@@ -2447,16 +2591,16 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     // Try edit endpoint if reference files exist
     if (referenceFiles.length > 0) {
       try {
-        console.log(`[API /api/personas/generate-slide] Attempting openai.images.edit with ${referenceFiles.length} reference image(s)...`);
+        console.log(`[API /api/personas/generate-slide] Attempting openai.images.edit with ${referenceFiles.length} reference image(s) (size: ${targetSize})...`);
         const editResponse = await withTimeout(
           openai.images.edit({
             model: "gpt-image-2.5-sunburst",
             image: referenceFiles.length === 1 ? referenceFiles[0] : referenceFiles,
             prompt,
-            size: "1536x864",
-            quality: "high",
+            size: targetSize,
+            quality: "xhigh",
           } as any),
-          120000,
+          180000,
           null
         );
 
@@ -2472,15 +2616,15 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
 
     // Fallback or default to images.generate
     if (!resultImageBase64) {
-      console.log("[API /api/personas/generate-slide] Calling openai.images.generate with gpt-image-2.5-sunburst...");
+      console.log(`[API /api/personas/generate-slide] Calling openai.images.generate with gpt-image-2.5-sunburst (size: ${targetSize})...`);
       const genResponse = await withTimeout(
         openai.images.generate({
           model: "gpt-image-2.5-sunburst",
           prompt,
-          size: "1536x864",
-          quality: "high",
-        }),
-        120000,
+          size: targetSize,
+          quality: "xhigh",
+        } as any),
+        180000,
         null
       );
 
@@ -2493,13 +2637,17 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
       }
     }
 
-    const finalImageUrl = `data:image/png;base64,${resultImageBase64}`;
+    const savedAssetUrl = persistSlidePngToDisk(resultImageBase64, `persona-${mode}-${personaIndex}`);
+    const finalImageUrl = savedAssetUrl;
     res.json({
       success: true,
       imageUrl: finalImageUrl,
+      dataUrl: `data:image/png;base64,${resultImageBase64}`,
       model: "gpt-image-2.5-sunburst",
       mode,
       personaIndex,
+      aspectRatio,
+      dimensions: { width: ratioInfo.width, height: ratioInfo.height },
       revisedPrompt,
     });
 
@@ -2512,7 +2660,7 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
   }
 });
 
-// API: Generate 16:9 Presentation Slides for Channel Strategy using gpt-image-2.5-sunburst
+// API: Generate Presentation Slides for Channel Strategy using gpt-image-2.5-sunburst
 app.post("/api/channels/generate-slide", async (req, res) => {
   // Prevent socket timeout on long-running image generation
   req.socket.setTimeout(0);
@@ -2529,6 +2677,7 @@ app.post("/api/channels/generate-slide", async (req, res) => {
       campaignFocus = "",
       geography = "",
       style = "corporate_light", // "corporate_light" | "modern_dark" | "minimal_slate"
+      aspectRatio = "16:9",
       customNotes = "",
       executiveInsight = "",
     } = req.body || {};
@@ -2546,7 +2695,10 @@ app.post("/api/channels/generate-slide", async (req, res) => {
       return;
     }
 
-        console.log(`[API /api/channels/generate-slide] Starting channel slide generation. Mode: '${mode}', Style: '${style}', Active channels count: ${channels.length}`);
+    const ratioInfo = SLIDE_ASPECT_RATIO_CONFIG[aspectRatio] || SLIDE_ASPECT_RATIO_CONFIG["16:9"];
+    const targetSize = ratioInfo.size;
+
+    console.log(`[API /api/channels/generate-slide] Starting channel slide generation. Mode: '${mode}', Style: '${style}', Ratio: '${aspectRatio} (${ratioInfo.name} - ${targetSize})', Active channels count: ${channels.length}`);
 
     // EXACT BRAND DESIGN GUIDE (Mandatory across all slide layouts)
     const brandDesignGuide = `
@@ -2574,12 +2726,8 @@ CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
       const channelName = targetChannel.channelName || `Media Channel ${cIdx + 1}`;
       const allocPct = targetChannel.allocationPercent != null ? Math.round(targetChannel.allocationPercent) : 0;
       const allocDollars = targetChannel.allocationDollars ? `$${Math.round(targetChannel.allocationDollars).toLocaleString()}` : "";
-      const cpmRange = targetChannel.typicalCpmLow && targetChannel.typicalCpmHigh 
-        ? `$${targetChannel.typicalCpmLow} – $${targetChannel.typicalCpmHigh} CPM` 
-        : targetChannel.typicalCpmLow ? `$${targetChannel.typicalCpmLow} CPM` : "CPM not specified in the plan";
       const score = targetChannel.recommendationScore ? targetChannel.recommendationScore.toFixed(1) : "n/a";
       const confidence = targetChannel.confidence || "Not assessed";
-      const status = targetChannel.status === "TEST" ? "TACTICAL TEST" : "RECOMMENDED CORE";
 
       // Extract tactics & publishers
       const tactics = Array.isArray(targetChannel.targetingTactics) && targetChannel.targetingTactics.length > 0
@@ -2598,37 +2746,69 @@ CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
         ? targetChannel.measurementCapabilities.slice(0, 3).map((m: any) => m.displayName || m.id).join(", ")
         : "Not specified in the plan";
 
-      prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing a single media channel strategy spotlight deep dive, designed to be placed directly onto a white background presentation slide.
+      let compositionSection = "";
+      if (ratioInfo.type === "vertical") {
+        compositionSection = `BODY CONTENT & COMPOSITION (Fills the ${aspectRatio} vertical canvas cleanly with generous vertical spacing):
+The entire image consists purely of vertically stacked channel strategy cards arranged from top to bottom:
 
-CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
-- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
-- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
-- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
-- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
-- NO UNSELECTED CANDIDATES: Only display this active, funded channel from the approved media plan.
+TOP SECTION:
+- Prominent Channel Overview Card:
+  • Eyebrow Label: "CHANNEL STRATEGY" in teal #0e8f86 (Lexend SemiBold uppercase)
+  • Channel Name: "${channelName}" (Lexend Bold)
+  • Strategic Role: "${targetChannel.role || "Not specified in the plan"}" (Lexend Regular, #0c1e24)
+  • Primary Allocation Metric Callout (Deep teal #0e3b42 card with lime #a6cf56 accent):
+    - Percentage: "${allocPct}% of Total Budget"
+    - Dollars: "${allocDollars}"
+  • Badges: Fit Score: "${score}/100" | Confidence: "${confidence}"
 
-${brandDesignGuide}
+MIDDLE SECTION:
+- Structured Execution Cards (stacked vertically):
+  1. 🎯 Targeting: "${tactics}"
+  2. 📺 Publishers: "${publishers}"
+  3. 🎨 Creative & Inventory Controls: "${enhancements}"
+  4. 📊 Measurement & Attribution: "${measurement}"
 
-BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+BOTTOM SECTION:
+- Strategic Allocation Rationale: "${targetChannel.allocationRationale || "Not specified in the plan"}"`;
+      } else if (ratioInfo.type === "square") {
+        compositionSection = `BODY CONTENT & COMPOSITION (Fills the 1:1 square canvas cleanly with balanced spacing):
+The entire image consists purely of the channel strategy presentation cards:
+
+LEFT SECTION:
+- Prominent Channel Overview Card:
+  • Eyebrow Label: "CHANNEL STRATEGY" in teal #0e8f86
+  • Channel Name: "${channelName}" (Lexend Bold)
+  • Strategic Role: "${targetChannel.role || "Not specified in the plan"}"
+  • Primary Allocation Metric: "${allocPct}% of Budget" (${allocDollars})
+  • Badges: Fit Score: "${score}/100" | Confidence: "${confidence}"
+
+RIGHT SECTION:
+- 4 Execution Cards in a 2x2 grid:
+  1. 🎯 Targeting: "${tactics}"
+  2. 📺 Publishers: "${publishers}"
+  3. 🎨 Creative: "${enhancements}"
+  4. 📊 Measurement: "${measurement}"
+- Strategic Allocation Rationale container along the bottom.`;
+      } else {
+        compositionSection = `BODY CONTENT & COMPOSITION (Fills the ${aspectRatio} canvas cleanly with generous whitespace for a premium executive feel):
 The entire image consists purely of the two-column slide body cards:
 
 LEFT COLUMN (~36% of width):
 - Prominent Channel Overview Card:
-  • Eyebrow Label: "${status}" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
+  • Eyebrow Label: "CHANNEL STRATEGY" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
   • Channel Name: "${channelName}" (Lexend Bold with tight 1.05 leading and -0.02em tracking, prominent title in card)
   • Strategic Role: "${targetChannel.role || "Not specified in the plan"}" (Lexend Regular, #0c1e24)
   • Primary Allocation Metric Callout (Deep teal #0e3b42 background card with lime #a6cf56 accent):
     - Percentage: "${allocPct}% of Total Budget" (Large bold display)
     - Dollars: "${allocDollars}" (Prominent secondary figure)
-  • Key Tactical Badges:
-    - Benchmark CPM: "${cpmRange}" (Teal #0e8f86 pill)
+  • Key Badges:
     - Fit Score: "${score}/100" (Indigo #6b63e6 pill)
     - Confidence: "${confidence}" (Lime #a6cf56 accent badge)
     - Flight Duration: "${flightDays ? `${flightDays} Days` : "Not set in the plan"}"
-  • Gap Addressed Callout: "${targetChannel.gapAddressed || "Not specified in the plan"}"
+  • Strategic Alignment Callout: "${targetChannel.gapAddressed || "Not specified in the plan"}"
 
 RIGHT COLUMN (~64% of width):
-- Four Structured Tactical Execution Cards in a clean 2x2 grid:
+- Four Structured Execution Cards in a clean 2x2 grid:
   1. 🎯 Targeting Tactics & Audience Activation:
      • Eyebrow: "TARGETING & AUDIENCE ACTIVATION" in teal #0e8f86
      • Body: "${tactics}" (Lexend Regular at 1.5 leading in #0c1e24)
@@ -2644,7 +2824,23 @@ RIGHT COLUMN (~64% of width):
 - Bottom Strategic Rationale Container:
   • Container: Light cool slate container (#F8FAFC) with subtle 1px border (#E2E8F0)
   • Eyebrow: "STRATEGIC ALLOCATION RATIONALE" in teal #0e8f86
-  • Text: "${targetChannel.allocationRationale || "Not specified in the plan"}" (Lexend Regular in #0c1e24)
+  • Text: "${targetChannel.allocationRationale || "Not specified in the plan"}" (Lexend Regular in #0c1e24)`;
+      }
+
+      prompt = `A modern, modular slide body graphic in ${aspectRatio} format (${targetSize}) showcasing a single media channel strategy spotlight deep dive, designed to be placed directly onto a white background presentation slide.
+
+CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
+- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
+- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
+- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- ABSOLUTELY NO "TACTICAL TEST" OR STATUS LABELS: Do NOT include any "Tactical Test", "Recommended Core", or test status tags anywhere.
+- ABSOLUTELY NO "KEY BENCHMARK" OR CPM VALUES: Do NOT display any "Key Benchmark", "$CPM", CPM rates, or benchmark pricing numbers anywhere on the slide.
+- CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
+- NO UNSELECTED CANDIDATES: Only display this active, funded channel from the approved media plan.
+
+${brandDesignGuide}
+
+${compositionSection}
 
 DESIGN & EXECUTION DIRECTIVES:
 - Follow all directives in the CORE BRAND DESIGN GUIDE above.
@@ -2656,47 +2852,60 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
 
     } else {
       // mode === "overview" (All active funded channels on 1 slide)
-      // DYNAMIC SELECTIVITY ENGINE: Support any number of funded channels without arbitrary truncation.
-      // Adapt layout geometry and selectively prioritize card content density so all channels fit cleanly.
       const activeChannels = Array.isArray(channels) ? channels : [];
       const numChannels = activeChannels.length;
       const totalBudgetFormatted = workingMediaBudget ? `$${Math.round(workingMediaBudget).toLocaleString()}` : "$0";
 
-      // Determine adaptive layout geometry and content selectivity based on active channel count
+      // Determine adaptive layout geometry and content selectivity based on active channel count and aspect ratio orientation
       let layoutInstruction = "";
       let densityLevel: "spacious" | "moderate" | "compact" | "ultra_compact" = "spacious";
       let selectiveContentRule = "";
 
-      if (numChannels <= 4) {
-        densityLevel = "spacious";
-        layoutInstruction = `A single horizontal row of ${numChannels} spacious, equal-width vertical cards arranged side-by-side across the 16:9 canvas with generous whitespace and margins.`;
-        selectiveContentRule = `Full detail included: Status Tag, Channel Name, Allocation (% and $), Strategic Role, Benchmark CPM, Recommendation Fit Score, Publishers, and Core Tactic.`;
-      } else if (numChannels === 5) {
-        densityLevel = "moderate";
-        layoutInstruction = `A single horizontal row of 5 streamlined vertical cards arranged side-by-side with balanced margins across the 16:9 canvas.`;
-        selectiveContentRule = `Streamlined content: Status Tag, Channel Name, Allocation (% and $), Strategic Role, Benchmark CPM, and Top Publishers. Lengthy narrative tactics are excluded to maintain clean vertical breathing room.`;
-      } else if (numChannels === 6) {
-        densityLevel = "compact";
-        layoutInstruction = `A balanced 2-row × 3-column modular grid (3 equal-sized cards in the top row, 3 equal-sized cards in the bottom row), guaranteeing all 6 channels have ample room, uniform dimensions, and equal visual weight across the 16:9 slide.`;
-        selectiveContentRule = `Selective high-impact metrics: Status Tag, Channel Name, Allocation (% and $), Concise Strategic Objective (1 phrase), and Benchmark CPM. Verbose publisher listings and long tactical paragraphs are selectively excluded to ensure large, crisp, legible typography and zero visual crowding.`;
-      } else if (numChannels <= 8) {
-        densityLevel = "compact";
-        layoutInstruction = `A balanced 2-row modular grid (4 equal-sized cards in the top row, and ${numChannels - 4} equal-sized cards uniformly spaced in the bottom row), sizing all card containers proportionally within the 16:9 canvas.`;
-        selectiveContentRule = `Selective executive metrics: Status Tag, Channel Name, Allocation (% and $), Concise Strategic Role (single phrase), and Benchmark CPM. Secondary narrative is omitted to preserve comfortable spacing, clear card borders, and prominent numbers.`;
-      } else {
-        densityLevel = "ultra_compact";
-        const rows = numChannels <= 12 ? 2 : 3;
+      if (ratioInfo.type === "vertical") {
+        densityLevel = numChannels <= 4 ? "moderate" : numChannels <= 7 ? "compact" : "ultra_compact";
+        layoutInstruction = `A single vertical column of ${numChannels} stacked horizontal channel allocation cards running top to bottom down the ${aspectRatio} vertical canvas, sized proportionally with clean spacing between cards.`;
+        selectiveContentRule = `Streamlined vertical card metrics: Channel Name, Allocation (% and $), and Strategic Role (1 concise phrase) so all ${numChannels} channel rows fit cleanly down the vertical canvas.`;
+      } else if (ratioInfo.type === "square") {
+        densityLevel = numChannels <= 4 ? "spacious" : "compact";
+        const rows = Math.ceil(Math.sqrt(numChannels));
         const cols = Math.ceil(numChannels / rows);
-        layoutInstruction = `A structured executive allocation matrix organized into ${rows} balanced rows of ${cols} cards, uniformly proportioned so all ${numChannels} channels fit comfortably within the 16:9 widescreen canvas.`;
-        selectiveContentRule = `Ultra-streamlined essential metrics: Channel Name, Status Tag, Allocation (% and $), and 1-line Core Role. Benchmark ranges, publisher lists, and descriptions are excluded to ensure crystal-clear readability and comfortable spacing for all ${numChannels} channels.`;
+        layoutInstruction = `A balanced ${rows}×${cols} modular grid proportioned for the 1:1 square canvas, guaranteeing all ${numChannels} channels have equal visual weight and ample padding.`;
+        selectiveContentRule = `Balanced square card metrics: Channel Name, Allocation (% and $), and Concise Strategic Objective.`;
+      } else {
+        // Horizontal / widescreen ratios
+        if (numChannels <= 4) {
+          densityLevel = "spacious";
+          layoutInstruction = `A single horizontal row of ${numChannels} spacious, equal-width vertical cards arranged side-by-side across the ${aspectRatio} canvas with generous whitespace and margins.`;
+          selectiveContentRule = `Full detail included: Channel Name, Allocation (% and $), Strategic Role, Recommendation Fit Score, Publishers, and Core Alignment.`;
+        } else if (numChannels === 5) {
+          densityLevel = "moderate";
+          layoutInstruction = `A single horizontal row of 5 streamlined vertical cards arranged side-by-side with balanced margins across the ${aspectRatio} canvas.`;
+          selectiveContentRule = `Streamlined content: Channel Name, Allocation (% and $), Strategic Role, and Top Publishers. Lengthy narrative text is excluded to maintain clean vertical breathing room.`;
+        } else if (numChannels === 6) {
+          densityLevel = "compact";
+          layoutInstruction = `A balanced 2-row × 3-column modular grid (3 equal-sized cards in the top row, 3 equal-sized cards in the bottom row), guaranteeing all 6 channels have ample room, uniform dimensions, and equal visual weight across the ${aspectRatio} slide.`;
+          selectiveContentRule = `Selective high-impact metrics: Channel Name, Allocation (% and $), and Concise Strategic Objective (1 phrase). Verbose publisher listings and long narrative paragraphs are selectively excluded to ensure large, crisp, legible typography and zero visual crowding.`;
+        } else if (numChannels <= 8) {
+          densityLevel = "compact";
+          layoutInstruction = `A balanced 2-row modular grid (4 equal-sized cards in the top row, and ${numChannels - 4} equal-sized cards uniformly spaced in the bottom row), sizing all card containers proportionally within the ${aspectRatio} canvas.`;
+          selectiveContentRule = `Selective executive metrics: Channel Name, Allocation (% and $), and Concise Strategic Role (single phrase). Secondary narrative is omitted to preserve comfortable spacing, clear card borders, and prominent numbers.`;
+        } else {
+          densityLevel = "ultra_compact";
+          const rows = numChannels <= 12 ? 2 : 3;
+          const cols = Math.ceil(numChannels / rows);
+          layoutInstruction = `A structured executive allocation matrix organized into ${rows} balanced rows of ${cols} cards, uniformly proportioned so all ${numChannels} channels fit comfortably within the ${aspectRatio} canvas.`;
+          selectiveContentRule = `Ultra-streamlined essential metrics: Channel Name, Allocation (% and $), and 1-line Core Role. Publisher lists and descriptions are excluded to ensure crystal-clear readability and comfortable spacing for all ${numChannels} channels.`;
+        }
       }
 
-      prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing an executive media mix and channel allocation portfolio, designed to be placed directly onto a white background presentation slide.
+      prompt = `A modern, modular slide body graphic in ${aspectRatio} format (${targetSize}) showcasing an executive media mix and channel allocation portfolio, designed to be placed directly onto a white background presentation slide.
 
 CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
 - ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
 - ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
 - ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- ABSOLUTELY NO "TACTICAL TEST" OR STATUS TAGS: Do NOT include "Tactical Test", "Core Strategy", or status tags/eyebrows anywhere on the cards.
+- ABSOLUTELY NO "KEY BENCHMARK" OR CPM VALUES: Do NOT display "Key Benchmark", "$CPM", CPM rates, or pricing benchmark numbers anywhere on the slide.
 - CANVAS BACKGROUND: PURE SOLID CLEAN WHITE (#FFFFFF) across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a white slide presentation.
 - NO UNSELECTED CANDIDATES: Absolutely DO NOT include any out-of-plan channels, rejected options, or "media types not in plan". Strictly feature ONLY the ${numChannels} funded active channels listed below.
 
@@ -2707,11 +2916,11 @@ CRITICAL SLIDE PACKING & ADAPTIVE LAYOUT DIRECTIVE:
 - ADAPTIVE CARD GEOMETRY:
   ${layoutInstruction}
 - CONTENT SELECTIVITY & BREATHING ROOM:
-  To guarantee all ${numChannels} channels fit inside the 16:9 widescreen canvas (1536x864) without clipping, overflowing, or tiny unreadable text:
+  To guarantee all ${numChannels} channels fit inside the ${aspectRatio} canvas (${targetSize}) without clipping, overflowing, or tiny unreadable text:
   ${selectiveContentRule}
   The cards must maintain comfortable margins, generous internal padding, crisp borders (#E2E8F0), and readable typography.
 
-BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+BODY CONTENT & COMPOSITION (Fills the ${aspectRatio} canvas cleanly with generous whitespace for a premium executive feel):
 The entire image consists purely of the executive media allocation portfolio cards:
 
 TOP SUMMARY STRIP:
@@ -2726,53 +2935,46 @@ ACTIVE CHANNEL PORTFOLIO CARDS (${numChannels} cards arranged according to the a
 ${activeChannels.map((c: any, idx: number) => {
   const pct = c.allocationPercent != null ? Math.round(c.allocationPercent) : 0;
   const dollars = c.allocationDollars ? `$${Math.round(c.allocationDollars).toLocaleString()}` : "";
-  const cpm = c.typicalCpmLow && c.typicalCpmHigh ? `$${c.typicalCpmLow}–$${c.typicalCpmHigh} CPM` : "CPM not specified";
   const score = c.recommendationScore ? c.recommendationScore.toFixed(1) : "9.0";
   const pubText = Array.isArray(c.publishers) && c.publishers.length > 0
     ? c.publishers.slice(0, 2).map((p: any) => p.displayName || p.id).join(", ")
     : "Not specified in the plan";
-  const statusLabel = c.status === "TEST" ? "TACTICAL TEST" : "CORE STRATEGY";
 
   if (densityLevel === "spacious") {
     return `
 CARD ${idx + 1}: ${c.channelName}
-• Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold uppercase)
 • Channel Title: "${c.channelName}" (Lexend Bold)
 • Allocation Callout: "${pct}%" / "${dollars}" (Large bold metric with lime #a6cf56 highlight)
 • Strategic Role: "${c.role || "Not specified in the plan"}" (Lexend Regular in #0c1e24)
-• Key Benchmark: "${cpm}" | Fit Score: "${score}/100" (Teal & Indigo badges)
+• Fit Score: "${score}/100" (Indigo #6b63e6 badge)
 • Key Publishers / Environments: "${pubText}"
-• Core Tactic: "${c.gapAddressed || "Not specified in the plan"}"
+• Strategic Alignment: "${c.gapAddressed || "Not specified in the plan"}"
 `;
   }
 
   if (densityLevel === "moderate") {
     return `
 CARD ${idx + 1}: ${c.channelName}
-• Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold uppercase)
 • Channel Title: "${c.channelName}" (Lexend Bold)
 • Allocation Callout: "${pct}%" / "${dollars}" (Large bold metric with lime #a6cf56 highlight)
 • Strategic Role: "${c.role || "Not specified in the plan"}" (Lexend Regular, 1 concise sentence)
-• Key Benchmark: "${cpm}"
 • Key Environment: "${pubText}"
-(Selective Content Fit: Tactical paragraphs excluded to preserve vertical breathing space)`;
+(Selective Content Fit: Lengthy tactical narrative excluded to preserve vertical breathing space)`;
   }
 
   if (densityLevel === "compact") {
     return `
 CARD ${idx + 1}: ${c.channelName}
-• Status Tag: "${statusLabel}" in teal #0e8f86 (Lexend SemiBold)
 • Channel Title: "${c.channelName}" (Lexend Bold)
 • Allocation Callout: "${pct}%" / "${dollars}" (Prominent bold metric with lime #a6cf56 highlight)
 • Strategic Objective: "${c.role || "Not specified in the plan"}" (Concise single phrase)
-• Key Benchmark: "${cpm}"
 (Selective Content Fit: Publishers list and narrative excluded so all ${numChannels} cards fit cleanly into the 2-row grid with high legibility)`;
   }
 
   // ultra_compact
   return `
 CARD ${idx + 1}: ${c.channelName}
-• Channel Title: "${c.channelName}" (Lexend Bold) [${statusLabel}]
+• Channel Title: "${c.channelName}" (Lexend Bold)
 • Allocation Callout: "${pct}%" / "${dollars}" (Prominent bold metric with lime #a6cf56 highlight)
 • Primary Objective: "${c.role || "Not specified in the plan"}" (Brief 1-phrase summary)
 (Selective Content Fit: Streamlined core metrics so all ${numChannels} channels fit effortlessly with generous spacing)`;
@@ -2789,16 +2991,16 @@ DESIGN & EXECUTION DIRECTIVES:
 ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     }
 
-    console.log(`[API /api/channels/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: 1536x864)...`);
+    console.log(`[API /api/channels/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: ${targetSize})...`);
 
     const genResponse = await withTimeout(
       openai.images.generate({
         model: "gpt-image-2.5-sunburst",
         prompt,
-        size: "1536x864",
-        quality: "high",
-      }),
-      120000,
+        size: targetSize,
+        quality: "xhigh",
+      } as any),
+      180000,
       null
     );
 
@@ -2810,13 +3012,17 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     const revisedPrompt = genResponse.data[0].revised_prompt;
     console.log("[API /api/channels/generate-slide] Successfully generated channel slide using openai.images.generate!");
 
-    const finalImageUrl = `data:image/png;base64,${resultImageBase64}`;
+    const savedAssetUrl = persistSlidePngToDisk(resultImageBase64, `channel-${mode}-${channelIndex}`);
+    const finalImageUrl = savedAssetUrl;
     res.json({
       success: true,
       imageUrl: finalImageUrl,
+      dataUrl: `data:image/png;base64,${resultImageBase64}`,
       model: "gpt-image-2.5-sunburst",
       mode,
       channelIndex,
+      aspectRatio,
+      dimensions: { width: ratioInfo.width, height: ratioInfo.height },
       revisedPrompt,
     });
 
@@ -2829,7 +3035,7 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
   }
 });
 
-// API: Generate 16:9 Presentation Slides for Recommended Segments using gpt-image-2.5-sunburst
+// API: Generate Presentation Slides for Recommended Segments using gpt-image-2.5-sunburst
 app.post("/api/segments/generate-slide", async (req, res) => {
   // Prevent socket timeout on long-running image generation
   req.socket.setTimeout(0);
@@ -2841,6 +3047,7 @@ app.post("/api/segments/generate-slide", async (req, res) => {
       campaignFocus = "",
       geography = "",
       style = "corporate_light", // "corporate_light" | "modern_dark" | "minimal_slate"
+      aspectRatio = "16:9",
       customNotes = "",
     } = req.body || {};
 
@@ -2857,7 +3064,10 @@ app.post("/api/segments/generate-slide", async (req, res) => {
       return;
     }
 
-    console.log(`[API /api/segments/generate-slide] Starting segment slide generation. Style: '${style}', Segments count: ${segments.length}`);
+    const ratioInfo = SLIDE_ASPECT_RATIO_CONFIG[aspectRatio] || SLIDE_ASPECT_RATIO_CONFIG["16:9"];
+    const targetSize = ratioInfo.size;
+
+    console.log(`[API /api/segments/generate-slide] Starting segment slide generation. Style: '${style}', Ratio: '${aspectRatio} (${ratioInfo.name} - ${targetSize})', Segments count: ${segments.length}`);
 
     // EXACT BRAND DESIGN GUIDE (Mandatory across all slide layouts)
     const brandDesignGuide = `
@@ -2903,7 +3113,16 @@ CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
     const activeDimensions = Object.keys(groupedSegments);
     const numDimensions = activeDimensions.length || 1;
 
-    const prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing target audience segment recommendations, designed to be placed directly onto a white background presentation slide.
+    let bentoLayoutInstruction = "";
+    if (ratioInfo.type === "vertical") {
+      bentoLayoutInstruction = `STRUCTURED VERTICAL BENTO BANDS OF AUDIENCE SEGMENTS (Stacked in ${numDimensions} horizontal rows/bands from top to bottom across the ${aspectRatio} vertical canvas):`;
+    } else if (ratioInfo.type === "square") {
+      bentoLayoutInstruction = `STRUCTURED 2x2 QUADRANT BENTO GRID OF AUDIENCE SEGMENTS (Arranged into 4 balanced quadrants for the 1:1 square canvas):`;
+    } else {
+      bentoLayoutInstruction = `STRUCTURED BENTO GRID OF AUDIENCE SEGMENTS (Arranged across ${numDimensions} balanced columns/containers side-by-side):`;
+    }
+
+    const prompt = `A modern, modular slide body graphic in ${aspectRatio} format (${targetSize}) showcasing target audience segment recommendations, designed to be placed directly onto a white background presentation slide.
 
 CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
 - ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
@@ -2914,7 +3133,7 @@ CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
 ${brandDesignGuide}
 VISUAL THEME: ${paletteDesc}
 
-BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+BODY CONTENT & COMPOSITION (Fills the ${aspectRatio} canvas cleanly with generous whitespace for a premium executive feel):
 The entire image consists purely of the structured audience segment recommendation containers:
 
 TOP SUMMARY STRIP:
@@ -2924,16 +3143,16 @@ TOP SUMMARY STRIP:
   • Core Focus: "${advertiserName ? `${advertiserName} Campaign` : "Digital Media Campaign"}" (Lexend SemiBold in #0c1e24)
   ${geography ? `• Target Geography: "${geography}"` : ""}
 
-STRUCTURED BENTO GRID OF AUDIENCE SEGMENTS (Arranged across ${numDimensions} balanced columns/containers):
+${bentoLayoutInstruction}
 ${activeDimensions.map((dim, colIdx) => {
   const dimSegs = groupedSegments[dim];
   const colorAccent = colIdx % 3 === 0 ? "teal #0e8f86" : colIdx % 3 === 1 ? "indigo #6b63e6" : "deep teal #0e3b42";
   return `
-COLUMN ${colIdx + 1}: ${dim.toUpperCase()} (${dimSegs.length} Segments)
-- Column Container Header:
+SECTION ${colIdx + 1}: ${dim.toUpperCase()} (${dimSegs.length} Segments)
+- Container Header:
   • Dimension Label: "${dim.toUpperCase()}" (Lexend Bold with ${colorAccent} badge)
   • Subtitle: "${dimSegs.length} Active Segments"
-- Segment Cards within this column:
+- Segment Cards within this container:
 ${dimSegs.map((s: any, sIdx: number) => {
   const tier = s.tier || "Core";
   const tierColor = tier === "Core" ? "teal #0e8f86" : tier === "Expansion" ? "indigo #6b63e6" : "lime #a6cf56";
@@ -2956,16 +3175,16 @@ DESIGN & EXECUTION DIRECTIVES:
 - STRICT REMINDER: ONLY produce the visual body cards. NO top slide title, NO subhead, NO logo, NO footer text.
 ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
 
-    console.log(`[API /api/segments/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: 1536x864)...`);
+    console.log(`[API /api/segments/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: ${targetSize})...`);
 
     const genResponse = await withTimeout(
       openai.images.generate({
         model: "gpt-image-2.5-sunburst",
         prompt,
-        size: "1536x864",
-        quality: "high",
-      }),
-      120000,
+        size: targetSize,
+        quality: "xhigh",
+      } as any),
+      180000,
       null
     );
 
@@ -2977,11 +3196,15 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     const revisedPrompt = genResponse.data[0].revised_prompt;
     console.log("[API /api/segments/generate-slide] Successfully generated segments slide using openai.images.generate!");
 
-    const finalImageUrl = `data:image/png;base64,${resultImageBase64}`;
+    const savedAssetUrl = persistSlidePngToDisk(resultImageBase64, `segments-recommendations`);
+    const finalImageUrl = savedAssetUrl;
     res.json({
       success: true,
       imageUrl: finalImageUrl,
+      dataUrl: `data:image/png;base64,${resultImageBase64}`,
       model: "gpt-image-2.5-sunburst",
+      aspectRatio,
+      dimensions: { width: ratioInfo.width, height: ratioInfo.height },
       revisedPrompt,
     });
   } catch (err: any) {

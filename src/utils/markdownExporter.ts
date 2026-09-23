@@ -295,9 +295,9 @@ export function exportProfileToMarkdown(
     markdown += `${profile.executiveSummary}\n\n`;
   }
 
-  // Citations & Media Sourcing Registry
+  // Citations
   if (includeSources && !hidden.has("sources")) {
-    markdown += `## Citations & Media Sourcing Registry\n\n`;
+    markdown += `## Citations\n\n`;
     profile.sources.forEach((source, idx) => {
       markdown += `### [Source ${idx + 1}] ${source.name}\n`;
       // A first-party source has no public URL to verify against, so the line is omitted

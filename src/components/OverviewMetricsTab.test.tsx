@@ -48,7 +48,7 @@ test("with a plan uploaded, overview applies requested metric defaults and rende
   assert.match(markup, /40\.0%/);
 });
 
-test("with nothing uploaded there is no ScoutAI comparison and no metric built from constants", () => {
+test("with nothing uploaded, overview respects metric visibility settings and displays enabled campaign metrics without plan comparison", () => {
   const markup = renderToStaticMarkup(
     <OverviewMetricsTab
       extractedPlacements={[]}
@@ -58,10 +58,36 @@ test("with nothing uploaded there is no ScoutAI comparison and no metric built f
       metricSettings={DEFAULT_OVERVIEW_METRICS}
     />,
   );
-  assert.doesNotMatch(markup, /AI Scout/);
-  assert.doesNotMatch(markup, /Estimated Impressions|Completed Views|Estimated Reach|Avg Frequency/);
+  assert.match(markup, /Campaign Overview/);
+  assert.doesNotMatch(markup, /Plan vs\. AI Scout/);
+  assert.doesNotMatch(markup, /Planned:\s*</);
   assert.match(markup, /Working Media Budget/);
   assert.match(markup, /\$100,000/);
+  assert.match(markup, /Estimated Impressions/);
+  assert.match(markup, /Completed Views/);
+  assert.match(markup, /Estimated Reach/);
+  assert.doesNotMatch(markup, /Estimated ECPM/);
+  assert.doesNotMatch(markup, /Cost Per View/);
+  assert.doesNotMatch(markup, /Avg Frequency/);
+  assert.match(markup, /Media Type Allocation/);
+});
+
+test("with nothing uploaded and only budget enabled in settings, overview displays only budget", () => {
+  const onlyBudgetSettings = DEFAULT_OVERVIEW_METRICS.map((m) => ({ ...m, show: m.id === "budget" }));
+  const markup = renderToStaticMarkup(
+    <OverviewMetricsTab
+      extractedPlacements={[]}
+      planOptions={[]}
+      rfpAnalysis={null}
+      profileData={profileWithAllocation}
+      metricSettings={onlyBudgetSettings}
+    />,
+  );
+  assert.match(markup, /Working Media Budget/);
+  assert.match(markup, /\$100,000/);
+  assert.doesNotMatch(markup, /Estimated Impressions/);
+  assert.doesNotMatch(markup, /Completed Views/);
+  assert.doesNotMatch(markup, /Estimated Reach/);
   assert.match(markup, /Media Type Allocation/);
 });
 
@@ -79,4 +105,19 @@ test("overview visibility settings can show a previously hidden metric", () => {
   assert.match(markup, /Estimated ECPM/);
   assert.doesNotMatch(markup, /Planned Budget/);
   assert.match(markup, /Media Type Allocation/);
+});
+
+test("hideHeader prop suppresses the internal Campaign Overview header badge", () => {
+  const markup = renderToStaticMarkup(
+    <OverviewMetricsTab
+      extractedPlacements={[]}
+      planOptions={[]}
+      rfpAnalysis={null}
+      profileData={profileWithAllocation}
+      metricSettings={DEFAULT_OVERVIEW_METRICS}
+      hideHeader={true}
+    />,
+  );
+  assert.doesNotMatch(markup, /Campaign Overview/);
+  assert.match(markup, /Working Media Budget/);
 });

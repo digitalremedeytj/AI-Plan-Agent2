@@ -31,9 +31,11 @@ import {
   ChevronDown,
   ChevronUp,
   Bookmark,
+  Search,
   Save,
   Trash2,
   Edit3,
+  Pencil,
   History,
   Calendar,
   Lock,
@@ -56,7 +58,7 @@ import {
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
+import { AudienceProfile, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
@@ -77,11 +79,14 @@ import { SectionVisibilityButton } from "./components/SectionVisibilityButton";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SharePlanModal } from "./components/SharePlanModal";
+import { ClonePlanModal } from "./components/ClonePlanModal";
+import { DeletePlanModal } from "./components/DeletePlanModal";
 import { CtvPublishersModal } from "./components/CtvPublishersModal";
 import { CtvPublisherCard } from "./components/CtvPublisherCard";
 import { CtvSlideExportView } from "./components/CtvSlideExportView";
 import { CtvExportDropdown } from "./components/CtvExportDropdown";
 import { PersonaSlideExportModal } from "./components/PersonaSlideExportModal";
+import { PersonaAvatarModal } from "./components/PersonaAvatarModal";
 import { SegmentRecommendations, SEGMENT_DIMENSION_STYLES, type SegmentStatus } from "./components/SegmentRecommendations";
 import {
   createUserSegment,
@@ -1125,7 +1130,16 @@ export default function App() {
           setProfileData((prev) => {
             if (!prev || !prev.personas || !prev.personas[index]) return prev;
             const updated = [...prev.personas];
-            updated[index] = { ...updated[index], avatarUrl: finalAvatar };
+            const existingHistory = updated[index].avatarHistory || [];
+            const newHistory = existingHistory.length > 0
+              ? existingHistory
+              : [{
+                  id: `v-init-${Date.now()}`,
+                  url: finalAvatar,
+                  prompt: "Initial archetype portrait",
+                  createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                }];
+            updated[index] = { ...updated[index], avatarUrl: finalAvatar, avatarHistory: newHistory };
             return { ...prev, personas: updated };
           });
         })
@@ -1249,8 +1263,40 @@ export default function App() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [pdfGenerating, setPdfGenerating] = useState(false);
 
-  const handleRegenerateAvatar = async (personaIndex: number) => {
+  // Persona Avatar Customizer Modal State
+  const [editingAvatarPersonaIndex, setEditingAvatarPersonaIndex] = useState<number | null>(null);
+
+  const handleOpenAvatarModal = (personaIndex: number) => {
+    setEditingAvatarPersonaIndex(personaIndex);
+  };
+
+  const handleCloseAvatarModal = () => {
+    setEditingAvatarPersonaIndex(null);
+  };
+
+  const handleSelectPersonaAvatar = (
+    personaIndex: number,
+    avatarUrl: string,
+    updatedHistory: PersonaAvatarVersion[]
+  ) => {
     if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return;
+    const updatedPersonas = [...profileData.personas];
+    updatedPersonas[personaIndex] = {
+      ...updatedPersonas[personaIndex],
+      avatarUrl,
+      avatarHistory: updatedHistory,
+    };
+    setProfileData({
+      ...profileData,
+      personas: updatedPersonas,
+    });
+  };
+
+  const handleGeneratePersonaAvatar = async (
+    personaIndex: number,
+    instruction?: string
+  ): Promise<string | null> => {
+    if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return null;
     setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, personaIndex])));
     markAvatarFailed(personaIndex, false);
     try {
@@ -1258,33 +1304,50 @@ export default function App() {
       const res = await api.authFetch("/api/generate-persona-avatar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ persona: targetPersona })
+        body: JSON.stringify({
+          persona: targetPersona,
+          instruction: instruction && instruction.trim() ? instruction.trim() : undefined,
+        }),
       });
       const data = await res.json();
       if (data.success && data.avatarUrl) {
         const compressed = await compressAvatarUrl(data.avatarUrl);
         const finalAvatar = compressed || data.avatarUrl;
-        const updatedPersonas = [...profileData.personas];
-        updatedPersonas[personaIndex] = {
-          ...updatedPersonas[personaIndex],
-          avatarUrl: finalAvatar
-        };
-        const updatedProfile = {
-          ...profileData,
-          personas: updatedPersonas
-        };
-        setProfileData(updatedProfile);
-        // Deliberately not written back to the shared plan. Regenerating a headshot is a
-        // local, exploratory action; pushing it straight to the server would change a
-        // shared plan for everyone without anyone choosing to save.
+        return finalAvatar;
       } else {
         markAvatarFailed(personaIndex, true);
+        return null;
       }
     } catch (err) {
-      console.error("Failed to regenerate persona headshot photo:", err);
+      console.error("Failed to generate persona headshot photo:", err);
       markAvatarFailed(personaIndex, true);
+      return null;
     } finally {
       setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== personaIndex));
+    }
+  };
+
+  const handleRegenerateAvatar = async (personaIndex: number) => {
+    if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return;
+    const finalAvatar = await handleGeneratePersonaAvatar(personaIndex);
+    if (finalAvatar) {
+      const targetPersona = profileData.personas[personaIndex];
+      const currentHistory = targetPersona.avatarHistory || (targetPersona.avatarUrl ? [
+        {
+          id: `v-prev-${Date.now()}`,
+          url: targetPersona.avatarUrl,
+          prompt: "Initial archetype portrait",
+          createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }
+      ] : []);
+      const newVersion: PersonaAvatarVersion = {
+        id: `v-${Date.now()}`,
+        url: finalAvatar,
+        prompt: "Regenerated studio portrait",
+        createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      const updatedHistory = [newVersion, ...currentHistory].slice(0, 8);
+      handleSelectPersonaAvatar(personaIndex, finalAvatar, updatedHistory);
     }
   };
 
@@ -1378,10 +1441,79 @@ export default function App() {
   /** Id of the plan currently being fetched, so the list can show a spinner on that row. */
   const [loadingPlanId, setLoadingPlanId] = useState<string | null>(null);
   const [activeSavedId, setActiveSavedId] = useState<string | null>(null);
+  const [activeSavedTitle, setActiveSavedTitle] = useState<string | null>(null);
+
+  const currentPlanTitle = React.useMemo(() => {
+    if (activeSavedTitle) return activeSavedTitle;
+    if (activeSavedId) {
+      const match = planSummaries.find((p) => p.id === activeSavedId);
+      if (match?.title) return match.title;
+    }
+    const advertiser = advertiserName.trim();
+    if (advertiser) {
+      return /\bplans?\b/i.test(advertiser) ? advertiser : `${advertiser} Plan`;
+    }
+    const desc = audienceDescription.trim();
+    if (desc) {
+      return desc.length > 50 ? `${desc.slice(0, 50)}...` : desc;
+    }
+    return saveTitle.trim() || "Strategic Audience Profile";
+  }, [activeSavedTitle, activeSavedId, planSummaries, advertiserName, audienceDescription, saveTitle]);
   
   // Renaming state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
+
+  // Blueprint panel inline title editing
+  const [isEditingBlueprintTitle, setIsEditingBlueprintTitle] = useState(false);
+  const [blueprintTitleInput, setBlueprintTitleInput] = useState("");
+  const [isSavingBlueprintTitle, setIsSavingBlueprintTitle] = useState(false);
+
+  // Saved plans search and filter state
+  const [savedSearchQuery, setSavedSearchQuery] = useState("");
+  const [savedUserFilter, setSavedUserFilter] = useState<string>("ALL");
+
+  const savedPlanUsers = React.useMemo(() => {
+    const userSet = new Set<string>();
+    planSummaries.forEach((p) => {
+      if (p.createdBy?.trim()) userSet.add(p.createdBy.trim());
+      if (p.updatedBy?.trim()) userSet.add(p.updatedBy.trim());
+    });
+    return Array.from(userSet).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [planSummaries]);
+
+  const filteredPlanSummaries = React.useMemo(() => {
+    let result = planSummaries;
+
+    // Filter by user's name
+    if (savedUserFilter && savedUserFilter !== "ALL") {
+      const targetUser = savedUserFilter.toLowerCase();
+      result = result.filter(
+        (p) =>
+          p.createdBy?.trim().toLowerCase() === targetUser ||
+          p.updatedBy?.trim().toLowerCase() === targetUser
+      );
+    }
+
+    // Search query filter: once more than 2 characters start filtering by what is entered
+    const trimmedQuery = savedSearchQuery.trim().toLowerCase();
+    if (trimmedQuery.length > 2) {
+      result = result.filter((p) => {
+        return Boolean(
+          p.title?.toLowerCase().includes(trimmedQuery) ||
+          p.audienceDescription?.toLowerCase().includes(trimmedQuery) ||
+          p.advertiserName?.toLowerCase().includes(trimmedQuery) ||
+          p.geography?.toLowerCase().includes(trimmedQuery) ||
+          p.campaignFocus?.toLowerCase().includes(trimmedQuery) ||
+          p.url?.toLowerCase().includes(trimmedQuery) ||
+          p.createdBy?.toLowerCase().includes(trimmedQuery) ||
+          p.updatedBy?.toLowerCase().includes(trimmedQuery)
+        );
+      });
+    }
+
+    return result;
+  }, [planSummaries, savedUserFilter, savedSearchQuery]);
 
   // Share Token & Public View State
   const [shareToken, setShareToken] = useState<string | null>(() => {
@@ -1403,6 +1535,14 @@ export default function App() {
     isShared?: boolean;
   } | null>(null);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+
+  // Clone Plan Modal State
+  const [cloneModalPlan, setCloneModalPlan] = useState<{ id: string; title: string } | null>(null);
+  const [isCloneModalOpen, setIsCloneModalOpen] = useState(false);
+
+  // Delete Plan Modal State
+  const [deleteModalPlan, setDeleteModalPlan] = useState<{ id: string; title: string } | null>(null);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   // CTV Publishers Edit Modal State
   const [isCtvPublishersModalOpen, setIsCtvPublishersModalOpen] = useState(false);
@@ -1452,13 +1592,15 @@ export default function App() {
     if (!profileData) return;
     const advertiser = advertiserName.trim();
     const desc = audienceDescription.trim();
-    const defaultTitle = advertiser
-      ? (/\bplans?\b/i.test(advertiser) ? advertiser : `${advertiser} Plan`)
-      : desc
-        ? (desc.length > 50 ? desc.slice(0, 50) + "..." : desc)
-        : uploadedFileName
-          ? uploadedFileName.replace(/\.[^/.]+$/, "")
-          : "Audience Profile";
+    const defaultTitle = activeSavedTitle
+      ? activeSavedTitle
+      : advertiser
+        ? (/\bplans?\b/i.test(advertiser) ? advertiser : `${advertiser} Plan`)
+        : desc
+          ? (desc.length > 50 ? desc.slice(0, 50) + "..." : desc)
+          : uploadedFileName
+            ? uploadedFileName.replace(/\.[^/.]+$/, "")
+            : "Audience Profile";
     setSaveTitle(defaultTitle);
     setSaveError(null);
     setIsSaving(true);
@@ -1534,6 +1676,7 @@ export default function App() {
     lastPersistedPlanRef.current = plan;
     activePlanRevisionRef.current = plan.revision;
     setActivePlanRevision(plan.revision);
+    setActiveSavedTitle(plan.title);
   };
 
   const resetSegmentSession = () => {
@@ -1580,8 +1723,8 @@ export default function App() {
           geography,
           campaignFocus,
           kpis: kpis.filter((k) => k.trim().length > 0),
-          // Headshots are large data URLs and say nothing about targeting.
-          personas: (profile.personas || []).map(({ avatarUrl: _avatar, ...persona }) => persona),
+          // Headshots and avatar history are large data URLs and say nothing about targeting.
+          personas: (profile.personas || []).map(({ avatarUrl: _avatar, avatarHistory: _history, ...persona }) => persona),
           profileContext: {
             intro: profile.intro,
             executiveSummary: profile.executiveSummary,
@@ -1986,6 +2129,7 @@ export default function App() {
     setPersonaPage(0);
     setArePersonasExpanded(false);
     setIsDomainAffinityExpanded(false);
+    setIsEditingBlueprintTitle(false);
 
     // Restore the settings this plan was generated against.
     if (saved.settingsRevision !== null) {
@@ -2030,7 +2174,16 @@ export default function App() {
                   if (!prev || !prev.personas) return prev;
                   const updated = [...prev.personas];
                   if (updated[index]) {
-                    updated[index] = { ...updated[index], avatarUrl: finalAvatar };
+                    const existingHistory = updated[index].avatarHistory || [];
+                    const newHistory = existingHistory.length > 0
+                      ? existingHistory
+                      : [{
+                          id: `v-init-${Date.now()}`,
+                          url: finalAvatar,
+                          prompt: "Initial archetype portrait",
+                          createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                        }];
+                    updated[index] = { ...updated[index], avatarUrl: finalAvatar, avatarHistory: newHistory };
                   }
                   return { ...prev, personas: updated };
                 });
@@ -2078,7 +2231,7 @@ export default function App() {
    * alongside it, so the numbers render the way they did when it was saved even if the
    * global settings have moved on since.
    */
-  const handleLoadSavedProfile = async (summary: PlanSummary) => {
+  const handleLoadSavedProfile = async (summary: { id: string; [key: string]: any }) => {
     setPlansError(null);
     setLoadingPlanId(summary.id);
 
@@ -2093,22 +2246,11 @@ export default function App() {
     }
   };
 
-  /** Archive is a soft delete on the server - the record stays recoverable. */
-  const handleDeleteSavedProfile = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm("Remove this plan from the shared list? It is archived, not permanently deleted.")) return;
-
-    try {
-      await api.archivePlan(id);
-      if (activeSavedId === id) {
-        setActiveSavedId(null);
-        setActivePlanRevision(null);
-      }
-      await refreshPlans();
-    } catch (err: any) {
-      console.error("Could not archive plan:", err);
-      setPlansError(err?.message || "Could not remove that plan.");
-    }
+  /** Open permanent delete confirmation modal */
+  const handleDeleteSavedProfile = (plan: { id: string; title: string }, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setDeleteModalPlan({ id: plan.id, title: plan.title });
+    setIsDeleteModalOpen(true);
   };
 
   // Start renaming
@@ -2143,6 +2285,45 @@ export default function App() {
           : err?.message || "Could not rename that plan.",
       );
     }
+  };
+
+  // Blueprint title inline editing handlers
+  const handleStartEditBlueprintTitle = () => {
+    setBlueprintTitleInput(currentPlanTitle);
+    setIsEditingBlueprintTitle(true);
+  };
+
+  const handleSaveBlueprintTitle = async () => {
+    const nextTitle = blueprintTitleInput.trim();
+    if (!nextTitle) return;
+
+    setIsSavingBlueprintTitle(true);
+    setActiveSavedTitle(nextTitle);
+    setSaveTitle(nextTitle);
+
+    if (activeSavedId) {
+      try {
+        const existing = await api.getPlan(activeSavedId);
+        const updated = await api.updatePlan(activeSavedId, existing.revision, {
+          title: nextTitle,
+          advertiserName: existing.advertiserName,
+          settingsRevision: existing.settingsRevision,
+          payload: existing.payload,
+        });
+        markPlanPersisted(updated);
+        await refreshPlans();
+      } catch (err: any) {
+        console.error("Could not update plan title:", err);
+        setPlansError(
+          err instanceof ApiError && err.isConflict
+            ? "Someone else changed this plan just now. Reload the list and try renaming again."
+            : err?.message || "Could not rename that plan.",
+        );
+      }
+    }
+
+    setIsSavingBlueprintTitle(false);
+    setIsEditingBlueprintTitle(false);
   };
 
   // File upload and parsing handler using SheetJS (XLSX) with smart client & server caching
@@ -2491,6 +2672,7 @@ export default function App() {
     setPersonaPage(0);
     setArePersonasExpanded(false);
     setIsDomainAffinityExpanded(false);
+    setIsEditingBlueprintTitle(false);
     setGeneratingAvatarIndices([]);
     resetSegmentSession();
     setFailedAvatarIndices([]);
@@ -2518,6 +2700,7 @@ export default function App() {
     adoptDraftRef.current = !typeOverride || !activeSavedId;
     if (!typeOverride) {
       setActiveSavedId(null);
+      setActiveSavedTitle(null);
     }
 
     // Bound the run from the client side. The server's 4s SSE heartbeat means a stalled
@@ -2668,7 +2851,11 @@ export default function App() {
     if (saved) {
       setProfileData((prev) => ({
         ...saved,
-        personas: (saved.personas || []).map((persona, i) => ({ ...persona, avatarUrl: persona.avatarUrl || prev?.personas?.[i]?.avatarUrl })),
+        personas: (saved.personas || []).map((persona, i) => ({
+          ...persona,
+          avatarUrl: persona.avatarUrl || prev?.personas?.[i]?.avatarUrl,
+          avatarHistory: persona.avatarHistory || prev?.personas?.[i]?.avatarHistory,
+        })),
       }));
     }
     markPlanPersisted(result.plan);
@@ -2741,6 +2928,8 @@ export default function App() {
 
     // Reset saved plan selection & modals
     setActiveSavedId(null);
+    setActiveSavedTitle(null);
+    setIsEditingBlueprintTitle(false);
     setActivePlanRevision(null);
     setLeftTab("brief");
     setIsExportOpen(false);
@@ -2969,7 +3158,7 @@ export default function App() {
     link.href = fileUrl;
     
     // Clean name for filename
-    const sanitizedName = (profileData.personas[0]?.name || "audience_profile")
+    const sanitizedName = (currentPlanTitle || profileData.personas[0]?.name || "audience_profile")
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "_");
     
@@ -2989,7 +3178,7 @@ export default function App() {
     link.href = fileUrl;
     
     // Clean name for filename
-    const sanitizedName = (profileData.personas[0]?.name || "audience_profile")
+    const sanitizedName = (currentPlanTitle || profileData.personas[0]?.name || "audience_profile")
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "_");
     
@@ -3203,7 +3392,7 @@ export default function App() {
         heightLeft -= pageHeight;
       }
 
-      const sanitizedName = (profileData.personas[0]?.name || "audience_profile")
+      const sanitizedName = (currentPlanTitle || profileData.personas[0]?.name || "audience_profile")
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "_");
 
@@ -3580,17 +3769,6 @@ export default function App() {
                   <span>Share Plan</span>
                 </button>
 
-                {/* Manual QA audit of the saved plan; fixes are applied only once approved */}
-                <button
-                  onClick={() => setIsAuditModalOpen(true)}
-                  disabled={!activeSavedId}
-                  className="inline-flex items-center justify-center gap-1.5 text-xs bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={activeSavedId ? "Audit the saved plan and review proposed fixes before any are applied" : "Save the plan first to run a QA audit"}
-                >
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>Run QA Audit</span>
-                </button>
-
                 {/* New Plan Button */}
                 <button
                   onClick={handleNewPlan}
@@ -3707,6 +3885,16 @@ export default function App() {
                           {canEditSettings ? "Can edit global settings" : "Settings are read-only"}
                         </p>
                       </div>
+                      <a
+                        href="https://forms.gle/Ug9JjxKt9RSCFkJv6"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setIsHeaderMenuOpen(false)}
+                        className="flex items-center justify-between w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
+                      >
+                        <span>Feedback</span>
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                      </a>
                       <button
                         type="button"
                         onClick={() => { setIsHeaderMenuOpen(false); setIsSettingsOpen(true); }}
@@ -3792,8 +3980,9 @@ export default function App() {
                 <TrendingUp className="w-4 h-4 text-indigo-600" />
                 <span>Campaign Overview</span>
               </div>
-              <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
-                Summary
+              <span className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/60 px-2 py-0.5 rounded-full flex items-center gap-1">
+                <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
+                ScoutAI
               </span>
             </div>
           )}
@@ -4750,87 +4939,214 @@ export default function App() {
                 </div>
               ) : (
                 <div className="space-y-3 pr-1">
-                  {planSummaries.map((saved) => (
-                    <div
-                      key={saved.id}
-                      onClick={() => loadingPlanId === null && handleLoadSavedProfile(saved)}
-                      className={`group p-3.5 rounded-xl border transition-all cursor-pointer text-left relative ${
-                        activeSavedId === saved.id
-                          ? "bg-indigo-50/40 border-indigo-200 ring-2 ring-indigo-50"
-                          : "bg-white border-slate-100 hover:border-slate-200 hover:shadow-xs"
-                      }`}
-                    >
-                      {/* Saved Header with Renaming Option */}
-                      <div className="flex items-start justify-between gap-2 mb-1.5">
-                        {editingId === saved.id ? (
-                          <div className="flex items-center gap-1.5 w-full mr-6" onClick={(e) => e.stopPropagation()}>
-                            <input
-                              type="text"
-                              value={editingTitle}
-                              onChange={(e) => setEditingTitle(e.target.value)}
-                              className="text-xs font-bold text-slate-800 border border-slate-300 rounded px-1.5 py-0.5 w-full focus:outline-hidden focus:border-indigo-500 bg-white"
-                              autoFocus
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") handleSaveRename(saved.id, e as any);
-                                if (e.key === "Escape") setEditingId(null);
-                              }}
-                            />
-                            <button
-                              onClick={(e) => handleSaveRename(saved.id, e)}
-                              className="text-emerald-600 hover:text-emerald-800 p-0.5 shrink-0"
-                              title="Save Title"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="pr-16">
-                            <h4 className="text-xs font-bold text-slate-800 group-hover:text-indigo-900 leading-snug line-clamp-2">
-                              {saved.title}
-                            </h4>
-                          </div>
-                        )}
+                  {/* Search and User Filter Controls */}
+                  <div className="space-y-2 pb-1">
+                    {/* Search Input */}
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={savedSearchQuery}
+                        onChange={(e) => setSavedSearchQuery(e.target.value)}
+                        placeholder="Search plans (type 3+ chars)..."
+                        className="w-full text-xs pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500/20 transition-all"
+                      />
+                      {savedSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setSavedSearchQuery("")}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
+                          title="Clear search"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
 
-                        {/* Top-Right Action Row (Share / Rename / Delete) */}
-                        <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShareModalPlan({
-                                id: saved.id,
-                                title: saved.title,
-                                shareToken: saved.shareToken,
-                                isShared: saved.isShared,
-                              });
-                              setIsShareModalOpen(true);
-                            }}
-                            className={`p-1 rounded-md transition-colors ${
-                              saved.isShared
-                                ? "text-indigo-600 hover:bg-indigo-50"
-                                : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"
-                            }`}
-                            title={saved.isShared ? "Manage Share Link" : "Create Share Link"}
-                          >
-                            <Share2 className="w-3 h-3" />
-                          </button>
-                          {editingId !== saved.id && (
-                            <button
-                              onClick={(e) => handleStartRename(saved.id, saved.title, e)}
-                              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-md transition-colors"
-                              title="Rename Profile"
-                            >
-                              <Edit3 className="w-3 h-3" />
-                            </button>
-                          )}
-                          <button
-                            onClick={(e) => handleDeleteSavedProfile(saved.id, e)}
-                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-slate-50 rounded-md transition-colors"
-                            title="Delete Profile"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                    {/* Filter by User's Name */}
+                    <div className="flex items-center gap-1.5">
+                      <div className="relative flex-1">
+                        <User className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <select
+                          value={savedUserFilter}
+                          onChange={(e) => setSavedUserFilter(e.target.value)}
+                          className="w-full text-xs pl-7 pr-6 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-hidden focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500/20 transition-all appearance-none cursor-pointer"
+                          title="Filter plans by creator or editor"
+                        >
+                          <option value="ALL">All Users</option>
+                          {savedPlanUsers.map((userName) => (
+                            <option key={userName} value={userName}>
+                              {userName}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="w-3 h-3 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
+
+                      {(savedUserFilter !== "ALL" || savedSearchQuery.trim().length > 2) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSavedSearchQuery("");
+                            setSavedUserFilter("ALL");
+                          }}
+                          className="text-[10px] text-slate-500 hover:text-indigo-600 font-medium px-2 py-1.5 rounded-lg bg-slate-100 hover:bg-indigo-50 transition-colors shrink-0 cursor-pointer"
+                          title="Reset all filters"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Count indicator & 3+ char hint */}
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 px-0.5">
+                      <span>
+                        {filteredPlanSummaries.length} of {planSummaries.length} {planSummaries.length === 1 ? "plan" : "plans"}
+                      </span>
+                      {savedSearchQuery.trim().length > 0 && savedSearchQuery.trim().length <= 2 && (
+                        <span className="text-amber-500/90 text-[10px] font-medium">
+                          Type {3 - savedSearchQuery.trim().length} more char{savedSearchQuery.trim().length === 2 ? "" : "s"} to search
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {filteredPlanSummaries.length === 0 ? (
+                    <div className="text-center py-6 px-3 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                      <Search className="w-6 h-6 text-slate-300 mx-auto mb-1.5" />
+                      <p className="text-xs font-semibold text-slate-600">No matching plans</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5 max-w-[200px] mx-auto leading-normal">
+                        {savedUserFilter !== "ALL" && savedSearchQuery.trim().length > 2
+                          ? `No plans matching "${savedSearchQuery.trim()}" for user "${savedUserFilter}".`
+                          : savedUserFilter !== "ALL"
+                          ? `No plans found for user "${savedUserFilter}".`
+                          : `No plans matching "${savedSearchQuery.trim()}".`}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSavedSearchQuery("");
+                          setSavedUserFilter("ALL");
+                        }}
+                        className="mt-2.5 inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 cursor-pointer"
+                      >
+                        Clear filters
+                      </button>
+                    </div>
+                  ) : (
+                    filteredPlanSummaries.map((saved) => (
+                      <div
+                        key={saved.id}
+                        onClick={() => loadingPlanId === null && handleLoadSavedProfile(saved)}
+                        className={`group p-3.5 rounded-xl border transition-all cursor-pointer text-left relative ${
+                          activeSavedId === saved.id
+                            ? "bg-indigo-50/40 border-indigo-200 ring-2 ring-indigo-50"
+                            : "bg-white border-slate-100 hover:border-slate-200 hover:shadow-xs"
+                        }`}
+                      >
+                        {/* Saved Header with Renaming Option */}
+                        <div className="flex items-start justify-between gap-2 mb-1.5">
+                          {editingId === saved.id ? (
+                            <div className="flex items-center gap-1.5 w-full" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="text"
+                                value={editingTitle}
+                                onChange={(e) => setEditingTitle(e.target.value)}
+                                className="text-xs font-bold text-slate-800 border border-slate-300 rounded px-1.5 py-0.5 w-full focus:outline-hidden focus:border-indigo-500 bg-white"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleSaveRename(saved.id, e as any);
+                                  if (e.key === "Escape") setEditingId(null);
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={(e) => handleSaveRename(saved.id, e)}
+                                className="p-1 px-1.5 shrink-0 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-xs flex items-center justify-center cursor-pointer"
+                                title="Save Title"
+                                aria-label="Save Title"
+                              >
+                                <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingId(null);
+                                }}
+                                className="text-slate-400 hover:text-slate-600 p-1 shrink-0 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+                                title="Cancel"
+                                aria-label="Cancel"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-start gap-1 pr-14 min-w-0 flex-1">
+                              <h4 className="text-xs font-bold text-slate-800 group-hover:text-indigo-900 leading-snug line-clamp-2">
+                                {saved.title}
+                              </h4>
+                              <button
+                                type="button"
+                                onClick={(e) => handleStartRename(saved.id, saved.title, e)}
+                                className="p-1 -mt-0.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded-md transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 cursor-pointer"
+                                title="Rename Plan"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Top-Right Action Row (Share / Clone / Delete) */}
+                          {editingId !== saved.id && (
+                          <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShareModalPlan({
+                                  id: saved.id,
+                                  title: saved.title,
+                                  shareToken: saved.shareToken,
+                                  isShared: saved.isShared,
+                                });
+                                setIsShareModalOpen(true);
+                              }}
+                              className={`p-1 rounded-md transition-colors cursor-pointer ${
+                                saved.isShared
+                                  ? "text-indigo-600 hover:bg-indigo-50"
+                                  : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"
+                              }`}
+                              title={saved.isShared ? "Manage Share Link" : "Create Share Link"}
+                            >
+                              <Share2 className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setCloneModalPlan({
+                                  id: saved.id,
+                                  title: saved.title,
+                                });
+                                setIsCloneModalOpen(true);
+                              }}
+                              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-md transition-colors cursor-pointer"
+                              title="Clone Plan"
+                            >
+                              <Copy className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleDeleteSavedProfile(saved, e)}
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-slate-50 rounded-md transition-colors cursor-pointer"
+                              title="Delete Plan"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          )}
+                        </div>
 
                       {/* Audience brief snippets */}
                       <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed mb-2">
@@ -4877,7 +5193,8 @@ export default function App() {
                         ) : null}
                       </div>
                     </div>
-                  ))}
+                  ))
+                )}
                 </div>
               )}
             </div>
@@ -4890,6 +5207,7 @@ export default function App() {
                   rfpAnalysis={rfpAnalysis}
                   profileData={profileData}
                   metricSettings={planningSettings.overviewMetrics}
+                  hideHeader={isShareView}
                 />
               </ErrorBoundary>
             </div>
@@ -5160,9 +5478,67 @@ export default function App() {
                       <Sparkles className="w-3 h-3" />
                       Research Strategy Blueprint
                     </div>
-                    <h2 className="text-lg md:text-xl font-display font-bold tracking-tight">
-                      {profileData.personas[0]?.name ? `${profileData.personas[0].name} Target Audience Plan` : "Strategic Audience Profile"}
-                    </h2>
+                    {!isEditingBlueprintTitle ? (
+                      <div className="flex items-center gap-2 group/title flex-wrap">
+                        <h2 className="text-lg md:text-xl font-display font-bold tracking-tight">
+                          {currentPlanTitle}
+                        </h2>
+                        {!isShareView && (
+                          <button
+                            type="button"
+                            onClick={handleStartEditBlueprintTitle}
+                            className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                            title="Edit plan name"
+                            aria-label="Edit plan name"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleSaveBlueprintTitle();
+                        }}
+                        className="flex items-center gap-2 flex-wrap max-w-xl my-1"
+                      >
+                        <input
+                          type="text"
+                          value={blueprintTitleInput}
+                          onChange={(e) => setBlueprintTitleInput(e.target.value)}
+                          autoFocus
+                          disabled={isSavingBlueprintTitle}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") setIsEditingBlueprintTitle(false);
+                          }}
+                          className="text-base md:text-lg font-semibold text-white bg-slate-800/90 border border-indigo-500/60 rounded-lg px-3 py-1 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/40 min-w-[240px] sm:w-80 shadow-inner"
+                          placeholder="Plan title"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isSavingBlueprintTitle || !blueprintTitleInput.trim()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg shadow-sm transition-colors cursor-pointer"
+                        >
+                          {isSavingBlueprintTitle ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Check className="w-3.5 h-3.5" />
+                          )}
+                          <span>Save</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsEditingBlueprintTitle(false)}
+                          disabled={isSavingBlueprintTitle}
+                          className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                          title="Cancel"
+                          aria-label="Cancel"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </form>
+                    )}
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-2 font-medium">
                       {geoTargets.length > 0 ? (
                         <div className="relative group">
@@ -5378,7 +5754,7 @@ export default function App() {
                                             <User className="w-8 h-8 mb-0.5 text-slate-300" />
                                             {avatarFailed && <span className="text-[8px] font-bold text-rose-600 leading-tight">Photo failed</span>}
                                             <button
-                                              onClick={() => handleRegenerateAvatar(globalIndex)}
+                                              onClick={() => handleOpenAvatarModal(globalIndex)}
                                               className="text-[9px] font-bold text-indigo-600 hover:underline cursor-pointer"
                                             >
                                               {avatarFailed ? "Retry" : "+ Photo"}
@@ -5389,11 +5765,11 @@ export default function App() {
 
                                       {!isGeneratingThis && hasValidAvatar && (
                                         <button
-                                          onClick={() => handleRegenerateAvatar(globalIndex)}
-                                          title="Regenerate headshot"
+                                          onClick={() => handleOpenAvatarModal(globalIndex)}
+                                          title="Customize persona headshot"
                                           className="absolute bottom-0 right-0 bg-white hover:bg-indigo-50 text-indigo-600 hover:text-indigo-700 p-1.5 rounded-full border border-slate-200 shadow-xs transition-colors cursor-pointer"
                                         >
-                                          <RefreshCw className="w-3 h-3" />
+                                          <Pencil className="w-3 h-3" />
                                         </button>
                                       )}
                                     </div>
@@ -5750,15 +6126,17 @@ export default function App() {
                 )}
 
                 {/* Case 2: Full-Funnel - SHOW BOTH Domain Affinity (Collapsible) AND CTV Publishers */}
-                {campaignFocus === "Full-funnel digital media plan" && (!isShareView || !isDomainAffinityHidden) && (
-                  <div className={`space-y-6 transition-all ${
-                    isDomainAffinityHidden ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70 p-4 rounded-2xl border" : ""
-                  }`}>
+                {campaignFocus === "Full-funnel digital media plan" && (
+                  <div className="space-y-6">
                     {/* Collapsible Domain Affinity Index */}
-                    {(() => {
+                    {(!isShareView || !isDomainAffinityHidden) && (() => {
                       const domainSummary = getDomainAffinitySummary(profileData.browserAndReach);
                       return (
-                        <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
+                        <div className={`group relative rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                          isDomainAffinityHidden
+                            ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
+                            : "border-slate-100 bg-white hover:border-slate-200"
+                        }`}>
                           <div className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left">
                             <button
                               type="button"
@@ -5878,13 +6256,6 @@ export default function App() {
                                 <span>Edit Publishers</span>
                               </button>
                             )}
-                            {!isShareView && (
-                              <SectionVisibilityButton
-                                sectionKey="domainAffinity"
-                                isInactive={isDomainAffinityHidden}
-                                onToggle={handleToggleSectionActive}
-                              />
-                            )}
                           </div>
                         </div>
                         <div className="flex items-center justify-between">
@@ -5944,7 +6315,7 @@ export default function App() {
                   (() => {
                     const domainSummary = getDomainAffinitySummary(profileData.browserAndReach);
                     return (
-                      <div className={`rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                      <div className={`group relative rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
                         isDomainAffinityHidden
                           ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
                           : "border-slate-100 bg-white hover:border-slate-200"
@@ -6045,7 +6416,7 @@ export default function App() {
                   (() => {
                     const deviceSummary = getDeviceShareSummary(profileData.deviceTypeIndex?.chartData);
                     return (
-                      <div className={`rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                      <div className={`group relative rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
                         isDeviceShareHidden
                           ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
                           : "border-slate-100 bg-white hover:border-slate-200"
@@ -6137,7 +6508,7 @@ export default function App() {
                   (() => {
                     const demoSummary = getDemographicsSummary(profileData.demographics);
                     return (
-                      <div className={`rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                      <div className={`group relative rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
                         isDemographicsHidden
                           ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
                           : "border-slate-100 bg-white hover:border-slate-200"
@@ -6275,7 +6646,7 @@ export default function App() {
                   (() => {
                     const temporalSummary = getTemporalSummary(profileData.temporalPatterns);
                     return (
-                      <div className={`rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                      <div className={`group relative rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
                         isTemporalHidden
                           ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
                           : "border-slate-100 bg-white hover:border-slate-200"
@@ -6380,7 +6751,7 @@ export default function App() {
               )}
 
                 {/* Channel Strategy & Activation Plan (when Media Plan Analysis is present) */}
-                {profileData.channelStrategy && (
+                {profileData.channelStrategy && (!isShareView || !isChannelsHidden) && (
                   <ChannelStrategySection
                     data={profileData.channelStrategy}
                     ctvPublishers={profileData.ctvPublishers ?? []}
@@ -6394,12 +6765,14 @@ export default function App() {
                     onOpenSlideStudio={() => handleOpenSlideStudio('channels')}
                     readOnly={isShareView}
                     onUpdateChannelOverrides={handleUpdateChannelOverrides}
+                    isInactive={isChannelsHidden}
+                    onToggleActive={(inactive) => handleToggleSectionActive("channels", inactive)}
                   />
                 )}
 
                 {/* Executive Summary Blueprint (placed after Channel Strategy) */}
                 {(!isShareView || !isExecutiveSummaryHidden) && (
-                  <div className={`rounded-2xl p-6 md:p-8 shadow-xs space-y-5 transition-all ${
+                  <div className={`group relative rounded-2xl p-6 md:p-8 shadow-xs space-y-5 transition-all ${
                     isExecutiveSummaryHidden
                       ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70 border"
                       : "bg-gradient-to-br from-indigo-50/70 via-white to-slate-50 border border-indigo-100/90"
@@ -6460,7 +6833,7 @@ export default function App() {
 
               {/* Sourcing and Grounding List */}
               {(!isShareView || !isSourcesHidden) && (
-                <div className={`rounded-2xl border p-5 md:p-6 shadow-xs transition-all ${
+                <div className={`group relative rounded-2xl border p-5 md:p-6 shadow-xs transition-all ${
                   isSourcesHidden
                     ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
                     : "bg-white border-slate-100"
@@ -6474,7 +6847,7 @@ export default function App() {
                     >
                       <BookOpen className="w-4 h-4 text-indigo-600" />
                       <span className="text-slate-900 group-hover:text-indigo-600 transition-colors">
-                        Citations & Media Sourcing Registry
+                        Citations
                       </span>
                     </button>
                     <div className="flex items-center gap-2">
@@ -6958,6 +7331,16 @@ export default function App() {
                     Tweak the planning assumptions by triggering the generation agent again with localized weighting configurations.
                   </p>
                   <div className="flex flex-wrap justify-center gap-3">
+                    <button
+                      onClick={() => setIsAuditModalOpen(true)}
+                      disabled={!activeSavedId}
+                      className="inline-flex items-center gap-1.5 text-xs bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 px-4 py-2 rounded-xl transition-all font-semibold shadow-xs hover:shadow-sm cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={activeSavedId ? "Audit the saved plan and review proposed fixes before any are applied" : "Save the plan first to run a QA audit"}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Run QA Audit</span>
+                    </button>
+
                     <button
                       onClick={() => handleGenerate(undefined, "stricter_sourcing")}
                       disabled={loading}
@@ -7755,6 +8138,51 @@ export default function App() {
           }}
         />
       )}
+
+      {/* Clone Plan Modal */}
+      {cloneModalPlan && (
+        <ClonePlanModal
+          isOpen={isCloneModalOpen}
+          onClose={() => {
+            setIsCloneModalOpen(false);
+            setCloneModalPlan(null);
+          }}
+          plan={cloneModalPlan}
+          existingTitles={planSummaries.map((p) => p.title)}
+          onCloneSuccess={async (clonedPlan) => {
+            await refreshPlans();
+            if (clonedPlan) {
+              handleLoadSavedProfile({
+                id: clonedPlan.id,
+                title: clonedPlan.title,
+                advertiserName: clonedPlan.advertiserName,
+                audienceDescription: clonedPlan.audienceDescription,
+                updatedAt: clonedPlan.updatedAt,
+              });
+            }
+          }}
+        />
+      )}
+
+      {/* Delete Plan Confirmation Modal */}
+      {deleteModalPlan && (
+        <DeletePlanModal
+          isOpen={isDeleteModalOpen}
+          onClose={() => {
+            setIsDeleteModalOpen(false);
+            setDeleteModalPlan(null);
+          }}
+          plan={deleteModalPlan}
+          onDeleteSuccess={async (deletedId) => {
+            if (activeSavedId === deletedId) {
+              setActiveSavedId(null);
+              setActiveSavedTitle(null);
+              setActivePlanRevision(null);
+            }
+            await refreshPlans();
+          }}
+        />
+      )}
       {/* CTV Publishers Edit Modal */}
       {profileData && (
         <CtvPublishersModal
@@ -7781,6 +8209,18 @@ export default function App() {
           campaignFocus={campaignFocus || ""}
           geography={geography}
           api={api}
+        />
+      )}
+      {/* Persona Headshot Customizer & History Modal */}
+      {profileData && profileData.personas && editingAvatarPersonaIndex !== null && profileData.personas[editingAvatarPersonaIndex] && (
+        <PersonaAvatarModal
+          isOpen={editingAvatarPersonaIndex !== null}
+          onClose={handleCloseAvatarModal}
+          persona={profileData.personas[editingAvatarPersonaIndex]}
+          personaIndex={editingAvatarPersonaIndex}
+          onSelectAvatar={handleSelectPersonaAvatar}
+          onGenerateNew={handleGeneratePersonaAvatar}
+          isGenerating={generatingAvatarIndices.includes(editingAvatarPersonaIndex)}
         />
       )}
       {/* Off-screen 16:9 Canvases for CTV Publishers & Insights Slide Export */}

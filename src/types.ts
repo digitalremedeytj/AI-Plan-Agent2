@@ -2,6 +2,32 @@ import type { PlanningSettings } from "./planning/settings";
 import type { MediaRecommendationPlan, RecommendationStatus, ConfidenceLevel } from "./planning/types";
 export type { CtvPublisherSetting } from "./planning/knowledge/ctvPublishers";
 
+export interface PersonaAvatarVersion {
+  id: string;
+  url: string;
+  prompt?: string;
+  createdAt: string;
+}
+
+export type SlideAspectRatio = "21:9" | "2:1" | "16:9" | "3:2" | "4:3" | "1:1" | "3:4" | "2:3" | "9:16";
+
+export interface SlideExportVersion {
+  id: string;
+  section: "personas" | "channels" | "segments";
+  mode: "portfolio" | "spotlight" | "overview";
+  personaIndex?: number;
+  personaName?: string;
+  channelIndex?: number;
+  channelName?: string;
+  imageUrl: string;
+  thumbnailUrl?: string;
+  style: "corporate_light" | "modern_dark" | "minimal_slate";
+  aspectRatio: SlideAspectRatio;
+  dimensions?: { width: number; height: number };
+  customNotes?: string;
+  createdAt: string;
+}
+
 export interface Persona {
   name: string;
   gender: string;
@@ -12,6 +38,7 @@ export interface Persona {
   buy: string;
   narrative: string;
   avatarUrl?: string;
+  avatarHistory?: PersonaAvatarVersion[];
   sourceType?: 'RFP' | 'ScoutAI' | 'User';
   isExpansion?: boolean;
 }
@@ -321,6 +348,7 @@ export interface AudienceProfile {
   geoInsights?: string;
   geoTargeting?: GeoTargeting;
   hiddenSections?: string[];
+  slideExports?: SlideExportVersion[];
 }
 
 export interface GenerateProfileResponse {

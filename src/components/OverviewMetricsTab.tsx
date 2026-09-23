@@ -28,6 +28,7 @@ interface OverviewMetricsTabProps {
   rfpAnalysis: RfpAnalysis | null;
   profileData: AudienceProfile | null;
   metricSettings?: OverviewMetricSetting[];
+  hideHeader?: boolean;
 }
 
 const ALLOCATION_COLORS = ["#4f46e5", "#0f9f94", "#84a720", "#036987", "#db2777", "#d97706", "#7c3aed", "#0284c7", "#e11d48", "#64748b"];
@@ -38,6 +39,7 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
   rfpAnalysis,
   profileData,
   metricSettings = DEFAULT_OVERVIEW_METRICS,
+  hideHeader = false,
 }) => {
   // Determine active placements (selected plan options if any, else extracted placements)
   const safePlanOptions = Array.isArray(planOptions) ? planOptions : [];
@@ -56,8 +58,12 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
     plannedBudget = activePlacements.reduce((acc, p) => acc + (p.budget || 0), 0);
   } else if (profileData?.channelStrategy?.totalRfpBudget) {
     plannedBudget = profileData.channelStrategy.totalRfpBudget;
+  } else if (profileData?.channelStrategy?.mediaPlan?.workingMediaBudget) {
+    plannedBudget = profileData.channelStrategy.mediaPlan.workingMediaBudget;
   } else if (rfpAnalysis?.extractedMetadata?.budget) {
     plannedBudget = rfpAnalysis.extractedMetadata.budget;
+  } else if (profileData?.channelStrategy?.mediaPlan?.channels?.length) {
+    plannedBudget = profileData.channelStrategy.mediaPlan.channels.reduce((sum, ch) => sum + (ch.allocationDollars || 0), 0);
   }
 
   // 2. Base Planned Impressions & ECPM
@@ -84,9 +90,27 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
     }
   });
 
+  // Calculate typical CPM blended from recommended media plan channels if available
+  const recommendedChannels = profileData?.channelStrategy?.mediaPlan?.channels || [];
+  let weightedCpmSum = 0;
+  let weightedDollars = 0;
+  recommendedChannels.forEach((ch) => {
+    const avgCpm =
+      ch.typicalCpmLow && ch.typicalCpmHigh
+        ? (ch.typicalCpmLow + ch.typicalCpmHigh) / 2
+        : (ch.typicalCpmLow || ch.typicalCpmHigh || 0);
+    if (avgCpm > 0 && ch.allocationDollars > 0) {
+      weightedCpmSum += avgCpm * ch.allocationDollars;
+      weightedDollars += ch.allocationDollars;
+    }
+  });
+  const blendedChannelCpm = weightedDollars > 0 ? weightedCpmSum / weightedDollars : 0;
+
   let plannedEcpm = 18.33; // Standard baseline CTV/video rate
   if (plannedBudget > 0 && rawImpressionsSum > 0) {
     plannedEcpm = (plannedBudget / rawImpressionsSum) * 1000;
+  } else if (blendedChannelCpm > 0) {
+    plannedEcpm = blendedChannelCpm;
   }
 
   let plannedImpressions = rawImpressionsSum;
@@ -101,9 +125,14 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
   const plannedFreq = 6.00; // Unoptimized frequency baseline
   const plannedReachHH = Math.round(plannedImpressions / plannedFreq);
 
+  // Determine whether this plan is comparing against an uploaded client file or presenting ScoutAI campaign estimates
+  const hasUploadedContent = selectedOptions.length > 0 || safeExtractedPlacements.length > 0 || Boolean(rfpAnalysis);
+
   // --- AI SCOUT RECOMMENDED METRICS (SPO, Frequency Capping & Inventory Optimization) ---
   const aiBudget = plannedBudget;
-  const aiEcpm = plannedEcpm * 0.83; // 17% SPO efficiency gain
+  const aiEcpm = hasUploadedContent
+    ? plannedEcpm * 0.83 // 17% SPO efficiency gain against unoptimized uploaded plan
+    : (blendedChannelCpm > 0 ? blendedChannelCpm : plannedEcpm * 0.83);
   const aiImpressions = Math.round((aiBudget / aiEcpm) * 1000);
   const aiVcr = 0.98; // Non-skippable premium CTV targeting
   const aiCompletedViews = Math.round(aiImpressions * aiVcr);
@@ -228,18 +257,17 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
 
   const metricVisibility = new Map(metricSettings.map((metric) => [metric.id, metric.show]));
 
-  // The ScoutAI comparison is only offered against something the user uploaded. With nothing
-  // uploaded there is no plan to compare to, and every figure other than the budget would come
-  // from the constants above rather than from the plan, so only the budget is shown.
-  const hasUploadedContent = selectedOptions.length > 0 || safeExtractedPlacements.length > 0 || Boolean(rfpAnalysis);
-
-  // Filter out hidden metrics and values unavailable due to limited information
-  const availableMetrics = hasUploadedContent
-    ? metricsList.filter(
-        (m) => (metricVisibility.get(m.id as OverviewMetricSetting["id"]) ?? true) && m.plannedFormatted !== null && m.aiFormatted !== null
-      )
-    : [];
-  const budgetOnly = !hasUploadedContent && plannedBudget > 0 && (metricVisibility.get("budget") ?? true);
+  // Filter out hidden metrics and values unavailable due to limited information.
+  // When no uploaded plan is present, ScoutAI campaign estimates are presented for any metric turned on in settings.
+  const availableMetrics = metricsList.filter((m) => {
+    const isVisible = metricVisibility.get(m.id as OverviewMetricSetting["id"]) ?? true;
+    if (!isVisible) return false;
+    if (m.id === "budget") return plannedBudget > 0;
+    if (hasUploadedContent) {
+      return m.plannedFormatted !== null && m.aiFormatted !== null;
+    }
+    return m.aiFormatted !== null;
+  });
 
   const scoutAllocation = profileData?.channelStrategy?.mediaPlan?.channels || [];
   const uploadedAllocationGroups = new Map<string, number>();
@@ -262,7 +290,7 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
         .sort((a, b) => b.value - a.value);
   const allocationSource = scoutAllocation.length > 0 ? "ScoutAI recommended allocation" : "Uploaded plan allocation";
 
-  if (availableMetrics.length === 0 && !budgetOnly && allocationData.length === 0) {
+  if (availableMetrics.length === 0 && allocationData.length === 0) {
     return (
       <div className="py-8 px-4 text-center space-y-3 bg-slate-50/60 rounded-xl border border-slate-200/80">
         <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
@@ -282,31 +310,28 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
 
   return (
     <div className="space-y-3 font-sans">
-      {budgetOnly && (
-        <div className="p-2 rounded-xl bg-slate-50/50 border border-slate-100/80 flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 bg-blue-50 text-blue-600">
-            <TrendingUp className="w-4 h-4 stroke-[2.25]" />
-          </div>
-          <div className="flex-1 min-w-0 flex items-center justify-between gap-1.5">
-            <span className="text-xs font-bold text-slate-800 truncate">Working Media Budget</span>
-            <span className="text-xs font-extrabold text-slate-900 tracking-tight shrink-0">{formatCurrency(plannedBudget)}</span>
-          </div>
-        </div>
-      )}
-
       {availableMetrics.length > 0 && (
         <>
           {/* Header Badge */}
-          <div className="flex items-center justify-between mb-1 px-0.5">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 uppercase tracking-wider">
-              <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Plan vs. AI Scout</span>
+          {!hideHeader && (
+            <div className="flex items-center justify-between mb-1 px-0.5">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 uppercase tracking-wider">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                <span>{hasUploadedContent ? "Plan vs. AI Scout" : "Campaign Overview"}</span>
+              </div>
+              {hasUploadedContent ? (
+                <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/60 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <CheckCircle2 className="w-2.5 h-2.5" />
+                  Optimized
+                </span>
+              ) : (
+                <span className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/60 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <Sparkles className="w-2.5 h-2.5" />
+                  ScoutAI
+                </span>
+              )}
             </div>
-            <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/60 px-2 py-0.5 rounded-full flex items-center gap-1">
-              <CheckCircle2 className="w-2.5 h-2.5" />
-              Optimized
-            </span>
-          </div>
+          )}
 
           {/* Metrics List */}
           <div className="space-y-1.5">
@@ -328,6 +353,11 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
                 }
               }
 
+              const displayLabel = !hasUploadedContent && metric.id === "budget" ? "Working Media Budget" : metric.label;
+              const displayValue = !hasUploadedContent && metric.id === "budget"
+                ? formatCurrency(plannedBudget)
+                : (metric.aiFormatted ?? metric.plannedFormatted);
+
               return (
                 <div
                   key={metric.id}
@@ -342,27 +372,29 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-1.5">
                       <span className="text-xs font-bold text-slate-800 truncate">
-                        {metric.label}
+                        {displayLabel}
                       </span>
                       <span className="text-xs font-extrabold text-slate-900 font-sans tracking-tight shrink-0">
-                        {metric.aiFormatted}
+                        {displayValue}
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between gap-1.5 mt-0.5 text-[11px] leading-none">
-                      <span className="text-slate-400 font-medium truncate">
-                        Planned:{" "}
-                        <span className="text-slate-600 font-semibold">
-                          {metric.plannedFormatted}
+                    {hasUploadedContent && (
+                      <div className="flex items-center justify-between gap-1.5 mt-0.5 text-[11px] leading-none">
+                        <span className="text-slate-400 font-medium truncate">
+                          Planned:{" "}
+                          <span className="text-slate-600 font-semibold">
+                            {metric.plannedFormatted}
+                          </span>
                         </span>
-                      </span>
-                      <span
-                        className={`inline-flex items-center gap-0.5 px-[5px] py-[2px] rounded-full text-[9.5px] leading-none border ${badgeClass} shrink-0`}
-                      >
-                        {ArrowIcon && <ArrowIcon className="w-2.5 h-2.5 stroke-[2.5]" />}
-                        <span>{pctText}</span>
-                      </span>
-                    </div>
+                        <span
+                          className={`inline-flex items-center gap-0.5 px-[5px] py-[2px] rounded-full text-[9.5px] leading-none border ${badgeClass} shrink-0`}
+                        >
+                          {ArrowIcon && <ArrowIcon className="w-2.5 h-2.5 stroke-[2.5]" />}
+                          <span>{pctText}</span>
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
