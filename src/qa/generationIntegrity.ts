@@ -16,6 +16,8 @@ export const RESEARCH_DOSSIERS = ["Demographics", "Digital Touchpoints", "CTV & 
 export type ResearchDossier = (typeof RESEARCH_DOSSIERS)[number];
 
 interface ChartSpec {
+  /** Stable id the QA scorer uses to name a chart it rejects. */
+  id: string;
   section: "demographics" | "browserAndReach" | "deviceTypeIndex" | "temporalPatterns";
   key: string;
   label: string;
@@ -23,13 +25,13 @@ interface ChartSpec {
 }
 
 export const PROFILE_CHARTS: ChartSpec[] = [
-  { section: "demographics", key: "ageChartData", label: "Age distribution", dossier: "Demographics" },
-  { section: "demographics", key: "genderChartData", label: "Gender split", dossier: "Demographics" },
-  { section: "demographics", key: "incomeChartData", label: "Household income", dossier: "Demographics" },
-  { section: "browserAndReach", key: "chartData", label: "Top domain affinity", dossier: "Digital Touchpoints" },
-  { section: "deviceTypeIndex", key: "chartData", label: "Device split", dossier: "CTV & Devices" },
-  { section: "temporalPatterns", key: "dayOfWeekChartData", label: "Day-of-week activity", dossier: "Temporal & Purchase" },
-  { section: "temporalPatterns", key: "hourOfDayChartData", label: "Hour-of-day activity", dossier: "Temporal & Purchase" },
+  { id: "age", section: "demographics", key: "ageChartData", label: "Age distribution", dossier: "Demographics" },
+  { id: "gender", section: "demographics", key: "genderChartData", label: "Gender split", dossier: "Demographics" },
+  { id: "income", section: "demographics", key: "incomeChartData", label: "Household income", dossier: "Demographics" },
+  { id: "domains", section: "browserAndReach", key: "chartData", label: "Top domain affinity", dossier: "Digital Touchpoints" },
+  { id: "device", section: "deviceTypeIndex", key: "chartData", label: "Device split", dossier: "CTV & Devices" },
+  { id: "dayOfWeek", section: "temporalPatterns", key: "dayOfWeekChartData", label: "Day-of-week activity", dossier: "Temporal & Purchase" },
+  { id: "hourOfDay", section: "temporalPatterns", key: "hourOfDayChartData", label: "Hour-of-day activity", dossier: "Temporal & Purchase" },
 ];
 
 // The source labels the model used for invented values before modeled data was banned.
@@ -164,26 +166,39 @@ export function removeUngroundedCharts(profile: any, researchText: string): Gene
 }
 
 /**
- * Charts the synthesis built from research but auto-remediation then removed, because the QA
- * review found them unsupported (typically a split stitched together from studies with
- * different denominators). Reported as removed, not as "not found": the research had figures,
- * they just did not hold up.
+ * Removes the charts the QA scorer rejected by id, carrying its reason into the alert. Charts
+ * are removed only here, on QA's explicit say-so: remediation used to delete every chart it
+ * was sent, including ones QA never questioned.
  */
-export function reportChartsRemovedByRemediation(before: any, after: any): GenerationAlert[] {
+export function applyQaChartRejections(profile: any, rejections: unknown): GenerationAlert[] {
   const alerts: GenerationAlert[] = [];
-  if (!before || before === after) return alerts;
-  for (const chart of PROFILE_CHARTS) {
-    const had = before?.[chart.section]?.[chart.key];
-    const has = after?.[chart.section]?.[chart.key];
-    if (Array.isArray(had) && had.length > 0 && (!Array.isArray(has) || has.length === 0)) {
-      pushAlert(alerts, {
-        section: chart.section,
-        severity: "flagged",
-        message: `${chart.label}: removed during QA auto-remediation after the QA review questioned it. See the QA red flags for the reason.`,
-      });
-    }
+  if (!Array.isArray(rejections)) return alerts;
+  for (const rejection of rejections) {
+    const chart = PROFILE_CHARTS.find((spec) => spec.id === rejection?.chart);
+    const data = chart ? profile?.[chart.section]?.[chart.key] : undefined;
+    if (!chart || !Array.isArray(data) || data.length === 0) continue;
+    profile[chart.section][chart.key] = [];
+    const reason = String(rejection?.reason ?? "").trim();
+    pushAlert(alerts, {
+      section: chart.section,
+      severity: "flagged",
+      message: `${chart.label}: removed after QA review${reason ? ` - ${reason.replace(/\.?$/, ".")}` : "."}`,
+    });
   }
   return alerts;
+}
+
+/**
+ * Puts every chart back to its pre-remediation state. Chart values have already passed the
+ * research-grounding check and QA's rejections; remediation rewrites prose, not figures.
+ */
+export function lockChartsFrom(target: any, source: any): void {
+  for (const chart of PROFILE_CHARTS) {
+    const original = source?.[chart.section]?.[chart.key];
+    if (!Array.isArray(original)) continue;
+    if (!target[chart.section] || typeof target[chart.section] !== "object") target[chart.section] = { ...source[chart.section] };
+    target[chart.section][chart.key] = original;
+  }
 }
 
 /** One alert per chart the research did not cover, so an empty chart is never mistaken for a rendering bug. */

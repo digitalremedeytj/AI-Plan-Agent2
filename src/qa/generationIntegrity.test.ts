@@ -9,7 +9,8 @@ import {
   removeUngroundedCharts,
   numbersInText,
   reportChartsNotFound,
-  reportChartsRemovedByRemediation,
+  applyQaChartRejections,
+  lockChartsFrom,
 } from "./generationIntegrity";
 
 const researched = (source = "Pew Research 2025") => ({ isModeled: false, source });
@@ -127,22 +128,29 @@ test("without an uploaded plan a user-specified persona keeps its label and the 
   assert.deepEqual(profile.personas.map((p: any) => p.sourceType), ["User", "ScoutAI", "ScoutAI", "ScoutAI"]);
 });
 
-test("a chart remediation deleted is reported as removed by QA, not as missing from the research", () => {
-  const before = profileWithCharts();
-  const after = profileWithCharts();
-  after.deviceTypeIndex.chartData = [];
+test("QA can remove a chart it names, and the plan says why", () => {
+  const profile = profileWithCharts();
 
-  const removed = reportChartsRemovedByRemediation(before, after);
-  const notFound = reportChartsNotFound(after, removed);
+  const alerts = applyQaChartRejections(profile, [
+    { chart: "age", reason: "CDC birth data describes mothers, not organic baby-product shoppers" },
+    { chart: "notAChart", reason: "ignored" },
+  ]);
 
-  assert.equal(removed.length, 1);
-  assert.match(removed[0].message, /Device split: removed during QA auto-remediation/);
-  assert.deepEqual(notFound, [], "the removal already explains the empty chart");
+  assert.deepEqual(profile.demographics.ageChartData, []);
+  assert.equal(profile.demographics.genderChartData.length, 2, "charts QA did not name stay");
+  assert.deepEqual(alerts.map((a) => a.message), ["Age distribution: removed after QA review - CDC birth data describes mothers, not organic baby-product shoppers."]);
 });
 
-test("without a remediation rewrite nothing is reported as removed", () => {
-  const profile = profileWithCharts();
-  assert.deepEqual(reportChartsRemovedByRemediation(profile, profile), []);
+test("remediation cannot change or delete chart figures", () => {
+  const original = profileWithCharts();
+  const rewritten: any = { demographics: { overview: "Sharper prose.", ageChartData: [] }, deviceTypeIndex: { overview: "New.", chartData: [{ device: "CTV", value: 99 }] } };
+
+  lockChartsFrom(rewritten, original);
+
+  assert.equal(rewritten.demographics.overview, "Sharper prose.", "prose edits are kept");
+  assert.deepEqual(rewritten.demographics.ageChartData, original.demographics.ageChartData);
+  assert.deepEqual(rewritten.deviceTypeIndex.chartData, original.deviceTypeIndex.chartData);
+  assert.deepEqual(rewritten.temporalPatterns.dayOfWeekChartData, original.temporalPatterns.dayOfWeekChartData, "a section the rewrite dropped gets its charts back");
 });
 
 test("a chart stitched together from several studies is removed rather than shown as one split", () => {

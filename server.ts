@@ -39,7 +39,8 @@ import {
   removeModeledCharts,
   removeUngroundedCharts,
   reportChartsNotFound,
-  reportChartsRemovedByRemediation,
+  applyQaChartRejections,
+  lockChartsFrom,
   type GenerationAlert,
 } from "./src/qa/generationIntegrity";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
@@ -664,9 +665,21 @@ const auditResultSchema = {
       type: Type.ARRAY,
       description: "Instructions on what needs to be changed in the profile.",
       items: { type: Type.STRING }
+    },
+    rejectedCharts: {
+      type: Type.ARRAY,
+      description: "Charts whose figures do not describe this audience or are not supported by their named source. Empty array if none.",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          chart: { type: Type.STRING, description: "One of: age, gender, income, domains, device, dayOfWeek, hourOfDay" },
+          reason: { type: Type.STRING, description: "One sentence: why this chart cannot be shown" }
+        },
+        required: ["chart", "reason"]
+      }
     }
   },
-  required: ["executiveSummary", "scorecard", "totalScore", "criticalRedFlags", "strategicHighlights", "fixItChecklist"]
+  required: ["executiveSummary", "scorecard", "totalScore", "criticalRedFlags", "strategicHighlights", "fixItChecklist", "rejectedCharts"]
 };
 
 const profileCorrectionSchema = {
@@ -3429,14 +3442,16 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // rather than values that are about to be removed. They run again after remediation.
     const integrityCorrections: string[] = [];
     const researchText = researchResults.filter((result) => !result.failed).map((result) => result.text).join("\n");
-    // Rescaling runs only on the final pass: the grounding check compares chart values with
-    // the numbers the research reported, and a rescaled value no longer matches them.
+    // The grounding check runs first, on the values exactly as synthesis wrote them; rescaling
+    // afterwards would move a reported 50.6 away from the research. The final pass skips it:
+    // charts are locked to this pass's output, so there is nothing new to check.
     const enforceResearchIntegrity = (profile: any, { final }: { final: boolean }) => {
       for (const alert of clearSectionsForFailedDossiers(profile, failedDossiers)) pushAlert(generationAlerts, alert);
       for (const alert of removeModeledCharts(profile)) pushAlert(generationAlerts, alert);
       for (const alert of removeMixedSourceCharts(profile)) pushAlert(generationAlerts, alert);
-      for (const alert of removeUngroundedCharts(profile, researchText)) pushAlert(generationAlerts, alert);
-      if (!final) return;
+      if (!final) {
+        for (const alert of removeUngroundedCharts(profile, researchText)) pushAlert(generationAlerts, alert);
+      }
       const sanity = applyProgrammaticSanityChecks(profile, req.body);
       for (const alert of sanity.alerts) pushAlert(generationAlerts, alert);
       integrityCorrections.push(...sanity.corrections);
@@ -3474,6 +3489,7 @@ CONTEXT YOU MUST APPLY BEFORE SCORING:
 - Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
 ${channelStrategyGuidance}
 - An empty chart array means the research did not report those figures. That is a correct outcome, not a defect: do not score it as missing data or ask for it to be filled, and never recommend estimated, modeled or benchmark values.
+- Every chart value has already been checked to appear in the research text, and share charts are rescaled to 100 by the server, so do not flag rounding. Judge whether each chart describes THIS audience and is supported by its named source. List any chart that does not (wrong population, source that does not report it, mismatched year) in 'rejectedCharts' with its id - one of age, gender, income, domains, device, dayOfWeek, hourOfDay - and a one-sentence reason. Only listed charts are removed; do not reject a chart you have no specific objection to.
 - 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
 
 Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
@@ -3548,6 +3564,12 @@ Your output must be a perfectly formatted JSON matching the required schema. Ens
       ? "Scoring Agent bypassed - profile delivered unverified."
       : `Scoring Agent evaluation complete. Score: ${auditResult.totalScore}/100. Red Flags Count: ${auditResult.criticalRedFlags?.length || 0}`);
 
+    // Charts QA rejected by name are removed now, before remediation sees the profile, so the
+    // alert can carry QA's own reason. No other chart is removed after this point.
+    if (!qaBypassed) {
+      for (const alert of applyQaChartRejections(originalData, auditResult.rejectedCharts)) pushAlert(generationAlerts, alert);
+    }
+
     let finalProfile = originalData;
     let autoFixesList: Array<{ issue: string; resolution: string }> = [];
     // Tracked separately from autoFixesList because the correction agent can return a rewritten
@@ -3568,7 +3590,7 @@ You have been given an audience profile and a list of critical red flags or corr
 Your task is to rewrite and update the audience profile to:
 1. Resolve every single red flag/issue identified by the QA specialist.
 2. Ensure all percentages sum to 100% and there are no mathematical or logical contradictions.
-3. Where a figure is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate, and never add chart values that are not already in the input profile - an empty chart is acceptable, an invented one is not.
+3. Where a figure in the prose is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate. Do NOT edit chart arrays (any 'chartData' or '...ChartData' field): they were checked against the research and QA's chart decisions are already applied, and the server restores them as they are. Keep the prose consistent with the charts as given.
 4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
 5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
 6. USER-SPECIFIED PERSONAS ARE PROTECTED: If the input profile contains personas with sourceType 'User' (or personas matching user-specified targets), you MUST strictly preserve their exact names and 'sourceType': 'User'. Do NOT rename, delete, swap, or overwrite user-specified personas.
@@ -3632,6 +3654,7 @@ Please correct the profile to resolve all issues.`
           // personas once shipped "Persona Archetype" stand-ins.
           const merged = mergeRemediatedProfile(originalData, corrected);
           finalProfile = merged.profile;
+          lockChartsFrom(finalProfile, originalData);
           profileRewritten = true;
           if (merged.restored.length > 0) {
             console.warn(`[REMEDIATION] Correction omitted ${merged.restored.join(", ")}; kept the synthesized version.`);
@@ -3712,7 +3735,6 @@ Please correct the profile to resolve all issues.`
     const isMediaPlanUploaded = Boolean(selectedPlanOptions && selectedPlanOptions.length > 0);
     for (const alert of checkPersonas(finalProfile, { mediaPlanUploaded: isMediaPlanUploaded })) pushAlert(generationAlerts, alert);
     delete finalProfile.expansionReachPercent;
-    for (const alert of reportChartsRemovedByRemediation(originalData, finalProfile)) pushAlert(generationAlerts, alert);
     for (const alert of reportChartsNotFound(finalProfile, generationAlerts)) pushAlert(generationAlerts, alert);
     finalProfile.generationAlerts = generationAlerts;
 
