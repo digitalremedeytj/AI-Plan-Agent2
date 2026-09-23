@@ -259,12 +259,39 @@ export interface AudienceProfile {
   channelStrategy?: ChannelStrategyData;
   additionalRfpRequirements?: RfpAnalysis;
   generationAlerts?: GenerationAlert[];
+  geoInsights?: string;
+  geoTargeting?: GeoTargeting;
 }
 
 export interface GenerateProfileResponse {
   profile: AudienceProfile;
   groundingSources?: Array<{ title: string; uri: string }>;
   channelStrategy?: ChannelStrategyData;
+}
+
+export type GeoScope = "national" | "state" | "dma";
+
+export interface GeoEntry {
+  id: string;
+  name: string;
+  rank?: number;
+  tvHouseholds?: number;
+  usSharePct?: number;
+  states?: string[];
+}
+
+export interface GeoUnresolvedToken {
+  token: string;
+  reason: "ambiguous" | "over_limit" | "unknown";
+  candidates?: string[];
+}
+
+export interface GeoTargeting {
+  scope: GeoScope;
+  entries: GeoEntry[];
+  unresolved: GeoUnresolvedToken[];
+  inputMethod: "select" | "paste" | "upload";
+  sourceFileName?: string;
 }
 
 export type GeographyType = 'National' | 'State' | 'DMA';

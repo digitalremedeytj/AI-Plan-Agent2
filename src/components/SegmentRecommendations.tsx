@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { AlertCircle, Download, Loader2, Plus, Sparkles, Tags, X } from 'lucide-react';
+import { AlertCircle, Download, Loader2, Plus, Sparkles, Users, X } from 'lucide-react';
 import type { Persona, SegmentDimension, SegmentRecommendation } from '../types';
 import {
   MAX_SEGMENT_JUSTIFICATION_LENGTH,
@@ -256,7 +256,7 @@ export const SegmentRecommendations: React.FC<SegmentRecommendationsProps> = ({
     <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-xs space-y-4" id="segment-recommendations">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2 text-slate-700 text-xs font-bold uppercase tracking-wider">
-          <Tags className="w-4 h-4 text-indigo-600" />
+          <Users className="w-4 h-4 text-indigo-600" />
           <span>Segment Recommendations</span>
         </div>
         {!readOnly && hasSegments && (

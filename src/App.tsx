@@ -984,13 +984,36 @@ export default function App() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [personaPage, setPersonaPage] = useState<number>(0);
   const [arePersonasExpanded, setArePersonasExpanded] = useState<boolean>(false);
+  const [expandedPersonaIndices, setExpandedPersonaIndices] = useState<Record<number, boolean>>({});
   const [isDeviceShareExpanded, setIsDeviceShareExpanded] = useState<boolean>(false);
   const [isDemographicsExpanded, setIsDemographicsExpanded] = useState<boolean>(false);
   const [isTemporalExpanded, setIsTemporalExpanded] = useState<boolean>(false);
   const [isDomainAffinityExpanded, setIsDomainAffinityExpanded] = useState<boolean>(false);
 
   const toggleAllPersonasExpanded = () => {
-    setArePersonasExpanded((prev) => !prev);
+    setArePersonasExpanded((prev) => {
+      const next = !prev;
+      setExpandedPersonaIndices({});
+      return next;
+    });
+  };
+
+  const togglePersonaExpanded = (idx: number) => {
+    setExpandedPersonaIndices((prev) => {
+      const rowIndex = Math.floor(idx / 2);
+      const firstInRow = rowIndex * 2;
+      const secondInRow = firstInRow + 1;
+      const current =
+        prev[firstInRow] !== undefined
+          ? prev[firstInRow]
+          : (prev[secondInRow] !== undefined ? prev[secondInRow] : arePersonasExpanded);
+      const nextState = !current;
+      return {
+        ...prev,
+        [firstInRow]: nextState,
+        [secondInRow]: nextState,
+      };
+    });
   };
   
   // Real-time research stream console logs
@@ -5025,19 +5048,27 @@ export default function App() {
                             const hasValidAvatar = Boolean(persona.avatarUrl && !persona.avatarUrl.includes("example.com"));
                             const isUserTarget = persona.sourceType === 'User';
                             const isRfp = persona.sourceType === 'RFP';
-                            const isExpanded = arePersonasExpanded;
+                            const rowIndex = Math.floor(globalIndex / 2);
+                            const firstInRow = rowIndex * 2;
+                            const secondInRow = firstInRow + 1;
+                            const isExpanded =
+                              expandedPersonaIndices[firstInRow] !== undefined
+                                ? expandedPersonaIndices[firstInRow]
+                                : (expandedPersonaIndices[secondInRow] !== undefined
+                                    ? expandedPersonaIndices[secondInRow]
+                                    : arePersonasExpanded);
                             const segmentHighlight = hoveredSegment?.personaIndices.includes(globalIndex)
                               ? SEGMENT_DIMENSION_STYLES[hoveredSegment.dimension].ring
                               : "";
 
                             return (
-                              <div key={globalIndex} className={`bg-white rounded-2xl border border-slate-100 p-5 shadow-xs flex flex-col justify-between hover:shadow-md transition-all duration-200 ${segmentHighlight}`}>
-                                <div>
-                                  {/* Headshot Photo & Name Header */}
-                                  <div className="flex items-center gap-3.5 mb-4">
-                                    {/* Round Headshot Frame */}
+                              <div key={globalIndex} className={`bg-white rounded-2xl border border-slate-100 p-4 sm:p-5 shadow-xs flex flex-col hover:shadow-md transition-all duration-200 ${segmentHighlight}`}>
+                                {/* Main Persona Row */}
+                                <div className="flex items-start gap-3.5 sm:gap-4">
+                                  {/* Left: 100x100 Avatar + Archetype Label below */}
+                                  <div className="flex flex-col items-center shrink-0 w-[100px]">
                                     <div className="relative group shrink-0">
-                                      <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full overflow-hidden bg-slate-100 ring-2 ${isGeneratingThis ? 'ring-indigo-300 ring-offset-2 animate-pulse bg-indigo-50/50' : 'ring-indigo-100'} border border-slate-200/80 shadow-xs flex items-center justify-center relative shrink-0 aspect-square`}>
+                                      <div className={`w-[100px] h-[100px] rounded-full overflow-hidden bg-slate-100 ring-2 ${isGeneratingThis ? 'ring-indigo-300 ring-offset-2 animate-pulse bg-indigo-50/50' : 'ring-indigo-100'} border border-slate-200/80 shadow-xs flex items-center justify-center relative aspect-square`}>
                                         {isGeneratingThis ? (
                                           <div className="flex flex-col items-center justify-center text-center p-1 text-indigo-600 bg-white/95 absolute inset-0">
                                             <Loader2 className="w-5 h-5 animate-spin mb-1 text-indigo-600" />
@@ -5052,7 +5083,7 @@ export default function App() {
                                           />
                                         ) : (
                                           <div className="flex flex-col items-center justify-center text-slate-400 p-2 text-center">
-                                            <User className="w-7 h-7 mb-0.5 text-slate-300" />
+                                            <User className="w-8 h-8 mb-0.5 text-slate-300" />
                                             {avatarFailed && <span className="text-[8px] font-bold text-rose-600 leading-tight">Photo failed</span>}
                                             <button
                                               onClick={() => handleRegenerateAvatar(globalIndex)}
@@ -5075,105 +5106,112 @@ export default function App() {
                                       )}
                                     </div>
 
-                                    {/* Archetype & Persona Name */}
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-1.5 flex-wrap mb-1">
-                                        <span className="inline-block text-[10px] uppercase font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md font-bold border border-indigo-100">
-                                          Archetype 0{globalIndex + 1}
-                                        </span>
-                                        {isUserTarget ? (
-                                          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-100/90 text-emerald-900 border border-emerald-200 px-2 py-0.5 rounded-md uppercase tracking-wider">
-                                            <User className="w-2.5 h-2.5 text-emerald-700" /> Target Archetype
-                                          </span>
-                                        ) : isUploadedPlanMode ? (
-                                          isRfp ? (
-                                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-amber-100/90 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md uppercase tracking-wider">
-                                              <FileText className="w-2.5 h-2.5 text-amber-700" /> RFP
-                                            </span>
-                                          ) : (
-                                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-indigo-100/90 text-indigo-900 border border-indigo-200 px-2 py-0.5 rounded-md uppercase tracking-wider">
-                                              <Sparkles className="w-2.5 h-2.5 text-indigo-600" /> ScoutAI
-                                            </span>
-                                          )
-                                        ) : null}
-                                      </div>
-                                      <h4 className="text-base font-display font-bold text-slate-800 leading-snug">{persona.name}</h4>
-                                    </div>
-                                  </div>
-                                  
-                                  {/* Age, Gender & Household Income Demographics */}
-                                  <div className="bg-slate-50/80 p-3 rounded-xl border border-slate-100 space-y-2">
-                                    <div className="grid grid-cols-2 gap-2 text-[11px]">
-                                      <div>
-                                        <span className="text-slate-400 block font-medium text-[10px] uppercase tracking-wider">Age Group</span>
-                                        <span className="font-bold text-slate-700">{persona.age}</span>
-                                      </div>
-                                      <div>
-                                        <span className="text-slate-400 block font-medium text-[10px] uppercase tracking-wider">Gender Skew</span>
-                                        <span className="font-bold text-slate-700">{persona.gender}</span>
-                                      </div>
-                                    </div>
-                                    <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px]">
-                                      <span className="text-slate-400 font-medium text-[10px] uppercase tracking-wider">Household Income (HHI)</span>
-                                      <span className="font-bold font-mono text-indigo-900 bg-indigo-50/80 px-2 py-0.5 rounded border border-indigo-100/50">{persona.income}</span>
+                                    {/* Archetype label moved under the image */}
+                                    <div className="mt-2 text-center w-full">
+                                      <span className="inline-block text-[10px] uppercase font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md font-bold border border-indigo-100 tracking-wide text-center">
+                                        Archetype 0{globalIndex + 1}
+                                      </span>
                                     </div>
                                   </div>
 
-                                  {/* Media & Shopping Habits and Narrative (Collapsible) */}
-                                  {isExpanded && (
-                                    <div className="mt-4 space-y-4 pt-3 border-t border-slate-100">
-                                      <div className="space-y-2.5 text-xs">
-                                        <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
-                                          <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
-                                            <Tv className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                                            <span>Watch Profile:</span>
+                                  {/* Right: Persona Name, Badges, Caret & Demographics */}
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="min-w-0 flex-1">
+                                        {(isUserTarget || isUploadedPlanMode) && (
+                                          <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                                            {isUserTarget ? (
+                                              <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-100/90 text-emerald-900 border border-emerald-200 px-2 py-0.5 rounded-md uppercase tracking-wider">
+                                                <User className="w-2.5 h-2.5 text-emerald-700" /> Target Archetype
+                                              </span>
+                                            ) : isUploadedPlanMode ? (
+                                              isRfp ? (
+                                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-amber-100/90 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md uppercase tracking-wider">
+                                                  <FileText className="w-2.5 h-2.5 text-amber-700" /> RFP
+                                                </span>
+                                              ) : (
+                                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-indigo-100/90 text-indigo-900 border border-indigo-200 px-2 py-0.5 rounded-md uppercase tracking-wider">
+                                                  <Sparkles className="w-2.5 h-2.5 text-indigo-600" /> ScoutAI
+                                                </span>
+                                              )
+                                            ) : null}
                                           </div>
-                                          <span className="text-slate-600 block pl-5">{persona.watch}</span>
-                                        </div>
-                                        <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
-                                          <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
-                                            <Globe className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                                            <span>Digital Browsing:</span>
-                                          </div>
-                                          <span className="text-slate-600 block pl-5">{persona.browse}</span>
-                                        </div>
-                                        <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
-                                          <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
-                                            <ShoppingCart className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                                            <span>Purchasing Focus:</span>
-                                          </div>
-                                          <span className="text-slate-600 block pl-5">{persona.buy}</span>
-                                        </div>
+                                        )}
+                                        <h4 className="text-base font-display font-bold text-slate-800 leading-snug">{persona.name}</h4>
                                       </div>
 
-                                      {/* Narrative Quote */}
-                                      <div className="text-xs text-slate-600 italic bg-slate-50/40 -mx-5 p-4 rounded-b-xl border-t border-slate-100">
+                                      {/* Caret in upper right to expand/collapse */}
+                                      <button
+                                        type="button"
+                                        onClick={() => togglePersonaExpanded(globalIndex)}
+                                        className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors cursor-pointer shrink-0 ml-1"
+                                        title={isExpanded ? "Collapse habits & narrative" : "View habits & narrative"}
+                                        aria-label={isExpanded ? "Collapse habits & narrative" : "View habits & narrative"}
+                                        aria-expanded={isExpanded}
+                                      >
+                                        {isExpanded ? (
+                                          <ChevronUp className="w-4 h-4 text-indigo-600" />
+                                        ) : (
+                                          <ChevronDown className="w-4 h-4 text-slate-500" />
+                                        )}
+                                      </button>
+                                    </div>
+
+                                    {/* Demographics content moved up under persona name to save vertical space */}
+                                    <div className="mt-2.5 bg-slate-50/80 p-2.5 rounded-xl border border-slate-100 space-y-1.5">
+                                      <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                        <div>
+                                          <span className="text-slate-400 block font-medium text-[10px] uppercase tracking-wider">Age Group</span>
+                                          <span className="font-bold text-slate-700 truncate block">{persona.age}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-slate-400 block font-medium text-[10px] uppercase tracking-wider">Gender Skew</span>
+                                          <span className="font-bold text-slate-700 truncate block">{persona.gender}</span>
+                                        </div>
+                                      </div>
+                                      <div className="pt-1.5 border-t border-slate-200/60 flex items-center justify-between text-[11px] gap-2">
+                                        <span className="text-slate-400 font-medium text-[10px] uppercase tracking-wider shrink-0">Household Income (HHI)</span>
+                                        <span className="font-bold font-mono text-indigo-900 bg-indigo-50/80 px-1.5 py-0.5 rounded border border-indigo-100/50 text-[11px] truncate">{persona.income}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Media & Shopping Habits and Narrative (Collapsible) */}
+                                {isExpanded && (
+                                  <div className="mt-3.5 space-y-3 pt-3 border-t border-slate-100">
+                                    <div className="space-y-2 text-xs">
+                                      <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
+                                        <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
+                                          <Tv className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                                          <span>Watch Profile:</span>
+                                        </div>
+                                        <span className="text-slate-600 block pl-5">{persona.watch}</span>
+                                      </div>
+                                      <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
+                                        <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
+                                          <Globe className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                          <span>Digital Browsing:</span>
+                                        </div>
+                                        <span className="text-slate-600 block pl-5">{persona.browse}</span>
+                                      </div>
+                                      <div className="leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
+                                        <div className="flex items-center gap-1.5 text-slate-700 text-[11px] font-semibold mb-0.5">
+                                          <ShoppingCart className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                          <span>Purchasing Focus:</span>
+                                        </div>
+                                        <span className="text-slate-600 block pl-5">{persona.buy}</span>
+                                      </div>
+                                    </div>
+
+                                    {/* Narrative Quote */}
+                                    {persona.narrative && (
+                                      <div className="text-xs text-slate-600 italic bg-slate-50/50 p-3 rounded-xl border border-slate-100/80 leading-relaxed">
                                         "{persona.narrative}"
                                       </div>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Expand / Collapse Button */}
-                                <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                                  <button
-                                    type="button"
-                                    onClick={toggleAllPersonasExpanded}
-                                    className="w-full py-1.5 px-3 rounded-lg text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50/70 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                                  >
-                                    {isExpanded ? (
-                                      <>
-                                        <span>Hide Details</span>
-                                        <ChevronUp className="w-3.5 h-3.5" />
-                                      </>
-                                    ) : (
-                                      <>
-                                        <span>View Habits & Narrative</span>
-                                        <ChevronDown className="w-3.5 h-3.5" />
-                                      </>
                                     )}
-                                  </button>
-                                </div>
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
