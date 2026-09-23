@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { AlertCircle, Download, Loader2, Plus, Sparkles, Users, X } from 'lucide-react';
+import { AlertCircle, ChevronRight, Download, FileSpreadsheet, Loader2, MonitorPlay, Plus, Sparkles, Users, X } from 'lucide-react';
 import type { Persona, SegmentDimension, SegmentRecommendation } from '../types';
+import { SectionVisibilityButton } from './SectionVisibilityButton';
 import {
   MAX_SEGMENT_JUSTIFICATION_LENGTH,
   MAX_SEGMENT_NAME_LENGTH,
@@ -56,7 +57,10 @@ interface SegmentRecommendationsProps {
   onSuggestMore?: () => void;
   onGenerate?: () => void;
   onExportCsv?: () => void;
+  onOpenSlideExport?: () => void;
   onHoverSegment?: (segment: SegmentRecommendation | null) => void;
+  isInactive?: boolean;
+  onToggleActive?: (inactive: boolean) => void;
 }
 
 const TOOLTIP_WIDTH_PX = 288;
@@ -230,10 +234,15 @@ export const SegmentRecommendations: React.FC<SegmentRecommendationsProps> = ({
   onSuggestMore,
   onGenerate,
   onExportCsv,
+  onOpenSlideExport,
   onHoverSegment,
+  isInactive = false,
+  onToggleActive,
 }) => {
   const [openId, setOpenId] = useState<string | null>(null);
   const [isAdding, setIsAdding] = useState(false);
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const exportDropdownRef = useRef<HTMLDivElement>(null);
   const list = orderSegmentsForDisplay(segments ?? []);
   const hasSegments = list.length > 0;
   const isInitialLoad = status === 'loading' && !isToppingUp;
@@ -244,7 +253,20 @@ export const SegmentRecommendations: React.FC<SegmentRecommendationsProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openId]);
 
-  if (readOnly && !hasSegments) return null;
+  useEffect(() => {
+    if (!isExportOpen) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (exportDropdownRef.current && !exportDropdownRef.current.contains(event.target as Node)) {
+        setIsExportOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [isExportOpen]);
+
+  if (readOnly && (!hasSegments || isInactive)) return null;
 
   const handleOpenChange = (id: string) => (open: boolean) => {
     setOpenId((current) => (open ? id : current === id ? null : current));
@@ -253,44 +275,127 @@ export const SegmentRecommendations: React.FC<SegmentRecommendationsProps> = ({
   const atCap = list.length >= MAX_TOTAL_SEGMENTS;
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-xs space-y-4" id="segment-recommendations">
+    <div
+      className={`group relative rounded-2xl border p-5 space-y-4 transition-all ${
+        isInactive
+          ? 'border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70'
+          : 'border-slate-100 bg-white shadow-xs'
+      }`}
+      id="segment-recommendations"
+    >
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2 text-slate-700 text-xs font-bold uppercase tracking-wider">
           <Users className="w-4 h-4 text-indigo-600" />
           <span>Segment Recommendations</span>
         </div>
-        {!readOnly && hasSegments && (
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={onSuggestMore}
-              disabled={status === 'loading' || atCap}
-              className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 disabled:text-slate-400 disabled:cursor-not-allowed inline-flex items-center gap-1 cursor-pointer"
-              title={atCap ? `Plans hold up to ${MAX_TOTAL_SEGMENTS} segments` : 'Suggest additional segments'}
-            >
-              {isToppingUp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-              <span>{isToppingUp ? 'Suggesting…' : 'Suggest more'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsAdding(true)}
-              disabled={atCap || isAdding}
-              className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 disabled:text-slate-400 disabled:cursor-not-allowed inline-flex items-center gap-1 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add segment</span>
-            </button>
-            <button
-              type="button"
-              onClick={onExportCsv}
-              className="p-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer transition-all"
-              title="Download segments as CSV"
-              aria-label="Download segments as CSV"
-            >
-              <Download className="w-4 h-4 text-indigo-600" />
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-3">
+          {!readOnly && onToggleActive && (
+            <SectionVisibilityButton
+              sectionKey="segments"
+              isInactive={isInactive}
+              onToggle={(_, inactive) => onToggleActive(inactive)}
+            />
+          )}
+          {!readOnly && hasSegments && (
+            <>
+              <button
+                type="button"
+                onClick={onSuggestMore}
+                disabled={status === 'loading' || atCap}
+                className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 disabled:text-slate-400 disabled:cursor-not-allowed inline-flex items-center gap-1 cursor-pointer"
+                title={atCap ? `Plans hold up to ${MAX_TOTAL_SEGMENTS} segments` : 'Suggest additional segments'}
+              >
+                {isToppingUp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                <span>{isToppingUp ? 'Suggesting…' : 'Suggest more'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsAdding(true)}
+                disabled={atCap || isAdding}
+                className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 disabled:text-slate-400 disabled:cursor-not-allowed inline-flex items-center gap-1 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add segment</span>
+              </button>
+
+            {/* Export Dropdown (Slide Export or Download segments as CSV) */}
+            <div ref={exportDropdownRef} className="relative inline-block text-left">
+              <button
+                type="button"
+                id="btn-export-segments-menu"
+                onClick={() => setIsExportOpen((prev) => !prev)}
+                className="p-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer transition-all shadow-2xs hover:shadow-xs active:scale-[0.98]"
+                title="Download segments as CSV or Export Presentation Slide"
+                aria-label="Export segments (Presentation Slide or Download segments as CSV)"
+                aria-haspopup="true"
+                aria-expanded={isExportOpen}
+              >
+                <Download className="w-4 h-4 text-indigo-600" />
+              </button>
+
+              {isExportOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 mt-2 w-64 origin-top-right rounded-2xl bg-white p-1.5 shadow-xl border border-slate-200/90 focus:outline-none z-50 animate-in fade-in zoom-in-95 duration-100"
+                >
+                  <div className="px-3 py-2 border-b border-slate-100 mb-1">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Export Segments</span>
+                    <span className="text-xs text-slate-600">Select export format</span>
+                  </div>
+
+                  <div className="space-y-1">
+                    {/* Option 1: Slide Export */}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      id="btn-export-segments-slide"
+                      onClick={() => {
+                        setIsExportOpen(false);
+                        onOpenSlideExport?.();
+                      }}
+                      className="w-full text-left p-2 rounded-xl hover:bg-indigo-50/70 transition-colors flex items-start gap-2.5 group cursor-pointer"
+                    >
+                      <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors shrink-0 mt-0.5">
+                        <MonitorPlay className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-slate-800 group-hover:text-indigo-950">Slide Export (16:9)</span>
+                          <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-600 transition-transform group-hover:translate-x-0.5" />
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">Presentation slide ready for master deck</p>
+                      </div>
+                    </button>
+
+                    {/* Option 2: Download as CSV */}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      id="btn-export-segments-csv"
+                      onClick={() => {
+                        setIsExportOpen(false);
+                        onExportCsv?.();
+                      }}
+                      className="w-full text-left p-2 rounded-xl hover:bg-indigo-50/70 transition-colors flex items-start gap-2.5 group cursor-pointer"
+                    >
+                      <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors shrink-0 mt-0.5">
+                        <FileSpreadsheet className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-slate-800 group-hover:text-indigo-950">Download segments as CSV</span>
+                          <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-600 transition-transform group-hover:translate-x-0.5" />
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">Spreadsheet with taxonomy paths and tiers</p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            </>
+          )}
+        </div>
       </div>
 
       {isInitialLoad && (

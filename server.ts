@@ -296,6 +296,7 @@ const PUBLIC_API_PATHS = new Set([
   "/api/summarize-publisher-insights",
   "/api/personas/generate-slide",
   "/api/channels/generate-slide",
+  "/api/segments/generate-slide",
 ]);
 
 app.use("/api", (req, res, next) => {
@@ -2823,6 +2824,170 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     console.error("[API /api/channels/generate-slide ERROR]:", err);
     res.status(500).json({
       error: "Failed to generate channel strategy presentation slide.",
+      details: err.message || String(err),
+    });
+  }
+});
+
+// API: Generate 16:9 Presentation Slides for Recommended Segments using gpt-image-2.5-sunburst
+app.post("/api/segments/generate-slide", async (req, res) => {
+  // Prevent socket timeout on long-running image generation
+  req.socket.setTimeout(0);
+
+  try {
+    const {
+      segments = [],
+      advertiserName = "",
+      campaignFocus = "",
+      geography = "",
+      style = "corporate_light", // "corporate_light" | "modern_dark" | "minimal_slate"
+      customNotes = "",
+    } = req.body || {};
+
+    if (!Array.isArray(segments) || segments.length === 0) {
+      res.status(400).json({ error: "Segments array is required to generate presentation slide." });
+      return;
+    }
+
+    let openai: OpenAI;
+    try {
+      openai = getOpenaiClient();
+    } catch (clientErr: any) {
+      res.status(500).json({ error: "OpenAI client configuration error.", details: clientErr.message || clientErr });
+      return;
+    }
+
+    console.log(`[API /api/segments/generate-slide] Starting segment slide generation. Style: '${style}', Segments count: ${segments.length}`);
+
+    // EXACT BRAND DESIGN GUIDE (Mandatory across all slide layouts)
+    const brandDesignGuide = `
+CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
+- COLOR PALETTE & TONAL EXECUTION:
+  • Primary Color: Teal #0e8f86 (used for primary brand elements, key highlights, active tags, and primary accents).
+  • Dark Surfaces: Deep Teal #0e3b42 for dark surfaces, rich container backgrounds, or high-contrast card blocks.
+  • Secondary Color: Indigo #6b63e6 for secondary tags, supporting category indicators, and demographic badges.
+  • Limited Accents: Lime #a6cf56 for high-impact metric callouts, core targeting badges, and tier indicators.
+  • Neutrals & Body Copy: Cool slate-tinted neutrals with all body text and descriptions rendered strictly at #0c1e24 rather than true black.
+  • Elevation & Shadows: Shadows are cool-tinted and low-contrast, providing soft, premium depth without harsh dark edges.
+  • Layout & Negative Space: Layout stays generous and breathable because ample whitespace is an intentional part of the premium feel.
+- TYPOGRAPHY SYSTEM (LEXEND THROUGHOUT):
+  • Typeface: Lexend throughout all textual elements.
+  • Headlines & Dimension Titles: Lexend Bold with tight 1.05 leading and -0.02em tracking.
+  • Body Text & Justifications: Lexend Regular at 1.4 leading with body text in #0c1e24.
+  • Eyebrow Labels & Category Badges: Lexend SemiBold in all-caps (UPPERCASE) with 0.08em tracking for teal (#0e8f86) eyebrow labels.
+`;
+
+    // Palette & visual styling directives - optimized for white background slide decks
+    let paletteDesc = "Pure white presentation canvas (#FFFFFF) with cool slate-tinted neutral card containers (#F8FAFC), subtle 1px cool borders (#E2E8F0), body text at #0c1e24, primary teal #0e8f86 accents, deep teal #0e3b42 dark surfaces, indigo #6b63e6 secondary accents, and limited lime #a6cf56 highlights";
+    if (style === "modern_dark") {
+      paletteDesc = "Executive dark theme: deep teal (#0e3b42) canvas and surfaces, clean white text, teal #0e8f86 and indigo #6b63e6 accents, limited lime #a6cf56 callouts, with subtle cool-tinted low-contrast borders";
+    } else if (style === "minimal_slate") {
+      paletteDesc = "Refined minimal editorial theme: pure white canvas (#FFFFFF), high-contrast #0c1e24 typography in Lexend, subtle cool slate borders (#E2E8F0), teal #0e8f86 eyebrow labels, and indigo #6b63e6 accents";
+    }
+
+    // Group segments by dimension
+    const dimensionOrder = ["In-Market / Intent", "Behavioral", "Interest & Affinity", "Demographics"] as const;
+    const groupedSegments: Record<string, any[]> = {};
+    for (const d of dimensionOrder) {
+      const match = segments.filter((s: any) => s.dimension === d);
+      if (match.length > 0) {
+        groupedSegments[d] = match;
+      }
+    }
+    // Also include any segments with other dimensions if present
+    const otherSegments = segments.filter((s: any) => !dimensionOrder.includes(s.dimension));
+    if (otherSegments.length > 0) {
+      groupedSegments["Strategic Target Segments"] = otherSegments;
+    }
+
+    const activeDimensions = Object.keys(groupedSegments);
+    const numDimensions = activeDimensions.length || 1;
+
+    const prompt = `A modern, modular slide body graphic in 16:9 widescreen format (1536x864) showcasing target audience segment recommendations, designed to be placed directly onto a white background presentation slide.
+
+CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
+- ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
+- ABSOLUTELY NO LOGO: Do NOT include any company logo, brand mark, insignia, or watermarks anywhere.
+- ABSOLUTELY NO FOOTER: Do NOT include any footer bar, disclaimer, confidentiality notice, page number, slide counter, or bottom footer text.
+- CANVAS BACKGROUND: ${style === "modern_dark" ? "DEEP TEAL (#0e3b42)" : "PURE SOLID CLEAN WHITE (#FFFFFF)"} across the entire canvas with no outer border, no framing drop shadow, and no vignette, so it blends seamlessly into a presentation deck.
+
+${brandDesignGuide}
+VISUAL THEME: ${paletteDesc}
+
+BODY CONTENT & COMPOSITION (Fills the 16:9 canvas cleanly with generous whitespace for a premium executive feel):
+The entire image consists purely of the structured audience segment recommendation containers:
+
+TOP SUMMARY STRIP:
+- High-level audience segment summary bar displaying:
+  • Scope: "${segments.length} Curated Audience Segments" (Bold Lexend display with teal #0e8f86 highlight)
+  • Categories: "${activeDimensions.length} Targeting Dimensions" (Indigo #6b63e6 pill)
+  • Core Focus: "${advertiserName ? `${advertiserName} Campaign` : "Digital Media Campaign"}" (Lexend SemiBold in #0c1e24)
+  ${geography ? `• Target Geography: "${geography}"` : ""}
+
+STRUCTURED BENTO GRID OF AUDIENCE SEGMENTS (Arranged across ${numDimensions} balanced columns/containers):
+${activeDimensions.map((dim, colIdx) => {
+  const dimSegs = groupedSegments[dim];
+  const colorAccent = colIdx % 3 === 0 ? "teal #0e8f86" : colIdx % 3 === 1 ? "indigo #6b63e6" : "deep teal #0e3b42";
+  return `
+COLUMN ${colIdx + 1}: ${dim.toUpperCase()} (${dimSegs.length} Segments)
+- Column Container Header:
+  • Dimension Label: "${dim.toUpperCase()}" (Lexend Bold with ${colorAccent} badge)
+  • Subtitle: "${dimSegs.length} Active Segments"
+- Segment Cards within this column:
+${dimSegs.map((s: any, sIdx: number) => {
+  const tier = s.tier || "Core";
+  const tierColor = tier === "Core" ? "teal #0e8f86" : tier === "Expansion" ? "indigo #6b63e6" : "lime #a6cf56";
+  const signal = s.dataSignal ? `Data Signal: ${s.dataSignal}` : "";
+  const just = s.justification ? `Rationale: ${s.justification}` : "";
+  return `  • Segment ${sIdx + 1}: "${s.name}"
+    - Tier: "${tier.toUpperCase()}" (${tierColor} pill badge)
+    ${signal ? `- Signal: "${s.dataSignal}"` : ""}
+    ${just ? `- Activation Rationale: "${just}" (Lexend Regular in #0c1e24, 1 concise sentence)` : ""}
+  `;
+}).join("\n")}
+`;
+}).join("\n")}
+
+DESIGN & EXECUTION DIRECTIVES:
+- Follow all directives in the CORE BRAND DESIGN GUIDE above.
+- Clean graphic card containers with subtle 1px cool borders (#E2E8F0) and softly rounded corners (12px).
+- Crisp typography in Lexend with clear hierarchy between Segment Name (Bold), Tier/Data Signal badges, and concise rationale copy.
+- Generous whitespace throughout ensuring an uncluttered, high-end presentation feel.
+- STRICT REMINDER: ONLY produce the visual body cards. NO top slide title, NO subhead, NO logo, NO footer text.
+${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
+
+    console.log(`[API /api/segments/generate-slide] Dispatching request to OpenAI model 'gpt-image-2.5-sunburst' (size: 1536x864)...`);
+
+    const genResponse = await withTimeout(
+      openai.images.generate({
+        model: "gpt-image-2.5-sunburst",
+        prompt,
+        size: "1536x864",
+        quality: "high",
+      }),
+      120000,
+      null
+    );
+
+    if (!genResponse || !genResponse.data || !genResponse.data[0]?.b64_json) {
+      throw new Error("gpt-image-2.5-sunburst did not return image data for segments slide.");
+    }
+
+    const resultImageBase64 = genResponse.data[0].b64_json;
+    const revisedPrompt = genResponse.data[0].revised_prompt;
+    console.log("[API /api/segments/generate-slide] Successfully generated segments slide using openai.images.generate!");
+
+    const finalImageUrl = `data:image/png;base64,${resultImageBase64}`;
+    res.json({
+      success: true,
+      imageUrl: finalImageUrl,
+      model: "gpt-image-2.5-sunburst",
+      revisedPrompt,
+    });
+  } catch (err: any) {
+    console.error("[API /api/segments/generate-slide ERROR]:", err);
+    res.status(500).json({
+      error: "Failed to generate segment recommendations presentation slide.",
       details: err.message || String(err),
     });
   }

@@ -19,17 +19,19 @@ import {
   Target,
   BarChart3,
   ShieldCheck,
-  CheckCircle2
+  CheckCircle2,
+  Users
 } from "lucide-react";
-import type { ChannelStrategyData } from "../types";
+import type { ChannelStrategyData, SegmentRecommendation } from "../types";
 import type { MediaRecommendationPlan, ChannelPlanRecommendation } from "../planning/types";
 import { isNonMediaItem } from "../utils/mediaTaxonomy";
 
 export interface PresentationSlideStudioModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialSection?: "personas" | "channels";
+  initialSection?: "personas" | "channels" | "segments";
   personas?: any[];
+  segments?: SegmentRecommendation[];
   channelStrategy?: ChannelStrategyData;
   mediaPlan?: MediaRecommendationPlan;
   advertiserName?: string;
@@ -44,7 +46,7 @@ export type PersonaSlideExportModalProps = PresentationSlideStudioModalProps;
 
 interface GeneratedSlide {
   id: string;
-  section: "personas" | "channels";
+  section: "personas" | "channels" | "segments";
   mode: "portfolio" | "spotlight" | "overview";
   personaIndex?: number;
   personaName?: string;
@@ -60,6 +62,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
   onClose,
   initialSection = "personas",
   personas = [],
+  segments = [],
   channelStrategy,
   mediaPlan,
   advertiserName = "",
@@ -67,8 +70,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
   geography = "",
   api,
 }) => {
-  // Current active section dropdown: "personas" | "channels"
-  const [section, setSection] = useState<"personas" | "channels">(initialSection);
+  // Current active section dropdown: "personas" | "channels" | "segments"
+  const [section, setSection] = useState<"personas" | "channels" | "segments">(initialSection);
 
   // Mode state for Personas
   const [personaMode, setPersonaMode] = useState<"portfolio" | "spotlight">("portfolio");
@@ -94,6 +97,9 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
 
   const [channelSlides, setChannelSlides] = useState<GeneratedSlide[]>([]);
   const [activeChannelSlideIndex, setActiveChannelSlideIndex] = useState<number>(0);
+
+  const [segmentSlides, setSegmentSlides] = useState<GeneratedSlide[]>([]);
+  const [activeSegmentSlideIndex, setActiveSegmentSlideIndex] = useState<number>(0);
 
   // Copy feedback & zoom
   const [isCopied, setIsCopied] = useState<boolean>(false);
@@ -125,7 +131,16 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
     "Finalizing high-resolution presentation layout..."
   ];
 
-  const currentSteps = section === "personas" ? personaSteps : channelSteps;
+  // Step labels for segment recommendations generation
+  const segmentSteps = [
+    "Auditing recommended segment taxonomy & signals...",
+    "Organizing segments by strategic dimension & tier...",
+    "Formatting high-impact 16:9 widescreen layout...",
+    "Composing segment activation cards and targeting rationale...",
+    "Finalizing high-resolution presentation layout..."
+  ];
+
+  const currentSteps = section === "personas" ? personaSteps : section === "channels" ? channelSteps : segmentSteps;
 
   useEffect(() => {
     let timer: any;
@@ -156,12 +171,14 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
     return true;
   });
 
+  const candidateSegments = segments || [];
   const hasPersonas = candidatePersonas.length > 0;
   const hasChannels = fundedChannels.length > 0;
+  const hasSegments = candidateSegments.length > 0;
 
   // Active slide references depending on current section
-  const currentSlides = section === "personas" ? personaSlides : channelSlides;
-  const currentActiveIndex = section === "personas" ? activePersonaSlideIndex : activeChannelSlideIndex;
+  const currentSlides = section === "personas" ? personaSlides : section === "channels" ? channelSlides : segmentSlides;
+  const currentActiveIndex = section === "personas" ? activePersonaSlideIndex : section === "channels" ? activeChannelSlideIndex : activeSegmentSlideIndex;
   const activeSlide = currentSlides[currentActiveIndex];
 
   const handleGenerate = async () => {
@@ -465,6 +482,58 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
         }
       }
     }
+
+    // ==========================================
+    // 3. SEGMENTS SECTION GENERATION
+    // ==========================================
+    if (section === "segments") {
+      setTotalToGenerate(1);
+      setCompletedCount(0);
+      try {
+        const payload = {
+          segments: candidateSegments,
+          advertiserName,
+          campaignFocus,
+          geography,
+          style,
+          customNotes: customNotes.trim(),
+        };
+
+        const res = await fetchFn("/api/segments/generate-slide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => ({}));
+          throw new Error(errJson.details || errJson.error || `Server responded with ${res.status}`);
+        }
+
+        const data = await res.json();
+        if (!data.success || !data.imageUrl) {
+          throw new Error(data.error || "Model did not return slide image.");
+        }
+
+        const newSlide: GeneratedSlide = {
+          id: `${Date.now()}-segments`,
+          section: "segments",
+          mode: "overview",
+          imageUrl: data.imageUrl,
+          style,
+          timestamp: new Date(),
+        };
+
+        setCompletedCount(1);
+        setSegmentSlides((prev) => [newSlide, ...prev]);
+        setActiveSegmentSlideIndex(0);
+      } catch (err: any) {
+        console.error("[SlideStudioModal] Error generating segments slide:", err);
+        setError(err.message || "Failed to generate segment presentation slide. Please try again.");
+      } finally {
+        setIsGenerating(false);
+      }
+    }
   };
 
   const handleDownload = (slide: GeneratedSlide) => {
@@ -476,10 +545,12 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
       namePart = slide.mode === "portfolio"
         ? "all-personas-portfolio"
         : `persona-${(slide.personaIndex !== undefined ? slide.personaIndex + 1 : 1)}-${(slide.personaName || "spotlight").toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
-    } else {
+    } else if (slide.section === "channels") {
       namePart = slide.mode === "overview"
         ? "channel-strategy-media-mix-overview"
         : `channel-spotlight-${(slide.channelIndex !== undefined ? slide.channelIndex + 1 : 1)}-${(slide.channelName || "spotlight").toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+    } else {
+      namePart = "audience-segment-recommendations";
     }
 
     const filename = `${cleanBrand}-${namePart}-16x9.png`;
@@ -568,7 +639,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   id="select-slide-studio-section"
                   value={section}
                   onChange={(e) => {
-                    const newSec = e.target.value as "personas" | "channels";
+                    const newSec = e.target.value as "personas" | "channels" | "segments";
                     setSection(newSec);
                     setError(null);
                   }}
@@ -580,6 +651,9 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   </option>
                   <option value="channels" disabled={!hasChannels}>
                     Channels {fundedChannels.length > 0 ? `(${fundedChannels.length} in Plan)` : ""}
+                  </option>
+                  <option value="segments" disabled={!hasSegments}>
+                    Segments {candidateSegments.length > 0 ? `(${candidateSegments.length} Targets)` : ""}
                   </option>
                 </select>
                 <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -792,6 +866,42 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             </div>
           )}
 
+          {/* ========================================================================= */}
+          {/* C. SEGMENTS CONFIGURATION VIEW */}
+          {/* ========================================================================= */}
+          {section === "segments" && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl border-2 border-[#0e8f86] bg-[#0e8f86]/5 shadow-xs ring-2 ring-[#0e8f86]/20">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-[#0e8f86] text-white">
+                      <Users className="w-4 h-4" />
+                    </div>
+                    <span className="text-sm font-bold text-slate-900">Audience Segments Matrix</span>
+                  </div>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[#0e8f86]/10 text-[#0e8f86]">
+                    1 Slide ({candidateSegments.length} Segments)
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed mb-3">
+                  Renders your entire curated audience segment recommendations onto a single executive 16:9 widescreen slide. Segments are structured into bento columns by strategic dimension (In-Market / Intent, Behavioral, Interest &amp; Affinity, Demographics), displaying targeting tiers (Core, Expansion, Experimental), data signals, and concise activation rationales. Zero headers or footers.
+                </p>
+                <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-200/60">
+                  {["In-Market / Intent", "Behavioral", "Interest & Affinity", "Demographics"].map((dim) => {
+                    const count = candidateSegments.filter((s) => s.dimension === dim).length;
+                    if (count === 0) return null;
+                    return (
+                      <span key={dim} className="text-[11px] font-semibold px-2.5 py-1 rounded-md bg-white border border-slate-200 text-slate-700 inline-flex items-center gap-1.5 shadow-2xs">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#0e8f86]" />
+                        <span>{dim}: <strong>{count}</strong></span>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Collapsible Advanced Custom Notes */}
           <div className="space-y-2">
             <button
@@ -818,7 +928,9 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   placeholder={
                     section === "personas"
                       ? "e.g., Emphasize live sports CTV viewing, highlight suburban family lifestyle, or focus on mobile app commerce..."
-                      : "e.g., Emphasize premium live sports inventory on CTV, highlight ROAS attribution, or focus on brand lift metrics..."
+                      : section === "channels"
+                      ? "e.g., Emphasize premium live sports inventory on CTV, highlight ROAS attribution, or focus on brand lift metrics..."
+                      : "e.g., Emphasize In-Market intent signals, highlight automotive purchase data, or emphasize cross-device reach..."
                   }
                   className="w-full text-xs p-2.5 rounded-lg border border-slate-200 bg-white focus:outline-hidden focus:ring-2 focus:ring-[#0e8f86]/20 focus:border-[#0e8f86] placeholder:text-slate-400"
                 />
@@ -838,12 +950,14 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                 ) : (
                   <span>Creates 4 individual 16:9 spotlight slides tabbed side-by-side</span>
                 )
-              ) : (
+              ) : section === "channels" ? (
                 channelMode === "overview" ? (
                   <span>Creates 1 comprehensive 16:9 slide with all {fundedChannels.length} active channels</span>
                 ) : (
                   <span>Creates {fundedChannels.length} individual 16:9 spotlight slides tabbed side-by-side</span>
                 )
+              ) : (
+                <span>Creates 1 comprehensive 16:9 slide with all {candidateSegments.length} recommended segments</span>
               )}
             </div>
 
@@ -851,7 +965,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
               type="button"
               id="btn-generate-slide-studio"
               onClick={handleGenerate}
-              disabled={isGenerating || (section === "personas" ? candidatePersonas.length === 0 : fundedChannels.length === 0)}
+              disabled={isGenerating || (section === "personas" ? candidatePersonas.length === 0 : section === "channels" ? fundedChannels.length === 0 : candidateSegments.length === 0)}
               className={`px-6 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs ${
                 isGenerating
                   ? "bg-slate-200 text-slate-400 cursor-not-allowed"
@@ -866,9 +980,11 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                       ? personaMode === "spotlight"
                         ? `Generating All 4 Spotlight Slides... (${completedCount}/${totalToGenerate || candidatePersonas.length})`
                         : "Generating All 4 Personas Slide..."
-                      : channelMode === "spotlight"
-                        ? `Generating All ${fundedChannels.length} Channel Slides... (${completedCount}/${totalToGenerate || fundedChannels.length})`
-                        : "Generating Media Mix Overview Slide..."}
+                      : section === "channels"
+                        ? channelMode === "spotlight"
+                          ? `Generating All ${fundedChannels.length} Channel Slides... (${completedCount}/${totalToGenerate || fundedChannels.length})`
+                          : "Generating Media Mix Overview Slide..."
+                        : "Generating Audience Segments Slide..."}
                   </span>
                 </>
               ) : (
@@ -879,9 +995,11 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                       ? personaMode === "spotlight"
                         ? (personaSlides.length > 0 ? "Regenerate All 4 Spotlight Slides" : "Generate All 4 Spotlight Slides (16:9)")
                         : (personaSlides.length > 0 ? "Regenerate All 4 Personas on 1 Slide" : "Generate All 4 Personas on 1 Slide (16:9)")
-                      : channelMode === "spotlight"
-                        ? (channelSlides.length > 0 ? `Regenerate All ${fundedChannels.length} Channel Slides` : `Generate All ${fundedChannels.length} Channel Slides (16:9)`)
-                        : (channelSlides.length > 0 ? "Regenerate Media Mix Overview Slide" : "Generate Media Mix Overview Slide (16:9)")}
+                      : section === "channels"
+                        ? channelMode === "spotlight"
+                          ? (channelSlides.length > 0 ? `Regenerate All ${fundedChannels.length} Channel Slides` : `Generate All ${fundedChannels.length} Channel Slides (16:9)`)
+                          : (channelSlides.length > 0 ? "Regenerate Media Mix Overview Slide" : "Generate Media Mix Overview Slide (16:9)")
+                        : (segmentSlides.length > 0 ? "Regenerate Audience Segments Slide" : "Generate Audience Segments Slide (16:9)")}
                   </span>
                 </>
               )}
@@ -899,9 +1017,11 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                       ? personaMode === "spotlight"
                         ? `Rendering 4 Spotlight Slides in parallel (${completedCount}/${totalToGenerate || candidatePersonas.length} completed)...`
                         : "AI Rendering All 4 Personas on 1 Slide..."
-                      : channelMode === "spotlight"
-                        ? `Rendering ${fundedChannels.length} Channel Slides in parallel (${completedCount}/${totalToGenerate || fundedChannels.length} completed)...`
-                        : "AI Rendering Media Mix Overview on 1 Slide..."}
+                      : section === "channels"
+                        ? channelMode === "spotlight"
+                          ? `Rendering ${fundedChannels.length} Channel Slides in parallel (${completedCount}/${totalToGenerate || fundedChannels.length} completed)...`
+                          : "AI Rendering Media Mix Overview on 1 Slide..."
+                        : "AI Rendering Audience Segments on 1 Slide..."}
                   </span>
                 </div>
                 <div className="flex items-center gap-1 text-slate-500 font-normal">
@@ -948,7 +1068,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                 <div className="flex items-center gap-2">
                   <MonitorPlay className="w-4 h-4 text-[#0e8f86]" />
                   <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                    Generated {section === "personas" ? "Persona" : "Channel"} Slides ({currentSlides.length})
+                    Generated {section === "personas" ? "Persona" : section === "channels" ? "Channel" : "Segment"} Slides ({currentSlides.length})
                   </span>
                 </div>
 
@@ -964,12 +1084,14 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                           : s.personaIndex !== undefined
                             ? `${s.personaIndex + 1}. ${s.personaName}`
                             : s.personaName || `Persona ${idx + 1}`;
-                      } else {
+                      } else if (s.section === "channels") {
                         tabLabel = s.mode === "overview"
                           ? "Media Mix Overview"
                           : s.channelIndex !== undefined
                             ? `${s.channelIndex + 1}. ${s.channelName}`
                             : s.channelName || `Channel ${idx + 1}`;
+                      } else {
+                        tabLabel = "Audience Segments Matrix";
                       }
 
                       return (
@@ -980,8 +1102,10 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                           onClick={() => {
                             if (section === "personas") {
                               setActivePersonaSlideIndex(idx);
-                            } else {
+                            } else if (section === "channels") {
                               setActiveChannelSlideIndex(idx);
+                            } else {
+                              setActiveSegmentSlideIndex(idx);
                             }
                           }}
                           className={`px-3 py-1.5 text-xs rounded-md font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
@@ -994,6 +1118,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                             <LayoutGrid className={`w-3 h-3 ${isActive ? "text-[#0e8f86]" : "text-slate-400"}`} />
                           ) : s.section === "personas" ? (
                             <User className={`w-3 h-3 ${isActive ? "text-[#0e8f86]" : "text-slate-400"}`} />
+                          ) : s.section === "segments" ? (
+                            <Users className={`w-3 h-3 ${isActive ? "text-[#0e8f86]" : "text-slate-400"}`} />
                           ) : (
                             <Layers className={`w-3 h-3 ${isActive ? "text-[#0e8f86]" : "text-slate-400"}`} />
                           )}

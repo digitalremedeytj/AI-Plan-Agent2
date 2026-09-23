@@ -331,13 +331,36 @@ function eligibility(product: MediaProductRecord, facts: CampaignFacts): { failu
     prerequisites.push(`Confirm a flight of at least ${product.minimumFlightDays} days.`);
   }
 
+  const formatReqName = (req: string): string => {
+    const map: Record<string, string> = {
+      ctvVideoAssets: 'CTV Video Assets',
+      onlineVideoAssets: 'Online Video Assets',
+      displayAssets: 'Display Assets',
+      audioAssets: 'Audio Assets',
+      socialAssets: 'Social Assets',
+      nativeContent: 'Native Content Assets',
+      productFeedCreative: 'Product Feed Creative Assets',
+      doohAssets: 'DOOH Creative Assets',
+      highImpactBudgetAndLeadTime: 'High Impact Budget & Lead Time',
+      sitePixel: 'Site Conversion Pixel',
+      meaningfulSiteTraffic: 'Meaningful Site Traffic',
+      crmSuppressionList: 'CRM Suppression List',
+      leadOrRevenueExports: 'Lead or Revenue Exports',
+      offlineSalesData: 'Offline Sales Data',
+      productFeed: 'Product Feed',
+      locationData: 'Location Data',
+      firstPartyDataPermission: '1st-Party Data Permission',
+    };
+    return map[req] || req.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
+  };
+
   product.dataRequirements.forEach((requirement) => {
     const value = facts.dataReadiness[requirement];
-    if (value !== true) prerequisites.push(`${requirement} must be confirmed before allocation.`);
+    if (value !== true) prerequisites.push(`${formatReqName(requirement)} (${requirement}) must be confirmed before allocation.`);
   });
   product.creativeRequirements.forEach((requirement) => {
     const value = facts.creativeReadiness[requirement];
-    if (value !== true) prerequisites.push(`${requirement} must be supplied or produced before launch.`);
+    if (value !== true) prerequisites.push(`${formatReqName(requirement)} (${requirement}) must be supplied or produced before launch.`);
   });
   return { failures, prerequisites };
 }

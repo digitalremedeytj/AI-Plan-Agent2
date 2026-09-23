@@ -56,7 +56,7 @@ import {
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
+import { AudienceProfile, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
@@ -73,6 +73,7 @@ import { exportProfileToMarkdown, exportSourcesToMarkdown } from "./utils/markdo
 import { MediaPlanSelector } from "./components/MediaPlanSelector";
 import { TaxonomyVerificationBadge } from "./components/TaxonomyVerificationBadge";
 import { ALL_INTERNAL_VISIBLE, ChannelStrategySection, type InternalOnlyVisibility } from "./components/ChannelStrategySection";
+import { SectionVisibilityButton } from "./components/SectionVisibilityButton";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SharePlanModal } from "./components/SharePlanModal";
@@ -1409,9 +1410,9 @@ export default function App() {
 
   // Presentation AI Slide Studio (gpt-image-2.5-sunburst) Modal State
   const [isSlideStudioOpen, setIsSlideStudioOpen] = useState(false);
-  const [slideStudioSection, setSlideStudioSection] = useState<'personas' | 'channels'>('personas');
+  const [slideStudioSection, setSlideStudioSection] = useState<'personas' | 'channels' | 'segments'>('personas');
 
-  const handleOpenSlideStudio = (section: 'personas' | 'channels' = 'personas') => {
+  const handleOpenSlideStudio = (section: 'personas' | 'channels' | 'segments' = 'personas') => {
     setSlideStudioSection(section);
     setIsSlideStudioOpen(true);
   };
@@ -1495,7 +1496,39 @@ export default function App() {
   const activePlanRevisionRef = React.useRef<number | null>(activePlanRevision);
   activePlanRevisionRef.current = activePlanRevision;
   const segmentsDirtyRef = React.useRef(false);
+  const channelOverridesDirtyRef = React.useRef(false);
+  const hiddenSectionsDirtyRef = React.useRef(false);
   const segmentAutoSaveQueueRef = React.useRef<Promise<void>>(Promise.resolve());
+
+  const handleToggleSectionActive = (sectionKey: string, inactive: boolean) => {
+    hiddenSectionsDirtyRef.current = true;
+    setProfileData((prev) => {
+      if (!prev) return null;
+      const currentHidden = new Set(prev.hiddenSections || []);
+      if (inactive) {
+        currentHidden.add(sectionKey);
+      } else {
+        currentHidden.delete(sectionKey);
+      }
+      return {
+        ...prev,
+        hiddenSections: Array.from(currentHidden),
+      };
+    });
+  };
+
+  const hiddenSections = new Set(profileData?.hiddenSections || []);
+  const isIntroHidden = hiddenSections.has("intro");
+  const isPersonasHidden = hiddenSections.has("personas");
+  const isSegmentsHidden = hiddenSections.has("segments");
+  const isInsightsHidden = hiddenSections.has("insights");
+  const isDomainAffinityHidden = hiddenSections.has("domainAffinity");
+  const isDeviceShareHidden = hiddenSections.has("deviceShare") || hiddenSections.has("deviceSplit");
+  const isDemographicsHidden = hiddenSections.has("demographics");
+  const isTemporalHidden = hiddenSections.has("temporal") || hiddenSections.has("daypart");
+  const isChannelsHidden = hiddenSections.has("channels");
+  const isExecutiveSummaryHidden = hiddenSections.has("executiveSummary") || hiddenSections.has("blueprint");
+  const isSourcesHidden = hiddenSections.has("sources");
 
   const markPlanPersisted = (plan: api.StoredPlan) => {
     lastPersistedPlanRef.current = plan;
@@ -1507,6 +1540,7 @@ export default function App() {
     segmentRequestTokenRef.current += 1;
     removedSegmentsRef.current = [];
     segmentsDirtyRef.current = false;
+    hiddenSectionsDirtyRef.current = false;
     if (segmentUndoTimerRef.current) clearTimeout(segmentUndoTimerRef.current);
     setSegmentUndoName(null);
     setSegmentStatus("idle");
@@ -1683,6 +1717,93 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileData?.segmentRecommendations, activeSavedId, isShareView]);
 
+  // Auto-save channel overrides onto an already-saved plan
+  React.useEffect(() => {
+    if (!channelOverridesDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
+    const planId = activeSavedId;
+    const overrides = profileData.channelStrategy?.channelOverrides;
+    const liveFingerprint = profileBaselineFingerprint(profileData);
+
+    const timer = setTimeout(() => {
+      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
+        const persisted = lastPersistedPlanRef.current;
+        const revision = activePlanRevisionRef.current;
+        if (!channelOverridesDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
+        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) {
+          return;
+        }
+
+        channelOverridesDirtyRef.current = false;
+        try {
+          const updated = await api.updatePlan(planId, revision, {
+            title: persisted.title,
+            advertiserName: persisted.advertiserName,
+            settingsRevision: persisted.settingsRevision,
+            payload: {
+              ...persisted.payload,
+              profile: {
+                ...persisted.payload.profile,
+                channelStrategy: persisted.payload.profile.channelStrategy
+                  ? {
+                      ...persisted.payload.profile.channelStrategy,
+                      channelOverrides: overrides,
+                    }
+                  : undefined,
+              },
+            },
+          });
+          markPlanPersisted(updated);
+        } catch (err: any) {
+          console.error("Could not auto-save channel overrides:", err);
+          channelOverridesDirtyRef.current = true;
+        }
+      });
+    }, 1200);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileData?.channelStrategy?.channelOverrides, activeSavedId, isShareView]);
+
+  // Auto-save hidden sections onto an already-saved plan
+  React.useEffect(() => {
+    if (!hiddenSectionsDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
+    const planId = activeSavedId;
+    const hidden = profileData.hiddenSections || [];
+    const liveFingerprint = profileBaselineFingerprint(profileData);
+
+    const timer = setTimeout(() => {
+      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
+        const persisted = lastPersistedPlanRef.current;
+        const revision = activePlanRevisionRef.current;
+        if (!hiddenSectionsDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
+        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) {
+          return;
+        }
+
+        hiddenSectionsDirtyRef.current = false;
+        try {
+          const updated = await api.updatePlan(planId, revision, {
+            title: persisted.title,
+            advertiserName: persisted.advertiserName,
+            settingsRevision: persisted.settingsRevision,
+            payload: {
+              ...persisted.payload,
+              profile: {
+                ...persisted.payload.profile,
+                hiddenSections: hidden,
+              },
+            },
+          });
+          markPlanPersisted(updated);
+        } catch (err: any) {
+          console.error("Could not auto-save hidden sections:", err);
+          hiddenSectionsDirtyRef.current = true;
+        }
+      });
+    }, 1200);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileData?.hiddenSections, activeSavedId, isShareView]);
+
   /**
    * Save to the shared store. An existing plan is updated against the revision we last
    * read; if somebody else saved in the meantime the server refuses with a conflict and
@@ -1715,6 +1836,7 @@ export default function App() {
         markPlanPersisted(created);
       }
       segmentsDirtyRef.current = false;
+      hiddenSectionsDirtyRef.current = false;
       setSegmentAutoSaveError(null);
 
       await refreshPlans();
@@ -2821,6 +2943,22 @@ export default function App() {
     handleUpdateCtvPublishers(toRestore);
   };
 
+  const handleUpdateChannelOverrides = (overrides: ChannelOverridesMap) => {
+    channelOverridesDirtyRef.current = true;
+    setProfileData((previous) => {
+      if (!previous) return null;
+      return {
+        ...previous,
+        channelStrategy: previous.channelStrategy
+          ? {
+              ...previous.channelStrategy,
+              channelOverrides: overrides,
+            }
+          : undefined,
+      };
+    });
+  };
+
   // Download Profile Markdown file
   const handleDownloadMarkdown = () => {
     if (!profileData) return;
@@ -3406,6 +3544,22 @@ export default function App() {
             {/* Plan Action Buttons (Save, Share, New Plan, Export) */}
             {!isShareView && profileData && !loading && (
               <div className="flex items-center gap-2 flex-wrap">
+                {/* Reset Hidden Sections Button (Visible if any section is hidden) */}
+                {profileData.hiddenSections && profileData.hiddenSections.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      hiddenSectionsDirtyRef.current = true;
+                      setProfileData((prev) => (prev ? { ...prev, hiddenSections: [] } : prev));
+                    }}
+                    className="inline-flex items-center gap-1.5 text-xs bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/90 px-3 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-2xs"
+                    title="Click to restore all hidden sections in the share link"
+                  >
+                    <EyeOff className="w-3.5 h-3.5 text-amber-700" />
+                    <span>{profileData.hiddenSections.length} hidden from share • Reset</span>
+                  </button>
+                )}
+
                 {/* Save to History Button */}
                 <button
                   onClick={handleOpenSaveDialog}
@@ -3589,7 +3743,10 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-[1500px] w-full mx-auto p-4 md:p-6 flex flex-col lg:flex-row gap-6 items-start">
         {/* Left Column: Media Planner Inputs (350px fixed on lg) */}
-        <section className="w-full lg:w-[350px] shrink-0 bg-white border border-slate-100 rounded-2xl shadow-xs sticky lg:top-24 max-h-[calc(100vh-120px)] flex flex-col overflow-hidden">
+        <section
+          className="w-full lg:w-[350px] shrink-0 bg-white border border-slate-100 rounded-2xl shadow-xs sticky lg:top-24 flex flex-col overflow-hidden"
+          style={{ maxHeight: "calc(100vh - 120px)" }}
+        >
           {/* Tabs header: shown for authenticated planners, hidden on shared read-only link */}
           {!isShareView ? (
             <div className="flex border-b border-slate-100 p-4 pb-3 gap-1 shrink-0 bg-white">
@@ -4740,14 +4897,21 @@ export default function App() {
         </section>
 
         {/* Right Column: Output / Workspace Workspace (fluid width) */}
-        <section id="profile-workspace" className="flex-1 w-full min-w-0 space-y-6 lg:min-h-[calc(100vh-120px)] flex flex-col">
+        <section
+          id="profile-workspace"
+          className="flex-1 w-full min-w-0 space-y-6 flex flex-col"
+          style={{ minHeight: "calc(100vh - 120px)" }}
+        >
           <ErrorBoundary resetKey={profileData} fallback={(error, retry) => <PlanRenderError error={error} retry={retry} draftSaved={Boolean(activeSavedId)} />}>
           {/* The workspace is drawn inside RenderBelow so its errors happen below the boundary;
               an error in App's own render would skip it and take down the whole page. */}
           <RenderBelow>{() => (<>
           {/* Loading Overlay State */}
           {loading && (
-            <div className="bg-slate-950 border border-slate-800 text-slate-100 rounded-2xl p-6 md:p-8 shadow-2xl flex flex-col gap-6 min-h-[500px]">
+            <div
+              className="bg-slate-950 border border-slate-800 text-slate-100 rounded-2xl p-6 md:p-8 shadow-2xl flex flex-col gap-6 flex-1"
+              style={{ minHeight: "calc(100vh - 120px)" }}
+            >
               {/* Header block of console */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-4 gap-4">
                 <div className="space-y-1">
@@ -4834,7 +4998,7 @@ export default function App() {
                     logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
                   }
                 }}
-                className="relative flex-1 bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 md:p-5 font-mono text-xs overflow-y-auto max-h-[360px] space-y-4 custom-scrollbar"
+                className="relative flex-1 bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 md:p-5 font-mono text-xs overflow-y-auto min-h-[300px] space-y-4 custom-scrollbar"
               >
                 {isLogHovered && (
                   <div className="sticky top-0 z-20 flex justify-center -mt-1 mb-2 pointer-events-none">
@@ -4946,7 +5110,10 @@ export default function App() {
 
           {/* Empty state when no data exists and not loading */}
           {!profileData && !loading && (
-            <div className="bg-white rounded-2xl border border-slate-100 p-8 md:p-12 text-center shadow-xs flex flex-col items-center justify-center gap-5 flex-1 min-h-[400px] lg:min-h-[calc(100vh-120px)]">
+            <div
+              className="bg-white rounded-2xl border border-slate-100 p-8 md:p-12 text-center shadow-xs flex flex-col items-center justify-center gap-5 flex-1"
+              style={{ minHeight: "calc(100vh - 120px)" }}
+            >
               <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600 border border-indigo-100">
                 <Tv className="w-7 h-7" />
               </div>
@@ -5050,68 +5217,101 @@ export default function App() {
                 )}
 
                 {/* Introduction Summary */}
-                <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
-                  <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                    <Tv className="w-4 h-4" />
-                    <span>Strategic Introduction</span>
-                  </div>
-                  <h3 className="text-lg font-display font-bold text-slate-900 leading-snug mb-3">Audience Overview</h3>
-                  <p className="text-slate-600 text-sm leading-relaxed font-medium">
-                    {profileData.intro}
-                  </p>
-
-                  {profileData.audienceAnalysis && profileData.audienceAnalysis.trim() && (
-                    <div className="mt-5 pt-5 border-t border-slate-100">
-                      <h3 className="text-lg font-display font-bold text-slate-900 leading-snug mb-3">Audience Analysis</h3>
-                      <p className="text-slate-600 text-sm leading-relaxed font-medium">
-                        {profileData.audienceAnalysis}
-                      </p>
+                {(!isShareView || !isIntroHidden) && (
+                  <div
+                    className={`group relative rounded-2xl border p-5 md:p-6 transition-all ${
+                      isIntroHidden
+                        ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
+                        : "border-slate-100 bg-white shadow-xs"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
+                        <Tv className="w-4 h-4" />
+                        <span>Strategic Introduction</span>
+                      </div>
+                      {!isShareView && (
+                        <SectionVisibilityButton
+                          sectionKey="intro"
+                          isInactive={isIntroHidden}
+                          onToggle={handleToggleSectionActive}
+                        />
+                      )}
                     </div>
-                  )}
-                </div>
+                    <h3 className="text-lg font-display font-bold text-slate-900 leading-snug mb-3">Audience Overview</h3>
+                    <p className="text-slate-600 text-sm leading-relaxed font-medium">
+                      {profileData.intro}
+                    </p>
+
+                    {profileData.audienceAnalysis && profileData.audienceAnalysis.trim() && (
+                      <div className="mt-5 pt-5 border-t border-slate-100">
+                        <h3 className="text-lg font-display font-bold text-slate-900 leading-snug mb-3">Audience Analysis</h3>
+                        <p className="text-slate-600 text-sm leading-relaxed font-medium">
+                          {profileData.audienceAnalysis}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {!isShareView && profileData.briefOfRecord && <BriefOfRecordCard brief={profileData.briefOfRecord} />}
 
                 {/* Key Personas (Grid of cards) */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
-                      <User className="w-4 h-4" />
-                      <span>Consumer Segments & Personas</span>
-                    </div>
-                    {profileData.personas && profileData.personas.length > 0 && (
-                      <div className="flex items-center gap-2.5">
-                        <button
-                          type="button"
-                          id="btn-open-persona-slide-studio"
-                          onClick={() => handleOpenSlideStudio('personas')}
-                          className="p-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer transition-all shadow-2xs hover:shadow-xs active:scale-[0.98]"
-                          title="Export Presentation Slide (16:9)"
-                          aria-label="Export Presentation Slide"
-                        >
-                          <Download className="w-4 h-4 text-indigo-600" />
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={toggleAllPersonasExpanded}
-                          className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer transition-colors"
-                        >
-                          {arePersonasExpanded ? (
-                            <>
-                              <span>Collapse All</span>
-                              <ChevronUp className="w-3.5 h-3.5" />
-                            </>
-                          ) : (
-                            <>
-                              <span>Expand All</span>
-                              <ChevronDown className="w-3.5 h-3.5" />
-                            </>
-                          )}
-                        </button>
+                {(!isShareView || !isPersonasHidden) && (
+                  <div
+                    className={`group relative space-y-4 transition-all ${
+                      isPersonasHidden
+                        ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70 p-4 rounded-2xl border"
+                        : ""
+                    }`}
+                  >
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
+                        <User className="w-4 h-4" />
+                        <span>Consumer Segments & Personas</span>
                       </div>
-                    )}
-                  </div>
+                      <div className="flex items-center gap-2.5">
+                        {!isShareView && (
+                          <SectionVisibilityButton
+                            sectionKey="personas"
+                            isInactive={isPersonasHidden}
+                            onToggle={handleToggleSectionActive}
+                          />
+                        )}
+                        {profileData.personas && profileData.personas.length > 0 && (
+                          <div className="flex items-center gap-2.5">
+                            <button
+                              type="button"
+                              id="btn-open-persona-slide-studio"
+                              onClick={() => handleOpenSlideStudio('personas')}
+                              className="p-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer transition-all shadow-2xs hover:shadow-xs active:scale-[0.98]"
+                              title="Export Presentation Slide (16:9)"
+                              aria-label="Export Presentation Slide"
+                            >
+                              <Download className="w-4 h-4 text-indigo-600" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={toggleAllPersonasExpanded}
+                              className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer transition-colors"
+                            >
+                              {arePersonasExpanded ? (
+                                <>
+                                  <span>Collapse All</span>
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                </>
+                              ) : (
+                                <>
+                                  <span>Expand All</span>
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
 
                   {(() => {
                     const personas = profileData.personas || [];
@@ -5308,37 +5508,50 @@ export default function App() {
                             );
                           })}
                         </div>
-
-                        <SegmentRecommendations
-                          segments={profileData.segmentRecommendations}
-                          personas={personas}
-                          status={segmentStatus}
-                          isToppingUp={isToppingUpSegments}
-                          error={segmentError}
-                          autoSaveError={segmentAutoSaveError}
-                          readOnly={isShareView}
-                          undoName={segmentUndoName}
-                          onRemove={handleRemoveSegment}
-                          onUndo={handleUndoRemoveSegment}
-                          onAdd={handleAddSegment}
-                          onSuggestMore={() => requestSegments("top-up")}
-                          onGenerate={() => requestSegments("initial")}
-                          onExportCsv={handleExportSegmentsCsv}
-                          onHoverSegment={setHoveredSegment}
-                        />
                       </div>
                     );
                   })()}
                 </div>
+              )}
+
+              {/* Segment Recommendations Component */}
+              <SegmentRecommendations
+                segments={profileData.segmentRecommendations}
+                personas={profileData.personas || []}
+                status={segmentStatus}
+                isToppingUp={isToppingUpSegments}
+                error={segmentError}
+                autoSaveError={segmentAutoSaveError}
+                readOnly={isShareView}
+                undoName={segmentUndoName}
+                onRemove={handleRemoveSegment}
+                onUndo={handleUndoRemoveSegment}
+                onAdd={handleAddSegment}
+                onSuggestMore={() => requestSegments("top-up")}
+                onGenerate={() => requestSegments("initial")}
+                onExportCsv={handleExportSegmentsCsv}
+                onOpenSlideExport={() => handleOpenSlideStudio('segments')}
+                onHoverSegment={setHoveredSegment}
+                isInactive={isSegmentsHidden}
+                onToggleActive={(inactive) => handleToggleSectionActive("segments", inactive)}
+              />
 
                 {/* 3. Key Insights & Recommendations (Combined & Collapsible) */}
-                <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => setIsInsightsExpanded(prev => !prev)}
-                    className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
-                    aria-expanded={isInsightsExpanded}
+                {(!isShareView || !isInsightsHidden) && (
+                  <div
+                    className={`group relative rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                      isInsightsHidden
+                        ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
+                        : "border-slate-100 bg-white hover:border-slate-200"
+                    }`}
                   >
+                    <div className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left">
+                      <button
+                        type="button"
+                        onClick={() => setIsInsightsExpanded(prev => !prev)}
+                        className="flex items-center gap-3 shrink-0 cursor-pointer text-left focus:outline-none"
+                        aria-expanded={isInsightsExpanded}
+                      >
                     <div className="flex items-center gap-3 shrink-0">
                       <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
                         <Sparkles className="w-4 h-4" />
@@ -5350,23 +5563,41 @@ export default function App() {
                         <h3 className="text-base font-display font-bold text-slate-800">Consumer Facts & Tactical Media Guide</h3>
                       </div>
                     </div>
-
-                    {/* Badge Style Highlights in 1 Row */}
-                    <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200/80 rounded-lg">
-                        <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Takeaways ({profileData.takeaways.length})</span>
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/80 rounded-lg">
-                        <Layers className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                        <span>Recommendations ({profileData.recommendations.length})</span>
-                      </span>
-                    </div>
-
-                    <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
-                      {isInsightsExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
-                    </div>
                   </button>
+
+                  {/* Badge Style Highlights in 1 Row */}
+                  <div
+                    className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3 cursor-pointer"
+                    onClick={() => setIsInsightsExpanded(prev => !prev)}
+                  >
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200/80 rounded-lg">
+                      <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>Takeaways ({profileData.takeaways.length})</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/80 rounded-lg">
+                      <Layers className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                      <span>Recommendations ({profileData.recommendations.length})</span>
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                    {!isShareView && (
+                      <SectionVisibilityButton
+                        sectionKey="insights"
+                        isInactive={isInsightsHidden}
+                        onToggle={handleToggleSectionActive}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsInsightsExpanded(prev => !prev)}
+                      className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 cursor-pointer"
+                      aria-label={isInsightsExpanded ? "Collapse Insights" : "Expand Insights"}
+                    >
+                      {isInsightsExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                    </button>
+                  </div>
+                </div>
 
                   {isInsightsExpanded && (
                     <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30 space-y-6">
@@ -5423,11 +5654,14 @@ export default function App() {
                     </div>
                   )}
                 </div>
+              )}
 
                 {/* Dynamic Domain Affinity & CTV Publishers Bento Rows */}
                 {/* Case 1: CTV-First - SHOW CTV Publishers and REPLACE Domains */}
-                {campaignFocus === "CTV-first digital media plan" && (
-                  <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                {campaignFocus === "CTV-first digital media plan" && (!isShareView || !isDomainAffinityHidden) && (
+                  <div className={`grid grid-cols-1 lg:grid-cols-5 gap-6 transition-all ${
+                    isDomainAffinityHidden ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70 p-4 rounded-2xl border" : ""
+                  }`}>
                     {/* CTV Publishers to Target (60% width) */}
                     <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
                       <div className="flex items-center justify-between gap-2">
@@ -5454,6 +5688,13 @@ export default function App() {
                               <Edit3 className="w-3.5 h-3.5" />
                               <span>Edit Publishers</span>
                             </button>
+                          )}
+                          {!isShareView && (
+                            <SectionVisibilityButton
+                              sectionKey="domainAffinity"
+                              isInactive={isDomainAffinityHidden}
+                              onToggle={handleToggleSectionActive}
+                            />
                           )}
                         </div>
                       </div>
@@ -5509,20 +5750,22 @@ export default function App() {
                 )}
 
                 {/* Case 2: Full-Funnel - SHOW BOTH Domain Affinity (Collapsible) AND CTV Publishers */}
-                {campaignFocus === "Full-funnel digital media plan" && (
-                  <div className="space-y-6">
+                {campaignFocus === "Full-funnel digital media plan" && (!isShareView || !isDomainAffinityHidden) && (
+                  <div className={`space-y-6 transition-all ${
+                    isDomainAffinityHidden ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70 p-4 rounded-2xl border" : ""
+                  }`}>
                     {/* Collapsible Domain Affinity Index */}
                     {(() => {
                       const domainSummary = getDomainAffinitySummary(profileData.browserAndReach);
                       return (
                         <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
-                          <button
-                            type="button"
-                            onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
-                            className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
-                            aria-expanded={isDomainAffinityExpanded}
-                          >
-                            <div className="flex items-center gap-3 shrink-0">
+                          <div className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left">
+                            <button
+                              type="button"
+                              onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
+                              className="flex items-center gap-3 shrink-0 cursor-pointer text-left focus:outline-none"
+                              aria-expanded={isDomainAffinityExpanded}
+                            >
                               <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
                                 <Globe className="w-4 h-4" />
                               </div>
@@ -5532,10 +5775,13 @@ export default function App() {
                                 </div>
                                 <h3 className="text-base font-display font-bold text-slate-800">Top High-Affinity Web Environments</h3>
                               </div>
-                            </div>
+                            </button>
 
                             {/* Option C Highlight: Tag + Top 3 Domains */}
-                            <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
+                            <div
+                              className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3 cursor-pointer"
+                              onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
+                            >
                               <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
                                 {domainSummary.tag}
                               </span>
@@ -5550,10 +5796,24 @@ export default function App() {
                               ))}
                             </div>
 
-                            <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
-                              {isDomainAffinityExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                            <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                              {!isShareView && (
+                                <SectionVisibilityButton
+                                  sectionKey="domainAffinity"
+                                  isInactive={isDomainAffinityHidden}
+                                  onToggle={handleToggleSectionActive}
+                                />
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
+                                className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 cursor-pointer"
+                                aria-label={isDomainAffinityExpanded ? "Collapse Domain Affinity" : "Expand Domain Affinity"}
+                              >
+                                {isDomainAffinityExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                              </button>
                             </div>
-                          </button>
+                          </div>
 
                           {isDomainAffinityExpanded && (
                             <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
@@ -5618,6 +5878,13 @@ export default function App() {
                                 <span>Edit Publishers</span>
                               </button>
                             )}
+                            {!isShareView && (
+                              <SectionVisibilityButton
+                                sectionKey="domainAffinity"
+                                isInactive={isDomainAffinityHidden}
+                                onToggle={handleToggleSectionActive}
+                              />
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center justify-between">
@@ -5673,18 +5940,22 @@ export default function App() {
                 )}
 
                 {/* Case 3: Display & Social - SHOW ONLY Domain Affinity (Collapsible) */}
-                {campaignFocus === "Display/social/video plan" && (
+                {campaignFocus === "Display/social/video plan" && (!isShareView || !isDomainAffinityHidden) && (
                   (() => {
                     const domainSummary = getDomainAffinitySummary(profileData.browserAndReach);
                     return (
-                      <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
-                        <button
-                          type="button"
-                          onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
-                          className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
-                          aria-expanded={isDomainAffinityExpanded}
-                        >
-                          <div className="flex items-center gap-3 shrink-0">
+                      <div className={`rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                        isDomainAffinityHidden
+                          ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
+                          : "border-slate-100 bg-white hover:border-slate-200"
+                      }`}>
+                        <div className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left">
+                          <button
+                            type="button"
+                            onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
+                            className="flex items-center gap-3 shrink-0 cursor-pointer text-left focus:outline-none"
+                            aria-expanded={isDomainAffinityExpanded}
+                          >
                             <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
                               <Globe className="w-4 h-4" />
                             </div>
@@ -5694,10 +5965,13 @@ export default function App() {
                               </div>
                               <h3 className="text-base font-display font-bold text-slate-800">Top High-Affinity Web Environments</h3>
                             </div>
-                          </div>
+                          </button>
 
                           {/* Option C Highlight: Tag + Top 3 Domains */}
-                          <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
+                          <div
+                            className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3 cursor-pointer"
+                            onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
+                          >
                             <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
                               {domainSummary.tag}
                             </span>
@@ -5712,10 +5986,24 @@ export default function App() {
                             ))}
                           </div>
 
-                          <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
-                            {isDomainAffinityExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                          <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                            {!isShareView && (
+                              <SectionVisibilityButton
+                                sectionKey="domainAffinity"
+                                isInactive={isDomainAffinityHidden}
+                                onToggle={handleToggleSectionActive}
+                              />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setIsDomainAffinityExpanded(prev => !prev)}
+                              className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 cursor-pointer"
+                              aria-label={isDomainAffinityExpanded ? "Collapse Domain Affinity" : "Expand Domain Affinity"}
+                            >
+                              {isDomainAffinityExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                            </button>
                           </div>
-                        </button>
+                        </div>
 
                         {isDomainAffinityExpanded && (
                           <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
@@ -5753,117 +6041,162 @@ export default function App() {
                 )}
 
                 {/* 5. Device Share - Collapsible Panel with Option C Highlights */}
-                {(() => {
-                  const deviceSummary = getDeviceShareSummary(profileData.deviceTypeIndex?.chartData);
-                  return (
-                    <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
-                      <button
-                        type="button"
-                        onClick={() => setIsDeviceShareExpanded(prev => !prev)}
-                        className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
-                        aria-expanded={isDeviceShareExpanded}
-                      >
-                        <div className="flex items-center gap-3 shrink-0">
-                          <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
-                            <Smartphone className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
-                              <span>Device Share</span>
+                {(!isShareView || !isDeviceShareHidden) && (
+                  (() => {
+                    const deviceSummary = getDeviceShareSummary(profileData.deviceTypeIndex?.chartData);
+                    return (
+                      <div className={`rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                        isDeviceShareHidden
+                          ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
+                          : "border-slate-100 bg-white hover:border-slate-200"
+                      }`}>
+                        <div className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left">
+                          <button
+                            type="button"
+                            onClick={() => setIsDeviceShareExpanded(prev => !prev)}
+                            className="flex items-center gap-3 shrink-0 cursor-pointer text-left focus:outline-none"
+                            aria-expanded={isDeviceShareExpanded}
+                          >
+                            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                              <Smartphone className="w-4 h-4" />
                             </div>
-                            <h3 className="text-base font-display font-bold text-slate-800">Multi-Screen Habits</h3>
-                          </div>
-                        </div>
+                            <div>
+                              <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                                <span>Device Share</span>
+                              </div>
+                              <h3 className="text-base font-display font-bold text-slate-800">Multi-Screen Habits</h3>
+                            </div>
+                          </button>
 
-                        {/* Option C Highlight: Tag + Key Metric Chips */}
-                        <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
-                          <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
-                            {deviceSummary.tag}
-                          </span>
-                          {deviceSummary.chips.map((chip, idx) => (
-                            <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
-                              {chip.icon === "tv" && <Tv className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              {chip.icon === "mobile" && <Smartphone className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              {chip.icon === "desktop" && <Monitor className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              {chip.icon === "tablet" && <Tablet className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              {chip.icon === "device" && <Layers className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              <span className="font-semibold text-slate-900">{chip.label}:</span>
-                              <span>{chip.value}</span>
+                          {/* Option C Highlight: Tag + Key Metric Chips */}
+                          <div
+                            className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3 cursor-pointer"
+                            onClick={() => setIsDeviceShareExpanded(prev => !prev)}
+                          >
+                            <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
+                              {deviceSummary.tag}
                             </span>
-                          ))}
-                        </div>
+                            {deviceSummary.chips.map((chip, idx) => (
+                              <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
+                                {chip.icon === "tv" && <Tv className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                {chip.icon === "mobile" && <Smartphone className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                {chip.icon === "desktop" && <Monitor className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                {chip.icon === "tablet" && <Tablet className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                {chip.icon === "device" && <Layers className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                <span className="font-semibold text-slate-900">{chip.label}:</span>
+                                <span>{chip.value}</span>
+                              </span>
+                            ))}
+                          </div>
 
-                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
-                          {isDeviceShareExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
-                        </div>
-                      </button>
-
-                      {isDeviceShareExpanded && (
-                        <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-                            {/* Left Column: Device Chart */}
-                            <div className="w-full">
-                              <DeviceChart
-                                data={profileData.deviceTypeIndex.chartData}
-                                source={profileData.deviceTypeIndex.chartSource}
+                          <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                            {!isShareView && (
+                              <SectionVisibilityButton
+                                sectionKey="deviceShare"
+                                isInactive={isDeviceShareHidden}
+                                onToggle={handleToggleSectionActive}
                               />
-                            </div>
-                            {/* Right Column: Text content */}
-                            <div className="space-y-4 flex flex-col justify-between h-full">
-                              <p className="text-xs text-slate-600 leading-relaxed">
-                                {profileData.deviceTypeIndex.overview}
-                              </p>
-                            </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setIsDeviceShareExpanded(prev => !prev)}
+                              className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 cursor-pointer"
+                              aria-label={isDeviceShareExpanded ? "Collapse Device Share" : "Expand Device Share"}
+                            >
+                              {isDeviceShareExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                            </button>
                           </div>
                         </div>
-                      )}
-                    </div>
-                  );
-                })()}
+
+                        {isDeviceShareExpanded && (
+                          <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                              {/* Left Column: Device Chart */}
+                              <div className="w-full">
+                                <DeviceChart
+                                  data={profileData.deviceTypeIndex.chartData}
+                                  source={profileData.deviceTypeIndex.chartSource}
+                                />
+                              </div>
+                              {/* Right Column: Text content */}
+                              <div className="space-y-4 flex flex-col justify-between h-full">
+                                <p className="text-xs text-slate-600 leading-relaxed">
+                                  {profileData.deviceTypeIndex.overview}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()
+                )}
 
                 {/* 6. Demographics - Collapsible Panel with Option C Highlights */}
-                {(() => {
-                  const demoSummary = getDemographicsSummary(profileData.demographics);
-                  return (
-                    <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
-                      <button
-                        type="button"
-                        onClick={() => setIsDemographicsExpanded(prev => !prev)}
-                        className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
-                        aria-expanded={isDemographicsExpanded}
-                      >
-                        <div className="flex items-center gap-3 shrink-0">
-                          <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
-                            <Users className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
-                              <span>Demographics</span>
+                {(!isShareView || !isDemographicsHidden) && (
+                  (() => {
+                    const demoSummary = getDemographicsSummary(profileData.demographics);
+                    return (
+                      <div className={`rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                        isDemographicsHidden
+                          ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
+                          : "border-slate-100 bg-white hover:border-slate-200"
+                      }`}>
+                        <div className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left">
+                          <button
+                            type="button"
+                            onClick={() => setIsDemographicsExpanded(prev => !prev)}
+                            className="flex items-center gap-3 shrink-0 cursor-pointer text-left focus:outline-none"
+                            aria-expanded={isDemographicsExpanded}
+                          >
+                            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                              <Users className="w-4 h-4" />
                             </div>
-                            <h3 className="text-base font-display font-bold text-slate-800">Strategic Demographic Overview</h3>
+                            <div>
+                              <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                                <span>Demographics</span>
+                              </div>
+                              <h3 className="text-base font-display font-bold text-slate-800">Strategic Demographic Overview</h3>
+                            </div>
+                          </button>
+
+                          {/* Option C Highlight: Tag + Key Metric Chips */}
+                          <div
+                            className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3 cursor-pointer"
+                            onClick={() => setIsDemographicsExpanded(prev => !prev)}
+                          >
+                            <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
+                              {demoSummary.tag}
+                            </span>
+                            {demoSummary.chips.map((chip, idx) => (
+                              <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
+                                {chip.icon === "users" && <Users className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                {chip.icon === "gender" && <UserCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                {chip.icon === "income" && <DollarSign className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                <span className="font-semibold text-slate-900">{chip.label}:</span>
+                                <span>{chip.value}</span>
+                              </span>
+                            ))}
+                          </div>
+
+                          <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                            {!isShareView && (
+                              <SectionVisibilityButton
+                                sectionKey="demographics"
+                                isInactive={isDemographicsHidden}
+                                onToggle={handleToggleSectionActive}
+                              />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setIsDemographicsExpanded(prev => !prev)}
+                              className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 cursor-pointer"
+                              aria-label={isDemographicsExpanded ? "Collapse Demographics" : "Expand Demographics"}
+                            >
+                              {isDemographicsExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                            </button>
                           </div>
                         </div>
-
-                        {/* Option C Highlight: Tag + Key Metric Chips */}
-                        <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
-                          <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
-                            {demoSummary.tag}
-                          </span>
-                          {demoSummary.chips.map((chip, idx) => (
-                            <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
-                              {chip.icon === "users" && <Users className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              {chip.icon === "gender" && <UserCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              {chip.icon === "income" && <DollarSign className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              <span className="font-semibold text-slate-900">{chip.label}:</span>
-                              <span>{chip.value}</span>
-                            </span>
-                          ))}
-                        </div>
-
-                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
-                          {isDemographicsExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
-                        </div>
-                      </button>
 
                       {isDemographicsExpanded && (
                         <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
@@ -5934,50 +6267,73 @@ export default function App() {
                       )}
                     </div>
                   );
-                })()}
+                })()
+              )}
 
                 {/* 7. Temporal Activity Patterns - Collapsible Panel with Option C Highlights */}
-                {(() => {
-                  const temporalSummary = getTemporalSummary(profileData.temporalPatterns);
-                  return (
-                    <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:border-slate-200">
-                      <button
-                        type="button"
-                        onClick={() => setIsTemporalExpanded(prev => !prev)}
-                        className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/60 transition-colors"
-                        aria-expanded={isTemporalExpanded}
-                      >
-                        <div className="flex items-center gap-3 shrink-0">
-                          <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
-                            <Clock className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
-                              <span>Temporal Activity Patterns</span>
+                {(!isShareView || !isTemporalHidden) && (
+                  (() => {
+                    const temporalSummary = getTemporalSummary(profileData.temporalPatterns);
+                    return (
+                      <div className={`rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
+                        isTemporalHidden
+                          ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
+                          : "border-slate-100 bg-white hover:border-slate-200"
+                      }`}>
+                        <div className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left">
+                          <button
+                            type="button"
+                            onClick={() => setIsTemporalExpanded(prev => !prev)}
+                            className="flex items-center gap-3 shrink-0 cursor-pointer text-left focus:outline-none"
+                            aria-expanded={isTemporalExpanded}
+                          >
+                            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                              <Clock className="w-4 h-4" />
                             </div>
-                            <h3 className="text-base font-display font-bold text-slate-800">Daypart Scheduling & Activity Indices</h3>
+                            <div>
+                              <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider">
+                                <span>Temporal Activity Patterns</span>
+                              </div>
+                              <h3 className="text-base font-display font-bold text-slate-800">Daypart Scheduling & Activity Indices</h3>
+                            </div>
+                          </button>
+
+                          {/* Option C Highlight: Tag + Key Metric Chips */}
+                          <div
+                            className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3 cursor-pointer"
+                            onClick={() => setIsTemporalExpanded(prev => !prev)}
+                          >
+                            <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
+                              {temporalSummary.tag}
+                            </span>
+                            {temporalSummary.chips.map((chip, idx) => (
+                              <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
+                                {chip.icon === "calendar" && <Calendar className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                {chip.icon === "clock" && <Clock className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                                <span className="font-semibold text-slate-900">{chip.label}:</span>
+                                <span>{chip.value}</span>
+                              </span>
+                            ))}
+                          </div>
+
+                          <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                            {!isShareView && (
+                              <SectionVisibilityButton
+                                sectionKey="temporal"
+                                isInactive={isTemporalHidden}
+                                onToggle={handleToggleSectionActive}
+                              />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setIsTemporalExpanded(prev => !prev)}
+                              className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 cursor-pointer"
+                              aria-label={isTemporalExpanded ? "Collapse Temporal Activity" : "Expand Temporal Activity"}
+                            >
+                              {isTemporalExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                            </button>
                           </div>
                         </div>
-
-                        {/* Option C Highlight: Tag + Key Metric Chips */}
-                        <div className="flex flex-wrap items-center gap-2 flex-1 md:justify-end md:mr-3">
-                          <span className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100/80 rounded-lg">
-                            {temporalSummary.tag}
-                          </span>
-                          {temporalSummary.chips.map((chip, idx) => (
-                            <span key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200/70 rounded-lg">
-                              {chip.icon === "calendar" && <Calendar className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              {chip.icon === "clock" && <Clock className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                              <span className="font-semibold text-slate-900">{chip.label}:</span>
-                              <span>{chip.value}</span>
-                            </span>
-                          ))}
-                        </div>
-
-                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200/60 transition-colors shrink-0 self-center">
-                          {isTemporalExpanded ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
-                        </div>
-                      </button>
 
                       {isTemporalExpanded && (
                         <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30">
@@ -6020,7 +6376,8 @@ export default function App() {
                       )}
                     </div>
                   );
-                })()}
+                })()
+              )}
 
                 {/* Channel Strategy & Activation Plan (when Media Plan Analysis is present) */}
                 {profileData.channelStrategy && (
@@ -6036,75 +6393,112 @@ export default function App() {
                     canUndoPlanChange={Boolean(channelStrategyUndo)}
                     onOpenSlideStudio={() => handleOpenSlideStudio('channels')}
                     readOnly={isShareView}
+                    onUpdateChannelOverrides={handleUpdateChannelOverrides}
                   />
                 )}
 
                 {/* Executive Summary Blueprint (placed after Channel Strategy) */}
-                <div className="bg-gradient-to-br from-indigo-50/70 via-white to-slate-50 border border-indigo-100/90 rounded-2xl p-6 md:p-8 shadow-xs space-y-5">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-indigo-100/60 pb-4">
-                    <div>
-                      <div className="flex items-center gap-2 text-indigo-700 text-xs font-bold uppercase tracking-wider mb-1.5">
-                        <Award className="w-4 h-4 text-indigo-600" />
-                        <span>Executive Summary Blueprint</span>
+                {(!isShareView || !isExecutiveSummaryHidden) && (
+                  <div className={`rounded-2xl p-6 md:p-8 shadow-xs space-y-5 transition-all ${
+                    isExecutiveSummaryHidden
+                      ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70 border"
+                      : "bg-gradient-to-br from-indigo-50/70 via-white to-slate-50 border border-indigo-100/90"
+                  }`}>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-indigo-100/60 pb-4">
+                      <div>
+                        <div className="flex items-center gap-2 text-indigo-700 text-xs font-bold uppercase tracking-wider mb-1.5">
+                          <Award className="w-4 h-4 text-indigo-600" />
+                          <span>Executive Summary Blueprint</span>
+                        </div>
+                        <h3 className="text-xl font-display font-bold text-slate-900">
+                          Audience Opportunity & Strategic Media Alignment
+                        </h3>
                       </div>
-                      <h3 className="text-xl font-display font-bold text-slate-900">
-                        Audience Opportunity & Strategic Media Alignment
-                      </h3>
+                      <div className="flex items-center gap-2 self-start sm:self-auto">
+                        {!isShareView && (
+                          <SectionVisibilityButton
+                            sectionKey="executiveSummary"
+                            isInactive={isExecutiveSummaryHidden}
+                            onToggle={handleToggleSectionActive}
+                          />
+                        )}
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-semibold border border-indigo-200/60">
+                          <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                          Executive Synthesis
+                        </span>
+                      </div>
                     </div>
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-semibold border border-indigo-200/60 self-start sm:self-auto">
-                      <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-                      Executive Synthesis
-                    </span>
+
+                    <p className="text-sm text-slate-700 leading-relaxed font-normal">
+                      {profileData.executiveSummary}
+                    </p>
+
+                    {/* Strategic Value Pillars: Where the Audience Is & Why it Hits KPIs */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                      <div className="bg-white/80 border border-indigo-100/70 rounded-xl p-4 space-y-1.5 shadow-2xs">
+                        <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs uppercase tracking-wider">
+                          <Target className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                          <span>Reaching Consumers Where They Actually Are</span>
+                        </div>
+                        <p className="text-xs text-slate-600 leading-relaxed">
+                          Activates across multi-screen behaviors (Connected TV living room co-viewing, mobile digital companion screens, and high-affinity contextual domains) during peak active dayparts.
+                        </p>
+                      </div>
+
+                      <div className="bg-white/80 border border-indigo-100/70 rounded-xl p-4 space-y-1.5 shadow-2xs">
+                        <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs uppercase tracking-wider">
+                          <TrendingUp className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                          <span>Engineered to Maximize Campaign KPIs</span>
+                        </div>
+                        <p className="text-xs text-slate-600 leading-relaxed">
+                          Combines high-impact unskippable premium inventory with precision intent targeting and retargeting to maximize reach, engagement, and conversion efficiency.
+                        </p>
+                      </div>
+                    </div>
                   </div>
-
-                  <p className="text-sm text-slate-700 leading-relaxed font-normal">
-                    {profileData.executiveSummary}
-                  </p>
-
-                  {/* Strategic Value Pillars: Where the Audience Is & Why it Hits KPIs */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-                    <div className="bg-white/80 border border-indigo-100/70 rounded-xl p-4 space-y-1.5 shadow-2xs">
-                      <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs uppercase tracking-wider">
-                        <Target className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                        <span>Reaching Consumers Where They Actually Are</span>
-                      </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        Activates across multi-screen behaviors (Connected TV living room co-viewing, mobile digital companion screens, and high-affinity contextual domains) during peak active dayparts.
-                      </p>
-                    </div>
-
-                    <div className="bg-white/80 border border-indigo-100/70 rounded-xl p-4 space-y-1.5 shadow-2xs">
-                      <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs uppercase tracking-wider">
-                        <TrendingUp className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                        <span>Engineered to Maximize Campaign KPIs</span>
-                      </div>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        Combines high-impact unskippable premium inventory with precision intent targeting and retargeting to maximize reach, engagement, and conversion efficiency.
-                      </p>
-                    </div>
-                  </div>
-                </div>
+                )}
 
               {/* Sourcing and Grounding List */}
-              <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs transition-all">
-                <button
-                  type="button"
-                  onClick={() => setIsCitationsExpanded((prev) => !prev)}
-                  aria-expanded={isCitationsExpanded}
-                  className="w-full flex items-center justify-between text-left cursor-pointer group"
-                >
-                  <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider">
-                    <BookOpen className="w-4 h-4 text-indigo-600" />
-                    <span className="text-slate-900 group-hover:text-indigo-600 transition-colors">
-                      Citations & Media Sourcing Registry
-                    </span>
+              {(!isShareView || !isSourcesHidden) && (
+                <div className={`rounded-2xl border p-5 md:p-6 shadow-xs transition-all ${
+                  isSourcesHidden
+                    ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
+                    : "bg-white border-slate-100"
+                }`}>
+                  <div className="w-full flex items-center justify-between text-left">
+                    <button
+                      type="button"
+                      onClick={() => setIsCitationsExpanded((prev) => !prev)}
+                      aria-expanded={isCitationsExpanded}
+                      className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider cursor-pointer group text-left flex-1"
+                    >
+                      <BookOpen className="w-4 h-4 text-indigo-600" />
+                      <span className="text-slate-900 group-hover:text-indigo-600 transition-colors">
+                        Citations & Media Sourcing Registry
+                      </span>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      {!isShareView && (
+                        <SectionVisibilityButton
+                          sectionKey="sources"
+                          isInactive={isSourcesHidden}
+                          onToggle={handleToggleSectionActive}
+                        />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setIsCitationsExpanded((prev) => !prev)}
+                        className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 group-hover:text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+                        aria-label={isCitationsExpanded ? "Collapse Citations" : "Expand Citations"}
+                      >
+                        <ChevronDown
+                          className={`w-5 h-5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
+                            isCitationsExpanded ? "rotate-180" : ""
+                          }`}
+                        />
+                      </button>
+                    </div>
                   </div>
-                  <ChevronDown
-                    className={`w-5 h-5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
-                      isCitationsExpanded ? "rotate-180" : ""
-                    }`}
-                  />
-                </button>
 
                 {isCitationsExpanded && (
                   <div className="mt-4 pt-4 border-t border-slate-100 space-y-4">
@@ -6191,6 +6585,7 @@ export default function App() {
                   </div>
                 )}
               </div>
+            )}
 
               {/* AI QA Audit & Scoring Center */}
               {!isShareView && internalOnlyVisibility.qaAudit && profileData.auditResult && (
@@ -7379,6 +7774,7 @@ export default function App() {
           onClose={() => setIsSlideStudioOpen(false)}
           initialSection={slideStudioSection}
           personas={profileData.personas || []}
+          segments={profileData.segmentRecommendations || []}
           channelStrategy={profileData.channelStrategy}
           mediaPlan={profileData.channelStrategy?.mediaPlan}
           advertiserName={advertiserName}

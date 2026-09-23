@@ -320,6 +320,7 @@ export interface AudienceProfile {
   generationAlerts?: GenerationAlert[];
   geoInsights?: string;
   geoTargeting?: GeoTargeting;
+  hiddenSections?: string[];
 }
 
 export interface GenerateProfileResponse {
@@ -452,6 +453,15 @@ export interface ChannelEvaluation {
   allocationDollars?: number;
 }
 
+export interface ChannelPanelOverride {
+  hiddenPanels?: string[];
+  fieldEdits?: Record<string, { title?: string; content?: string }>;
+  scoreEdits?: Record<string, { label?: string; score?: number }>;
+  overallScore?: number;
+}
+
+export type ChannelOverridesMap = Record<string, ChannelPanelOverride>;
+
 export interface ChannelStrategyData {
   rfpChannels: ChannelEvaluation[];
   scoutAiRecommendedChannels: ChannelEvaluation[];
@@ -467,4 +477,5 @@ export interface ChannelStrategyData {
   hasManualAllocationChanges?: boolean;
   mediaPlan?: MediaRecommendationPlan;
   ctvPublishers?: CtvPublisherRecommendation[];
+  channelOverrides?: ChannelOverridesMap;
 }
