@@ -30,7 +30,9 @@ import {
 import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import { applyProgrammaticSanityChecks } from "./src/qa/chartSanity";
 import { resolveGroundingUrls } from "./src/research/groundingUrls";
+import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints } from "./src/qa/chartRealism";
 import {
+  PROFILE_CHARTS,
   checkPersonas,
   clearSectionsForFailedDossiers,
   mergeRemediatedProfile,
@@ -141,6 +143,9 @@ const TIMEOUT_SEGMENTS_FALLBACK_MS = 60000;
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
 const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
 const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
+// One revision per chart that looked generated (straight-line dayparts, evenly spaced indices).
+// The revisions run in parallel, so the stage costs one call's time.
+const TIMEOUT_CHART_REVISION_MS = 30000;
 // Per-redirect budget when turning grounding links back into publisher URLs. Deliberately short:
 // this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
@@ -3172,6 +3177,7 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 5. Do not call an audience segment "affluent", "young", "tech-savvy", etc. unless the research supportively proves it with metrics.
 6. Ensure demographic charts, device charts, web share charts, and day/hour charts are fully populated with exact numbers. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'. Provide realistic index values (e.g. 120%, 150%, 210%, 280% depending on target audience domain affinity).
 7. Use current ${currentYear} data. Match geography: ${geography}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
+7b. REALISTIC, LABELLED ESTIMATES: Where a chart value comes from a dossier, copy it as reported and name that source. Where the dossiers have no figure and you estimate one, set 'isModeled' to true and make the source say it is an estimate (e.g. 'ScoutAI estimate informed by Nielsen 2025'). Estimates must look like real audience data, not a formula: day-of-week and hour-of-day series are uneven (hour-of-day has an early-morning low, a smaller daytime bump, a prime-time peak and an audience-specific late-night tail - never a straight climb; adjacent days never rise in a straight line), domain affinity indices have uneven gaps, and shares are precise numbers (e.g. 43, 27, 14) rather than multiples of 5. The server checks for straight runs, even spacing, round numbers and repeated values and sends offending charts back for revision.
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
    - You are STRICTLY PROHIBITED from fabricating, guessing, or making up consumer desire/sentiment figures, survey percentages, or market statistics (such as "85% of gamers express a desire to see product recommendations on their TV home screens").
    - Every single statistic or percentage mentioned in the recommendations ('recommendations.why' or 'recommendations.action') or core takeaways ('takeaways') MUST be directly grounded and cross-referenced from the provided parallel research dossiers.
@@ -3419,9 +3425,46 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       }
     }
 
-    // The scorer is a different model with a different training cutoff, so it has no idea what
-    // "now" is. Left unanchored it read current-year figures as future-dated fabrications and
-    // charged them to Data Integrity.
+    // Charts: a failed dossier's charts are cleared first, then any chart that looks generated
+    // (a straight climb through the day, evenly spaced indices, all round numbers) gets one
+    // targeted revision, then every point the research does not state is labelled as an
+    // estimate. All of it runs on the values as synthesis wrote them, before rescaling.
+    for (const alert of clearSectionsForFailedDossiers(originalData, failedDossiers)) pushAlert(generationAlerts, alert);
+    const researchText = researchResults.filter((result) => !result.failed).map((result) => result.text).join("\n");
+    const unrealistic = findUnrealisticCharts(originalData);
+    if (unrealistic.length > 0) {
+      sendEvent("status", { message: `Refining ${unrealistic.length} chart${unrealistic.length === 1 ? "" : "s"} whose estimates looked unrealistic...` });
+      await Promise.all(unrealistic.map(async ({ chart, problems }) => {
+        const current = originalData[chart.section][chart.key];
+        const dossier = researchResults.find((result) => result.label === chart.dossier);
+        const itemSchema = (audienceProfileJsonSchema as any).properties?.[chart.section]?.properties?.[chart.key];
+        const labelKey = Object.keys(current[0] || {}).find((key) => !["value", "index", "isModeled", "source", "metricType"].includes(key));
+        try {
+          const revision: any = await generateStructuredJson(ai, {
+            systemInstruction: "You revise one chart in a media-planning audience profile so its estimated values look like real audience data. Keep the same items in the same order. Keep any value the research states exactly as stated; change only estimates, and mark every estimated point isModeled true with a source that says it is an estimate.",
+            input: `AUDIENCE: ${cleanAudienceDesc || cleanUrl}\nGEOGRAPHY: ${geography}\n\nCHART: ${chart.label}\nCURRENT VALUES:\n${JSON.stringify(current, null, 2)}\n\nWHY IT LOOKS GENERATED: ${problems.join("; ")}.\n\nWHAT REALISTIC DATA LOOKS LIKE: ${CHART_SHAPE_GUIDANCE[chart.id] || ""}\n\nRESEARCH FOR THIS TOPIC:\n${(dossier && !dossier.failed ? dossier.text : "").slice(0, 8000)}\n\nReturn the revised chart as 'chartData'.`,
+            schema: { type: "object", properties: { chartData: itemSchema }, required: ["chartData"] },
+            thinkingLevel: "medium",
+            timeoutMs: TIMEOUT_CHART_REVISION_MS,
+          });
+          const revised = revision?.chartData;
+          const sameItems = Array.isArray(revised) && revised.length === current.length
+            && (!labelKey || current.every((item: any, i: number) => revised[i]?.[labelKey] === item[labelKey]));
+          if (!sameItems) throw new Error("revision did not return the same chart items");
+          originalData[chart.section][chart.key] = revised;
+          const remaining = chartRealismProblems(chart, revised);
+          console.log(`[CHART REALISM] ${chart.label}: revised${remaining.length ? `; still ${remaining.join("; ")}` : ""}.`);
+          if (remaining.length > 0) {
+            pushAlert(generationAlerts, { section: chart.section, severity: "flagged", message: `${chart.label}: the estimates may look unrealistic (${remaining.join("; ")}).` });
+          }
+        } catch (err: any) {
+          console.warn(`[CHART REALISM] ${chart.label}: revision failed, keeping the original (${err?.message || err}).`);
+          pushAlert(generationAlerts, { section: chart.section, severity: "flagged", message: `${chart.label}: the estimates may look unrealistic (${problems.join("; ")}), and the automatic revision did not complete.` });
+        }
+      }));
+    }
+    labelEstimatedPoints(originalData, researchText);
+
     // Run the research-integrity rules before scoring, so QA grades the profile we will ship
     // rather than values that are about to be removed. They run again after remediation.
     const integrityCorrections: string[] = [];
@@ -3432,7 +3475,12 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       integrityCorrections.push(...sanity.corrections);
     };
     enforceResearchIntegrity(originalData);
+    // What the charts looked like going into QA, to spot the ones remediation changes.
+    const chartsBeforeRemediation = new Map(PROFILE_CHARTS.map((chart) => [chart.id, JSON.stringify(originalData?.[chart.section]?.[chart.key] ?? null)]));
 
+    // The scorer is a different model with a different training cutoff, so it has no idea what
+    // "now" is. Left unanchored it read current-year figures as future-dated fabrications and
+    // charged them to Data Integrity.
     const scoringToday = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
     // Only claim the engine owns the budget when it actually ran. A profile generated without a
     // working-media budget has no channelStrategy, and pointing the scorer at an absent object
@@ -3658,6 +3706,11 @@ Please correct the profile to resolve all issues.`
     }
 
     // Remediation can reintroduce what the first pass removed, so the rules run again on what ships.
+    // A chart remediation corrected carries new values; label those against the research too.
+    const changedCharts = new Set(PROFILE_CHARTS
+      .filter((chart) => JSON.stringify(finalProfile?.[chart.section]?.[chart.key] ?? null) !== chartsBeforeRemediation.get(chart.id))
+      .map((chart) => chart.id));
+    if (changedCharts.size > 0) labelEstimatedPoints(finalProfile, researchText, changedCharts);
     enforceResearchIntegrity(finalProfile);
     for (const corr of integrityCorrections) {
       autoFixesList.push({

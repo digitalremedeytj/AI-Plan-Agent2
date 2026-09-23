@@ -1,0 +1,86 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, numbersInText } from "./chartRealism";
+import { PROFILE_CHARTS } from "./generationIntegrity";
+
+const spec = (id: string) => PROFILE_CHARTS.find((chart) => chart.id === id)!;
+
+test("numbers are read from research text including percentages, decimals and thousands separators", () => {
+  assert.deepEqual(numbersInText("51% female, 23.5% aged 25-34, 1,250 respondents, index 225"), [51, 23.5, 25, 34, 1250, 225]);
+});
+
+test("a point the research does not state is labelled as an estimate, and a reported one is not", () => {
+  const profile: any = {
+    demographics: {
+      genderChartData: [
+        { gender: "Female", value: 51, isModeled: false, source: "Pew 2025" },
+        { gender: "Male", value: 47, isModeled: false, source: "Pew 2025" },
+      ],
+    },
+  };
+
+  const labelled = labelEstimatedPoints(profile, "Pew: 50.6% of players are women.");
+
+  assert.equal(labelled, 1);
+  assert.equal(profile.demographics.genderChartData[0].isModeled, false, "50.6 rounds to 51, so it is sourced");
+  assert.equal(profile.demographics.genderChartData[1].isModeled, true);
+  assert.equal(profile.demographics.genderChartData[1].source, "ScoutAI estimate (informed by Pew 2025)");
+});
+
+test("a point the model called modeled stays modeled even if the number happens to appear in the research", () => {
+  const profile: any = { deviceTypeIndex: { chartSource: "Model", chartData: [{ device: "CTV", value: 20, isModeled: true, source: "Modeled Planning Proxy" }] } };
+
+  labelEstimatedPoints(profile, "20 respondents");
+
+  assert.equal(profile.deviceTypeIndex.chartData[0].isModeled, true);
+  assert.equal(profile.deviceTypeIndex.chartData[0].source, "Modeled Planning Proxy");
+});
+
+test("a chart made entirely of estimates says so in its source footer", () => {
+  const profile: any = { deviceTypeIndex: { chartSource: "eMarketer 2025", chartData: [{ device: "CTV", value: 46 }, { device: "Mobile", value: 54 }] } };
+
+  labelEstimatedPoints(profile, "no numbers here");
+
+  assert.equal(profile.deviceTypeIndex.chartSource, "ScoutAI estimate (informed by eMarketer 2025)");
+});
+
+test("a daypart chart that climbs in a straight line is flagged", () => {
+  // The hour-of-day curve from a live run: 44 -> 86 -> 114 -> 128 -> 146.
+  const hours = [82, 44, 86, 114, 128, 146].map((index, i) => ({ hour: `h${i}`, index }));
+
+  const problems = chartRealismProblems(spec("hourOfDay"), hours);
+
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /rises steadily across 5 consecutive periods/);
+});
+
+test("a daypart chart with a lunchtime bump and a prime-time peak passes", () => {
+  const hours = [61, 23, 74, 97, 88, 143].map((index, i) => ({ hour: `h${i}`, index }));
+
+  assert.deepEqual(chartRealismProblems(spec("hourOfDay"), hours), []);
+});
+
+test("a ranked domain list may descend, but not in even steps or round numbers", () => {
+  const descending = [310, 285, 275, 260, 245].map((value, i) => ({ domain: `d${i}`, value }));
+  const even = [300, 280, 260, 240, 220].map((value, i) => ({ domain: `d${i}`, value }));
+
+  assert.deepEqual(chartRealismProblems(spec("domains"), descending), ["every value is a round multiple of 5"]);
+  assert.deepEqual(chartRealismProblems(spec("domains"), even), ["its values are evenly spaced", "every value is a round multiple of 5"]);
+  assert.deepEqual(chartRealismProblems(spec("domains"), [312, 287, 241, 226, 219].map((value, i) => ({ domain: `d${i}`, value }))), []);
+});
+
+test("repeated identical values are flagged, and short charts are not judged at all", () => {
+  const ages = [22, 22, 22, 17, 17].map((value, i) => ({ range: `r${i}`, value }));
+
+  assert.deepEqual(chartRealismProblems(spec("age"), ages), ["three or more values are identical"]);
+  assert.deepEqual(chartRealismProblems(spec("gender"), [{ gender: "F", value: 50 }, { gender: "M", value: 50 }]), []);
+});
+
+test("only charts with a problem are returned for revision", () => {
+  const profile: any = {
+    temporalPatterns: { hourOfDayChartData: [82, 44, 86, 114, 128, 146].map((index, i) => ({ hour: `h${i}`, index })), dayOfWeekChartData: [] },
+    demographics: { ageChartData: [18, 31, 18, 16, 17].map((value, i) => ({ range: `r${i}`, value })) },
+  };
+
+  assert.deepEqual(findUnrealisticCharts(profile).map((entry) => entry.chart.id), ["hourOfDay"]);
+});
