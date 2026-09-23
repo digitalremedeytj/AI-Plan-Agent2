@@ -3667,7 +3667,7 @@ You have been given an audience profile and a list of critical red flags or corr
 Your task is to rewrite and update the audience profile to:
 1. Resolve every single red flag/issue identified by the QA specialist.
 2. Ensure all percentages sum to 100% and there are no mathematical or logical contradictions.
-3. Where a figure in the prose is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate. You may correct chart values the checklist flags, but never empty or drop a chart array - fix its values instead; a chart the rewrite empties is restored as it was.
+3. Where a figure in the prose is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate. Do NOT change chart arrays (any 'chartData' or '...ChartData' field): the server settles chart figures before QA and restores them as they were. Keep the prose consistent with the charts as given.
 4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
 5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
 6. USER-SPECIFIED PERSONAS ARE PROTECTED: If the input profile contains personas with sourceType 'User' (or personas matching user-specified targets), you MUST strictly preserve their exact names and 'sourceType': 'User'. Do NOT rename, delete, swap, or overwrite user-specified personas.
@@ -3767,29 +3767,19 @@ Please correct the profile to resolve all issues.`
     }
 
     // Remediation can reintroduce what the first pass removed, so the rules run again on what ships.
-    // A chart remediation changed is held to the same realism bar. In a live run it answered a
-    // QA note by flattening the day and hour charts to 100 everywhere; a flat line is no more
-    // an answer than a straight one, so such a rewrite is undone. Changes that pass are kept
-    // and labelled against the research like any other values.
-    const changedCharts = new Set<string>();
+    // Chart figures are settled before QA - research figures kept, estimates labelled, Census/BLS
+    // baselines applied, generated-looking shapes revised - so remediation rewrites prose only.
+    // In live runs it flattened charts to 100, deleted them, and replaced research-built
+    // demographics with its own "planning proxy" numbers; QA's chart notes stay visible in the
+    // red flags instead.
     for (const chart of PROFILE_CHARTS) {
       const before = chartsBeforeRemediation.get(chart.id);
-      const after = finalProfile?.[chart.section]?.[chart.key];
-      if (JSON.stringify(after ?? null) === before) continue;
-      if (builtFromBaseline.has(chart.id) && before && before !== "null") {
-        // Built from published baselines by code; remediation rewrites prose, not these.
-        finalProfile[chart.section][chart.key] = JSON.parse(before);
-        continue;
-      }
-      const problems = chartRealismProblems(chart, after);
-      if (problems.length > 0 && before && before !== "null") {
-        console.warn(`[CHART REALISM] ${chart.label}: remediation's rewrite looked generated (${problems.join("; ")}); kept the pre-remediation chart.`);
-        finalProfile[chart.section][chart.key] = JSON.parse(before);
-      } else {
-        changedCharts.add(chart.id);
-      }
+      if (before === undefined || before === "null") continue;
+      if (JSON.stringify(finalProfile?.[chart.section]?.[chart.key] ?? null) === before) continue;
+      if (!finalProfile[chart.section] || typeof finalProfile[chart.section] !== "object") finalProfile[chart.section] = { ...originalData[chart.section] };
+      finalProfile[chart.section][chart.key] = JSON.parse(before);
+      console.log(`[CHARTS] ${chart.label}: kept the pre-remediation chart; remediation edits prose only.`);
     }
-    if (changedCharts.size > 0) labelEstimatedPoints(finalProfile, researchText, changedCharts);
     enforceResearchIntegrity(finalProfile);
     for (const corr of integrityCorrections) {
       autoFixesList.push({
