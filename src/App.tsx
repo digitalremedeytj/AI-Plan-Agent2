@@ -560,7 +560,7 @@ export default function App() {
 
   // Input fields state
   const [advertiserName, setAdvertiserName] = useState("");
-  const [budget, setBudget] = useState("$10,000");
+  const [budget, setBudget] = useState("$100,000");
   const [campaignLength, setCampaignLength] = useState("30");
   const [kpis, setKpis] = useState<string[]>([""]);
   const [audienceDescription, setAudienceDescription] = useState("");
@@ -2493,7 +2493,7 @@ export default function App() {
   const handleNewPlan = () => {
     // Reset brief input fields
     setAdvertiserName("");
-    setBudget("$10,000");
+    setBudget("$100,000");
     setCampaignLength("30");
     setKpis([""]);
     setAudienceDescription("");
@@ -2505,6 +2505,8 @@ export default function App() {
     setGeoUploadNotice(null);
     setCampaignFocus("Full-funnel digital media plan");
     setAdditionalContext("");
+    setIsAdvancedPersonaOpen(false);
+    setTargetPersonas(["", "", "", ""]);
 
     // Reset media plan upload & parsing states
     setBriefMode("text");
@@ -3937,7 +3939,7 @@ export default function App() {
                       type="text"
                       value={budget}
                       onChange={(e) => setBudget(e.target.value)}
-                      placeholder="$10,000"
+                      placeholder="$100,000"
                       className="w-full text-sm px-3 py-2 border border-slate-200 rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all placeholder:text-slate-400"
                     />
                   </div>
@@ -4654,7 +4656,7 @@ export default function App() {
         </section>
 
         {/* Right Column: Output / Workspace Workspace (fluid width) */}
-        <section id="profile-workspace" className="flex-1 w-full min-w-0 space-y-6">
+        <section id="profile-workspace" className="flex-1 w-full min-w-0 space-y-6 lg:min-h-[calc(100vh-120px)] flex flex-col">
           {/* Loading Overlay State */}
           {loading && (
             <div className="bg-slate-950 border border-slate-800 text-slate-100 rounded-2xl p-6 md:p-8 shadow-2xl flex flex-col gap-6 min-h-[500px]">
@@ -4856,7 +4858,7 @@ export default function App() {
 
           {/* Empty state when no data exists and not loading */}
           {!profileData && !loading && (
-            <div className="bg-white rounded-2xl border border-slate-100 p-8 md:p-12 text-center shadow-xs flex flex-col items-center justify-center gap-5 min-h-[400px]">
+            <div className="bg-white rounded-2xl border border-slate-100 p-8 md:p-12 text-center shadow-xs flex flex-col items-center justify-center gap-5 flex-1 min-h-[400px] lg:min-h-[calc(100vh-120px)]">
               <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600 border border-indigo-100">
                 <Tv className="w-7 h-7" />
               </div>
