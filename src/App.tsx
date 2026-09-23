@@ -4936,26 +4936,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Generation alerts: what failed or was not found, instead of placeholder content */}
-                {profileData.generationAlerts && profileData.generationAlerts.length > 0 && (
-                  <div role="status" className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 md:p-5">
-                    <div className="flex items-center gap-2 text-amber-800 text-xs font-bold uppercase tracking-wider mb-2.5">
-                      <AlertTriangle className="w-4 h-4 text-amber-600" />
-                      <span>{profileData.generationAlerts.length} item{profileData.generationAlerts.length === 1 ? "" : "s"} in this plan did not complete</span>
-                    </div>
-                    <ul className="space-y-1.5">
-                      {profileData.generationAlerts.map((alert, idx) => (
-                        <li key={idx} className="flex items-start gap-2 text-xs leading-relaxed text-slate-700">
-                          <span className={`shrink-0 mt-px px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${alert.severity === "failed" ? "bg-rose-100 text-rose-700" : alert.severity === "not_found" ? "bg-slate-200 text-slate-600" : "bg-amber-100 text-amber-800"}`}>
-                            {alert.severity === "failed" ? "Failed" : alert.severity === "not_found" ? "Not found" : "Check"}
-                          </span>
-                          <span>{alert.message}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
                 {/* Introduction Summary */}
                 <div className="bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs">
                   <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
@@ -6096,6 +6076,12 @@ export default function App() {
                       <span className="text-slate-900 group-hover:text-indigo-600 transition-colors">
                         Programmatic Media Buyer QA Audit
                       </span>
+                      {profileData.generationAlerts && profileData.generationAlerts.length > 0 && (
+                        <span className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-bold normal-case tracking-normal">
+                          <AlertTriangle className="w-3 h-3" />
+                          {profileData.generationAlerts.length} item{profileData.generationAlerts.length === 1 ? "" : "s"} did not complete
+                        </span>
+                      )}
                     </div>
                     <ChevronDown
                       className={`w-5 h-5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
@@ -6126,6 +6112,26 @@ export default function App() {
                           )}
                         </div>
                       </div>
+
+                      {/* Generation alerts: what failed or was not found, instead of placeholder content */}
+                      {profileData.generationAlerts && profileData.generationAlerts.length > 0 && (
+                        <div role="status" className="bg-amber-50/80 border border-amber-200 rounded-xl p-4">
+                          <div className="flex items-center gap-2 text-amber-800 text-xs font-bold uppercase tracking-wider mb-2.5">
+                            <AlertTriangle className="w-4 h-4 text-amber-600" />
+                            <span>{profileData.generationAlerts.length} item{profileData.generationAlerts.length === 1 ? "" : "s"} in this plan did not complete</span>
+                          </div>
+                          <ul className="space-y-1.5">
+                            {profileData.generationAlerts.map((alert, idx) => (
+                              <li key={idx} className="flex items-start gap-2 text-xs leading-relaxed text-slate-700">
+                                <span className={`shrink-0 mt-px px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${alert.severity === "failed" ? "bg-rose-100 text-rose-700" : alert.severity === "not_found" ? "bg-slate-200 text-slate-600" : "bg-amber-100 text-amber-800"}`}>
+                                  {alert.severity === "failed" ? "Failed" : alert.severity === "not_found" ? "Not found" : "Check"}
+                                </span>
+                                <span>{alert.message}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
 
                       {/* Executive Summary */}
                       <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
