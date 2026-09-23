@@ -4,13 +4,8 @@ import {
   checkPersonas,
   clearSectionsForFailedDossiers,
   mergeRemediatedProfile,
-  removeMixedSourceCharts,
-  removeModeledCharts,
-  removeUngroundedCharts,
-  numbersInText,
   reportChartsNotFound,
-  applyQaChartRejections,
-  lockChartsFrom,
+  restoreDeletedCharts,
 } from "./generationIntegrity";
 
 const researched = (source = "Pew Research 2025") => ({ isModeled: false, source });
@@ -48,32 +43,11 @@ test("a failed research dossier clears the charts and prose it feeds instead of 
   assert.match(alerts[0].message, /Demographics research failed/);
 });
 
-test("a chart with any modeled value is removed whole, not shipped with an invented slice", () => {
-  const profile = profileWithCharts();
-  profile.deviceTypeIndex.chartData[1] = { device: "Mobile", value: 40, isModeled: true, source: "Nielsen" };
-  profile.browserAndReach.chartData[0].source = "Modeled Planning Proxy";
-
-  const alerts = removeModeledCharts(profile);
-
-  assert.deepEqual(profile.deviceTypeIndex.chartData, []);
-  assert.deepEqual(profile.browserAndReach.chartData, []);
-  assert.equal(profile.demographics.ageChartData.length, 2);
-  assert.deepEqual(alerts.map((a) => a.section).sort(), ["browserAndReach", "deviceTypeIndex"]);
-});
-
-test("a real source whose name mentions benchmarks is not mistaken for modeled data", () => {
-  const profile = profileWithCharts();
-  profile.deviceTypeIndex.chartData[0].source = "Nielsen Streaming Benchmark Report 2026";
-
-  assert.deepEqual(removeModeledCharts(profile), []);
-  assert.equal(profile.deviceTypeIndex.chartData.length, 2);
-});
-
 test("an empty chart is reported as not found in research unless another alert already explains it", () => {
   const profile = profileWithCharts();
   profile.temporalPatterns.dayOfWeekChartData = [];
   profile.temporalPatterns.hourOfDayChartData = [];
-  const existing = [{ section: "temporalPatterns", severity: "not_found" as const, message: "Hour-of-day activity: removed because it contained modeled or estimated values rather than figures from the research." }];
+  const existing = [{ section: "temporalPatterns", severity: "failed" as const, message: "Hour-of-day activity: removed because its shares summed to 130% instead of 100%." }];
 
   const alerts = reportChartsNotFound(profile, existing);
 
@@ -128,106 +102,18 @@ test("without an uploaded plan a user-specified persona keeps its label and the 
   assert.deepEqual(profile.personas.map((p: any) => p.sourceType), ["User", "ScoutAI", "ScoutAI", "ScoutAI"]);
 });
 
-test("QA can remove a chart it names, and the plan says why", () => {
-  const profile = profileWithCharts();
-
-  const alerts = applyQaChartRejections(profile, [
-    { chart: "age", reason: "CDC birth data describes mothers, not organic baby-product shoppers" },
-    { chart: "notAChart", reason: "ignored" },
-  ]);
-
-  assert.deepEqual(profile.demographics.ageChartData, []);
-  assert.equal(profile.demographics.genderChartData.length, 2, "charts QA did not name stay");
-  assert.deepEqual(alerts.map((a) => a.message), ["Age distribution: removed after QA review - CDC birth data describes mothers, not organic baby-product shoppers."]);
-});
-
-test("a note about a chart QA later removed is dropped, so the plan does not describe figures it no longer shows", () => {
-  const profile = profileWithCharts();
-  const existing = [
-    { section: "demographics", severity: "flagged" as const, message: "Household income: 42% of this audience is shown earning over $100k..." },
-    { section: "research", severity: "failed" as const, message: "The website crawl failed." },
-  ];
-
-  const removal = applyQaChartRejections(profile, [{ chart: "income", reason: "Source is from 2017" }], existing);
-
-  assert.deepEqual(existing.map((a) => a.message), ["The website crawl failed."]);
-  assert.match(removal[0].message, /^Household income: removed after QA review - Source is from 2017\.$/);
-});
-
-test("remediation cannot change or delete chart figures", () => {
+test("remediation may correct chart values but cannot delete a chart", () => {
   const original = profileWithCharts();
-  const rewritten: any = { demographics: { overview: "Sharper prose.", ageChartData: [] }, deviceTypeIndex: { overview: "New.", chartData: [{ device: "CTV", value: 99 }] } };
+  const rewritten: any = {
+    demographics: { overview: "Sharper prose.", ageChartData: [], genderChartData: [{ gender: "Female", value: 52 }, { gender: "Male", value: 48 }] },
+    deviceTypeIndex: { overview: "New.", chartData: [{ device: "CTV", value: 62 }, { device: "Mobile", value: 38 }] },
+  };
 
-  lockChartsFrom(rewritten, original);
+  restoreDeletedCharts(rewritten, original);
 
   assert.equal(rewritten.demographics.overview, "Sharper prose.", "prose edits are kept");
-  assert.deepEqual(rewritten.demographics.ageChartData, original.demographics.ageChartData);
-  assert.deepEqual(rewritten.deviceTypeIndex.chartData, original.deviceTypeIndex.chartData);
-  assert.deepEqual(rewritten.temporalPatterns.dayOfWeekChartData, original.temporalPatterns.dayOfWeekChartData, "a section the rewrite dropped gets its charts back");
-});
-
-test("a chart stitched together from several studies is removed rather than shown as one split", () => {
-  const profile = profileWithCharts();
-  profile.deviceTypeIndex.chartData = [
-    { device: "CTV", value: 45, isModeled: false, source: "Nielsen Gauge 2026" },
-    { device: "Mobile", value: 35, isModeled: false, source: "Comscore 2025" },
-    { device: "Desktop", value: 20, isModeled: false, source: "Nielsen Gauge 2026" },
-  ];
-
-  const alerts = removeMixedSourceCharts(profile);
-
-  assert.deepEqual(profile.deviceTypeIndex.chartData, []);
-  assert.match(alerts[0].message, /Device split: removed because it combined figures from 2 different sources/);
-  assert.equal(profile.demographics.ageChartData.length, 2, "single-source charts stay");
-});
-
-test("one study's breakdown is kept even when its label differs only in case or punctuation", () => {
-  const profile = profileWithCharts();
-  profile.demographics.ageChartData[1].source = "pew research 2025.";
-
-  assert.deepEqual(removeMixedSourceCharts(profile), []);
-  assert.equal(profile.demographics.ageChartData.length, 2);
-});
-
-test("a chart with an unsourced value is removed", () => {
-  const profile = profileWithCharts();
-  profile.demographics.genderChartData[0].source = "";
-
-  const alerts = removeMixedSourceCharts(profile);
-
-  assert.deepEqual(profile.demographics.genderChartData, []);
-  assert.match(alerts[0].message, /did not name their source/);
-});
-
-test("numbers are read from research text including percentages, decimals and thousands separators", () => {
-  assert.deepEqual(numbersInText("51% female, 23.5% aged 25-34, 1,250 respondents, index 225"), [51, 23.5, 25, 34, 1250, 225]);
-});
-
-test("a chart whose values the research never reported is removed before QA sees it", () => {
-  const profile = profileWithCharts();
-  const research = "ESA found 60% of players are 25-34 and 40% are 35-44. Similarweb: twitch.tv affinity index 180. "
-    + "Women are 55% and men 45%. Income under $100k is 70%, over 30%. CTV 60%, mobile 40%. Saturday index 120; 8pm-12am index 140.";
-  profile.deviceTypeIndex.chartData = [
-    { device: "CTV", value: 58, isModeled: false, source: "eMarketer 2025" },
-    { device: "Mobile", value: 42, isModeled: false, source: "eMarketer 2025" },
-  ];
-
-  const alerts = removeUngroundedCharts(profile, research);
-
-  assert.deepEqual(profile.deviceTypeIndex.chartData, [], "58/42 appear nowhere in the research");
-  assert.match(alerts[0].message, /Device split: removed because its values do not appear in the research/);
-  assert.equal(profile.demographics.ageChartData.length, 2, "reported figures are kept");
-  assert.equal(profile.temporalPatterns.hourOfDayChartData.length, 1);
-});
-
-test("a value synthesis rounded from the reported figure still counts as grounded", () => {
-  const profile = profileWithCharts();
-  profile.demographics.genderChartData = [
-    { gender: "Female", value: 51, isModeled: false, source: "Pew Research 2025" },
-    { gender: "Male", value: 49, isModeled: false, source: "Pew Research 2025" },
-  ];
-
-  removeUngroundedCharts(profile, "Pew: 50.6% of travelers are women and 49.4% are men.");
-
-  assert.equal(profile.demographics.genderChartData.length, 2);
+  assert.deepEqual(rewritten.demographics.ageChartData, original.demographics.ageChartData, "an emptied chart comes back");
+  assert.equal(rewritten.demographics.genderChartData[0].value, 52, "a corrected chart keeps its corrections");
+  assert.equal(rewritten.deviceTypeIndex.chartData[0].value, 62);
+  assert.deepEqual(rewritten.temporalPatterns.dayOfWeekChartData, original.temporalPatterns.dayOfWeekChartData, "a dropped section gets its charts back");
 });

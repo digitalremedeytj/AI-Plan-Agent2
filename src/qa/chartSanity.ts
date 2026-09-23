@@ -11,17 +11,13 @@
 //     client-facing auto-fix list, so rounding drift reported as a "verification mismatch" makes
 //     a clean profile look remediated.
 //
-//   * Never substitute numbers. A chart that is not what it claims to be is removed and the
-//     plan says so; it is not rescaled into a different shape or pulled toward a benchmark.
+//   * Flag, do not rewrite, a figure that looks wrong: the income-skew check reports rather
+//     than pulling the split to a benchmark.
 //
-// Mutates `data` in place. Returns one note per cosmetic correction (rounding drift) and one
-// alert per chart that was removed or needs a reader's attention.
+// Mutates `data` in place. Returns one note per material correction and one alert per chart
+// that needs a reader's attention.
 
 import type { GenerationAlert } from "../types";
-
-// A composition that misses 100 by more than this is not rounding: it is overlapping or
-// mixed-denominator data, and rescaling it would invent a split nobody measured.
-const MAX_RESCALABLE_DRIFT_PTS = 10;
 
 // Classifies an income bracket by where it starts. Matching on "100k" anywhere in the label
 // counted "$75k-$100k" as a six-figure bracket.
@@ -42,19 +38,17 @@ export function applyProgrammaticSanityChecks(data: any, reqBody: any): { correc
   // problem. It is still corrected, but silently: reporting it padded the auto-fix list on
   // effectively every run, which made a clean profile read as heavily remediated.
   const REPORTABLE_DRIFT_PTS = 2;
-  const normalizePercentages = (arr: any[], valueKey: string, chartName: string, section: string) => {
+  const normalizePercentages = (
+    arr: any[],
+    valueKey: string,
+    chartName: string,
+    // Lets a caller describe the correction in its own terms when "the split did not sum to
+    // 100" understates what actually happened - see the device chart below.
+    describe?: (sum: number) => string,
+  ) => {
     if (!arr || arr.length === 0) return;
     const sum = arr.reduce((acc, item) => acc + (Number(item[valueKey]) || 0), 0);
     if (sum === 0) return;
-    if (Math.abs(sum - 100) > MAX_RESCALABLE_DRIFT_PTS) {
-      arr.length = 0;
-      alerts.push({
-        section,
-        severity: "flagged",
-        message: `${chartName}: removed because its shares summed to ${sum.toFixed(1)}% instead of 100%, so the figures are not one comparable split.`,
-      });
-      return;
-    }
     if (Math.abs(sum - 100) > 0.05) {
       let runningSum = 0;
       arr.forEach((item, idx) => {
@@ -67,7 +61,11 @@ export function applyProgrammaticSanityChecks(data: any, reqBody: any): { correc
         }
       });
       if (Math.abs(sum - 100) > REPORTABLE_DRIFT_PTS) {
-        programmaticCorrections.push(`Programmatically normalized ${chartName} percentage split to sum to exactly 100% (was ${sum.toFixed(1)}%).`);
+        programmaticCorrections.push(
+          describe
+            ? describe(sum)
+            : `Programmatically normalized ${chartName} percentage split to sum to exactly 100% (was ${sum.toFixed(1)}%).`,
+        );
       }
     }
   };
@@ -75,13 +73,13 @@ export function applyProgrammaticSanityChecks(data: any, reqBody: any): { correc
   // Run normalizations
   if (data.demographics) {
     if (data.demographics.ageChartData) {
-      normalizePercentages(data.demographics.ageChartData, "value", "Age distribution", "demographics");
+      normalizePercentages(data.demographics.ageChartData, "value", "Age Demographic");
     }
     if (data.demographics.genderChartData) {
-      normalizePercentages(data.demographics.genderChartData, "value", "Gender split", "demographics");
+      normalizePercentages(data.demographics.genderChartData, "value", "Gender Demographic");
     }
     if (data.demographics.incomeChartData) {
-      normalizePercentages(data.demographics.incomeChartData, "value", "Household income", "demographics");
+      normalizePercentages(data.demographics.incomeChartData, "value", "Household Income");
     }
   }
   // The device chart is consumed as a composition share everywhere downstream - a pie in
@@ -89,10 +87,18 @@ export function applyProgrammaticSanityChecks(data: any, reqBody: any): { correc
   // index-valued chart cannot be rendered honestly no matter what the caption says. The
   // remediation agent used to reframe it as non-comparable indices, which left a table
   // renormalized to 100% sitting directly under an overview insisting it did not sum to 100.
-  // Index values that arrive here are removed rather than converted: turning an index into a
-  // share manufactures a split the research never reported.
+  // The device chart is consumed as a composition share everywhere downstream - a pie in
+  // DeviceChart, a "Reach Share" column, "Split Share %" in the markdown export - so an
+  // index-valued chart cannot be rendered honestly no matter what the caption says. The
+  // remediation agent used to reframe it as non-comparable indices, which left a table
+  // renormalized to 100% sitting directly under an overview insisting it did not sum to 100.
+  // Normalize it back to shares and say so when the input was not share-shaped at all.
   if (data.deviceTypeIndex && data.deviceTypeIndex.chartData) {
-    normalizePercentages(data.deviceTypeIndex.chartData, "value", "Device split", "deviceTypeIndex");
+    normalizePercentages(data.deviceTypeIndex.chartData, "value", "Device Type Split", (sum) =>
+      sum > 150
+        ? `Device Type Split arrived as index values summing to ${sum.toFixed(1)}% and was converted back to a composition share; this chart renders as a share of device usage occasions and cannot carry index values.`
+        : `Programmatically normalized Device Type Split percentage split to sum to exactly 100% (was ${sum.toFixed(1)}%).`,
+    );
   }
 
   // 2. Domain chart metric labelling

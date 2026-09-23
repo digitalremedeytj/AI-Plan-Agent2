@@ -36,28 +36,27 @@ test("a domain chart that claims to be a share but overlaps past 110% is relabel
   assert.match(corrections[0], /Audience Reach Penetration/);
 });
 
-test("device index values are removed with an alert rather than converted into a made-up share", () => {
+test("device index values are converted back to a composition share and reported", () => {
   // What the remediation agent produced when the QA checklist told it the device chart mixed
-  // denominators: a 100-baseline index. Converting it would manufacture a split no source reported.
+  // denominators: a 100-baseline index the pie chart and the "Split Share %" export cannot render.
   const data: any = {
     deviceTypeIndex: {
       chartData: [
-        { device: "Mobile", value: 135, isModeled: false, source: "Nielsen" },
-        { device: "CTV", value: 125, isModeled: false, source: "Nielsen" },
-        { device: "Desktop/PC", value: 95, isModeled: false, source: "Nielsen" },
-        { device: "Tablet", value: 80, isModeled: false, source: "Nielsen" },
-        { device: "Game Console", value: 70, isModeled: false, source: "Nielsen" },
+        { device: "Mobile", value: 135, isModeled: true, source: "Modeled" },
+        { device: "CTV", value: 125, isModeled: true, source: "Modeled" },
+        { device: "Desktop/PC", value: 95, isModeled: true, source: "Modeled" },
+        { device: "Tablet", value: 80, isModeled: true, source: "Modeled" },
+        { device: "Game Console", value: 70, isModeled: true, source: "Modeled" },
       ],
     },
   };
 
-  const { corrections, alerts } = applyProgrammaticSanityChecks(data, {});
+  const { corrections } = applyProgrammaticSanityChecks(data, {});
 
-  assert.deepEqual(data.deviceTypeIndex.chartData, []);
-  assert.deepEqual(corrections, []);
-  assert.equal(alerts.length, 1);
-  assert.equal(alerts[0].section, "deviceTypeIndex");
-  assert.match(alerts[0].message, /summed to 505\.0%/);
+  const sum = data.deviceTypeIndex.chartData.reduce((acc: number, d: any) => acc + d.value, 0);
+  assert.equal(Math.round(sum * 10) / 10, 100);
+  assert.equal(corrections.length, 1);
+  assert.match(corrections[0], /index values summing to 505\.0%/);
 });
 
 test("rounding drift under two points is corrected without reporting an auto-fix", () => {
@@ -80,7 +79,7 @@ test("rounding drift under two points is corrected without reporting an auto-fix
   assert.deepEqual(corrections, []);
 });
 
-test("a share chart that misses 100 by more than ten points is removed, not rescaled", () => {
+test("a materially broken share chart is still normalized and reported", () => {
   const data: any = {
     demographics: {
       genderChartData: [
@@ -91,11 +90,12 @@ test("a share chart that misses 100 by more than ten points is removed, not resc
     },
   };
 
-  const { corrections, alerts } = applyProgrammaticSanityChecks(data, {});
+  const { corrections } = applyProgrammaticSanityChecks(data, {});
 
-  assert.deepEqual(data.demographics.genderChartData, []);
-  assert.deepEqual(corrections, []);
-  assert.match(alerts[0].message, /Gender split: removed because its shares summed to 120\.0%/);
+  const sum = data.demographics.genderChartData.reduce((acc: number, d: any) => acc + d.value, 0);
+  assert.equal(Math.round(sum * 10) / 10, 100);
+  assert.equal(corrections.length, 1);
+  assert.match(corrections[0], /was 120\.0%/);
 });
 
 test("a share chart a few points off is still rescaled and reported as a correction", () => {

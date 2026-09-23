@@ -35,12 +35,8 @@ import {
   clearSectionsForFailedDossiers,
   mergeRemediatedProfile,
   pushAlert,
-  removeMixedSourceCharts,
-  removeModeledCharts,
-  removeUngroundedCharts,
   reportChartsNotFound,
-  applyQaChartRejections,
-  lockChartsFrom,
+  restoreDeletedCharts,
   type GenerationAlert,
 } from "./src/qa/generationIntegrity";
 import type { AiCandidateSignal, PlanningMode } from "./src/planning/types";
@@ -408,15 +404,15 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Paragraph overview of browser/web reach and top domain affinity." },
         chartData: {
           type: Type.ARRAY,
-          description: "Top relevant domains by affinity index, 5 to 8 items, taken from the dossiers. Empty array if the dossiers report no domain affinity figures.",
+          description: "Data for top relevant domains by audience share or traffic share. Between 5 and 8 items.",
           items: {
             type: Type.OBJECT,
             properties: {
               domain: { type: Type.STRING, description: "e.g., twitch.tv, nytimes.com, ign.com" },
               value: { type: Type.NUMBER, description: "The Affinity Index percentage value where 100% is average likelihood (e.g. 150 for 150%)" },
               metricType: { type: Type.STRING, description: "Must be 'Affinity Index'" },
-              isModeled: { type: Type.BOOLEAN, description: "Must be false: every value comes from a research dossier." },
-              source: { type: Type.STRING, description: "The dossier source for this value, e.g., 'Similarweb May 2026'" }
+              isModeled: { type: Type.BOOLEAN, description: "Whether this is a modeled planning proxy or syndicated data" },
+              source: { type: Type.STRING, description: "Source name/date, e.g., 'Similarweb May 2026' or 'Modeled Planning Proxy'" }
             },
             required: ["domain", "value", "metricType", "isModeled", "source"]
           }
@@ -431,13 +427,13 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Short explanation of device/platform behavior distinguishing CTV, console, desktop/PC, mobile, tablet." },
         chartData: {
           type: Type.ARRAY,
-          description: "Device/platform composition share. Values are percentages of one denominator - this audience's device usage occasions - and MUST sum to 100. Never index values: this chart renders as a pie and an index would be redrawn as a share. 4 to 6 items, or an empty array if the dossiers report no device split.",
+          description: "Device/platform composition share. Values are percentages of one denominator - this audience's device usage occasions - and MUST sum to 100. Never index values: this chart renders as a pie and an index would be redrawn as a share. 4 to 6 items.",
           items: {
             type: Type.OBJECT,
             properties: {
               device: { type: Type.STRING, description: "e.g., CTV, Mobile, Desktop/PC, Tablet, Game Console" },
               value: { type: Type.NUMBER, description: "Share of this audience's device usage occasions, as a percentage. All items must sum to 100." },
-              isModeled: { type: Type.BOOLEAN, description: "Must be false: every value comes from a research dossier." },
+              isModeled: { type: Type.BOOLEAN, description: "Whether this is modeled planning proxy" },
               source: { type: Type.STRING, description: "e.g. 'MRI-Simmons 2025' or 'eMarketer 2025'" }
             },
             required: ["device", "value", "isModeled", "source"]
@@ -453,7 +449,7 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Paragraph overview of the demographics (age, gender, income, geo)." },
         ageChartData: {
           type: Type.ARRAY,
-          description: "Age bracket split percentage data from the dossiers. Sums to ~100. Empty array if not reported.",
+          description: "Age bracket split percentage data. Sums to ~100.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -467,7 +463,7 @@ const audienceProfileSchema = {
         },
         genderChartData: {
           type: Type.ARRAY,
-          description: "Gender split percentage data from the dossiers. Sums to ~100. Empty array if not reported.",
+          description: "Gender split percentage data. Sums to ~100.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -481,7 +477,7 @@ const audienceProfileSchema = {
         },
         incomeChartData: {
           type: Type.ARRAY,
-          description: "Income bracket split percentage data from the dossiers. Empty array if not reported.",
+          description: "Income bracket split percentage data.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -503,7 +499,7 @@ const audienceProfileSchema = {
         overview: { type: Type.STRING, description: "Paragraph overview of digital/browsing vs CTV viewing temporal patterns." },
         dayOfWeekChartData: {
           type: Type.ARRAY,
-          description: "Activity index/percentage by Day of Week (Mon-Sun) from the dossiers. Empty array if the dossiers report no day-of-week figures.",
+          description: "Activity index/percentage by Day of Week. 7 items (Mon-Sun).",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -517,7 +513,7 @@ const audienceProfileSchema = {
         },
         hourOfDayChartData: {
           type: Type.ARRAY,
-          description: "Activity index/percentage by hour block from the dossiers. Empty array if the dossiers report no hour-of-day figures.",
+          description: "Activity index/percentage by general hour block. 6 to 12 items.",
           items: {
             type: Type.OBJECT,
             properties: {
@@ -665,21 +661,9 @@ const auditResultSchema = {
       type: Type.ARRAY,
       description: "Instructions on what needs to be changed in the profile.",
       items: { type: Type.STRING }
-    },
-    rejectedCharts: {
-      type: Type.ARRAY,
-      description: "Charts whose figures do not describe this audience or are not supported by their named source. Empty array if none.",
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          chart: { type: Type.STRING, description: "One of: age, gender, income, domains, device, dayOfWeek, hourOfDay" },
-          reason: { type: Type.STRING, description: "One sentence: why this chart cannot be shown" }
-        },
-        required: ["chart", "reason"]
-      }
     }
   },
-  required: ["executiveSummary", "scorecard", "totalScore", "criticalRedFlags", "strategicHighlights", "fixItChecklist", "rejectedCharts"]
+  required: ["executiveSummary", "scorecard", "totalScore", "criticalRedFlags", "strategicHighlights", "fixItChecklist"]
 };
 
 const profileCorrectionSchema = {
@@ -3177,17 +3161,17 @@ Your response must be a single, perfectly structured JSON object adhering exactl
 
 CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 1. COHESION & INTEGRATED STORYTELLING: Do not stitch together unrelated facts in silos. Create a single, unified audience story where all metrics and descriptions align.
-   - The narrative follows the charts, never the reverse: do not describe a device, day or daypart as dominant unless the chart (or a cited dossier figure) shows it.
-   - If Saturday/Sunday evenings are described as viewing or activity peaks, the day and hour charts MUST show those peaks. Contradictions between narrative text and numeric indices are strictly forbidden. If a chart is empty because the research had no figures for it, the narrative must not describe numeric peaks for it either.
+   - If a persona is described as having specific device preferences, that device must dominate or represent a substantial percentage in 'deviceTypeIndex.chartData'.
+   - If Saturday/Sunday evenings are described as viewing or activity peaks, Saturdays and Sundays MUST have a high activity index (e.g. index > 100, such as 108 - 120) in 'temporalPatterns.dayOfWeekChartData' and 'temporalPatterns.hourOfDayChartData'. Contradictions between narrative text and numeric indices are strictly forbidden.
 2. STATISTICAL PLAUSIBILITY & REAL-WORLD BOUNDS: Absolutely no statistically impossible claims.
    - Connected TV (CTV) QR code scan rates hover strictly between 0.01% and 0.5% in real campaign environments. Scan conversion or purchase rates are in low single digits (typically under 8%). You are STRICTLY FORBIDDEN from generating double-digit QR code scan rates or absurd purchase rates (such as "83% open to scanning and 92% of scanners likely to complete a purchase").
    - Do not apply the income skew of a niche sub-segment (e.g. premium hardware buyers earning >$100k) to the whole audience. If the dossiers only report a sub-segment's income split, say so in the overview and leave 'incomeChartData' empty rather than presenting it as the audience's split.
    - Media performance rates (CTR, VCR/VTR, conversion rates) may only appear where a dossier reports them. Do not quote typical or benchmark rates from general knowledge.
-3. DEVICE BREAKDOWNS: 'deviceTypeIndex.chartData' is one source's device composition for this audience (mutually exclusive shares summing to ~100). Use it only if a single dossier source reports such a split; do not assemble one by distributing share across devices yourself.
+3. MUTUALLY EXCLUSIVE DEVICE BREAKDOWNS: Correctly map the Connected TV and digital ecosystem as a fragmented but mutually exclusive environment. Explicitly distribute viewing share across Smart TVs, Streaming Devices (Roku/FireTV), Consoles, Smartphones, and Desktops so that there is no double-counting, and ensure percentage splits sum to approximately 100%.
 4. Be highly precise with definitions: composition vs index vs reach vs penetration. Clearly distinguish percentage split from activity index (average = 100).
 5. Do not call an audience segment "affluent", "young", "tech-savvy", etc. unless the research supportively proves it with metrics.
-6. CHART DATA COMES ONLY FROM THE DOSSIERS, AND EACH CHART FROM ONE SOURCE. Every chart value must be a number that is written in a dossier, copied as reported (do not rescale, round to a different number, or derive it); the server checks each value against the dossier text and removes any chart with a value it cannot find. Populate a chart only when a single source in the dossiers reports the whole breakdown on one base (one study, one population, one date) - for example one survey's age split of this audience. NEVER combine figures from different studies, years, populations or metrics into one chart: a split stitched together from several reports has no common denominator and is not a real composition. Every item in a chart MUST carry the identical 'source' string (the study name and year), and that chart's 'chartSource' must name the same study. Every item's 'isModeled' MUST be false. If the dossiers do not contain the figures a chart needs, return that chart as an EMPTY array - never estimate, model, extrapolate, or fill it from general knowledge. An empty chart is shown to the planner as "not found in research"; an invented one is presented to a client as fact. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'.
-7. Use current ${currentYear} data. Match geography: ${geography}. If the dossiers have no data for this geography, say so in the relevant overview; do not adapt national figures into a regional estimate.
+6. Ensure demographic charts, device charts, web share charts, and day/hour charts are fully populated with exact numbers. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'. Provide realistic index values (e.g. 120%, 150%, 210%, 280% depending on target audience domain affinity).
+7. Use current ${currentYear} data. Match geography: ${geography}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
    - You are STRICTLY PROHIBITED from fabricating, guessing, or making up consumer desire/sentiment figures, survey percentages, or market statistics (such as "85% of gamers express a desire to see product recommendations on their TV home screens").
    - Every single statistic or percentage mentioned in the recommendations ('recommendations.why' or 'recommendations.action') or core takeaways ('takeaways') MUST be directly grounded and cross-referenced from the provided parallel research dossiers.
@@ -3441,22 +3425,13 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // Run the research-integrity rules before scoring, so QA grades the profile we will ship
     // rather than values that are about to be removed. They run again after remediation.
     const integrityCorrections: string[] = [];
-    const researchText = researchResults.filter((result) => !result.failed).map((result) => result.text).join("\n");
-    // The grounding check runs first, on the values exactly as synthesis wrote them; rescaling
-    // afterwards would move a reported 50.6 away from the research. The final pass skips it:
-    // charts are locked to this pass's output, so there is nothing new to check.
-    const enforceResearchIntegrity = (profile: any, { final }: { final: boolean }) => {
+    const enforceResearchIntegrity = (profile: any) => {
       for (const alert of clearSectionsForFailedDossiers(profile, failedDossiers)) pushAlert(generationAlerts, alert);
-      for (const alert of removeModeledCharts(profile)) pushAlert(generationAlerts, alert);
-      for (const alert of removeMixedSourceCharts(profile)) pushAlert(generationAlerts, alert);
-      if (!final) {
-        for (const alert of removeUngroundedCharts(profile, researchText)) pushAlert(generationAlerts, alert);
-      }
       const sanity = applyProgrammaticSanityChecks(profile, req.body);
       for (const alert of sanity.alerts) pushAlert(generationAlerts, alert);
       integrityCorrections.push(...sanity.corrections);
     };
-    enforceResearchIntegrity(originalData, { final: false });
+    enforceResearchIntegrity(originalData);
 
     const scoringToday = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
     // Only claim the engine owns the budget when it actually ran. A profile generated without a
@@ -3488,8 +3463,7 @@ You MUST score across these five categories (0 to 20 points each):
 CONTEXT YOU MUST APPLY BEFORE SCORING:
 - Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
 ${channelStrategyGuidance}
-- An empty chart array means the research did not report those figures. That is a correct outcome, not a defect: do not score it as missing data or ask for it to be filled, and never recommend estimated, modeled or benchmark values.
-- Every chart value has already been checked to appear in the research text, and share charts are rescaled to 100 by the server, so do not flag rounding. Judge whether each chart describes THIS audience and is supported by its named source. List any chart that does not (wrong population, source that does not report it, mismatched year) in 'rejectedCharts' with its id - one of age, gender, income, domains, device, dayOfWeek, hourOfDay - and a one-sentence reason. Only listed charts are removed; do not reject a chart you have no specific objection to.
+- Chart values marked 'isModeled: true' are labelled planning estimates, shown to the reader as estimated. Judge them on plausibility and consistency with the narrative, not on the absence of a published source. Share charts are rescaled to 100 by the server, so do not flag rounding.
 - 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
 
 Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
@@ -3564,12 +3538,6 @@ Your output must be a perfectly formatted JSON matching the required schema. Ens
       ? "Scoring Agent bypassed - profile delivered unverified."
       : `Scoring Agent evaluation complete. Score: ${auditResult.totalScore}/100. Red Flags Count: ${auditResult.criticalRedFlags?.length || 0}`);
 
-    // Charts QA rejected by name are removed now, before remediation sees the profile, so the
-    // alert can carry QA's own reason. No other chart is removed after this point.
-    if (!qaBypassed) {
-      for (const alert of applyQaChartRejections(originalData, auditResult.rejectedCharts, generationAlerts)) pushAlert(generationAlerts, alert);
-    }
-
     let finalProfile = originalData;
     let autoFixesList: Array<{ issue: string; resolution: string }> = [];
     // Tracked separately from autoFixesList because the correction agent can return a rewritten
@@ -3590,7 +3558,7 @@ You have been given an audience profile and a list of critical red flags or corr
 Your task is to rewrite and update the audience profile to:
 1. Resolve every single red flag/issue identified by the QA specialist.
 2. Ensure all percentages sum to 100% and there are no mathematical or logical contradictions.
-3. Where a figure in the prose is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate. Do NOT edit chart arrays (any 'chartData' or '...ChartData' field): they were checked against the research and QA's chart decisions are already applied, and the server restores them as they are. Keep the prose consistent with the charts as given.
+3. Where a figure in the prose is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate. You may correct chart values the checklist flags, but never empty or drop a chart array - fix its values instead; a chart the rewrite empties is restored as it was.
 4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
 5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
 6. USER-SPECIFIED PERSONAS ARE PROTECTED: If the input profile contains personas with sourceType 'User' (or personas matching user-specified targets), you MUST strictly preserve their exact names and 'sourceType': 'User'. Do NOT rename, delete, swap, or overwrite user-specified personas.
@@ -3654,7 +3622,7 @@ Please correct the profile to resolve all issues.`
           // personas once shipped "Persona Archetype" stand-ins.
           const merged = mergeRemediatedProfile(originalData, corrected);
           finalProfile = merged.profile;
-          lockChartsFrom(finalProfile, originalData);
+          restoreDeletedCharts(finalProfile, originalData);
           profileRewritten = true;
           if (merged.restored.length > 0) {
             console.warn(`[REMEDIATION] Correction omitted ${merged.restored.join(", ")}; kept the synthesized version.`);
@@ -3690,7 +3658,7 @@ Please correct the profile to resolve all issues.`
     }
 
     // Remediation can reintroduce what the first pass removed, so the rules run again on what ships.
-    enforceResearchIntegrity(finalProfile, { final: true });
+    enforceResearchIntegrity(finalProfile);
     for (const corr of integrityCorrections) {
       autoFixesList.push({
         issue: "Programmatic metric verification mismatch",
