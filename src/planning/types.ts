@@ -32,11 +32,15 @@ export interface CreativeReadinessFacts {
   highImpactBudgetAndLeadTime: TriState;
 }
 
+export type CampaignAudienceType = "B2C" | "B2B" | "B2B2C";
+
 export interface CampaignFacts {
   advertiserName: string;
   advertiserUrl: string;
   vertical: string;
   subvertical: string;
+  /** Who buys. B2B-only tactics attach only when the buyer is a business. */
+  audienceType: CampaignAudienceType;
   primaryKpi: string;
   kpis: string[];
   funnelStages: string[];
@@ -240,6 +244,8 @@ export interface CampaignFactsInput {
   advertiserUrl?: string;
   vertical?: string;
   subvertical?: string;
+  /** From the Brief of Record. Inferred from the brief text when absent. */
+  audienceType?: CampaignAudienceType;
   kpis?: string[];
   campaignFocus?: string;
   audienceDescriptions?: string[];

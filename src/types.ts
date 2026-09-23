@@ -239,8 +239,45 @@ export interface GenerationAlert {
   message: string;
 }
 
+/** The settled audience definition every generation step reads. See src/research/briefOfRecord.ts. */
+export interface BriefOfRecord {
+  advertiser: string;
+  whatTheySell: string;
+  productCategories: string[];
+  businessModel: string;
+  priceTier: "value" | "mid-market" | "premium" | "luxury" | "mixed" | "unknown";
+  audienceType: "B2C" | "B2B" | "B2B2C";
+  primaryAudience: string;
+  /** Every group the advertiser serves. Anything here is on-target. */
+  includedSegments: string[];
+  /**
+   * The few groups that drive the business and this campaign; personas are built around them.
+   * Optional because briefs saved before the split do not carry it.
+   */
+  coreSegments?: string[];
+  excludedSegments: string[];
+  campaignObjective: string;
+  funnelEmphasis: "awareness" | "consideration" | "conversion" | "full-funnel";
+  geography: string;
+  uncertainties: string[];
+  /** What the brief was built from, so a reader knows how far to trust it. */
+  basis: "brief + website" | "brief + web search" | "brief only";
+}
+
+/**
+ * The research text a plan was generated from, kept so its figures can be checked against
+ * the research later (the audit runs after the dossiers are gone from memory).
+ */
+export interface ResearchSnapshot {
+  capturedAt: string;
+  dossiers: Array<{ label: string; failed: boolean; text: string }>;
+  crawl?: { url: string; ok: boolean; chars: number };
+}
+
 export interface AudienceProfile {
   intro: string;
+  briefOfRecord?: BriefOfRecord;
+  researchSnapshot?: ResearchSnapshot;
   audienceAnalysis?: string;
   personas: Persona[];
   segmentRecommendations?: SegmentRecommendation[];

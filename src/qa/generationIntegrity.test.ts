@@ -68,6 +68,17 @@ test("remediation cannot delete a section: anything it omits or empties keeps th
   assert.deepEqual(restored.sort(), ["ctvPublishers", "personas"], "sources and channelStrategy are always kept, so they are not reported as restored");
 });
 
+test("remediation cannot redefine the brief of record the rest of the plan was built for", () => {
+  const brief = { primaryAudience: "Dog and cat owners", includedSegments: ["Dog owners", "Cat owners"] };
+  const original = { intro: "Original.", briefOfRecord: brief };
+  const corrected = { intro: "Rewritten.", briefOfRecord: { primaryAudience: "Dog owners", includedSegments: ["Dog owners"] } };
+
+  const { profile, restored } = mergeRemediatedProfile(original, corrected);
+
+  assert.deepEqual(profile.briefOfRecord, brief);
+  assert.deepEqual(restored, []);
+});
+
 test("fewer than four personas is reported, never padded with stand-ins", () => {
   const profile: any = { personas: [{ name: "Core Gamer", sourceType: "ScoutAI" }, { name: "Casual Player" }] };
 

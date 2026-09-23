@@ -12,6 +12,7 @@ import type {
   AiCandidateSignal,
   AllocationAuditEntry,
   AttachedPlanningRecord,
+  CampaignAudienceType,
   CampaignFacts,
   CampaignFactsInput,
   CandidateScoreComponents,
@@ -138,6 +139,15 @@ function inferReadiness(text: string): { data: DataReadinessFacts; creative: Cre
   };
 }
 
+// Used only when no Brief of Record supplied the audience type (a plan generated before it
+// existed, or a direct engine call). Matches phrases a B2B brief would contain; anything else
+// is treated as consumer, which is what every brand this tool has planned for has been.
+const B2B_SIGNALS = ["b2b", "decision-maker", "decision maker", "it buyers", "procurement", "firmographic", "business owners", "enterprise buyers", "c-suite", "job title"];
+
+export function inferAudienceType(text: string): CampaignAudienceType {
+  return includesAny(text, B2B_SIGNALS) > 0 ? "B2B" : "B2C";
+}
+
 function canonicalToProductId(canonicalId: CanonicalMediaType): string | null {
   return DIGITAL_REMEDY_PRODUCT_REGISTRY.find((record) => record.legacyCanonicalId === canonicalId)?.id || null;
 }
@@ -199,6 +209,7 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     advertiserUrl: input.advertiserUrl || "",
     vertical: input.vertical || "unknown",
     subvertical: input.subvertical || "unknown",
+    audienceType: input.audienceType || inferAudienceType(combinedText),
     primaryKpi: input.kpis?.find(Boolean) || input.campaignFocus || "awareness",
     kpis: (input.kpis || []).filter(Boolean),
     funnelStages: [input.campaignFocus || "full-funnel"],
@@ -612,6 +623,54 @@ function attachmentMatches(attachesTo: string[], product: MediaProductRecord): b
   return attachesTo.some((target) => labels.some((label) => target.toLowerCase().includes(label) || label.includes(target.toLowerCase())));
 }
 
+const RETAILER_PHRASES: Record<string, string[]> = {
+  walmart: ["walmart"],
+  amazon: ["amazon"],
+  roundel_target: ["roundel", "target.com", "target stores", "at target", "target corporation"],
+  kroger: ["kroger"],
+  costco: ["costco"],
+  home_depot: ["home depot", "homedepot"],
+};
+
+/**
+ * Whether a workbook tactic can apply to this campaign at all. Compatibility with the channel
+ * is not enough: "B2B Job Title / Company IP" is compatible with Display, Meta, CTV and more,
+ * and attaching it on compatibility alone put B2B targeting in consumer pet-food plans.
+ * A tactic whose prerequisite the brief rules out is excluded; one whose prerequisite is merely
+ * unknown stays, since the plan already lists prerequisites for the planner to confirm.
+ */
+export function tacticFitsCampaign(record: { id: string; displayName: string; trigger: string }, facts: CampaignFacts): boolean {
+  const isB2bTactic = /\bb2b\b/i.test(`${record.displayName} ${record.trigger}`);
+  if (isB2bTactic) return facts.audienceType === "B2B" || facts.audienceType === "B2B2C";
+
+  // Retail-media data belongs to one retailer, and is only a fit when the brief names that
+  // retailer. Phrases rather than the display name, because "Target" alone matches every
+  // brief that says "target audience".
+  if (record.id.includes("retail_data")) {
+    const phrases = Object.entries(RETAILER_PHRASES).find(([key]) => record.id.includes(key))?.[1];
+    if (!phrases) return false;
+    const context = [facts.advertiserName, facts.advertiserUrl, ...facts.audienceDescriptions, ...facts.audienceSignals].join(" ");
+    return includesAny(context, phrases) > 0;
+  }
+
+  const data = facts.dataReadiness;
+  const prerequisite: Record<string, TriState | undefined> = {
+    "tactic.crm_targeting": data.crmSeedList,
+    "tactic.crm_lookalike": data.crmSeedList,
+    "tactic.crm_suppression": data.crmSuppressionList,
+    "tactic.purchase_transaction_data": data.offlineSalesData,
+    "tactic.site_retargeting": data.meaningfulSiteTraffic,
+    "tactic.geo_conquesting": data.locationData,
+  };
+  return prerequisite[record.id] !== false;
+}
+
+/** How many of a tactic's trigger phrases ("Awareness", "Conversion", ...) the campaign mentions. */
+function tacticRelevance(trigger: string, context: string): number {
+  const phrases = trigger.split(/[;,]/).map((phrase) => phrase.trim()).filter((phrase) => phrase.length > 3);
+  return includesAny(context, phrases);
+}
+
 function attachTargeting(product: MediaProductRecord, facts: CampaignFacts): AttachedPlanningRecord[] {
   const compatibleIds = new Set(planningKnowledgeBase.compatibilityEdges
     .filter((edge) => edge.toId === product.id && edge.relationship === "compatible")
@@ -619,10 +678,13 @@ function attachTargeting(product: MediaProductRecord, facts: CampaignFacts): Att
   const context = triggerText(facts);
   return planningKnowledgeBase.targetingTactics
     .filter((record) => record.recommendationEligible && (compatibleIds.has(record.id) || product.id === "channel.display_retargeting"))
+    .filter((record) => tacticFitsCampaign(record, facts))
+    // Ranked by trigger phrases rather than the whole trigger string: the whole string never
+    // appears in a brief, so every tactic tied and the workbook's row order decided the top 3.
     .sort((a, b) => {
       const aDefault = a.displayName === "Behavioral / Demographic" ? 1 : 0;
       const bDefault = b.displayName === "Behavioral / Demographic" ? 1 : 0;
-      return bDefault - aDefault || includesAny(context, [b.trigger]) - includesAny(context, [a.trigger]);
+      return bDefault - aDefault || tacticRelevance(b.trigger, context) - tacticRelevance(a.trigger, context);
     })
     .slice(0, 3)
     .map(({ id, displayName, rationale }) => ({ id, displayName, rationale }));
@@ -883,7 +945,9 @@ export function buildMediaRecommendationPlan(
 export function profileSignals(profile: AudienceProfile | null | undefined): { audienceDescriptions: string[]; audienceSignals: string[] } {
   if (!profile) return { audienceDescriptions: [], audienceSignals: [] };
   return {
-    audienceDescriptions: [profile.intro, profile.audienceAnalysis || "", profile.executiveSummary].filter(Boolean),
+    // The brief of record's business model is where retail partners are named ("sold through
+    // Walmart, Chewy and Amazon"), which is what the retailer-data tactics check for.
+    audienceDescriptions: [profile.briefOfRecord?.businessModel || "", profile.intro, profile.audienceAnalysis || "", profile.executiveSummary].filter(Boolean),
     audienceSignals: (profile.personas || []).flatMap((persona) => [persona.watch, persona.browse, persona.buy, persona.narrative]).filter(Boolean),
   };
 }

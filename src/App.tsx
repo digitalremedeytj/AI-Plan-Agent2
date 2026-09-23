@@ -121,6 +121,7 @@ import {
 import * as api from "./api/client";
 import { ApiError, type PlanSummary, type SessionUser } from "./api/client";
 import { migrateLocalPlans } from "./api/migrateLocalPlans";
+import { BriefOfRecordCard } from "./components/BriefOfRecordCard";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
 const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
@@ -1138,22 +1139,32 @@ export default function App() {
     const startedAt = Date.now();
     let lastLogAt = Date.now();
 
-    const interval = setInterval(() => {
-      // If there are real pending logs from the server stream, process the next one!
+    let finished = false;
+    const tick = () => {
+      if (finished) return;
       if (pendingLogsRef.current.length > 0) {
         lastLogAt = Date.now();
-        const nextLog = pendingLogsRef.current.shift();
+        // One line per tick keeps a live run readable. But a hidden tab's timers run as rarely
+        // as once a minute, so draining one line per tick there delayed a finished plan by
+        // minutes while the queue caught up. Once the run is complete, or nobody is watching,
+        // everything waiting is shown at once.
+        const batch = serverCompleteData || document.hidden
+          ? pendingLogsRef.current.splice(0)
+          : [pendingLogsRef.current.shift()];
         setResearchLogs(prev => [
           ...prev,
-          {
+          ...batch.map((nextLog) => ({
             id: Math.random().toString(),
-            timestamp: new Date().toLocaleTimeString(),
+            // The server's time, so the log shows when each step happened rather than when
+            // this queue got round to displaying it.
+            timestamp: new Date(nextLog.at || Date.now()).toLocaleTimeString(),
             ...nextLog
-          }
+          }))
         ]);
-      } 
+      }
       // If server has sent the completion event, and all real logs are drained, finish up!
-      else if (serverCompleteData) {
+      if (serverCompleteData && pendingLogsRef.current.length === 0) {
+        finished = true;
         const rawProfile = serverCompleteData.profile;
         if (rawProfile && rawProfile.personas) {
           Promise.all(
@@ -1187,8 +1198,9 @@ export default function App() {
             workspace.scrollIntoView({ behavior: "smooth" });
           }
         }, 100);
+        return;
       }
-      else if (Date.now() - lastLogAt >= 15000) {
+      if (!serverCompleteData && pendingLogsRef.current.length === 0 && Date.now() - lastLogAt >= 15000) {
         lastLogAt = Date.now();
         setResearchLogs(prev => [
           ...prev,
@@ -1200,7 +1212,11 @@ export default function App() {
           }
         ]);
       }
-    }, 1800); // Stagger every 1.8 seconds
+    };
+
+    // A completed run finishes on this render rather than waiting for the next tick.
+    if (serverCompleteData) tick();
+    const interval = setInterval(tick, 1800); // Stagger every 1.8 seconds
 
     return () => clearInterval(interval);
   }, [loading, serverCompleteData, audienceDescription, url, geography, campaignFocus, planOptions, hydratePersonaAvatars]);
@@ -2441,7 +2457,8 @@ export default function App() {
           if (event.type === "status") {
             pendingLogsRef.current.push({
               type: "status",
-              message: event.message
+              message: event.message,
+              at: event.at
             });
           } else if (event.type === "research_result") {
             pendingLogsRef.current.push({
@@ -2449,7 +2466,8 @@ export default function App() {
               label: event.label,
               sources: event.sources,
               blurb: event.blurb,
-              failed: Boolean(event.failed)
+              failed: Boolean(event.failed),
+              at: event.at
             });
           } else if (event.type === "complete") {
             sawComplete = true;
@@ -4981,6 +4999,8 @@ export default function App() {
                     </div>
                   )}
                 </div>
+
+                {!isShareView && profileData.briefOfRecord && <BriefOfRecordCard brief={profileData.briefOfRecord} />}
 
                 {/* Key Personas (Grid of cards) */}
                 <div className="space-y-4">

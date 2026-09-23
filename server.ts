@@ -30,6 +30,18 @@ import {
 import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import { applyProgrammaticSanityChecks } from "./src/qa/chartSanity";
 import { resolveGroundingUrls } from "./src/research/groundingUrls";
+import { crawlSite, type CrawlResult } from "./src/research/crawl";
+import {
+  BRIEF_OF_RECORD_SYSTEM_INSTRUCTION,
+  briefOfRecordSchema,
+  buildAdvertiserSearchPrompt,
+  buildBriefOfRecordInput,
+  formatBriefOfRecord,
+  normalizeBriefOfRecord,
+  type BriefOfRecord,
+} from "./src/research/briefOfRecord";
+import { filterCitationPool, RESEARCH_SOURCE_GUIDANCE } from "./src/research/sourceFilter";
+import { restorePublisherSelection, settlePublisherSelection } from "./src/qa/publisherSelection";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
 import { applyAudienceSkews, audienceSkewSchema, chartsNeedingBaselineEstimates, describeBaselines } from "./src/qa/baselineEstimates";
 import { NATIONAL_BASELINES } from "./src/planning/knowledge/nationalBaselines";
@@ -145,6 +157,10 @@ const TIMEOUT_SEGMENTS_FALLBACK_MS = 60000;
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
 const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
 const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
+// Per-dossier cap on the research text saved with a plan. Four at this size is ~100KB.
+const RESEARCH_SNAPSHOT_MAX_CHARS = 25000;
+// Brief of record: one optional grounded search plus one structured call, each on this budget.
+const TIMEOUT_BRIEF_OF_RECORD_MS = 45000;
 // One revision per chart that looked generated (straight-line dayparts, evenly spaced indices).
 // The revisions run in parallel, so the stage costs one call's time.
 // Low thinking: reshaping one small array needs little reasoning, and at medium the domain
@@ -310,53 +326,6 @@ function getOpenaiClient(): OpenAI {
     });
   }
   return openaiClient;
-}
-
-// Helper: Try to fetch and extract plain text from website URL
-async function fetchUrlText(url: string): Promise<string> {
-  if (!url) return "";
-  try {
-    let formattedUrl = url.trim();
-    if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
-      formattedUrl = `https://${formattedUrl}`;
-    }
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 6000); // 6s timeout
-
-    const response = await fetch(formattedUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-      },
-      signal: controller.signal
-    });
-    clearTimeout(id);
-
-    if (!response.ok) {
-      return `[Note: Direct crawl of ${formattedUrl} returned status ${response.status}. Rely on public web search grounding to understand this brand.]`;
-    }
-
-    const html = await response.text();
-    
-    // Simple text extraction from HTML
-    let cleanText = html;
-    // Strip scripts
-    cleanText = cleanText.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ');
-    // Strip styles
-    cleanText = cleanText.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ');
-    // Strip comments
-    cleanText = cleanText.replace(/<!--[\s\S]*?-->/g, ' ');
-    // Strip HTML tags
-    cleanText = cleanText.replace(/<[^>]+>/g, ' ');
-    // Normalize whitespace
-    cleanText = cleanText.replace(/\s+/g, ' ').trim();
-    
-    // Return a solid block of the text content to feed to Gemini
-    return cleanText.slice(0, 3500);
-  } catch (error: any) {
-    return `[Note: Direct website crawl failed due to error: ${error.message || error}. Rely on public web search grounding to understand this website.]`;
-  }
 }
 
 // Defining the strict schema to enforce structured outputs for the client-side Recharts & markdown rendering
@@ -802,7 +771,7 @@ ${JSON.stringify({
   creativeReadiness: facts.creativeReadiness,
 }, null, 2)}
 
-AI-RESEARCHED AUDIENCE PROFILE:
+${audienceProfile?.briefOfRecord ? `${formatBriefOfRecord(audienceProfile.briefOfRecord)}\nEvery rationale, evidence line and activation note must describe this audience; do not reason about groups outside it.\n\n` : ""}AI-RESEARCHED AUDIENCE PROFILE:
 ${JSON.stringify({
   intro: audienceProfile?.intro,
   personas: audienceProfile?.personas,
@@ -880,6 +849,8 @@ async function buildChannelStrategy(
   const facts = buildCampaignFacts({
     advertiserName,
     advertiserUrl: options?.advertiserUrl,
+    // Plans generated before the brief of record existed fall back to inference in the engine.
+    audienceType: audienceProfile?.briefOfRecord?.audienceType,
     kpis,
     campaignFocus: options?.campaignFocus,
     audienceDescriptions: signals.audienceDescriptions,
@@ -2826,7 +2797,8 @@ app.post("/api/generate-profile", async (req, res) => {
   let lastEventTime = Date.now();
   const sendEvent = (type: string, data: any) => {
     lastEventTime = Date.now();
-    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+    // Stamped here so the client log shows when each step ran, not when it was displayed.
+    res.write(`data: ${JSON.stringify({ type, ...data, at: new Date(lastEventTime).toISOString() })}\n\n`);
     if ((res as any).flush) {
       (res as any).flush();
     }
@@ -2882,15 +2854,69 @@ app.post("/api/generate-profile", async (req, res) => {
     // Everything that failed or was not found, carried on the delivered profile.
     const generationAlerts: GenerationAlert[] = [];
 
-    let crawledPageText = "";
+    let crawl: CrawlResult | null = null;
     if (url) {
       sendEvent("status", { message: `Crawling website ${url} to extract brand positioning, offering details, and market context...` });
-      crawledPageText = await fetchUrlText(url);
-      if (crawledPageText.startsWith("[Note: Direct website crawl failed")) {
-        pushAlert(generationAlerts, { section: "research", severity: "failed", message: `The website crawl of ${url} failed, so the profile is grounded in search research only.` });
+      crawl = await crawlSite(url);
+      if (crawl.ok) {
+        sendEvent("status", { message: `Crawl complete: extracted ${crawl.text.length} characters of brand text from ${crawl.url}.` });
+      } else {
+        console.warn(`[CRAWL] ${url} failed: ${crawl.errors.join("; ")}`);
+        pushAlert(generationAlerts, { section: "research", severity: "failed", message: `The website crawl of ${url} failed (${crawl.errors.join("; ")}), so the advertiser was researched through web search only.` });
+        sendEvent("status", { message: `Website crawl failed (${crawl.errors.join("; ")}). Continuing with web search research.` });
       }
-      sendEvent("status", { message: `Crawl complete: Extracted brand text snippet (${crawledPageText.length} chars) to ground audience analysis.` });
     }
+    const crawledPageText = crawl?.ok ? crawl.text : "";
+
+    // Brief of Record: one settled answer to "who is this plan for?", written before research so
+    // the dossiers, synthesis, channel reasoning and QA all work from the same definition rather
+    // than each inferring its own. When the crawl got nothing usable, a grounded search stands in.
+    sendEvent("status", { message: "Defining the brief of record: advertiser offering, audience in scope and campaign objective..." });
+    let briefOfRecord: BriefOfRecord | null = null;
+    try {
+      const briefAi = getAiClient();
+      let searchSummary = "";
+      if (!crawledPageText && (cleanAdvertiserName || cleanUrl)) {
+        searchSummary = await generateGroundedText(briefAi, {
+          input: buildAdvertiserSearchPrompt(cleanAdvertiserName, cleanUrl),
+          thinkingLevel: "low",
+          timeoutMs: TIMEOUT_BRIEF_OF_RECORD_MS,
+        }).then((result) => result.text.trim()).catch((err: any) => {
+          console.warn(`[BRIEF OF RECORD] Advertiser search failed: ${err?.message || err}`);
+          return "";
+        });
+      }
+      const raw = await generateStructuredJson(briefAi, {
+        systemInstruction: BRIEF_OF_RECORD_SYSTEM_INSTRUCTION,
+        input: buildBriefOfRecordInput({
+          advertiserName: cleanAdvertiserName,
+          url: cleanUrl,
+          audienceDescription: cleanAudienceDesc,
+          targetPersonas: cleanTargetPersonas,
+          kpis: cleanKpis,
+          campaignFocus: campaignFocus || "",
+          geography: geography || "United States",
+          additionalContext: cleanAdditionalContext,
+          crawlText: crawledPageText.slice(0, 6000),
+          searchSummary,
+        }),
+        schema: briefOfRecordSchema,
+        thinkingLevel: "medium",
+        timeoutMs: TIMEOUT_BRIEF_OF_RECORD_MS,
+      });
+      briefOfRecord = normalizeBriefOfRecord(raw, crawledPageText ? "brief + website" : searchSummary ? "brief + web search" : "brief only");
+      if (!briefOfRecord) throw new Error("the model returned no audience definition");
+      sendEvent("status", { message: `Brief of record: ${briefOfRecord.primaryAudience} Core segments: ${briefOfRecord.coreSegments?.join("; ") || "as described"}. Also in scope: ${briefOfRecord.includedSegments.length} group(s) in total.` });
+    } catch (err: any) {
+      console.warn(`[BRIEF OF RECORD] Failed: ${err?.message || err}`);
+      pushAlert(generationAlerts, { section: "research", severity: "flagged", message: `The brief of record could not be written (${err?.message || err}), so each research step inferred the audience from the brief on its own.` });
+    }
+    const briefBlock = formatBriefOfRecord(briefOfRecord);
+    // The one-line audience the chart estimate calls see. A bare URL told the skew model nothing
+    // about who the charts describe.
+    const audienceLine = briefOfRecord
+      ? `${briefOfRecord.primaryAudience}${briefOfRecord.coreSegments?.length ? ` (core segments: ${briefOfRecord.coreSegments.join("; ")})` : ""}`
+      : cleanAudienceDesc || cleanUrl;
 
     if (selectedPlanOptions && selectedPlanOptions.length > 0) {
       const planCount = selectedPlanOptions.length;
@@ -2924,7 +2950,7 @@ Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
 Additional Context: ${cleanAdditionalContext || "None provided"}
-
+${briefBlock ? `\n${briefBlock}\nResearch the audience defined above, across every in-scope group.\n` : ""}
 TASK:
 Search the web for real, reputable statistics regarding:
 1. Age distribution ranges (specifically looking for percentage splits across 18-24, 25-34, 35-44, 45-54, 55+ or similar cohorts).
@@ -2944,7 +2970,7 @@ Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
 Additional Context: ${cleanAdditionalContext || "None provided"}
-
+${briefBlock ? `\n${briefBlock}\nResearch the audience defined above, across every in-scope group.\n` : ""}
 TASK:
 Search the web for real, reputable statistics regarding:
 1. Top websites, apps, and digital platforms visited or preferred by this specific audience segment.
@@ -2963,7 +2989,7 @@ Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
 Additional Context: ${cleanAdditionalContext || "None provided"}
-
+${briefBlock ? `\n${briefBlock}\nResearch the audience defined above, across every in-scope group.\n` : ""}
 TASK:
 Search the web for real, reputable statistics regarding:
 1. Connected TV (CTV) vs. other video device viewing habits (Smart TVs, Streaming devices like Roku, FireTV, AppleTV).
@@ -2982,7 +3008,7 @@ Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
 Additional Context: ${cleanAdditionalContext || "None provided"}
-
+${briefBlock ? `\n${briefBlock}\nResearch the audience defined above, across every in-scope group.\n` : ""}
 TASK:
 Search the web for real, reputable statistics regarding:
 1. Online activity peaks (weekday vs. weekend habits, daytime vs. prime-time/late-night streaming, weekday web/browser activity trends like browser gaming weekday peaks).
@@ -3006,7 +3032,7 @@ INSTRUCTIONS:
       try {
         console.log(`Starting parallel research query for: ${label}...`);
         const research = await generateGroundedText(ai, {
-          systemInstruction: "You are an expert audience research analyst. Provide a highly detailed, fact-packed research brief. Always find and cite real stats, percentages, and sources.",
+          systemInstruction: `You are an expert audience research analyst. Provide a highly detailed, fact-packed research brief. Always find and cite real stats, percentages, and sources. ${RESEARCH_SOURCE_GUIDANCE}`,
           input: prompt,
           thinkingLevel: RESEARCH_THINKING_LEVEL,
           timeoutMs: TIMEOUT_PARALLEL_RESEARCH_MS,
@@ -3095,12 +3121,19 @@ INSTRUCTIONS:
     // resolve keeps its original link.
     sendEvent("status", { message: "Resolving research citations to their original publisher URLs..." });
     const resolveStartedAt = Date.now();
-    const deduplicatedSources = await resolveGroundingUrls(redirectSources, {
+    const resolvedSources = await resolveGroundingUrls(redirectSources, {
       timeoutMs: TIMEOUT_URL_RESOLUTION_MS,
       concurrency: URL_RESOLUTION_CONCURRENCY,
     });
-    const resolvedCount = deduplicatedSources.filter((src, idx) => src.uri !== redirectSources[idx].uri).length;
-    console.log(`Resolved ${resolvedCount}/${deduplicatedSources.length} grounding redirects to publisher URLs in ${Date.now() - resolveStartedAt}ms.`);
+    const resolvedCount = resolvedSources.filter((src, idx) => src.uri !== redirectSources[idx].uri).length;
+    console.log(`Resolved ${resolvedCount}/${resolvedSources.length} grounding redirects to publisher URLs in ${Date.now() - resolveStartedAt}ms.`);
+    // Social, forum and homework domains are never evidence, so they never reach the pool the
+    // registry is curated from. Filtered after resolution: before it, every URL is a redirect.
+    const citationPool = filterCitationPool(resolvedSources);
+    const deduplicatedSources = citationPool.kept;
+    if (citationPool.excluded.length > 0) {
+      console.log(`[SOURCES] Excluded ${citationPool.excluded.length} non-evidence source(s) from the citation pool: ${citationPool.excluded.map((src) => `${src.uri} (${src.reason})`).join(", ")}`);
+    }
 
     // Build dynamic CTV Publisher guidance based on active enabled publishers, tiers, and settings
     const effectivePublishers = (Array.isArray(ctvPublishers) && ctvPublishers.length > 0)
@@ -3268,7 +3301,7 @@ ${cleanTargetPersonas.length > 0 ? `USER SPECIFIED TARGET PERSONAS (MANDATORY TO
 ${cleanTargetPersonas.map((p, i) => `  Slot ${i + 1}: "${p}"`).join('\n')}
 (You MUST preserve these exact persona archetypes in the first ${cleanTargetPersonas.length} persona slots with sourceType 'User')` : ""}
 ${contextGuidance}
-
+${briefBlock ? `\n${briefBlock}\nThe personas, narrative and publisher picks must all describe this audience. Build the personas around the core segments; also-served groups are on-target but need no persona of their own. No persona may target a group outside the brief of record.\n` : ""}
 ${failedDossiers.length > 0 ? `RESEARCH THAT FAILED (leave every chart and figure for these topics empty): ${failedDossiers.join(", ")}
 ` : ""}
 --------------------------------------------------
@@ -3342,8 +3375,13 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
     }
     console.log(`Synthesis complete via ${GEMINI_FLASH_MODEL} (${synthesisResult.thinkingLevel} thinking) in ${((Date.now() - synthesisStartedAt) / 1000).toFixed(1)}s.`);
 
-    sendEvent("status", { message: "Evaluating audience profile using media planning scoring agent..." });
     const originalData = synthesisResult.data as any;
+    if (briefOfRecord) originalData.briefOfRecord = briefOfRecord;
+
+    // Publisher picks are settled here, before the channel strategy snapshots them: in the
+    // enabled pool, each once, with the admin's category.
+    for (const alert of settlePublisherSelection(originalData, enabledPublishers, targetPublisherCount)) pushAlert(generationAlerts, alert);
+    const settledPublishers = JSON.parse(JSON.stringify(originalData.ctvPublishers || []));
 
     // Fallback/merge RFP requirements if rfpAnalysis was supplied
     if (rfpAnalysis) {
@@ -3456,7 +3494,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       try {
         const skews: any = await generateStructuredJson(ai, {
           systemInstruction: "You estimate how a target audience differs from the U.S. national population. For each bracket or time period you give an index: 100 = same as the national baseline, 150 = 1.5x as likely, 60 = 0.6x. Base every skew on the research and on well-established facts about this kind of audience; where there is no reason to differ, use 100 and say so. Do not flatten differences that the research supports, and do not invent sharp skews it does not. Use the exact labels given.",
-          input: `AUDIENCE: ${cleanAudienceDesc || cleanUrl}\nGEOGRAPHY: ${geography}\nCAMPAIGN FOCUS: ${campaignFocus}\n\nNATIONAL BASELINES TO ADJUST:\n${describeBaselines(baselineIds)}\n\nFor day-of-week and hour-of-day, skew each period for this audience's own routine (work schedule, life stage, when they stream or browse) - the baseline is national TV viewing.\n\nRESEARCH - DEMOGRAPHICS:\n${dossierExcerpt("Demographics")}\n\nRESEARCH - TEMPORAL & PURCHASE:\n${dossierExcerpt("Temporal & Purchase")}\n\nReturn one index per label for each chart listed.`,
+          input: `AUDIENCE: ${audienceLine}\nGEOGRAPHY: ${geography}\nCAMPAIGN FOCUS: ${campaignFocus}\n\nNATIONAL BASELINES TO ADJUST:\n${describeBaselines(baselineIds)}\n\nFor day-of-week and hour-of-day, skew each period for this audience's own routine (work schedule, life stage, when they stream or browse) - the baseline is national TV viewing.\n\nRESEARCH - DEMOGRAPHICS:\n${dossierExcerpt("Demographics")}\n\nRESEARCH - TEMPORAL & PURCHASE:\n${dossierExcerpt("Temporal & Purchase")}\n\nReturn one index per label for each chart listed.`,
           schema: audienceSkewSchema(baselineIds),
           // Low: at medium this call hit its 45s budget in a live run; it is a small, structured
           // judgement per bracket, and the revision calls at low returned in 2-4s.
@@ -3503,7 +3541,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         try {
           const revision: any = await generateStructuredJson(ai, {
             systemInstruction: "You revise one chart in a media-planning audience profile so its estimated values look like real audience data. Keep the same items in the same order. Points marked isModeled true are estimates: change them as the required fixes say. Keep a point marked isModeled false only if the research below states that exact figure; otherwise treat it as an estimate. Mark every estimated point isModeled true with a source that says it is an estimate.",
-            input: `AUDIENCE: ${cleanAudienceDesc || cleanUrl}\nGEOGRAPHY: ${geography}\n\nCHART: ${chart.label}\nCURRENT VALUES:\n${JSON.stringify(current, null, 2)}\n\nWHY IT LOOKS GENERATED: ${problems.join("; ")}.\n\nREQUIRED FIXES:\n${realismFixes(problems).map((fix) => `- ${fix}`).join("\n")}\n\nWHAT REALISTIC DATA LOOKS LIKE: ${CHART_SHAPE_GUIDANCE[chart.id] || ""}\n\nRESEARCH FOR THIS TOPIC (excerpt, for context):\n${(dossier && !dossier.failed ? dossier.text : "").slice(0, 3000)}\n\nReturn the revised chart as 'chartData'.`,
+            input: `AUDIENCE: ${audienceLine}\nGEOGRAPHY: ${geography}\n\nCHART: ${chart.label}\nCURRENT VALUES:\n${JSON.stringify(current, null, 2)}\n\nWHY IT LOOKS GENERATED: ${problems.join("; ")}.\n\nREQUIRED FIXES:\n${realismFixes(problems).map((fix) => `- ${fix}`).join("\n")}\n\nWHAT REALISTIC DATA LOOKS LIKE: ${CHART_SHAPE_GUIDANCE[chart.id] || ""}\n\nRESEARCH FOR THIS TOPIC (excerpt, for context):\n${(dossier && !dossier.failed ? dossier.text : "").slice(0, 3000)}\n\nReturn the revised chart as 'chartData'.`,
             schema: { type: "object", properties: { chartData: itemSchema }, required: ["chartData"] },
             thinkingLevel: "low",
             timeoutMs: TIMEOUT_CHART_REVISION_MS,
@@ -3572,11 +3610,13 @@ You MUST score across these five categories (0 to 20 points each):
 CONTEXT YOU MUST APPLY BEFORE SCORING:
 - Today's date is ${scoringToday}. Data carrying ${currentYear} or ${currentYear - 1} dates is current, not speculative or future-dated. Do not treat a year later than your training data as an unsupported or fabricated claim; judge the figure on its cited source instead.
 ${channelStrategyGuidance}
-- Chart values marked 'isModeled: true' are labelled planning estimates, shown to the reader as estimated. Judge them on plausibility and consistency with the narrative, not on the absence of a published source. Charts whose source reads 'ScoutAI estimate: U.S. Census Bureau ...' or '... Bureau of Labor Statistics ...' are published national distributions adjusted for this audience; national TV viewing genuinely rises through the day to an 8-9 PM peak. Share charts are rescaled to 100 by the server, so do not flag rounding.
+${briefOfRecord ? `- The profile's 'briefOfRecord' is the settled definition of who this campaign is for, written from the advertiser's own offering before any research ran. Judge audience fit against it. A persona, chart or recommendation serving a group listed in 'includedSegments' is on-target - do not flag it or ask for it to be removed. Flag only content aimed at a group outside the brief of record, or content that contradicts it.
+` : ""}- Chart values marked 'isModeled: true' are labelled planning estimates, shown to the reader as estimated. Judge them on plausibility and consistency with the narrative, not on the absence of a published source. Charts whose source reads 'ScoutAI estimate: U.S. Census Bureau ...' or '... Bureau of Labor Statistics ...' are published national distributions adjusted for this audience; national TV viewing genuinely rises through the day to an 8-9 PM peak. Share charts are rescaled to 100 by the server, so do not flag rounding.
 - 'deviceTypeIndex.chartData' is a composition share of one denominator and is expected to sum to 100. 'browserAndReach.chartData' is an affinity index against a 100 = average baseline and is expected to sum far above 100. Neither is an error.
 
 Your output must be a perfectly formatted JSON matching the required schema. Ensure you list any specific mathematical, demographic, or strategic discrepancies in 'criticalRedFlags' or 'fixItChecklist'.`;
 
+    sendEvent("status", { message: "Evaluating audience profile using media planning scoring agent..." });
     console.log("Launching OpenAI Scoring Agent Call (gpt-5.6-terra) over the profile including its channel strategy...");
     const openai = getOpenaiClient();
     // Resolving a rejection to null routes API failures into the same bypass path that
@@ -3670,6 +3710,8 @@ Your task is to rewrite and update the audience profile to:
 3. Where a figure in the prose is implausible or not supported by the profile's cited sources, remove the figure (or the claim resting on it). NEVER replace it with an industry benchmark, a typical rate, or a modeled estimate. Do NOT change chart arrays (any 'chartData' or '...ChartData' field): the server settles chart figures before QA and restores them as they were. Keep the prose consistent with the charts as given.
 4. Maintain exactly the same structure as the input profile but with corrected values, narratives, or recommendations.
 5. NEVER write a budget allocation, media-type split or spend figure into the narrative recommendations. When the profile carries a 'channelStrategy' object, that object is produced by a deterministic planning engine and is the single source of truth for budget; a second split written in prose contradicts it in the delivered document. If the checklist asks for allocations, treat it as already satisfied there and address only the parts it does not cover. When there is no 'channelStrategy', answer an allocation request with the targeting, platform and measurement specifics it is really after - still no invented spend figures.
+6a. THE BRIEF OF RECORD IS SETTLED: When the profile carries 'briefOfRecord', it defines who the campaign is for, and the channel strategy and publisher picks were built for that audience. Never narrow, widen or redefine it, and never remove, replace or add a persona to change which groups the plan targets. You may sharpen a persona's details. If a red flag asks for an audience change, leave the audience as it is and say so in 'autoFixes'.
+6b. CTV PUBLISHER SELECTION IS SETTLED: Keep the same publishers in 'ctvPublishers', in the same order, with the same categories. You may rewrite a publisher's 'why'. The server restores the selection as it was.
 6. USER-SPECIFIED PERSONAS ARE PROTECTED: If the input profile contains personas with sourceType 'User' (or personas matching user-specified targets), you MUST strictly preserve their exact names and 'sourceType': 'User'. Do NOT rename, delete, swap, or overwrite user-specified personas.
 7. 'deviceTypeIndex.chartData' MUST stay a composition share summing to 100 - it renders as a pie chart and as a "Split Share %" table, so index values get redrawn as shares and contradict whatever the overview says. Fix a broken device chart by correcting the shares and their stated denominator, never by reframing it as an index. 'browserAndReach.chartData' stays an affinity index with metricType 'Affinity Index'.
 
@@ -3732,6 +3774,9 @@ Please correct the profile to resolve all issues.`
           const merged = mergeRemediatedProfile(originalData, corrected);
           finalProfile = merged.profile;
           restoreDeletedCharts(finalProfile, originalData);
+          if (restorePublisherSelection(finalProfile, settledPublishers).changed) {
+            console.log("[PUBLISHERS] Remediation changed the CTV publisher selection; kept the settled picks and any rewritten rationale.");
+          }
           profileRewritten = true;
           if (merged.restored.length > 0) {
             console.warn(`[REMEDIATION] Correction omitted ${merged.restored.join(", ")}; kept the synthesized version.`);
@@ -3827,6 +3872,15 @@ Please correct the profile to resolve all issues.`
     delete finalProfile.expansionReachPercent;
     for (const alert of reportChartsNotFound(finalProfile, generationAlerts)) pushAlert(generationAlerts, alert);
     finalProfile.generationAlerts = generationAlerts;
+
+    // The research the plan was built from, kept with the plan so a later audit can check its
+    // figures against the dossiers rather than the auditor's memory. Each dossier is capped so
+    // the plan stays well inside Firestore's 1MB document limit.
+    finalProfile.researchSnapshot = {
+      capturedAt: new Date().toISOString(),
+      dossiers: researchResults.map((result) => ({ label: result.label, failed: Boolean(result.failed), text: result.failed ? "" : result.text.slice(0, RESEARCH_SNAPSHOT_MAX_CHARS) })),
+      ...(crawl ? { crawl: { url: crawl.url, ok: crawl.ok, chars: crawl.text.length } } : {}),
+    };
 
     // Persona headshots are deliberately NOT generated here. Four sequential image calls
     // (45s timeout plus one retry each) could add up to 360s to a request the browser is

@@ -106,20 +106,27 @@ function isEmptyValue(value: unknown): boolean {
  * what it returns; it may not delete. Any top-level section it omitted or emptied keeps the
  * synthesized (real) version, and sources always stay the researched registry.
  */
+// Taken from the original whatever the rewrite says. Sources are the research that was
+// consulted; the channel strategy is the engine's; the brief of record is the audience every
+// other step was built for, and a rewrite that redefined it would leave those steps describing
+// a different audience.
+const SETTLED_KEYS = ["sources", "channelStrategy", "briefOfRecord"] as const;
+
 export function mergeRemediatedProfile(original: any, corrected: any): { profile: any; restored: string[] } {
   const profile = { ...corrected };
   const restored: string[] = [];
   for (const [key, value] of Object.entries(original ?? {})) {
     // Always taken from the original below, so their absence from the rewrite is not a loss.
-    if (key === "sources" || key === "channelStrategy") continue;
+    if ((SETTLED_KEYS as readonly string[]).includes(key)) continue;
     if (isEmptyValue(value)) continue;
     if (isEmptyValue(profile[key])) {
       profile[key] = value;
       restored.push(key);
     }
   }
-  if (Array.isArray(original?.sources)) profile.sources = original.sources;
-  if (original?.channelStrategy) profile.channelStrategy = original.channelStrategy;
+  for (const key of SETTLED_KEYS) {
+    if (original?.[key] !== undefined) profile[key] = original[key];
+  }
   return { profile, restored };
 }
 

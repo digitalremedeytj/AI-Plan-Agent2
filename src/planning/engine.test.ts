@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCampaignFacts, buildMediaRecommendationPlan } from "./engine";
+import { buildCampaignFacts, buildMediaRecommendationPlan, inferAudienceType, profileSignals, tacticFitsCampaign } from "./engine";
 import { validatePlanningKnowledgeBase } from "./knowledge/normalizeWorkbook";
 import { validateProductRegistry } from "./knowledge/registry";
 import { clonePlanningSettings, DEFAULT_PLANNING_SETTINGS } from "./settings";
@@ -516,4 +516,80 @@ test("only candidates scored by the AI layer are marked as assessed", () => {
 
   const assessed = plan.evaluatedCandidates.filter((candidate) => candidate.aiAssessed).map((candidate) => candidate.product.id);
   assert.deepEqual(assessed, [first.product.id]);
+});
+
+const B2B_TACTIC = /B2B Job Title/;
+const tacticNames = (facts: ReturnType<typeof buildCampaignFacts>) =>
+  buildMediaRecommendationPlan(facts).evaluatedCandidates.flatMap((candidate) => candidate.targetingTactics.map((tactic) => tactic.displayName));
+
+test("a consumer campaign never carries B2B job-title or company-IP targeting", () => {
+  const facts = buildCampaignFacts({
+    advertiserName: "PetSmart",
+    kpis: ["Site visits"],
+    campaignFocus: "Full-Funnel",
+    audienceDescriptions: ["U.S. dog and cat owners shopping for pet food, grooming and supplies; high-value conversion"],
+    audienceType: "B2C",
+    workingMediaBudget: 100_000,
+    campaignFlightDays: 30,
+    planningSettings: settings(),
+  });
+  const names = tacticNames(facts);
+  assert.ok(names.length > 0);
+  assert.ok(!names.some((name) => B2B_TACTIC.test(name)), names.join(", "));
+});
+
+test("a B2B campaign can still carry B2B targeting", () => {
+  const facts = buildCampaignFacts({
+    kpis: ["Lead gen"],
+    audienceDescriptions: ["B2B IT decision-makers at firms with 100+ employees"],
+    workingMediaBudget: 100_000,
+    campaignFlightDays: 30,
+    planningSettings: settings(),
+  });
+  assert.equal(facts.audienceType, "B2B");
+  assert.ok(tacticNames(facts).some((name) => B2B_TACTIC.test(name)));
+});
+
+test("without a brief of record the audience type is inferred from the brief text", () => {
+  assert.equal(inferAudienceType("Luxury travelers looking for boutique hotels"), "B2C");
+  assert.equal(inferAudienceType("B2B IT decision-makers"), "B2B");
+});
+
+test("retail-media data is only attached when the brief names that retailer", () => {
+  const base = buildCampaignFacts({
+    advertiserName: "Jinx",
+    audienceDescriptions: ["Dog and cat owners; this is our target audience"],
+    workingMediaBudget: 50_000,
+    campaignFlightDays: 30,
+    planningSettings: settings(),
+  });
+  const walmart = { id: "tactic.walmart_connect_retail_data_off_site_activation", displayName: "Walmart Connect (retail data, off-site activation)", trigger: "" };
+  const target = { id: "tactic.roundel_target_retail_data_off_site_activation", displayName: "Roundel / Target (retail data, off-site activation)", trigger: "" };
+  assert.equal(tacticFitsCampaign(walmart, base), false);
+  assert.equal(tacticFitsCampaign(target, base), false, "the word 'target' in a brief is not the retailer");
+  assert.equal(tacticFitsCampaign(walmart, { ...base, audienceSignals: ["Buys pet food at Walmart"] }), true);
+});
+
+test("a tactic whose data prerequisite the brief rules out is not attached", () => {
+  const facts = buildCampaignFacts({
+    audienceDescriptions: ["New customers; no customer list is available"],
+    workingMediaBudget: 50_000,
+    campaignFlightDays: 30,
+    planningSettings: settings(),
+  });
+  assert.equal(facts.dataReadiness.crmSeedList, false);
+  assert.equal(tacticFitsCampaign({ id: "tactic.crm_targeting", displayName: "CRM Targeting", trigger: "" }, facts), false);
+  assert.equal(tacticFitsCampaign({ id: "tactic.contextual_targeting", displayName: "Contextual Targeting", trigger: "" }, facts), true);
+});
+
+test("a retail partner named in the brief of record's business model unlocks that retailer's data", () => {
+  const signals = profileSignals({
+    intro: "Premium dog and cat food.",
+    executiveSummary: "",
+    personas: [],
+    briefOfRecord: { businessModel: "DTC e-commerce plus national retail partners including Walmart, Chewy and Amazon" },
+  } as any);
+  const facts = buildCampaignFacts({ ...signals, workingMediaBudget: 50_000, campaignFlightDays: 30, planningSettings: settings() });
+  const walmart = { id: "tactic.walmart_connect_retail_data_off_site_activation", displayName: "Walmart Connect (retail data, off-site activation)", trigger: "" };
+  assert.equal(tacticFitsCampaign(walmart, facts), true);
 });
