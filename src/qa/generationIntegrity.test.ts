@@ -78,7 +78,7 @@ test("an empty chart is reported as not found in research unless another alert a
 });
 
 test("remediation cannot delete a section: anything it omits or empties keeps the synthesized version", () => {
-  const original = { personas: [{ name: "Core Gamer" }], ctvPublishers: [{ publisher: "Hulu" }], intro: "Original intro.", sources: [{ url: "https://a" }] };
+  const original = { personas: [{ name: "Core Gamer" }], ctvPublishers: [{ publisher: "Hulu" }], intro: "Original intro.", sources: [{ url: "https://a" }], channelStrategy: { mediaPlan: {} } };
   const corrected = { intro: "Sharper intro.", ctvPublishers: [], sources: [{ url: "https://invented" }] };
 
   const { profile, restored } = mergeRemediatedProfile(original, corrected);
@@ -87,7 +87,8 @@ test("remediation cannot delete a section: anything it omits or empties keeps th
   assert.deepEqual(profile.personas, original.personas);
   assert.deepEqual(profile.ctvPublishers, original.ctvPublishers);
   assert.deepEqual(profile.sources, original.sources, "citations always stay the researched registry");
-  assert.deepEqual(restored.sort(), ["ctvPublishers", "personas"]);
+  assert.deepEqual(profile.channelStrategy, original.channelStrategy);
+  assert.deepEqual(restored.sort(), ["ctvPublishers", "personas"], "sources and channelStrategy are always kept, so they are not reported as restored");
 });
 
 test("fewer than four personas is reported, never padded with stand-ins", () => {

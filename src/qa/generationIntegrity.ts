@@ -138,7 +138,7 @@ export function reportChartsRemovedByRemediation(before: any, after: any): Gener
       pushAlert(alerts, {
         section: chart.section,
         severity: "flagged",
-        message: `${chart.label}: removed during QA auto-remediation because the QA review found the figures were not supported by a single comparable source. See the QA red flags.`,
+        message: `${chart.label}: removed during QA auto-remediation after the QA review questioned it. See the QA red flags for the reason.`,
       });
     }
   }
@@ -175,6 +175,8 @@ export function mergeRemediatedProfile(original: any, corrected: any): { profile
   const profile = { ...corrected };
   const restored: string[] = [];
   for (const [key, value] of Object.entries(original ?? {})) {
+    // Always taken from the original below, so their absence from the rewrite is not a loss.
+    if (key === "sources" || key === "channelStrategy") continue;
     if (isEmptyValue(value)) continue;
     if (isEmptyValue(profile[key])) {
       profile[key] = value;
