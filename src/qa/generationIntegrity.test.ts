@@ -141,6 +141,19 @@ test("QA can remove a chart it names, and the plan says why", () => {
   assert.deepEqual(alerts.map((a) => a.message), ["Age distribution: removed after QA review - CDC birth data describes mothers, not organic baby-product shoppers."]);
 });
 
+test("a note about a chart QA later removed is dropped, so the plan does not describe figures it no longer shows", () => {
+  const profile = profileWithCharts();
+  const existing = [
+    { section: "demographics", severity: "flagged" as const, message: "Household income: 42% of this audience is shown earning over $100k..." },
+    { section: "research", severity: "failed" as const, message: "The website crawl failed." },
+  ];
+
+  const removal = applyQaChartRejections(profile, [{ chart: "income", reason: "Source is from 2017" }], existing);
+
+  assert.deepEqual(existing.map((a) => a.message), ["The website crawl failed."]);
+  assert.match(removal[0].message, /^Household income: removed after QA review - Source is from 2017\.$/);
+});
+
 test("remediation cannot change or delete chart figures", () => {
   const original = profileWithCharts();
   const rewritten: any = { demographics: { overview: "Sharper prose.", ageChartData: [] }, deviceTypeIndex: { overview: "New.", chartData: [{ device: "CTV", value: 99 }] } };

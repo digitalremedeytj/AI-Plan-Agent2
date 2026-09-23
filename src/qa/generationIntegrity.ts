@@ -170,7 +170,7 @@ export function removeUngroundedCharts(profile: any, researchText: string): Gene
  * are removed only here, on QA's explicit say-so: remediation used to delete every chart it
  * was sent, including ones QA never questioned.
  */
-export function applyQaChartRejections(profile: any, rejections: unknown): GenerationAlert[] {
+export function applyQaChartRejections(profile: any, rejections: unknown, existing: GenerationAlert[] = []): GenerationAlert[] {
   const alerts: GenerationAlert[] = [];
   if (!Array.isArray(rejections)) return alerts;
   for (const rejection of rejections) {
@@ -178,6 +178,11 @@ export function applyQaChartRejections(profile: any, rejections: unknown): Gener
     const data = chart ? profile?.[chart.section]?.[chart.key] : undefined;
     if (!chart || !Array.isArray(data) || data.length === 0) continue;
     profile[chart.section][chart.key] = [];
+    // Earlier notes about this chart (e.g. an income-skew check) describe figures that are no
+    // longer shown; the removal alert replaces them.
+    for (let i = existing.length - 1; i >= 0; i--) {
+      if (existing[i].message.startsWith(`${chart.label}:`)) existing.splice(i, 1);
+    }
     const reason = String(rejection?.reason ?? "").trim();
     pushAlert(alerts, {
       section: chart.section,

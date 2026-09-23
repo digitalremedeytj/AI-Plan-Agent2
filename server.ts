@@ -3567,7 +3567,7 @@ Your output must be a perfectly formatted JSON matching the required schema. Ens
     // Charts QA rejected by name are removed now, before remediation sees the profile, so the
     // alert can carry QA's own reason. No other chart is removed after this point.
     if (!qaBypassed) {
-      for (const alert of applyQaChartRejections(originalData, auditResult.rejectedCharts)) pushAlert(generationAlerts, alert);
+      for (const alert of applyQaChartRejections(originalData, auditResult.rejectedCharts, generationAlerts)) pushAlert(generationAlerts, alert);
     }
 
     let finalProfile = originalData;
