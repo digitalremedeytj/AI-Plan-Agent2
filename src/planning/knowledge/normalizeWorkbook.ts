@@ -253,24 +253,47 @@ const compatibilityTargets: Record<string, string> = {
   Social: "channel.social_meta",
 };
 
+/**
+ * The compatibility sheet names tactics more briefly than the targeting sheet does
+ * ("Contextual" for "Contextual Targeting", "Retargeting off CTV / OTT" for "Sequential
+ * Retargeting off CTV / OTT"), so slugging its names produced ids no tactic had. 11 of its 28
+ * tactic rows matched nothing, and those tactics could never attach to a channel. A row now
+ * resolves to the tactic whose id it names, or failing that the tactics whose id contains it;
+ * the all-retailers row resolves to every retailer's data tactic.
+ */
+export function resolveCompatibilityTacticIds(itemSlug: string, tacticIds: string[]): string[] {
+  const exact = tacticIds.filter((id) => id === `tactic.${itemSlug}`);
+  if (exact.length > 0) return exact;
+  if (itemSlug.startsWith("retail_data")) return tacticIds.filter((id) => id.includes("retail_data_off_site_activation"));
+  const containing = tacticIds.filter((id) => id.slice("tactic.".length).includes(itemSlug));
+  // "contextual" is contained in both Contextual Targeting and Contextual Suppression; the row
+  // means the tactic whose name starts with it.
+  const starting = containing.filter((id) => id.startsWith(`tactic.${itemSlug}`));
+  return (starting.length > 0 ? starting : containing).slice(0, starting.length > 0 ? 1 : containing.length);
+}
+
 function buildCompatibilityEdges(): CompatibilityEdge[] {
   const edges: CompatibilityEdge[] = [];
+  const tacticIds = buildTargeting().map((record) => record.id);
   sheetRecords("Master_Compatibility").forEach((record) => {
     const item = String(record.Item || "").trim();
     const type = String(record.Type || "").trim().toLowerCase();
     if (!item || !type) return;
     const prefix = type.includes("target") ? "tactic" : type.includes("measure") ? "measurement" : "enhancement";
-    const fromId = `${prefix}.${slugify(item)}`;
-    Object.entries(compatibilityTargets).forEach(([column, toId]) => {
-      const compatible = String(record[column] || "").trim().toUpperCase() === "Y";
-      edges.push({
-        fromId,
-        toId,
-        relationship: compatible ? "compatible" : "incompatible",
-        availability: compatible ? "allowed" : "unsupported",
-        notes: `Workbook Master_Compatibility ${column} value: ${record[column] || "-"}`,
+    const resolved = prefix === "tactic" ? resolveCompatibilityTacticIds(slugify(item), tacticIds) : [];
+    const fromIds = resolved.length > 0 ? resolved : [`${prefix}.${slugify(item)}`];
+    for (const fromId of fromIds) {
+      Object.entries(compatibilityTargets).forEach(([column, toId]) => {
+        const compatible = String(record[column] || "").trim().toUpperCase() === "Y";
+        edges.push({
+          fromId,
+          toId,
+          relationship: compatible ? "compatible" : "incompatible",
+          availability: compatible ? "allowed" : "unsupported",
+          notes: `Workbook Master_Compatibility ${column} value: ${record[column] || "-"}`,
+        });
       });
-    });
+    }
   });
   return edges;
 }

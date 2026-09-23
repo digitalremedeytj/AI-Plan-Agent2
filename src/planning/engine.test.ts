@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCampaignFacts, buildMediaRecommendationPlan, inferAudienceType, profileSignals, tacticFitsCampaign } from "./engine";
+import { buildCampaignFacts, buildMediaRecommendationPlan, inferAudienceType, measurementFitsCampaign, profileSignals, tacticFitsCampaign } from "./engine";
+import { planningKnowledgeBase, resolveCompatibilityTacticIds } from "./knowledge/normalizeWorkbook";
 import { validatePlanningKnowledgeBase } from "./knowledge/normalizeWorkbook";
 import { validateProductRegistry } from "./knowledge/registry";
 import { clonePlanningSettings, DEFAULT_PLANNING_SETTINGS } from "./settings";
@@ -592,4 +593,50 @@ test("a retail partner named in the brief of record's business model unlocks tha
   const facts = buildCampaignFacts({ ...signals, workingMediaBudget: 50_000, campaignFlightDays: 30, planningSettings: settings() });
   const walmart = { id: "tactic.walmart_connect_retail_data_off_site_activation", displayName: "Walmart Connect (retail data, off-site activation)", trigger: "" };
   assert.equal(tacticFitsCampaign(walmart, facts), true);
+});
+
+const siteVisitsPlan = () => buildMediaRecommendationPlan(buildCampaignFacts({
+  advertiserName: "PetSmart",
+  kpis: ["Site visits"],
+  campaignFocus: "Full-funnel digital media plan",
+  audienceDescriptions: ["Dog and cat owners"],
+  audienceType: "B2C",
+  workingMediaBudget: 100_000,
+  campaignFlightDays: 30,
+  planningSettings: settings(),
+}));
+
+test("a site-visits plan measures online conversions, not leads, CRM matchback or linear TV", () => {
+  const plan = siteVisitsPlan();
+  const measurement = plan.evaluatedCandidates.flatMap((c) => c.measurementCapabilities.map((m) => m.id));
+  for (const id of ["measurement.leadmatch", "measurement.matchback", "measurement.crossview_linear_plus_ctv"]) {
+    assert.ok(!measurement.includes(id), `${id} should not attach`);
+  }
+  const ctv = plan.evaluatedCandidates.find((c) => c.product.id === "channel.ctv")!;
+  assert.ok(ctv.measurementCapabilities.some((m) => m.id === "measurement.online_booking_order_attribution"));
+});
+
+test("lead-gen measurement attaches when the brief is about leads", () => {
+  const facts = buildCampaignFacts({ kpis: ["Lead gen", "Qualified leads"], workingMediaBudget: 50_000, campaignFlightDays: 30, planningSettings: settings() });
+  assert.equal(measurementFitsCampaign({ id: "measurement.leadmatch" }, facts), true);
+  assert.equal(measurementFitsCampaign({ id: "measurement.crossview_linear_plus_ctv" }, facts), false);
+});
+
+test("display retargeting leads with site retargeting, and prospecting channels do not lead with retargeting", () => {
+  const plan = siteVisitsPlan();
+  const retargeting = plan.evaluatedCandidates.find((c) => c.product.id === "channel.display_retargeting")!;
+  assert.equal(retargeting.targetingTactics[0].id, "tactic.site_retargeting");
+  const ctv = plan.evaluatedCandidates.find((c) => c.product.id === "channel.ctv")!;
+  assert.ok(!ctv.targetingTactics.some((t) => t.id.includes("retargeting")), ctv.targetingTactics.map((t) => t.id).join(", "));
+});
+
+test("compatibility rows resolve to the tactic records they name, so those tactics can attach", () => {
+  const ids = planningKnowledgeBase.targetingTactics.map((t) => t.id);
+  assert.deepEqual(resolveCompatibilityTacticIds("contextual", ids), ["tactic.contextual_targeting"]);
+  assert.deepEqual(resolveCompatibilityTacticIds("retargeting_off_ctv_ott", ids), ["tactic.sequential_retargeting_off_ctv_ott"]);
+  assert.ok(resolveCompatibilityTacticIds("retail_data_on_site_data_off_site_activation_all_partners", ids).length >= 6);
+  const edgeIds = new Set(planningKnowledgeBase.compatibilityEdges.map((e) => e.fromId).filter((id) => id.startsWith("tactic.")));
+  const unmatched = [...edgeIds].filter((id) => !ids.includes(id));
+  // The workbook has a compatibility row for this, but no targeting record to attach.
+  assert.deepEqual(unmatched, ["tactic.cross_channel_sequential_messaging"]);
 });

@@ -665,10 +665,36 @@ export function tacticFitsCampaign(record: { id: string; displayName: string; tr
   return prerequisite[record.id] !== false;
 }
 
+// The campaign goals each tactic serves. Workbook triggers rarely share words with a brief, so
+// without this every tactic tied and row order put "Purchase / Transaction Data" - meant for
+// when offline sales panels exist - third on nearly every channel.
+const TACTIC_SERVES: Record<string, string[]> = {
+  "tactic.in_market_shopping_intent": ["conversion", "site visit", "purchase", "sales", "online sale", "traffic", "e-commerce", "ecommerce"],
+  "tactic.search_intent_retargeting": ["conversion", "site visit", "consideration", "traffic"],
+  // Site Retargeting is deliberately absent: it leads on retargeting channels (see
+  // attachTargeting) and would otherwise duplicate that line's job on every prospecting channel.
+  "tactic.contextual_targeting": ["awareness", "consideration", "full-funnel", "full funnel", "brand"],
+  "tactic.acr_targeting": ["awareness", "reach", "conquest"],
+  "tactic.crm_lookalike": ["prospecting", "acquisition", "new customer"],
+  "tactic.crm_targeting": ["retention", "loyalty", "win-back", "re-engage"],
+  "tactic.purchase_transaction_data": ["sales lift", "offline sales", "in-store sales"],
+  "tactic.geo_targeting": ["local", "store", "market"],
+  "tactic.daypart_targeting": ["frequency", "efficiency"],
+};
+
+function tacticScore(record: { id: string; trigger: string }, facts: CampaignFacts, context: string): number {
+  const goals = [...facts.kpis, facts.primaryKpi, ...facts.funnelStages].join(" ");
+  return includesAny(goals, TACTIC_SERVES[record.id] ?? []) * 10 + tacticRelevance(record.trigger, context);
+}
+
 /** How many of a tactic's trigger phrases ("Awareness", "Conversion", ...) the campaign mentions. */
 function tacticRelevance(trigger: string, context: string): number {
   const phrases = trigger.split(/[;,]/).map((phrase) => phrase.trim()).filter((phrase) => phrase.length > 3);
   return includesAny(context, phrases);
+}
+
+function isRetargetingProduct(product: MediaProductRecord): boolean {
+  return /retargeting/i.test(`${product.id} ${product.displayName}`);
 }
 
 function attachTargeting(product: MediaProductRecord, facts: CampaignFacts): AttachedPlanningRecord[] {
@@ -681,10 +707,14 @@ function attachTargeting(product: MediaProductRecord, facts: CampaignFacts): Att
     .filter((record) => tacticFitsCampaign(record, facts))
     // Ranked by trigger phrases rather than the whole trigger string: the whole string never
     // appears in a brief, so every tactic tied and the workbook's row order decided the top 3.
+    // A retargeting channel leads with its retargeting tactics; others with the foundational
+    // demographic default. Display Retargeting used to carry Behavioral, Interest and
+    // Contextual - nothing that names the site visitors it exists to reach.
     .sort((a, b) => {
-      const aDefault = a.displayName === "Behavioral / Demographic" ? 1 : 0;
-      const bDefault = b.displayName === "Behavioral / Demographic" ? 1 : 0;
-      return bDefault - aDefault || tacticRelevance(b.trigger, context) - tacticRelevance(a.trigger, context);
+      const lead = (record: { id: string; displayName: string }) => isRetargetingProduct(product)
+        ? (record.id === "tactic.site_retargeting" ? 2 : record.id.includes("retargeting") ? 1 : 0)
+        : (record.displayName === "Behavioral / Demographic" ? 1 : record.id.includes("retargeting") ? -1 : 0);
+      return lead(b) - lead(a) || tacticScore(b, facts, context) - tacticScore(a, facts, context);
     })
     .slice(0, 3)
     .map(({ id, displayName, rationale }) => ({ id, displayName, rationale }));
@@ -809,16 +839,56 @@ function verticalAllowed(gate: string, vertical: string): boolean {
   return true;
 }
 
+// What each measurement product proves, keyed to the campaign signals that call for it. The
+// workbook's triggers are sentences ("Client runs linear + CTV; is CTV incremental to linear?"),
+// and ranking on whether the whole sentence appeared in the brief tied every product, so row
+// order attached LeadMatch and MatchBack to every CTV, display and video line and CrossView to
+// search and social. A product listed here with a 'requires' only attaches when the campaign
+// shows that condition; 'serves' ranks it for the KPIs it measures.
+const MEASUREMENT_FIT: Record<string, { requires?: (facts: CampaignFacts, context: string) => boolean; serves?: string[] }> = {
+  "measurement.leadmatch": { requires: (_f, c) => includesAny(c, ["lead gen", "lead-gen", "leads", "lead quality", "form fill", "form submission", "qualified lead"]) > 0 },
+  "measurement.matchback": {
+    requires: (f, c) => f.dataReadiness.crmSeedList === true || f.dataReadiness.offlineSalesData === true || f.dataReadiness.leadOrRevenueExports === true || includesAny(c, ["crm", "point of sale", "pos data", "offline sales"]) > 0,
+  },
+  "measurement.crossview_linear_plus_ctv": {
+    requires: (f, c) => f.existingChannelIds.some((id) => /linear/.test(id)) || f.requiredChannelIds.some((id) => /linear/.test(id)) || includesAny(c, ["linear tv", "linear television", "broadcast tv"]) > 0,
+  },
+  "measurement.firmographic_reporting_abm_octane11": { requires: (f) => f.audienceType === "B2B" || f.audienceType === "B2B2C" },
+  "measurement.foot_traffic": { requires: (f) => includesAny([...f.kpis, f.primaryKpi].join(" "), ["store visit", "foot traffic", "in-store", "visits to store", "physical visit", "walk-in"]) > 0 },
+  "measurement.in_store_sales_lift_pathformance": { requires: (f) => includesAny([...f.kpis, f.primaryKpi].join(" "), ["in-store sales", "store sales", "retail sales lift"]) > 0 },
+  "measurement.consumer_panel_circana": { requires: (_f, c) => includesAny(c, ["cpg", "consumer packaged"]) > 0 },
+  "measurement.cpg_sales_validation_circana_marketlift": { requires: (_f, c) => includesAny(c, ["cpg", "consumer packaged"]) > 0 },
+  "measurement.online_booking_order_attribution": { serves: ["site visit", "online sale", "ecommerce", "e-commerce", "conversion", "purchase", "booking", "order", "traffic", "sign up", "signup", "subscription"] },
+  "measurement.consumer_journey_analytics_opa": { serves: ["full-funnel", "full funnel", "conversion", "site visit"] },
+  "measurement.reach_and_frequency": { serves: ["awareness", "reach", "frequency", "full-funnel", "full funnel"] },
+  "measurement.brand_lift": { serves: ["awareness", "brand lift", "consideration", "perception"] },
+  "measurement.incrementality": { serves: ["incremental", "lift", "causal"] },
+  "measurement.halo_effect": { serves: ["search", "halo"] },
+};
+
+export function measurementFitsCampaign(record: { id: string }, facts: CampaignFacts): boolean {
+  const requires = MEASUREMENT_FIT[record.id]?.requires;
+  return requires ? requires(facts, triggerText(facts)) : true;
+}
+
+function measurementRelevance(record: { id: string; trigger: string }, facts: CampaignFacts, context: string): number {
+  const goals = [...facts.kpis, facts.primaryKpi, ...facts.funnelStages].join(" ");
+  const serves = MEASUREMENT_FIT[record.id]?.serves ?? [];
+  // A KPI match outweighs any number of incidental trigger-phrase matches.
+  return includesAny(goals, serves) * 10 + tacticRelevance(record.trigger, context);
+}
+
 function attachMeasurement(product: MediaProductRecord, facts: CampaignFacts): AttachedPlanningRecord[] {
   const context = triggerText(facts);
   const eligible = planningKnowledgeBase.measurementCapabilities.filter((record) =>
     record.status === "live" &&
     record.recommendationEligible &&
     attachmentMatches(record.attachesTo, product) &&
-    verticalAllowed(record.verticalGate, facts.vertical),
+    verticalAllowed(record.verticalGate, facts.vertical) &&
+    measurementFitsCampaign(record, facts),
   );
   return eligible
-    .sort((a, b) => includesAny(context, [b.trigger, b.displayName]) - includesAny(context, [a.trigger, a.displayName]))
+    .sort((a, b) => measurementRelevance(b, facts, context) - measurementRelevance(a, facts, context))
     .slice(0, 2)
     .map(({ id, displayName, rationale, pricing, limitation }) => ({ id, displayName, rationale, pricing, limitation }));
 }
