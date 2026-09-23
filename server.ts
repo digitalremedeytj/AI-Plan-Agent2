@@ -145,7 +145,9 @@ const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
 const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
 // One revision per chart that looked generated (straight-line dayparts, evenly spaced indices).
 // The revisions run in parallel, so the stage costs one call's time.
-const TIMEOUT_CHART_REVISION_MS = 30000;
+// Low thinking: reshaping one small array needs little reasoning, and at medium the domain
+// chart revision timed out at 30s in live runs.
+const TIMEOUT_CHART_REVISION_MS = 40000;
 // Per-redirect budget when turning grounding links back into publisher URLs. Deliberately short:
 // this runs across ~100 sources and an unresolved one still ships, so waiting is pure loss.
 const TIMEOUT_URL_RESOLUTION_MS = 5000;
@@ -3444,7 +3446,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             systemInstruction: "You revise one chart in a media-planning audience profile so its estimated values look like real audience data. Keep the same items in the same order. Keep any value the research states exactly as stated; change only estimates, and mark every estimated point isModeled true with a source that says it is an estimate.",
             input: `AUDIENCE: ${cleanAudienceDesc || cleanUrl}\nGEOGRAPHY: ${geography}\n\nCHART: ${chart.label}\nCURRENT VALUES:\n${JSON.stringify(current, null, 2)}\n\nWHY IT LOOKS GENERATED: ${problems.join("; ")}.\n\nWHAT REALISTIC DATA LOOKS LIKE: ${CHART_SHAPE_GUIDANCE[chart.id] || ""}\n\nRESEARCH FOR THIS TOPIC:\n${(dossier && !dossier.failed ? dossier.text : "").slice(0, 8000)}\n\nReturn the revised chart as 'chartData'.`,
             schema: { type: "object", properties: { chartData: itemSchema }, required: ["chartData"] },
-            thinkingLevel: "medium",
+            thinkingLevel: "low",
             timeoutMs: TIMEOUT_CHART_REVISION_MS,
           });
           const revised = revision?.chartData;
@@ -3475,7 +3477,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       integrityCorrections.push(...sanity.corrections);
     };
     enforceResearchIntegrity(originalData);
-    // What the charts looked like going into QA, to spot the ones remediation changes.
+    // What the charts looked like going into QA, to spot (and if need be undo) remediation's changes.
     const chartsBeforeRemediation = new Map(PROFILE_CHARTS.map((chart) => [chart.id, JSON.stringify(originalData?.[chart.section]?.[chart.key] ?? null)]));
 
     // The scorer is a different model with a different training cutoff, so it has no idea what
@@ -3706,10 +3708,23 @@ Please correct the profile to resolve all issues.`
     }
 
     // Remediation can reintroduce what the first pass removed, so the rules run again on what ships.
-    // A chart remediation corrected carries new values; label those against the research too.
-    const changedCharts = new Set(PROFILE_CHARTS
-      .filter((chart) => JSON.stringify(finalProfile?.[chart.section]?.[chart.key] ?? null) !== chartsBeforeRemediation.get(chart.id))
-      .map((chart) => chart.id));
+    // A chart remediation changed is held to the same realism bar. In a live run it answered a
+    // QA note by flattening the day and hour charts to 100 everywhere; a flat line is no more
+    // an answer than a straight one, so such a rewrite is undone. Changes that pass are kept
+    // and labelled against the research like any other values.
+    const changedCharts = new Set<string>();
+    for (const chart of PROFILE_CHARTS) {
+      const before = chartsBeforeRemediation.get(chart.id);
+      const after = finalProfile?.[chart.section]?.[chart.key];
+      if (JSON.stringify(after ?? null) === before) continue;
+      const problems = chartRealismProblems(chart, after);
+      if (problems.length > 0 && before && before !== "null") {
+        console.warn(`[CHART REALISM] ${chart.label}: remediation's rewrite looked generated (${problems.join("; ")}); kept the pre-remediation chart.`);
+        finalProfile[chart.section][chart.key] = JSON.parse(before);
+      } else {
+        changedCharts.add(chart.id);
+      }
+    }
     if (changedCharts.size > 0) labelEstimatedPoints(finalProfile, researchText, changedCharts);
     enforceResearchIntegrity(finalProfile);
     for (const corr of integrityCorrections) {
