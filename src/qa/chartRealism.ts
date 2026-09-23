@@ -114,6 +114,21 @@ export function findUnrealisticCharts(profile: any): Array<{ chart: ChartSpec; p
     .filter((entry) => entry.problems.length > 0);
 }
 
+/**
+ * The concrete change each problem calls for. Stated as an instruction because the revision
+ * model, shown only a description of the problem plus the research, kept the round numbers it
+ * was given in every live run; told what to change, it complied in isolated tests.
+ */
+export function realismFixes(problems: string[]): string[] {
+  return problems.map((problem) => {
+    if (/steadily across/.test(problem)) return "Break the straight run: the series must rise and fall the way real behavior does (see the shape guidance), not move in one direction.";
+    if (/evenly spaced/.test(problem)) return "Make the gaps between neighbouring values clearly uneven.";
+    if (/multiple of 5/.test(problem)) return "Replace every estimated value with a precise number whose last digit is not 0 or 5 (e.g. 372 rather than 375, 38 rather than 40), keeping the overall ranking.";
+    if (/identical/.test(problem)) return "Make the repeated values differ from one another.";
+    return `Fix this: ${problem}.`;
+  });
+}
+
 /** What a realistic version of each chart looks like, for the revision prompt. */
 export const CHART_SHAPE_GUIDANCE: Record<string, string> = {
   hourOfDay: "Real daily activity has an early-morning low, a smaller daytime or lunchtime bump, its main peak in the evening/prime-time block, and a late-night tail sized to this audience (larger for gamers and night-owl audiences). It is never a straight climb through the day.",

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, numbersInText } from "./chartRealism";
+import { chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, numbersInText, realismFixes } from "./chartRealism";
 import { PROFILE_CHARTS } from "./generationIntegrity";
 
 const spec = (id: string) => PROFILE_CHARTS.find((chart) => chart.id === id)!;
@@ -83,4 +83,11 @@ test("only charts with a problem are returned for revision", () => {
   };
 
   assert.deepEqual(findUnrealisticCharts(profile).map((entry) => entry.chart.id), ["hourOfDay"]);
+});
+
+test("each realism problem maps to a concrete instruction for the revision", () => {
+  const fixes = realismFixes(["every value is a round multiple of 5", "its values are evenly spaced"]);
+
+  assert.match(fixes[0], /last digit is not 0 or 5/);
+  assert.match(fixes[1], /uneven/);
 });

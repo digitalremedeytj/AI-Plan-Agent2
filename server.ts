@@ -30,7 +30,7 @@ import {
 import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import { applyProgrammaticSanityChecks } from "./src/qa/chartSanity";
 import { resolveGroundingUrls } from "./src/research/groundingUrls";
-import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints } from "./src/qa/chartRealism";
+import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
 import {
   PROFILE_CHARTS,
   checkPersonas,
@@ -3443,8 +3443,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         const labelKey = Object.keys(current[0] || {}).find((key) => !["value", "index", "isModeled", "source", "metricType"].includes(key));
         try {
           const revision: any = await generateStructuredJson(ai, {
-            systemInstruction: "You revise one chart in a media-planning audience profile so its estimated values look like real audience data. Keep the same items in the same order. Keep any value the research states exactly as stated; change only estimates, and mark every estimated point isModeled true with a source that says it is an estimate.",
-            input: `AUDIENCE: ${cleanAudienceDesc || cleanUrl}\nGEOGRAPHY: ${geography}\n\nCHART: ${chart.label}\nCURRENT VALUES:\n${JSON.stringify(current, null, 2)}\n\nWHY IT LOOKS GENERATED: ${problems.join("; ")}.\n\nWHAT REALISTIC DATA LOOKS LIKE: ${CHART_SHAPE_GUIDANCE[chart.id] || ""}\n\nRESEARCH FOR THIS TOPIC:\n${(dossier && !dossier.failed ? dossier.text : "").slice(0, 8000)}\n\nReturn the revised chart as 'chartData'.`,
+            systemInstruction: "You revise one chart in a media-planning audience profile so its estimated values look like real audience data. Keep the same items in the same order. Points marked isModeled true are estimates: change them as the required fixes say. Keep a point marked isModeled false only if the research below states that exact figure; otherwise treat it as an estimate. Mark every estimated point isModeled true with a source that says it is an estimate.",
+            input: `AUDIENCE: ${cleanAudienceDesc || cleanUrl}\nGEOGRAPHY: ${geography}\n\nCHART: ${chart.label}\nCURRENT VALUES:\n${JSON.stringify(current, null, 2)}\n\nWHY IT LOOKS GENERATED: ${problems.join("; ")}.\n\nREQUIRED FIXES:\n${realismFixes(problems).map((fix) => `- ${fix}`).join("\n")}\n\nWHAT REALISTIC DATA LOOKS LIKE: ${CHART_SHAPE_GUIDANCE[chart.id] || ""}\n\nRESEARCH FOR THIS TOPIC (excerpt, for context):\n${(dossier && !dossier.failed ? dossier.text : "").slice(0, 3000)}\n\nReturn the revised chart as 'chartData'.`,
             schema: { type: "object", properties: { chartData: itemSchema }, required: ["chartData"] },
             thinkingLevel: "low",
             timeoutMs: TIMEOUT_CHART_REVISION_MS,
