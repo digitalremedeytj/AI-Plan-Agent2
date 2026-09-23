@@ -241,6 +241,45 @@ export async function updatePlan(
   return body.plan;
 }
 
+// --- manual QA audit ----------------------------------------------------------
+
+export interface AuditProposal {
+  findingId: string;
+  path: string;
+  before: string;
+  after: string;
+}
+
+export interface PlanAuditResponse {
+  planId: string;
+  /** The revision that was audited; approving fixes is refused if the plan has moved on. */
+  revision: number;
+  audit: {
+    executiveSummary: string;
+    scorecard: Array<{ category: string; score: number; notes: string }>;
+    totalScore: number;
+    findings: import("../types").AuditFindingRecord[];
+    strategicHighlights: string[];
+  };
+  proposals: AuditProposal[];
+  notes: unknown;
+  fixError: string | null;
+  auditModel: string;
+}
+
+/** Audits the saved plan and proposes fixes. Changes nothing. Takes a few minutes. */
+export async function auditPlan(id: string): Promise<PlanAuditResponse> {
+  return request<PlanAuditResponse>(`/api/plans/${encodeURIComponent(id)}/audit`, { method: "POST" });
+}
+
+/** Applies the approved fixes, re-verifies and saves the plan with the new audit. */
+export async function applyPlanAudit(
+  id: string,
+  body: { expectedRevision: number; audit: PlanAuditResponse["audit"]; accepted: AuditProposal[]; notes: unknown },
+): Promise<{ plan: StoredPlan; applied: number; stale: number; verifyError: string | null }> {
+  return request(`/api/plans/${encodeURIComponent(id)}/audit/apply`, { method: "POST", body: JSON.stringify(body) });
+}
+
 export async function archivePlan(id: string): Promise<void> {
   await request(`/api/plans/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

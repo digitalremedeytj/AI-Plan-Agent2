@@ -154,6 +154,8 @@ export interface AuditResult {
   findings?: AuditFindingRecord[];
   /** e.g. "gpt-6-sol (high)". */
   auditModel?: string;
+  /** Present when this audit was run by hand on the saved plan rather than during generation. */
+  manualAudit?: { at: string; by: string; proposed: number; applied: number };
 }
 
 export interface AuditFindingRecord {

@@ -42,23 +42,20 @@ import {
 } from "./src/research/briefOfRecord";
 import { filterCitationPool, RESEARCH_SOURCE_GUIDANCE } from "./src/research/sourceFilter";
 import { settlePublisherSelection } from "./src/qa/publisherSelection";
-import { buildClaimLedger, formatClaimLedger } from "./src/qa/claimLedger";
 import { describeChannelPlan, describeCharts, describePersonas, researchForPrompt } from "./src/qa/planContext";
+import { PROSE_OWNERS, normalizeAudit, openFindingsAsFlags, type NormalizedAudit, type NormalizedVerify } from "./src/qa/planAudit";
+import { applyPatches, describeAppliedFixes, getAtPath, type AppliedPatch } from "./src/qa/planRemediation";
 import {
-  AUDIT_CATEGORIES,
-  PROSE_OWNERS,
-  auditSystemInstruction,
-  buildAuditInput,
-  normalizeAudit,
-  normalizeVerify,
-  openFindingsAsFlags,
-  planForAudit,
-  verifySystemInstruction,
-  type AuditFinding,
-  type NormalizedAudit,
-  type NormalizedVerify,
-} from "./src/qa/planAudit";
-import { REMEDIATION_SYSTEM_INSTRUCTION, applyPatches, buildRemediationInput, describeAppliedFixes, remediationSchema, type AppliedPatch } from "./src/qa/planRemediation";
+  buildAuditResult,
+  campaignLineFrom,
+  ledgerFor,
+  mergeFindings,
+  proposeFixes,
+  publishersLine,
+  runAudit,
+  runVerify,
+  type AuditInputs,
+} from "./src/qa/auditRunner";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeSchema } from "./src/research/planNarrative";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
@@ -181,10 +178,8 @@ const NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: n
   { thinkingLevel: "medium", timeoutMs: 50000 },
 ];
 const TIMEOUT_NARRATIVE_MS = NARRATIVE_ATTEMPTS.reduce((sum, attempt) => sum + attempt.timeoutMs, 0);
-// Per-dossier research excerpt each later stage reads.
+// Per-dossier research excerpt the narrative writer reads (the QA steps set their own).
 const NARRATIVE_RESEARCH_CHARS = 12000;
-const AUDIT_RESEARCH_CHARS = 12000;
-const FIX_RESEARCH_CHARS = 6000;
 // The whole generation must finish inside Cloud Run's 900s request timeout. Late stages check
 // what is left and step aside (with an alert) rather than be cut off mid-response.
 const RUN_BUDGET_MS = 870000;
@@ -1867,6 +1862,153 @@ app.put("/api/plans/:id", async (req, res) => {
     res.json({ success: true, plan });
   } catch (err: any) {
     respondToStorageError(res, err, "update plan");
+  }
+});
+
+// ---- Manual QA audit of a saved plan ----
+// The same audit, fix and verify steps a generation runs, on demand. Nothing changes until a
+// planner approves it: the audit returns the fixes Gemini proposes, and only the ones sent back
+// to /apply are written, re-verified and saved against the revision that was audited.
+
+function auditInputsFromPlan(plan: any): { profile: any; inputs: AuditInputs } {
+  const payload = (plan?.payload || {}) as any;
+  const profile = payload.profile;
+  if (!profile || typeof profile !== "object") throw Object.assign(new Error("This plan has no profile to audit."), { status: 422 });
+  const mediaPlan = profile.channelStrategy?.mediaPlan;
+  const dossiers = Array.isArray(profile.researchSnapshot?.dossiers) ? profile.researchSnapshot.dossiers : [];
+  const budget = Number(mediaPlan?.workingMediaBudget) || Number(String(payload.budget || "").replace(/[^0-9.]/g, "")) || 0;
+  const flightDays = Number(mediaPlan?.flightDays) || Number(payload.campaignLength) || null;
+  return {
+    profile,
+    inputs: {
+      briefBlock: formatBriefOfRecord(profile.briefOfRecord),
+      campaignLine: campaignLineFrom({
+        advertiser: plan.advertiserName || payload.url || "",
+        kpis: Array.isArray(payload.kpis) ? payload.kpis : [],
+        campaignFocus: payload.campaignFocus || "",
+        geography: payload.geography || "United States",
+        workingMediaBudget: budget,
+        flightDays,
+        targetPersonas: Array.isArray(payload.targetPersonas) ? payload.targetPersonas : [],
+        uploadedPlan: Boolean(profile.channelStrategy?.analyzedPlanNames?.length),
+        rfp: Boolean(profile.additionalRfpRequirements?.isRfpDocument),
+      }),
+      research: dossiers.map((d: any) => ({ label: String(d?.label || ""), text: String(d?.text || ""), failed: Boolean(d?.failed) })),
+      planInputs: { workingMediaBudget: budget, flightDays },
+      alerts: Array.isArray(profile.generationAlerts) ? profile.generationAlerts : [],
+      researchNote: dossiers.length === 0
+        ? "NOTE: this plan was generated before research was saved with plans, so its figures cannot be checked against the research. Do not treat a figure as unsupported only because the NUMBER CHECK could not find it."
+        : undefined,
+    },
+  };
+}
+
+const manualAuditOptions = (effort: OpenAiEffort, timeoutMs: number) => ({
+  model: AUDIT_MODEL,
+  effort,
+  timeoutMs,
+  today: new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
+  currentYear: new Date().getFullYear(),
+});
+
+app.post("/api/plans/:id/audit", async (req, res) => {
+  req.socket.setTimeout(0);
+  try {
+    const plan = await (await getStorage()).getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    const { profile, inputs } = auditInputsFromPlan(plan);
+    const audit = await runAudit(getOpenaiClient(), profile, inputs, manualAuditOptions(AUDIT_EFFORT, TIMEOUT_AUDIT_MS));
+
+    // Proposals are validated on a copy, so the planner is only offered fixes that would apply.
+    let proposals: Array<{ findingId: string; path: string; before: string; after: string }> = [];
+    let notes: unknown = [];
+    let fixError: string | null = null;
+    try {
+      const fix = await proposeFixes(getAiClient(), audit.findings, profile, inputs, TIMEOUT_FIX_MS);
+      notes = fix.notes;
+      const { applied } = applyPatches(JSON.parse(JSON.stringify(profile)), fix.patches, audit.findings);
+      proposals = applied.map(({ findingId, path, before, value }) => ({ findingId, path, before, after: value }));
+    } catch (err: any) {
+      fixError = err?.message || String(err);
+      console.error("[MANUAL AUDIT] Proposing fixes failed:", fixError);
+    }
+    console.log(`[MANUAL AUDIT] Plan ${plan.id} r${plan.revision}: ${audit.totalScore}/100, ${audit.findings.length} finding(s), ${proposals.length} proposed fix(es).`);
+    res.json({ success: true, planId: plan.id, revision: plan.revision, audit, proposals, notes, fixError, auditModel: `${AUDIT_MODEL} (${AUDIT_EFFORT})` });
+  } catch (err: any) {
+    console.error("[MANUAL AUDIT] Failed:", err);
+    res.status(err?.status || 502).json({ error: "The QA audit could not be completed.", details: err?.message || String(err) });
+  }
+});
+
+app.post("/api/plans/:id/audit/apply", async (req, res) => {
+  req.socket.setTimeout(0);
+  try {
+    const expectedRevision = Number(req.body?.expectedRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "The revision that was audited is required.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    if (plan.revision !== expectedRevision) {
+      res.status(409).json({ error: "This plan changed after it was audited. Run the audit again.", code: "REVISION_CONFLICT", currentRevision: plan.revision });
+      return;
+    }
+    const audit = normalizeAudit(req.body?.audit);
+    if (!audit) {
+      res.status(400).json({ error: "The audit to apply is missing or unreadable." });
+      return;
+    }
+    const { profile, inputs } = auditInputsFromPlan(plan);
+
+    // A fix is applied only if the field still reads what the planner saw when approving it.
+    const accepted: any[] = Array.isArray(req.body?.accepted) ? req.body.accepted : [];
+    const current = accepted.filter((a) => typeof a?.before === "string" && getAtPath(profile, String(a?.path || "")) === a.before);
+    const { applied, rejected } = applyPatches(profile, current.map((a) => ({ findingId: a.findingId, path: a.path, value: a.after })), audit.findings);
+
+    let verify: NormalizedVerify | null = null;
+    let verifyError: string | null = null;
+    if (applied.length > 0) {
+      try {
+        verify = await runVerify(getOpenaiClient(), profile, inputs, audit, applied, manualAuditOptions(VERIFY_EFFORT, TIMEOUT_VERIFY_MS));
+      } catch (err: any) {
+        verifyError = err?.message || String(err);
+        console.error("[MANUAL AUDIT] Verify failed:", verifyError);
+      }
+    }
+    const findings = mergeFindings(audit, verify);
+    profile.auditResult = {
+      ...buildAuditResult({
+        audit,
+        verify,
+        findings,
+        autoFixes: describeAppliedFixes(audit.findings, applied, req.body?.notes),
+        qaBypassed: false,
+        auditModel: `${AUDIT_MODEL} (${AUDIT_EFFORT})`,
+      }),
+      manualAudit: { at: new Date().toISOString(), by: actorName(req), proposed: accepted.length, applied: applied.length },
+    };
+
+    const updated = await storage.updatePlan(plan.id, {
+      ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload: { ...plan.payload, profile } }),
+      actor: actorName(req),
+    }, expectedRevision);
+    console.log(`[MANUAL AUDIT] Plan ${plan.id}: applied ${applied.length} of ${accepted.length} approved fix(es), ${accepted.length - current.length} stale, ${rejected.length} rejected; ${verify ? `verified ${verify.totalScore}/100` : "not re-verified"}.`);
+    res.json({ success: true, plan: updated, applied: applied.length, stale: accepted.length - current.length, verifyError });
+  } catch (err: any) {
+    if (err instanceof RevisionConflictError) {
+      respondToStorageError(res, err, "apply audit fixes");
+      return;
+    }
+    console.error("[MANUAL AUDIT] Apply failed:", err);
+    res.status(err?.status || 502).json({ error: "The approved fixes could not be applied.", details: err?.message || String(err) });
   }
 });
 
@@ -3554,14 +3696,24 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     };
     enforceResearchIntegrity(originalData);
     // ---- Everything below reads the settled plan: charts, publishers and the channel plan. ----
-    const researchDossiers = researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) }));
-    const planInputs = { workingMediaBudget: Number(originalData.channelStrategy?.mediaPlan?.workingMediaBudget ?? workingMediaBudget) || 0, flightDays: Number(campaignFlightDays) || null };
-    const campaignLine = `CAMPAIGN: advertiser ${cleanAdvertiserName || cleanUrl || "not specified"}; KPIs: ${cleanKpis.join("; ") || "not specified"}; campaign focus: ${campaignFocus || "not specified"}; geography: ${geography}; working media budget $${Number(workingMediaBudget || 0).toLocaleString()} over ${campaignFlightDays || "an unspecified number of"} days; planner-named personas: ${cleanTargetPersonas.join("; ") || "none"}; uploaded media plan: ${selectedPlanOptions?.length ? "yes" : "none"}${rfpAnalysis ? "; an RFP was uploaded" : ""}.`;
-    const publishersLine = (profile: any) => `CTV PUBLISHERS (chosen from the enabled list; the selection is settled): ${(profile.ctvPublishers || []).map((p: any) => `${p.publisher} (${p.category})`).join(", ") || "none"}`;
-    const alertsLine = () => generationAlerts.length > 0
-      ? `GENERATION ALERTS (already shown to the planner):\n${generationAlerts.map((a) => `- [${a.severity}] ${a.message}`).join("\n")}`
-      : "GENERATION ALERTS: none.";
-    const ledgerFor = (profile: any) => formatClaimLedger(buildClaimLedger(profile, researchDossiers, planInputs));
+    const auditInputs: AuditInputs = {
+      briefBlock,
+      campaignLine: campaignLineFrom({
+        advertiser: cleanAdvertiserName || cleanUrl,
+        kpis: cleanKpis,
+        campaignFocus: campaignFocus || "",
+        geography,
+        workingMediaBudget: Number(workingMediaBudget) || 0,
+        flightDays: Number(campaignFlightDays) || null,
+        targetPersonas: cleanTargetPersonas,
+        uploadedPlan: Boolean(selectedPlanOptions?.length),
+        rfp: Boolean(rfpAnalysis),
+      }),
+      research: researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
+      planInputs: { workingMediaBudget: Number(originalData.channelStrategy?.mediaPlan?.workingMediaBudget ?? workingMediaBudget) || 0, flightDays: Number(campaignFlightDays) || null },
+      // The live array, so alerts raised by the narrative step reach the auditor.
+      alerts: generationAlerts,
+    };
     const remainingMs = () => RUN_BUDGET_MS - (Date.now() - runStartedAt);
 
     // The narrative is written last, by one writer, with the settled plan in front of it. Skipped
@@ -3576,13 +3728,13 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             systemInstruction: NARRATIVE_SYSTEM_INSTRUCTION,
             input: buildNarrativeInput({
               briefBlock,
-              campaign: campaignLine,
+              campaign: auditInputs.campaignLine,
               personas: describePersonas(originalData),
               charts: describeCharts(originalData),
               channelPlan: describeChannelPlan(originalData),
               publishers: publishersLine(originalData),
-              ledger: ledgerFor(originalData),
-              research: researchForPrompt(researchDossiers, NARRATIVE_RESEARCH_CHARS),
+              ledger: ledgerFor(originalData, auditInputs),
+              research: researchForPrompt(auditInputs.research, NARRATIVE_RESEARCH_CHARS),
               draft: currentNarrative(originalData),
             }),
             schema: narrativeSchema,
@@ -3605,39 +3757,17 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // The scorer is a different model with a different training cutoff, so it has no idea what
     // "now" is. Left unanchored it read current-year figures as future-dated fabrications.
     const auditToday = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-    const auditContext = (profile: any) => ({
-      briefBlock,
-      campaign: campaignLine,
-      planJson: planForAudit(profile),
-      personas: describePersonas(profile),
-      charts: describeCharts(profile),
-      channelPlan: describeChannelPlan(profile),
-      publishers: publishersLine(profile),
-      ledger: ledgerFor(profile),
-      alerts: alertsLine(),
-      research: researchForPrompt(researchDossiers, AUDIT_RESEARCH_CHARS),
-    });
     const stageTimeout = (budget: number) => Math.max(15000, Math.min(budget, remainingMs() - 10000));
+    const modelOptions = (effort: OpenAiEffort, budget: number) => ({ model: AUDIT_MODEL, effort, timeoutMs: stageTimeout(budget), today: auditToday, currentYear });
 
     let audit: NormalizedAudit | null = null;
     let qaBypassed = false;
     if (remainingMs() > 60000) {
       sendEvent("status", { message: `Auditing the plan with ${AUDIT_MODEL} (${AUDIT_EFFORT} reasoning): evidence, brief fit, cohesion, strategy and client readiness...` });
       try {
-        const openai = getOpenaiClient();
-        const result = await openAiJson(openai, {
-          model: AUDIT_MODEL,
-          effort: AUDIT_EFFORT,
-          system: auditSystemInstruction(auditToday, currentYear),
-          input: buildAuditInput(auditContext(originalData)),
-          timeoutMs: stageTimeout(TIMEOUT_AUDIT_MS),
-          label: "QA audit",
-        });
-        audit = normalizeAudit(result.data);
-        if (!audit) throw new Error("the audit response had no usable scorecard");
+        audit = await runAudit(getOpenaiClient(), originalData, auditInputs, modelOptions(AUDIT_EFFORT, TIMEOUT_AUDIT_MS));
       } catch (err: any) {
         console.error("QA audit failed:", err?.message || err);
-        audit = null;
       }
     }
     if (!audit) {
@@ -3647,7 +3777,6 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       sendEvent("status", { message: "QA audit unavailable - delivering the profile unverified. Please review before presenting." });
     }
 
-    let findings: AuditFinding[] = audit ? audit.findings : [];
     let verify: NormalizedVerify | null = null;
     let autoFixesList: Array<{ issue: string; resolution: string }> = [];
     if (audit) {
@@ -3658,24 +3787,10 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       if (fixable.length > 0 && remainingMs() > TIMEOUT_FIX_MS + 30000) {
         sendEvent("status", { message: `Applying targeted fixes for ${fixable.length} finding(s)...` });
         try {
-          const fix: any = await generateStructuredJson(ai, {
-            systemInstruction: REMEDIATION_SYSTEM_INSTRUCTION,
-            input: buildRemediationInput(fixable, originalData, [
-              briefBlock,
-              describePersonas(originalData),
-              describeCharts(originalData),
-              describeChannelPlan(originalData),
-              publishersLine(originalData),
-              ledgerFor(originalData),
-              researchForPrompt(researchDossiers, FIX_RESEARCH_CHARS),
-            ].filter(Boolean).join("\n\n")),
-            schema: remediationSchema,
-            thinkingLevel: "medium",
-            timeoutMs: stageTimeout(TIMEOUT_FIX_MS),
-          });
-          const result = applyPatches(originalData, fix?.patches, audit.findings);
+          const fix = await proposeFixes(ai, audit.findings, originalData, auditInputs, stageTimeout(TIMEOUT_FIX_MS));
+          const result = applyPatches(originalData, fix.patches, audit.findings);
           applied = result.applied;
-          autoFixesList = describeAppliedFixes(audit.findings, applied, fix?.notes);
+          autoFixesList = describeAppliedFixes(audit.findings, applied, fix.notes);
           console.log(`[REMEDIATION] Applied ${applied.length} patch(es) across ${autoFixesList.length} finding(s); rejected ${result.rejected.length}.`);
           for (const r of result.rejected) console.log(`[REMEDIATION] Rejected ${r.findingId} ${r.path}: ${r.reason}.`);
         } catch (err: any) {
@@ -3691,32 +3806,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       if (applied.length > 0 && remainingMs() > 45000) {
         sendEvent("status", { message: "Verifying the fixes and re-scoring the plan..." });
         try {
-          const result = await openAiJson(getOpenaiClient(), {
-            model: AUDIT_MODEL,
-            effort: VERIFY_EFFORT,
-            system: verifySystemInstruction(auditToday, currentYear),
-            input: buildAuditInput(auditContext(originalData), [
-              "EARLIER FINDINGS:",
-              JSON.stringify(audit.findings.map(({ id, severity, owner, paths, issue, fix }) => ({ id, severity, owner, paths, issue, fix })), null, 1),
-              "CHANGES APPLIED SINCE (field: before -> after):",
-              JSON.stringify(applied.map(({ findingId, path, before, value }) => ({ findingId, path, before, after: value })), null, 1),
-            ].join("\n")),
-            timeoutMs: stageTimeout(TIMEOUT_VERIFY_MS),
-            label: "QA verify",
-          });
-          verify = normalizeVerify(result.data);
-          if (!verify) throw new Error("the verify response had no usable scorecard");
+          verify = await runVerify(getOpenaiClient(), originalData, auditInputs, audit, applied, modelOptions(VERIFY_EFFORT, TIMEOUT_VERIFY_MS));
         } catch (err: any) {
           console.error("QA verify failed:", err?.message || err);
           pushAlert(generationAlerts, { section: "qa", severity: "flagged", message: `Fixes were applied but not re-verified (${err?.message || err}); the score shown is from before the fixes.` });
         }
-      }
-      if (verify) {
-        const statuses = verify.findingStatus;
-        findings = [
-          ...audit.findings.map((f) => ({ ...f, ...(statuses.get(f.id) ? { status: statuses.get(f.id)!.status, verifyNote: statuses.get(f.id)!.note } : {}) })),
-          ...verify.findings,
-        ];
       }
     }
     const finalProfile = originalData;
@@ -3728,26 +3822,9 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       });
     }
 
-    const scored = verify ?? audit;
+    const findings = audit ? mergeFindings(audit, verify) : [];
     const openFlags = openFindingsAsFlags(findings);
-    const finalAuditResult = {
-      executiveSummary: scored?.executiveSummary || "The independent QA audit was unavailable, so this profile has not been externally verified. Review it before client presentation.",
-      scorecard: scored?.scorecard ?? AUDIT_CATEGORIES.map((category) => ({ category, score: 0, notes: "Not evaluated - QA audit unavailable" })),
-      originalScore: audit?.totalScore ?? 0,
-      // The verified score when fixes were re-scored; otherwise the audit's own score, which
-      // then describes the plan as shipped because nothing changed after it.
-      finalScore: scored?.totalScore ?? 0,
-      verified: Boolean(verify),
-      remediationApplied: autoFixesList.length > 0,
-      criticalRedFlags: qaBypassed
-        ? ["QA scoring did not run - this profile has not been independently verified."]
-        : openFlags.length > 0 ? openFlags : ["Clean - no open major issues."],
-      strategicHighlights: scored?.strategicHighlights || [],
-      autoFixes: autoFixesList,
-      findings,
-      auditModel: `${AUDIT_MODEL} (${AUDIT_EFFORT})`,
-      qaBypassed
-    };
+    const finalAuditResult = buildAuditResult({ audit, verify, findings, autoFixes: autoFixesList, qaBypassed, auditModel: `${AUDIT_MODEL} (${AUDIT_EFFORT})` });
 
     // Embed the audit results into the final profile
     finalProfile.auditResult = finalAuditResult;

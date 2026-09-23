@@ -11,6 +11,12 @@ Express backend, Google Gemini with Search Grounding plus OpenAI for validation 
 Deployed as a **Google AI Studio applet running on Cloud Run**, which constrains a lot of
 what follows.
 
+Generation order: crawl -> Brief of Record -> four research dossiers -> synthesis (personas,
+charts, publishers, sources) -> channel plan (engine) -> chart estimates -> narrative written
+last -> QA audit on OpenAI `gpt-6-sol` (high) -> targeted Gemini text patches -> verify
+(`gpt-6-sol`, medium). Every finished run is auto-saved as a "(draft)" plan before it is sent.
+The whole run must fit Cloud Run's 900s request timeout; late stages check `RUN_BUDGET_MS`.
+
 ## Commands
 
 ```bash
@@ -65,10 +71,15 @@ src/planning/           Deterministic planning engine + knowledge base
 src/storage/            Shared server-side persistence. See below.
 src/server/session.ts   Signed-cookie auth, requireAuth / requireAdmin middleware.
 src/server/geminiInteractions.ts  Every Gemini text call goes through here (3.8, Interactions API).
-src/qa/                 Deterministic chart guardrails applied after the QA scoring and
-                        auto-remediation agents. Read the header comment before editing:
-                        these run last, so a check that misreads a chart's metric type
-                        creates the defect rather than catching it.
+src/qa/                 Plan QA. Deterministic chart guardrails (chartSanity, chartRealism,
+                        baselineEstimates; read their header comments before editing), the
+                        number check (claimLedger), CTV publisher checks, and the audit:
+                        planAudit (rubric, findings, owners), planRemediation (patches the
+                        server may apply), auditRunner (audit/fix/verify, shared by
+                        generation and the manual "Run QA Audit" on a saved plan).
+src/research/           Crawl, Brief of Record (the audience every step is built for),
+                        citation-pool filter, segment recommendations, and planNarrative
+                        (the narrative, written last against the settled plan).
 src/api/                Typed browser client for the shared store + one-time
                         localStorage migration.
 src/components/         Extracted UI (SettingsDrawer, charts, tabs).

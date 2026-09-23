@@ -123,6 +123,7 @@ import { ApiError, type PlanSummary, type SessionUser } from "./api/client";
 import { migrateLocalPlans } from "./api/migrateLocalPlans";
 import { BriefOfRecordCard } from "./components/BriefOfRecordCard";
 import { QaFindings } from "./components/QaFindings";
+import { PlanAuditModal } from "./components/PlanAuditModal";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
@@ -1041,6 +1042,7 @@ export default function App() {
   // regeneration of a plan that is already saved: Save should keep updating that plan, and the
   // draft stays in the list as a backup.
   const adoptDraftRef = React.useRef(true);
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
 
   // Segment recommendations. They are requested after the profile renders (like headshots),
   // live on profileData.segmentRecommendations, and auto-save onto an already-saved plan.
@@ -2537,6 +2539,27 @@ export default function App() {
     }
   };
 
+  // The manual audit saved the plan with the approved fixes and a new audit; show that version.
+  // Headshots generated in this session are kept: a server-saved draft does not carry them.
+  const handleAuditApplied = (result: { plan: api.StoredPlan; applied: number; stale: number; verifyError: string | null }) => {
+    const saved = result.plan.payload.profile as AudienceProfile | undefined;
+    if (saved) {
+      setProfileData((prev) => ({
+        ...saved,
+        personas: (saved.personas || []).map((persona, i) => ({ ...persona, avatarUrl: persona.avatarUrl || prev?.personas?.[i]?.avatarUrl })),
+      }));
+    }
+    markPlanPersisted(result.plan);
+    refreshPlans().catch(() => undefined);
+    setIsAuditModalOpen(false);
+    setIsAuditExpanded(true);
+    const notes = [
+      result.stale > 0 ? `${result.stale} approved fix${result.stale === 1 ? " was" : "es were"} skipped because the text had changed since the audit.` : "",
+      result.verifyError ? `The fixes were saved but could not be re-verified (${result.verifyError}).` : "",
+    ].filter(Boolean);
+    setActionError(notes.length > 0 ? notes.join(" ") : null);
+  };
+
   // Reset workspace to a fresh blank brief and clear the active plan
   const handleNewPlan = () => {
     // Reset brief input fields
@@ -3401,6 +3424,17 @@ export default function App() {
                 >
                   <Share2 className="w-3.5 h-3.5" />
                   <span>Share Plan</span>
+                </button>
+
+                {/* Manual QA audit of the saved plan; fixes are applied only once approved */}
+                <button
+                  onClick={() => setIsAuditModalOpen(true)}
+                  disabled={!activeSavedId}
+                  className="inline-flex items-center justify-center gap-1.5 text-xs bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={activeSavedId ? "Audit the saved plan and review proposed fixes before any are applied" : "Save the plan first to run a QA audit"}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Run QA Audit</span>
                 </button>
 
                 {/* New Plan Button */}
@@ -7288,6 +7322,14 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {isAuditModalOpen && activeSavedId && (
+        <PlanAuditModal
+          planId={activeSavedId}
+          onClose={() => setIsAuditModalOpen(false)}
+          onApplied={handleAuditApplied}
+        />
       )}
 
       {/* Share Plan Modal for authenticated planners */}
