@@ -118,7 +118,7 @@ export function findUnrealisticCharts(profile: any): Array<{ chart: ChartSpec; p
 export const CHART_SHAPE_GUIDANCE: Record<string, string> = {
   hourOfDay: "Real daily activity has an early-morning low, a smaller daytime or lunchtime bump, its main peak in the evening/prime-time block, and a late-night tail sized to this audience (larger for gamers and night-owl audiences). It is never a straight climb through the day.",
   dayOfWeek: "Day-to-day differences are uneven. Weekday and weekend behavior differ in ways specific to this audience (e.g. commuters dip midweek, streamers peak Friday-Sunday), and adjacent days do not rise or fall in a straight line.",
-  domains: "Affinity indices differ by uneven amounts between domains: a few standouts well above the rest, then a tighter cluster, never evenly spaced steps.",
+  domains: "Affinity indices differ by uneven amounts between domains: a few standouts well above the rest, then a tighter cluster, never evenly spaced steps. Use precise index values (e.g. 312, 287, 243, 219) - NOT multiples of 5 or 10 such as 375, 340, 275.",
   device: "Device shares are uneven and precise (e.g. 43, 27, 14, 9, 7), not rounded to multiples of 5.",
   age: "Age shares are uneven and precise, reflecting where this audience actually concentrates; not rounded to multiples of 5.",
   gender: "Gender shares are precise (e.g. 54/45/1), not rounded to multiples of 5.",
