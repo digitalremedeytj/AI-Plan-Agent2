@@ -37,6 +37,7 @@ import {
   pushAlert,
   removeMixedSourceCharts,
   removeModeledCharts,
+  removeUngroundedCharts,
   reportChartsNotFound,
   reportChartsRemovedByRemediation,
   type GenerationAlert,
@@ -3172,7 +3173,7 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 3. DEVICE BREAKDOWNS: 'deviceTypeIndex.chartData' is one source's device composition for this audience (mutually exclusive shares summing to ~100). Use it only if a single dossier source reports such a split; do not assemble one by distributing share across devices yourself.
 4. Be highly precise with definitions: composition vs index vs reach vs penetration. Clearly distinguish percentage split from activity index (average = 100).
 5. Do not call an audience segment "affluent", "young", "tech-savvy", etc. unless the research supportively proves it with metrics.
-6. CHART DATA COMES ONLY FROM THE DOSSIERS, AND EACH CHART FROM ONE SOURCE. Populate a chart only when a single source in the dossiers reports the whole breakdown on one base (one study, one population, one date) - for example one survey's age split of this audience. NEVER combine figures from different studies, years, populations or metrics into one chart: a split stitched together from several reports has no common denominator and is not a real composition. Every item in a chart MUST carry the identical 'source' string (the study name and year), and that chart's 'chartSource' must name the same study. Every item's 'isModeled' MUST be false. If the dossiers do not contain the figures a chart needs, return that chart as an EMPTY array - never estimate, model, extrapolate, or fill it from general knowledge. An empty chart is shown to the planner as "not found in research"; an invented one is presented to a client as fact. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'.
+6. CHART DATA COMES ONLY FROM THE DOSSIERS, AND EACH CHART FROM ONE SOURCE. Every chart value must be a number that is written in a dossier, copied as reported (do not rescale, round to a different number, or derive it); the server checks each value against the dossier text and removes any chart with a value it cannot find. Populate a chart only when a single source in the dossiers reports the whole breakdown on one base (one study, one population, one date) - for example one survey's age split of this audience. NEVER combine figures from different studies, years, populations or metrics into one chart: a split stitched together from several reports has no common denominator and is not a real composition. Every item in a chart MUST carry the identical 'source' string (the study name and year), and that chart's 'chartSource' must name the same study. Every item's 'isModeled' MUST be false. If the dossiers do not contain the figures a chart needs, return that chart as an EMPTY array - never estimate, model, extrapolate, or fill it from general knowledge. An empty chart is shown to the planner as "not found in research"; an invented one is presented to a client as fact. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'.
 7. Use current ${currentYear} data. Match geography: ${geography}. If the dossiers have no data for this geography, say so in the relevant overview; do not adapt national figures into a regional estimate.
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
    - You are STRICTLY PROHIBITED from fabricating, guessing, or making up consumer desire/sentiment figures, survey percentages, or market statistics (such as "85% of gamers express a desire to see product recommendations on their TV home screens").
@@ -3427,15 +3428,20 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // Run the research-integrity rules before scoring, so QA grades the profile we will ship
     // rather than values that are about to be removed. They run again after remediation.
     const integrityCorrections: string[] = [];
-    const enforceResearchIntegrity = (profile: any) => {
+    const researchText = researchResults.filter((result) => !result.failed).map((result) => result.text).join("\n");
+    // Rescaling runs only on the final pass: the grounding check compares chart values with
+    // the numbers the research reported, and a rescaled value no longer matches them.
+    const enforceResearchIntegrity = (profile: any, { final }: { final: boolean }) => {
       for (const alert of clearSectionsForFailedDossiers(profile, failedDossiers)) pushAlert(generationAlerts, alert);
       for (const alert of removeModeledCharts(profile)) pushAlert(generationAlerts, alert);
       for (const alert of removeMixedSourceCharts(profile)) pushAlert(generationAlerts, alert);
+      for (const alert of removeUngroundedCharts(profile, researchText)) pushAlert(generationAlerts, alert);
+      if (!final) return;
       const sanity = applyProgrammaticSanityChecks(profile, req.body);
       for (const alert of sanity.alerts) pushAlert(generationAlerts, alert);
       integrityCorrections.push(...sanity.corrections);
     };
-    enforceResearchIntegrity(originalData);
+    enforceResearchIntegrity(originalData, { final: false });
 
     const scoringToday = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
     // Only claim the engine owns the budget when it actually ran. A profile generated without a
@@ -3661,7 +3667,7 @@ Please correct the profile to resolve all issues.`
     }
 
     // Remediation can reintroduce what the first pass removed, so the rules run again on what ships.
-    enforceResearchIntegrity(finalProfile);
+    enforceResearchIntegrity(finalProfile, { final: true });
     for (const corr of integrityCorrections) {
       autoFixesList.push({
         issue: "Programmatic metric verification mismatch",

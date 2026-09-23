@@ -122,6 +122,47 @@ export function removeMixedSourceCharts(profile: any): GenerationAlert[] {
   return alerts;
 }
 
+// Every number written in the research text, so a chart value can be checked against it.
+// Thousands separators are dropped ("1,250" is 1250); percentages and indices both reduce to
+// their number.
+export function numbersInText(text: string): number[] {
+  return (text.match(/\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g) || [])
+    .map((token) => Number(token.replace(/,/g, "")))
+    .filter((value) => Number.isFinite(value));
+}
+
+// A chart value counts as grounded when the research states it, allowing for synthesis
+// rounding a reported 50.6% to 51.
+const GROUNDING_TOLERANCE = 0.5;
+
+/**
+ * Removes any chart with a value that does not appear in the research text. Labelling a chart
+ * with one source is not enough: in live runs synthesis credited figures to articles that do
+ * not contain them (a gender split to a piece about hotel in-room technology), and QA then
+ * rightly removed them. Checking the numbers against the dossiers catches that before QA sees
+ * it. Must run before any rescaling, which would move values away from what was reported.
+ */
+export function removeUngroundedCharts(profile: any, researchText: string): GenerationAlert[] {
+  const alerts: GenerationAlert[] = [];
+  const reported = numbersInText(researchText);
+  const isReported = (value: number) => reported.some((n) => Math.abs(n - value) <= GROUNDING_TOLERANCE);
+  for (const chart of PROFILE_CHARTS) {
+    const data = profile?.[chart.section]?.[chart.key];
+    if (!Array.isArray(data) || data.length === 0) continue;
+    const values = data.map((point: any) => Number(point?.value ?? point?.index));
+    const unreported = values.filter((value) => !Number.isFinite(value) || !isReported(value));
+    if (unreported.length > 0) {
+      profile[chart.section][chart.key] = [];
+      pushAlert(alerts, {
+        section: chart.section,
+        severity: "not_found",
+        message: `${chart.label}: removed because ${unreported.length === values.length ? "its values do" : `${unreported.length} of its ${values.length} values do`} not appear in the research.`,
+      });
+    }
+  }
+  return alerts;
+}
+
 /**
  * Charts the synthesis built from research but auto-remediation then removed, because the QA
  * review found them unsupported (typically a split stitched together from studies with

@@ -6,6 +6,8 @@ import {
   mergeRemediatedProfile,
   removeMixedSourceCharts,
   removeModeledCharts,
+  removeUngroundedCharts,
+  numbersInText,
   reportChartsNotFound,
   reportChartsRemovedByRemediation,
 } from "./generationIntegrity";
@@ -174,4 +176,37 @@ test("a chart with an unsourced value is removed", () => {
 
   assert.deepEqual(profile.demographics.genderChartData, []);
   assert.match(alerts[0].message, /did not name their source/);
+});
+
+test("numbers are read from research text including percentages, decimals and thousands separators", () => {
+  assert.deepEqual(numbersInText("51% female, 23.5% aged 25-34, 1,250 respondents, index 225"), [51, 23.5, 25, 34, 1250, 225]);
+});
+
+test("a chart whose values the research never reported is removed before QA sees it", () => {
+  const profile = profileWithCharts();
+  const research = "ESA found 60% of players are 25-34 and 40% are 35-44. Similarweb: twitch.tv affinity index 180. "
+    + "Women are 55% and men 45%. Income under $100k is 70%, over 30%. CTV 60%, mobile 40%. Saturday index 120; 8pm-12am index 140.";
+  profile.deviceTypeIndex.chartData = [
+    { device: "CTV", value: 58, isModeled: false, source: "eMarketer 2025" },
+    { device: "Mobile", value: 42, isModeled: false, source: "eMarketer 2025" },
+  ];
+
+  const alerts = removeUngroundedCharts(profile, research);
+
+  assert.deepEqual(profile.deviceTypeIndex.chartData, [], "58/42 appear nowhere in the research");
+  assert.match(alerts[0].message, /Device split: removed because its values do not appear in the research/);
+  assert.equal(profile.demographics.ageChartData.length, 2, "reported figures are kept");
+  assert.equal(profile.temporalPatterns.hourOfDayChartData.length, 1);
+});
+
+test("a value synthesis rounded from the reported figure still counts as grounded", () => {
+  const profile = profileWithCharts();
+  profile.demographics.genderChartData = [
+    { gender: "Female", value: 51, isModeled: false, source: "Pew Research 2025" },
+    { gender: "Male", value: 49, isModeled: false, source: "Pew Research 2025" },
+  ];
+
+  removeUngroundedCharts(profile, "Pew: 50.6% of travelers are women and 49.4% are men.");
+
+  assert.equal(profile.demographics.genderChartData.length, 2);
 });
