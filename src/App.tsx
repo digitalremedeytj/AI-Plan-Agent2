@@ -123,6 +123,7 @@ import { ApiError, type PlanSummary, type SessionUser } from "./api/client";
 import { migrateLocalPlans } from "./api/migrateLocalPlans";
 import { BriefOfRecordCard } from "./components/BriefOfRecordCard";
 import { QaFindings } from "./components/QaFindings";
+import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
 const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
@@ -1035,7 +1036,11 @@ export default function App() {
   const isLogHoveredRef = React.useRef<boolean>(false);
   const [isLogHovered, setIsLogHovered] = useState<boolean>(false);
   const pendingLogsRef = React.useRef<any[]>([]);
-  const [serverCompleteData, setServerCompleteData] = useState<{ profile: any; groundingSources: any } | null>(null);
+  const [serverCompleteData, setServerCompleteData] = useState<{ profile: any; groundingSources: any; savedPlanId?: string | null } | null>(null);
+  // Whether the draft the server saves for this run becomes the open plan. Not for a
+  // regeneration of a plan that is already saved: Save should keep updating that plan, and the
+  // draft stays in the list as a backup.
+  const adoptDraftRef = React.useRef(true);
 
   // Segment recommendations. They are requested after the profile renders (like headshots),
   // live on profileData.segmentRecommendations, and auto-save onto an already-saved plan.
@@ -1186,6 +1191,17 @@ export default function App() {
           setProfileData(rawProfile);
         }
         if (rawProfile) requestSegmentsRef.current("initial", rawProfile);
+        // The server already saved this run as a draft. Opening it as the active plan means
+        // Save updates that record instead of creating a second copy.
+        const draftId = serverCompleteData.savedPlanId;
+        if (draftId && adoptDraftRef.current) {
+          setActiveSavedId(draftId);
+          api.getPlan(draftId)
+            .then((plan) => { markPlanPersisted(plan); return refreshPlans(); })
+            .catch((err) => console.error("Could not open the auto-saved draft:", err));
+        } else if (draftId) {
+          refreshPlans().catch(() => undefined);
+        }
         setGroundingSources(serverCompleteData.groundingSources);
         setPersonaPage(0);
         setArePersonasExpanded(false);
@@ -2375,6 +2391,7 @@ export default function App() {
     ]);
 
     // Clear the active save tracking on a completely new run (non-regenerated version)
+    adoptDraftRef.current = !typeOverride || !activeSavedId;
     if (!typeOverride) {
       setActiveSavedId(null);
     }
@@ -2407,6 +2424,16 @@ export default function App() {
           campaignFlightDays: budgetNormalization.campaignFlightDays,
           planningSettings,
           ctvPublishers,
+          // What the server needs, beyond the brief above, to save the finished run as a draft.
+          draft: {
+            title: advertiserName.trim()
+              ? (/\bplans?\b/i.test(advertiserName.trim()) ? advertiserName.trim() : `${advertiserName.trim()} Plan`)
+              : (saveTitle.trim() || undefined),
+            settingsRevision,
+            geographyConfig: { type: geographyType, targets: geoTargets, rawInput: geoRawInput },
+            budget,
+            campaignLength,
+          },
         })
       });
 
@@ -2475,7 +2502,8 @@ export default function App() {
             sawComplete = true;
             setServerCompleteData({
               profile: event.profile,
-              groundingSources: event.groundingSources || null
+              groundingSources: event.groundingSources || null,
+              savedPlanId: event.savedPlanId || null,
             });
           } else if (event.type === "error") {
             serverError = event.details || event.error || "An error occurred during profile generation.";
@@ -4664,19 +4692,25 @@ export default function App() {
             </div>
           ) : (isShareView || leftTab === "overview") && profileData ? (
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
-              <OverviewMetricsTab
-                extractedPlacements={extractedPlacements}
-                planOptions={planOptions}
-                rfpAnalysis={rfpAnalysis}
-                profileData={profileData}
-                metricSettings={planningSettings.overviewMetrics}
-              />
+              <ErrorBoundary resetKey={profileData} fallback={(error, retry) => <PlanRenderError error={error} retry={retry} draftSaved={Boolean(activeSavedId)} />}>
+                <OverviewMetricsTab
+                  extractedPlacements={extractedPlacements}
+                  planOptions={planOptions}
+                  rfpAnalysis={rfpAnalysis}
+                  profileData={profileData}
+                  metricSettings={planningSettings.overviewMetrics}
+                />
+              </ErrorBoundary>
             </div>
           ) : null}
         </section>
 
         {/* Right Column: Output / Workspace Workspace (fluid width) */}
         <section id="profile-workspace" className="flex-1 w-full min-w-0 space-y-6 lg:min-h-[calc(100vh-120px)] flex flex-col">
+          <ErrorBoundary resetKey={profileData} fallback={(error, retry) => <PlanRenderError error={error} retry={retry} draftSaved={Boolean(activeSavedId)} />}>
+          {/* The workspace is drawn inside RenderBelow so its errors happen below the boundary;
+              an error in App's own render would skip it and take down the whole page. */}
+          <RenderBelow>{() => (<>
           {/* Loading Overlay State */}
           {loading && (
             <div className="bg-slate-950 border border-slate-800 text-slate-100 rounded-2xl p-6 md:p-8 shadow-2xl flex flex-col gap-6 min-h-[500px]">
@@ -6517,6 +6551,8 @@ export default function App() {
               )}
             </div>
           )}
+          </>)}</RenderBelow>
+          </ErrorBoundary>
         </section>
       </main>
 

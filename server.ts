@@ -2765,6 +2765,7 @@ app.post("/api/generate-profile", async (req, res) => {
     campaignFlightDays,
     planningSettings,
     ctvPublishers,
+    draft,
   } = req.body;
 
   // SSE Setup Headers
@@ -3794,8 +3795,47 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       sendEvent("status", { message: `• [${alert.severity === "failed" ? "FAILED" : alert.severity === "not_found" ? "NOT FOUND" : "CHECK"}] ${alert.message}` });
     }
 
+    // Every finished run is saved as a draft before it is sent, so a browser tab that crashes,
+    // reloads or closes cannot lose a run that took minutes. Clicking Save later updates this
+    // same record. A failed draft save is reported but never blocks delivering the plan.
+    let savedPlanId: string | null = null;
+    try {
+      const advertiserLabel = cleanAdvertiserName || cleanUrl || "Audience";
+      const baseTitle = typeof draft?.title === "string" && draft.title.trim() ? draft.title.trim() : `${advertiserLabel} Plan`;
+      const record = await (await getStorage()).createPlan({
+        ...planPayloadFromBody({
+          title: `${baseTitle} (draft)`.slice(0, 200),
+          advertiserName: cleanAdvertiserName || undefined,
+          settingsRevision: draft?.settingsRevision,
+          payload: {
+            kpis: cleanKpis,
+            audienceDescription: audienceDescription || "",
+            url: url || "",
+            geography,
+            geographyConfig: draft?.geographyConfig,
+            campaignFocus,
+            additionalContext: additionalContext || "",
+            targetPersonas: cleanTargetPersonas,
+            budget: draft?.budget,
+            campaignLength: draft?.campaignLength,
+            planningSettings,
+            profile: finalProfile,
+            groundingSources: deduplicatedSources,
+            autoSavedDraft: true,
+          },
+        }),
+        actor: actorName(req),
+      });
+      savedPlanId = record.id;
+      console.log(`[DRAFT] Saved the finished run as plan ${record.id} ("${record.title}").`);
+    } catch (err: any) {
+      console.error("[DRAFT] Could not auto-save the finished run:", err?.message || err);
+      sendEvent("status", { message: `• [CHECK] The plan could not be auto-saved (${err?.message || err}). Save it manually before leaving the page.` });
+    }
+
     // Return structured profile and citations
     sendEvent("complete", {
+      savedPlanId,
       profile: finalProfile,
       groundingSources: deduplicatedSources
     });
