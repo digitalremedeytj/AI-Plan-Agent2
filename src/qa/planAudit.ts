@@ -141,7 +141,7 @@ export function buildAuditInput(ctx: AuditContext, extra = ""): string {
 
 /** The plan as the auditor reads it: everything the prose says, without the parts described separately. */
 export function planForAudit(profile: any): string {
-  const { channelStrategy, researchSnapshot, auditResult, generationAlerts, segmentRecommendations, briefOfRecord, ...rest } = profile || {};
+  const { channelStrategy, researchSnapshot, auditResult, generationAlerts, generationLog, segmentRecommendations, briefOfRecord, ...rest } = profile || {};
   const stripCharts = (section: any, keys: string[]) => {
     if (!section || typeof section !== "object") return section;
     const copy = { ...section };

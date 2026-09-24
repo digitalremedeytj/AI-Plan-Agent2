@@ -61,6 +61,7 @@ import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBri
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { throttledProgress } from "./src/server/thoughtProgress";
+import type { GenerationLogEntry } from "./src/types";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
 import { applyAudienceSkews, audienceSkewSchema, chartsNeedingBaselineEstimates, describeBaselines } from "./src/qa/baselineEstimates";
 import { NATIONAL_BASELINES } from "./src/planning/knowledge/nationalBaselines";
@@ -207,6 +208,10 @@ const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
 const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
 // Per-dossier cap on the research text saved with a plan. Four at this size is ~100KB.
 const RESEARCH_SNAPSHOT_MAX_CHARS = 25000;
+// The console steps saved with a plan. A run sends well under this; the caps only guard the
+// plan's Firestore document (1MB) against a runaway loop or an unusually long source list.
+const GENERATION_LOG_MAX_ENTRIES = 400;
+const GENERATION_LOG_MAX_SOURCES = 25;
 // Brief of record: one optional grounded search plus one structured call, each on this budget.
 const TIMEOUT_BRIEF_OF_RECORD_MS = 45000;
 // One revision per chart that looked generated (straight-line dayparts, evenly spaced indices).
@@ -3415,8 +3420,21 @@ app.post("/api/generate-profile", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
 
   let lastEventTime = Date.now();
+  // Every step the console shows, saved with the plan so it can be reviewed after the run.
+  const generationLog: GenerationLogEntry[] = [];
   const sendEvent = (type: string, data: any) => {
     lastEventTime = Date.now();
+    if ((type === "status" || type === "research_result") && generationLog.length < GENERATION_LOG_MAX_ENTRIES) {
+      generationLog.push({
+        at: new Date(lastEventTime).toISOString(),
+        type,
+        ...(data.message ? { message: String(data.message) } : {}),
+        ...(data.label ? { label: String(data.label) } : {}),
+        ...(Array.isArray(data.sources) ? { sources: data.sources.slice(0, GENERATION_LOG_MAX_SOURCES).map((src: any) => ({ title: String(src?.title ?? ""), uri: String(src?.uri ?? "") })) } : {}),
+        ...(data.blurb ? { blurb: String(data.blurb) } : {}),
+        ...(data.failed ? { failed: true } : {}),
+      });
+    }
     // Stamped here so the client log shows when each step ran, not when it was displayed.
     res.write(`data: ${JSON.stringify({ type, ...data, at: new Date(lastEventTime).toISOString() })}\n\n`);
     if ((res as any).flush) {
@@ -4390,6 +4408,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     for (const alert of generationAlerts) {
       sendEvent("status", { message: `• [${alert.severity === "failed" ? "FAILED" : alert.severity === "not_found" ? "NOT FOUND" : "CHECK"}] ${alert.message}` });
     }
+
+    finalProfile.generationLog = generationLog;
 
     // Every finished run is saved as a draft before it is sent, so a browser tab that crashes,
     // reloads or closes cannot lose a run that took minutes. Clicking Save later updates this

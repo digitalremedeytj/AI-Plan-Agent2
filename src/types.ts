@@ -324,6 +324,21 @@ export interface ResearchSnapshot {
   crawl?: { url: string; ok: boolean; chars: number };
 }
 
+/**
+ * The live-console steps a plan was generated through (status lines and research results), kept
+ * with the plan so a planner can review how it was built after the run's console is gone.
+ */
+export interface GenerationLogEntry {
+  /** ISO time the server sent the step. */
+  at: string;
+  type: "status" | "research_result";
+  message?: string;
+  label?: string;
+  sources?: Array<{ title: string; uri: string }>;
+  blurb?: string;
+  failed?: boolean;
+}
+
 export interface AudienceProfile {
   intro: string;
   briefOfRecord?: BriefOfRecord;
@@ -349,6 +364,7 @@ export interface AudienceProfile {
   channelStrategy?: ChannelStrategyData;
   additionalRfpRequirements?: RfpAnalysis;
   generationAlerts?: GenerationAlert[];
+  generationLog?: GenerationLogEntry[];
   geoInsights?: string;
   geoTargeting?: GeoTargeting;
   hiddenSections?: string[];

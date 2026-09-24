@@ -131,6 +131,7 @@ import { BriefOfRecordCard } from "./components/BriefOfRecordCard";
 import { ExecutiveBriefSection, type ExecutiveBriefStatus } from "./components/ExecutiveBriefSection";
 import { briefFingerprint, buildBriefSnapshot, withoutHistory, type ExecutiveBrief } from "./research/executiveBrief";
 import { QaFindings } from "./components/QaFindings";
+import { GenerationLog } from "./components/GenerationLog";
 import { PlanAuditModal } from "./components/PlanAuditModal";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
@@ -7282,6 +7283,8 @@ export default function App() {
                           <QaFindings audit={profileData.auditResult} />
                         </div>
                       </div>
+
+                      <GenerationLog entries={profileData.generationLog} />
                     </div>
                   )}
                 </div>
