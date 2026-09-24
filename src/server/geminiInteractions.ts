@@ -1,4 +1,5 @@
 import type { GoogleGenAI } from "@google/genai";
+import { ThoughtHeadlines, streamDeadline } from "./thoughtProgress";
 
 /**
  * Gemini 3.8 calls through the Interactions API. Every Gemini text call in the app goes
@@ -30,6 +31,22 @@ interface InteractionRequest {
   thinkingLevel: GeminiThinkingLevel;
   timeoutMs: number;
   model?: string;
+  /** When set, the call streams and reports each thought-summary headline as it arrives. */
+  onThought?: (line: string) => void;
+}
+
+function interactionParams(request: InteractionRequest, extra: Record<string, unknown>): Record<string, unknown> {
+  return {
+    model: request.model ?? GEMINI_FLASH_MODEL,
+    ...(request.systemInstruction ? { system_instruction: request.systemInstruction } : {}),
+    input: request.images?.length
+      ? [{ type: "text", text: request.input }, ...request.images.map((image) => ({ type: "image", data: image.data, mime_type: image.mimeType }))]
+      : request.input,
+    generation_config: { thinking_level: request.thinkingLevel },
+    // Briefs are client-confidential; nothing here needs server-side conversation state.
+    store: false,
+    ...extra,
+  };
 }
 
 async function createInteraction(
@@ -38,21 +55,63 @@ async function createInteraction(
   extra: Record<string, unknown>,
 ): Promise<InteractionLike> {
   const interaction = await client.interactions.create(
-    {
-      model: request.model ?? GEMINI_FLASH_MODEL,
-      ...(request.systemInstruction ? { system_instruction: request.systemInstruction } : {}),
-      input: request.images?.length
-        ? [{ type: "text", text: request.input }, ...request.images.map((image) => ({ type: "image", data: image.data, mime_type: image.mimeType }))]
-        : request.input,
-      generation_config: { thinking_level: request.thinkingLevel },
-      // Briefs are client-confidential; nothing here needs server-side conversation state.
-      store: false,
-      ...extra,
-    } as any,
+    interactionParams(request, extra) as any,
     // Retries are the caller's decision: a silent SDK retry would double a timeout budget.
     { timeout: request.timeoutMs, maxRetries: 0 },
   );
   return interaction as InteractionLike;
+}
+
+/**
+ * The same call, streamed so thought summaries reach `onThought` while the model works. Returns
+ * the concatenated model output text, which is what `output_text` holds for a JSON response.
+ */
+async function streamInteractionText(
+  client: GoogleGenAI,
+  request: InteractionRequest,
+  extra: Record<string, unknown>,
+  onThought: (line: string) => void,
+): Promise<string> {
+  const deadline = streamDeadline(request.timeoutMs, "Gemini call");
+  const headlines = new ThoughtHeadlines(onThought);
+  const kinds = new Map<number, string>();
+  let text = "";
+  try {
+    const params = interactionParams(request, extra) as any;
+    const stream: AsyncIterable<any> = await client.interactions.create(
+      { ...params, generation_config: { ...params.generation_config, thinking_summaries: "auto" }, stream: true },
+      { timeout: request.timeoutMs, maxRetries: 0, fetchOptions: { signal: deadline.signal } } as any,
+    ) as any;
+    for await (const event of stream) {
+      switch (event?.event_type) {
+        case "step.start": {
+          const step = event.step ?? {};
+          kinds.set(event.index, step.type);
+          if (step.type === "thought") for (const part of step.summary ?? []) headlines.push(part?.text ?? "");
+          if (step.type === "model_output") for (const part of step.content ?? []) if (part?.type === "text") text += part.text ?? "";
+          break;
+        }
+        case "step.delta": {
+          const delta = event.delta ?? {};
+          if (delta.type === "thought_summary") headlines.push(delta.content?.text ?? "");
+          else if (delta.type === "text" && kinds.get(event.index) === "model_output") text += delta.text ?? "";
+          break;
+        }
+        case "step.stop":
+          if (kinds.get(event.index) === "thought") headlines.end();
+          break;
+        case "error":
+          throw new Error(`Gemini stream error: ${event.error?.message || JSON.stringify(event.error ?? {})}`);
+      }
+    }
+    return text;
+  } catch (err) {
+    // The SDK reports an abort generically; the deadline's own error says what happened.
+    if (deadline.signal.aborted) throw deadline.signal.reason;
+    throw err;
+  } finally {
+    deadline.clear();
+  }
 }
 
 export interface StructuredJsonRequest extends InteractionRequest {
@@ -61,11 +120,10 @@ export interface StructuredJsonRequest extends InteractionRequest {
 }
 
 export async function generateStructuredJson(client: GoogleGenAI, request: StructuredJsonRequest): Promise<unknown> {
-  const interaction = await createInteraction(client, request, {
-    response_format: { type: "text", mime_type: "application/json", schema: request.schema },
-  });
-
-  const text = interaction.output_text;
+  const format = { response_format: { type: "text", mime_type: "application/json", schema: request.schema } };
+  const text = request.onThought
+    ? await streamInteractionText(client, request, format, request.onThought)
+    : (await createInteraction(client, request, format)).output_text;
   if (!text) throw new Error("Gemini returned no output text.");
   return JSON.parse(text);
 }

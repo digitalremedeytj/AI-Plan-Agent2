@@ -60,6 +60,7 @@ import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, curr
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
+import { throttledProgress } from "./src/server/thoughtProgress";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
 import { applyAudienceSkews, audienceSkewSchema, chartsNeedingBaselineEstimates, describeBaselines } from "./src/qa/baselineEstimates";
 import { NATIONAL_BASELINES } from "./src/planning/knowledge/nationalBaselines";
@@ -3423,6 +3424,13 @@ app.post("/api/generate-profile", async (req, res) => {
     }
   };
 
+  // A long model call streams what it is weighing to the console, at most one line per ~12s,
+  // so the planner sees progress instead of "Still working...". Call `done()` when the call ends.
+  const thoughtsFor = (who: string) => {
+    const progress = throttledProgress((line) => sendEvent("status", { message: `${who}: ${line}...` }));
+    return { onThought: progress.report, done: progress.stop };
+  };
+
   // Heartbeat to prevent connection timeouts during longer generation phases (e.g. synthesis)
   const keepAlive = setInterval(() => {
     res.write(":\n\n");
@@ -3972,9 +3980,10 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
     sendEvent("status", { message: "Synthesizing research dossiers and mapping audience indices..." });
     console.log("Launching final Synthesis Call to build the comprehensive profile JSON...");
     const synthesisStartedAt = Date.now();
+    const synthesisThoughts = thoughtsFor("Synthesis");
     const synthesisPromise = generateStructuredJsonWithFallback(
       ai,
-      { systemInstruction: synthesisSystemInstruction, input: synthesisUserPrompt, schema: audienceProfileJsonSchema },
+      { systemInstruction: synthesisSystemInstruction, input: synthesisUserPrompt, schema: audienceProfileJsonSchema, onThought: synthesisThoughts.onThought },
       SYNTHESIS_ATTEMPTS,
       (failed, next) => sendEvent("status", { message: `Deep synthesis (${failed} reasoning) ran long; retrying with ${next} reasoning...` }),
     ).catch((err) => {
@@ -3987,7 +3996,7 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
       synthesisPromise,
       TIMEOUT_SYNTHESIS_MS,
       null
-    );
+    ).finally(synthesisThoughts.done);
 
     if (!synthesisResult) {
       throw new Error(`Synthesis stage exceeded the safety limit of ${TIMEOUT_SYNTHESIS_MS / 1000}s. Please simplify your input parameters and try again.`);
@@ -4218,6 +4227,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     if (remainingMs() > TIMEOUT_NARRATIVE_MS + TIMEOUT_AUDIT_MS) {
       sendEvent("status", { message: "Writing the final plan narrative against the settled charts, channel plan and research..." });
       const narrativeStartedAt = Date.now();
+      const narrativeThoughts = thoughtsFor("Narrative writer");
       try {
         const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
           ai,
@@ -4235,6 +4245,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
               draft: currentNarrative(originalData),
             }),
             schema: narrativeSchema,
+            onThought: narrativeThoughts.onThought,
           },
           NARRATIVE_ATTEMPTS,
           (failed, next) => sendEvent("status", { message: `Narrative writing (${failed} reasoning) ran long; retrying with ${next} reasoning...` }),
@@ -4245,6 +4256,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       } catch (err: any) {
         console.warn(`[NARRATIVE] Failed; keeping the synthesis draft (${err?.message || err}).`);
         pushAlert(generationAlerts, { section: "narrative", severity: "flagged", message: `The final narrative pass did not complete (${err?.message || err}), so the narrative is synthesis's draft, written before the charts and channel plan were settled. Check it against them before presenting.` });
+      } finally {
+        narrativeThoughts.done();
       }
     } else {
       pushAlert(generationAlerts, { section: "narrative", severity: "flagged", message: "The run was short of time, so the final narrative pass was skipped and the narrative is synthesis's draft. Check it against the charts and channel plan before presenting." });
@@ -4261,10 +4274,13 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     let qaBypassed = false;
     if (remainingMs() > 60000) {
       sendEvent("status", { message: `Auditing the plan with ${AUDIT_MODEL} (${AUDIT_EFFORT} reasoning): evidence, brief fit, cohesion, strategy and client readiness...` });
+      const auditThoughts = thoughtsFor("QA auditor");
       try {
-        audit = await runAudit(getOpenaiClient(), originalData, auditInputs, modelOptions(AUDIT_EFFORT, TIMEOUT_AUDIT_MS));
+        audit = await runAudit(getOpenaiClient(), originalData, auditInputs, { ...modelOptions(AUDIT_EFFORT, TIMEOUT_AUDIT_MS), onThought: auditThoughts.onThought });
       } catch (err: any) {
         console.error("QA audit failed:", err?.message || err);
+      } finally {
+        auditThoughts.done();
       }
     }
     if (!audit) {
@@ -4283,8 +4299,9 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       let applied: AppliedPatch[] = [];
       if (fixable.length > 0 && remainingMs() > TIMEOUT_FIX_MS + 30000) {
         sendEvent("status", { message: `Applying targeted fixes for ${fixable.length} finding(s)...` });
+        const fixThoughts = thoughtsFor("Fixer");
         try {
-          const fix = await proposeFixes(ai, audit.findings, originalData, auditInputs, stageTimeout(TIMEOUT_FIX_MS));
+          const fix = await proposeFixes(ai, audit.findings, originalData, auditInputs, stageTimeout(TIMEOUT_FIX_MS), fixThoughts.onThought);
           const result = applyPatches(originalData, fix.patches, audit.findings);
           applied = result.applied;
           autoFixesList = describeAppliedFixes(audit.findings, applied, fix.notes);
@@ -4293,6 +4310,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         } catch (err: any) {
           console.error("Targeted fixes failed:", err?.message || err);
           pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: `QA fixes were not applied (${err?.message || err}). The plan is shown as written; review the QA findings before presenting.` });
+        } finally {
+          fixThoughts.done();
         }
       } else if (fixable.length > 0) {
         pushAlert(generationAlerts, { section: "remediation", severity: "flagged", message: "The run was short of time, so QA fixes were not applied. Review the QA findings before presenting." });
@@ -4302,11 +4321,14 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       // the plan that ships.
       if (applied.length > 0 && remainingMs() > 45000) {
         sendEvent("status", { message: "Verifying the fixes and re-scoring the plan..." });
+        const verifyThoughts = thoughtsFor("QA verifier");
         try {
-          verify = await runVerify(getOpenaiClient(), originalData, auditInputs, audit, applied, modelOptions(VERIFY_EFFORT, TIMEOUT_VERIFY_MS));
+          verify = await runVerify(getOpenaiClient(), originalData, auditInputs, audit, applied, { ...modelOptions(VERIFY_EFFORT, TIMEOUT_VERIFY_MS), onThought: verifyThoughts.onThought });
         } catch (err: any) {
           console.error("QA verify failed:", err?.message || err);
           pushAlert(generationAlerts, { section: "qa", severity: "flagged", message: `Fixes were applied but not re-verified (${err?.message || err}); the score shown is from before the fixes.` });
+        } finally {
+          verifyThoughts.done();
         }
       }
     }

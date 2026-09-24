@@ -92,6 +92,8 @@ export interface ModelOptions {
   timeoutMs: number;
   today: string;
   currentYear: number;
+  /** Reasoning-summary headlines for the live console, while the call runs. */
+  onThought?: (line: string) => void;
 }
 
 export async function runAudit(openai: OpenAI, profile: any, inputs: AuditInputs, opts: ModelOptions): Promise<NormalizedAudit> {
@@ -102,6 +104,7 @@ export async function runAudit(openai: OpenAI, profile: any, inputs: AuditInputs
     input: buildAuditInput(auditContextFor(profile, inputs)),
     timeoutMs: opts.timeoutMs,
     label: "QA audit",
+    onThought: opts.onThought,
   });
   const audit = normalizeAudit(result.data);
   if (!audit) throw new Error("the audit response had no usable scorecard");
@@ -115,6 +118,7 @@ export async function proposeFixes(
   profile: any,
   inputs: AuditInputs,
   timeoutMs: number,
+  onThought?: (line: string) => void,
 ): Promise<{ patches: unknown; notes: unknown }> {
   const fixable = findings.filter((f) => PROSE_OWNERS.has(f.owner));
   if (fixable.length === 0) return { patches: [], notes: [] };
@@ -132,6 +136,7 @@ export async function proposeFixes(
     schema: remediationSchema,
     thinkingLevel: "medium",
     timeoutMs,
+    onThought,
   });
   return { patches: fix?.patches, notes: fix?.notes };
 }
@@ -156,6 +161,7 @@ export async function runVerify(
     ].join("\n")),
     timeoutMs: opts.timeoutMs,
     label: "QA verify",
+    onThought: opts.onThought,
   });
   const verify = normalizeVerify(result.data);
   if (!verify) throw new Error("the verify response had no usable scorecard");
