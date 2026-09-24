@@ -128,6 +128,8 @@ import * as api from "./api/client";
 import { ApiError, type PlanSummary, type SessionUser } from "./api/client";
 import { migrateLocalPlans } from "./api/migrateLocalPlans";
 import { BriefOfRecordCard } from "./components/BriefOfRecordCard";
+import { ExecutiveBriefSection, type ExecutiveBriefStatus } from "./components/ExecutiveBriefSection";
+import { briefFingerprint, buildBriefSnapshot, withoutHistory, type ExecutiveBrief } from "./research/executiveBrief";
 import { QaFindings } from "./components/QaFindings";
 import { PlanAuditModal } from "./components/PlanAuditModal";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
@@ -1063,7 +1065,13 @@ export default function App() {
   const segmentUndoTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Bumped whenever the workspace switches profile, so a late response cannot land on the wrong plan. */
   const segmentRequestTokenRef = React.useRef(0);
-  const requestSegmentsRef = React.useRef<(mode: "initial" | "top-up", profileOverride?: AudienceProfile) => void>(() => {});
+  const requestSegmentsRef = React.useRef<(mode: "initial" | "top-up", profileOverride?: AudienceProfile) => Promise<void>>(async () => {});
+  // Executive brief: written after the plan is delivered, and rewritten on demand.
+  const [briefStatus, setBriefStatus] = useState<ExecutiveBriefStatus>("idle");
+  const [briefError, setBriefError] = useState<string | null>(null);
+  const briefRequestTokenRef = React.useRef(0);
+  const executiveBriefDirtyRef = React.useRef(false);
+  const [autoBriefToken, setAutoBriefToken] = useState<number | null>(null);
 
   // Derived QA audit state from logs
   const isQAStarted = researchLogs.some(log => 
@@ -1207,7 +1215,16 @@ export default function App() {
         } else {
           setProfileData(rawProfile);
         }
-        if (rawProfile) requestSegmentsRef.current("initial", rawProfile);
+        if (rawProfile) {
+          // The executive brief follows the segments, because its audience section is built on
+          // them. It runs whether or not the segments succeed.
+          const briefToken = briefRequestTokenRef.current;
+          if (rawProfile.channelStrategy?.mediaPlan?.channels?.length && !rawProfile.executiveBrief) setBriefStatus("loading");
+          requestSegmentsRef.current("initial", rawProfile).finally(() => {
+            // Picked up by an effect, so the brief reads the profile after the segments render.
+            if (briefToken === briefRequestTokenRef.current) setAutoBriefToken(briefToken);
+          });
+        }
         // The server already saved this run as a draft. Opening it as the active plan means
         // Save updates that record instead of creating a second copy.
         const draftId = serverCompleteData.savedPlanId;
@@ -1670,6 +1687,29 @@ export default function App() {
   const isTemporalHidden = hiddenSections.has("temporal") || hiddenSections.has("daypart");
   const isChannelsHidden = hiddenSections.has("channels");
   const isExecutiveSummaryHidden = hiddenSections.has("executiveSummary") || hiddenSections.has("blueprint");
+
+  // The brief is out of date once the plan it was written from no longer matches the plan on screen.
+  const liveBriefFingerprint = React.useMemo(
+    () => (profileData?.executiveBrief ? briefFingerprint(buildBriefSnapshot(profileData)) : ""),
+    [profileData],
+  );
+  const isBriefStale = Boolean(profileData?.executiveBrief && profileData.executiveBrief.inputFingerprint !== liveBriefFingerprint);
+  const briefLivePercents = React.useMemo(
+    () => Object.fromEntries((profileData?.channelStrategy?.mediaPlan?.channels || []).map((c) => [c.channelId, Math.round(c.allocationPercent * 10) / 10])),
+    [profileData?.channelStrategy?.mediaPlan?.channels],
+  );
+  const briefGlance = React.useMemo(() => {
+    const plan = profileData?.channelStrategy?.mediaPlan;
+    const facts: Array<{ label: string; value: string }> = [];
+    if (plan?.workingMediaBudget) facts.push({ label: "Media budget", value: `$${Math.round(plan.workingMediaBudget).toLocaleString()}` });
+    if (plan?.flightDays) facts.push({ label: "Flight", value: `${plan.flightDays} days` });
+    const primaryKpi = kpis.find((k) => k.trim());
+    if (primaryKpi) facts.push({ label: "Primary KPI", value: primaryKpi.trim() });
+    if (plan?.channels?.length) facts.push({ label: "Channels", value: String(plan.channels.length) });
+    const geo = geography || profileData?.briefOfRecord?.geography;
+    if (geo) facts.push({ label: "Geography", value: geo });
+    return facts;
+  }, [profileData?.channelStrategy?.mediaPlan, profileData?.briefOfRecord, kpis, geography]);
   const isSourcesHidden = hiddenSections.has("sources");
 
   const markPlanPersisted = (plan: api.StoredPlan) => {
@@ -1681,6 +1721,11 @@ export default function App() {
 
   const resetSegmentSession = () => {
     segmentRequestTokenRef.current += 1;
+    briefRequestTokenRef.current += 1;
+    executiveBriefDirtyRef.current = false;
+    setBriefStatus("idle");
+    setBriefError(null);
+    setAutoBriefToken(null);
     removedSegmentsRef.current = [];
     segmentsDirtyRef.current = false;
     hiddenSectionsDirtyRef.current = false;
@@ -1759,6 +1804,82 @@ export default function App() {
     }
   };
   requestSegmentsRef.current = requestSegments;
+
+  /**
+   * Writes (or rewrites) the executive brief from the plan as it stands on screen: channel
+   * edits applied, hidden sections left out. Hand edits are dropped unless the planner keeps
+   * them; the version being replaced is kept for Undo.
+   */
+  const requestExecutiveBrief = async ({ instructions = "", keepEdits = false, auto = false }: { instructions?: string; keepEdits?: boolean; auto?: boolean } = {}) => {
+    const profile = profileData;
+    if (!profile || isShareView) return;
+    if (auto && profile.executiveBrief) return;
+    if (!profile.channelStrategy?.mediaPlan?.channels?.length) {
+      setBriefError(auto ? null : "This plan has no channel plan yet, so there is nothing to summarise.");
+      setBriefStatus(auto ? "idle" : "error");
+      return;
+    }
+
+    const token = ++briefRequestTokenRef.current;
+    const snapshot = buildBriefSnapshot(profile, { advertiserName, url, geography, campaignFocus, kpis });
+    setBriefStatus("loading");
+    setBriefError(null);
+    try {
+      const response = await api.authFetch("/api/executive-brief", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ snapshot, instructions }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (token !== briefRequestTokenRef.current) return;
+      if (!response.ok || !data.brief) {
+        throw new Error(data.error || "The executive summary could not be written.");
+      }
+      const generated = data.brief as ExecutiveBrief;
+      executiveBriefDirtyRef.current = true;
+      setProfileData((prev) => {
+        if (!prev) return prev;
+        const current = prev.executiveBrief;
+        const next: ExecutiveBrief = {
+          ...generated,
+          // The client's fingerprint, so the out-of-date check compares like with like.
+          inputFingerprint: briefFingerprint(snapshot),
+          ...(current?.hiddenPanels?.length ? { hiddenPanels: current.hiddenPanels } : {}),
+          ...(keepEdits && current?.edits ? { edits: current.edits } : {}),
+          ...(current ? { previous: withoutHistory(current) } : {}),
+        };
+        return { ...prev, executiveBrief: next };
+      });
+      setBriefStatus("idle");
+    } catch (err: any) {
+      if (token !== briefRequestTokenRef.current) return;
+      console.error("Could not write the executive brief:", err);
+      setBriefError(err?.message || "The executive summary could not be written.");
+      setBriefStatus("error");
+    }
+  };
+
+  // The first brief of a new run, once its segments have rendered.
+  React.useEffect(() => {
+    if (autoBriefToken === null) return;
+    setAutoBriefToken(null);
+    if (autoBriefToken !== briefRequestTokenRef.current || !profileData || profileData.executiveBrief) {
+      if (autoBriefToken === briefRequestTokenRef.current) setBriefStatus("idle");
+      return;
+    }
+    requestExecutiveBrief({ auto: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoBriefToken]);
+
+  const handleChangeExecutiveBrief = (next: ExecutiveBrief) => {
+    executiveBriefDirtyRef.current = true;
+    setProfileData((prev) => (prev ? { ...prev, executiveBrief: next } : prev));
+  };
+
+  const handleUndoExecutiveBrief = () => {
+    executiveBriefDirtyRef.current = true;
+    setProfileData((prev) => (prev?.executiveBrief?.previous ? { ...prev, executiveBrief: prev.executiveBrief.previous } : prev));
+  };
 
   const handleRemoveSegment = (id: string) => {
     const list = profileData?.segmentRecommendations ?? [];
@@ -1946,6 +2067,40 @@ export default function App() {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileData?.hiddenSections, activeSavedId, isShareView]);
+
+  // Auto-save the executive brief (generated, regenerated, hand-edited) onto an already-saved plan.
+  React.useEffect(() => {
+    if (!executiveBriefDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
+    const planId = activeSavedId;
+    const brief = profileData.executiveBrief;
+    const liveFingerprint = profileBaselineFingerprint(profileData);
+
+    const timer = setTimeout(() => {
+      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
+        const persisted = lastPersistedPlanRef.current;
+        const revision = activePlanRevisionRef.current;
+        if (!executiveBriefDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
+        // Other unsaved changes: the brief waits for the planner's next Save, like the segments.
+        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) return;
+
+        executiveBriefDirtyRef.current = false;
+        try {
+          const updated = await api.updatePlan(planId, revision, {
+            title: persisted.title,
+            advertiserName: persisted.advertiserName,
+            settingsRevision: persisted.settingsRevision,
+            payload: { ...persisted.payload, profile: { ...persisted.payload.profile, executiveBrief: brief } },
+          });
+          markPlanPersisted(updated);
+        } catch (err: any) {
+          console.error("Could not auto-save the executive brief:", err);
+          executiveBriefDirtyRef.current = true;
+        }
+      });
+    }, 1200);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileData?.executiveBrief, activeSavedId, isShareView]);
 
   /**
    * Save to the shared store. An existing plan is updated against the revision we last
@@ -6772,63 +6927,23 @@ export default function App() {
 
                 {/* Executive Summary Blueprint (placed after Channel Strategy) */}
                 {(!isShareView || !isExecutiveSummaryHidden) && (
-                  <div className={`group relative rounded-2xl p-6 md:p-8 shadow-xs space-y-5 transition-all ${
-                    isExecutiveSummaryHidden
-                      ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70 border"
-                      : "bg-gradient-to-br from-indigo-50/70 via-white to-slate-50 border border-indigo-100/90"
-                  }`}>
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-indigo-100/60 pb-4">
-                      <div>
-                        <div className="flex items-center gap-2 text-indigo-700 text-xs font-bold uppercase tracking-wider mb-1.5">
-                          <Award className="w-4 h-4 text-indigo-600" />
-                          <span>Executive Summary Blueprint</span>
-                        </div>
-                        <h3 className="text-xl font-display font-bold text-slate-900">
-                          Audience Opportunity & Strategic Media Alignment
-                        </h3>
-                      </div>
-                      <div className="flex items-center gap-2 self-start sm:self-auto">
-                        {!isShareView && (
-                          <SectionVisibilityButton
-                            sectionKey="executiveSummary"
-                            isInactive={isExecutiveSummaryHidden}
-                            onToggle={handleToggleSectionActive}
-                          />
-                        )}
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-semibold border border-indigo-200/60">
-                          <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-                          Executive Synthesis
-                        </span>
-                      </div>
-                    </div>
-
-                    <p className="text-sm text-slate-700 leading-relaxed font-normal">
-                      {profileData.executiveSummary}
-                    </p>
-
-                    {/* Strategic Value Pillars: Where the Audience Is & Why it Hits KPIs */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-                      <div className="bg-white/80 border border-indigo-100/70 rounded-xl p-4 space-y-1.5 shadow-2xs">
-                        <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs uppercase tracking-wider">
-                          <Target className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                          <span>Reaching Consumers Where They Actually Are</span>
-                        </div>
-                        <p className="text-xs text-slate-600 leading-relaxed">
-                          Activates across multi-screen behaviors (Connected TV living room co-viewing, mobile digital companion screens, and high-affinity contextual domains) during peak active dayparts.
-                        </p>
-                      </div>
-
-                      <div className="bg-white/80 border border-indigo-100/70 rounded-xl p-4 space-y-1.5 shadow-2xs">
-                        <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs uppercase tracking-wider">
-                          <TrendingUp className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                          <span>Engineered to Maximize Campaign KPIs</span>
-                        </div>
-                        <p className="text-xs text-slate-600 leading-relaxed">
-                          Combines high-impact unskippable premium inventory with precision intent targeting and retargeting to maximize reach, engagement, and conversion efficiency.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
+                  <ExecutiveBriefSection
+                    brief={profileData.executiveBrief}
+                    legacySummary={profileData.executiveSummary}
+                    status={briefStatus}
+                    error={briefError}
+                    isStale={isBriefStale}
+                    readOnly={isShareView}
+                    isHidden={isExecutiveSummaryHidden}
+                    onToggleSection={handleToggleSectionActive}
+                    onGenerate={(options) => requestExecutiveBrief(options)}
+                    onUndo={handleUndoExecutiveBrief}
+                    onChangeBrief={handleChangeExecutiveBrief}
+                    glance={briefGlance}
+                    livePercents={briefLivePercents}
+                    advertiserName={advertiserName}
+                    geography={geography}
+                  />
                 )}
 
               {/* Sourcing and Grounding List */}

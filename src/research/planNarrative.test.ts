@@ -20,9 +20,9 @@ test("the final narrative replaces the draft section by section", () => {
 });
 
 test("an empty field or a wrong-length list keeps the draft instead of blanking the section", () => {
-  const profile: any = { executiveSummary: "Draft summary.", takeaways: ["a", "b", "c", "d"], recommendations: recs(4) };
-  const replaced = applyNarrative(profile, { executiveSummary: "  ", takeaways: ["only one"], recommendations: recs(3) });
-  assert.equal(profile.executiveSummary, "Draft summary.");
+  const profile: any = { intro: "Draft intro.", takeaways: ["a", "b", "c", "d"], recommendations: recs(4) };
+  const replaced = applyNarrative(profile, { intro: "  ", takeaways: ["only one"], recommendations: recs(3) });
+  assert.equal(profile.intro, "Draft intro.");
   assert.deepEqual(profile.takeaways, ["a", "b", "c", "d"]);
   assert.equal(profile.recommendations.length, 4);
   assert.deepEqual(replaced, []);
@@ -34,4 +34,10 @@ test("the draft handed to the writer is the narrative currently on the profile",
   assert.equal(draft.intro, "i");
   assert.equal(draft.temporalOverview, "t");
   assert.equal(draft.activationNotes, "n");
+});
+
+test("the narrative no longer writes the executive summary; the executive brief does", () => {
+  const profile: any = { executiveSummary: "Synthesis draft." };
+  applyNarrative(profile, { executiveSummary: "Should be ignored." });
+  assert.equal(profile.executiveSummary, "Synthesis draft.");
 });

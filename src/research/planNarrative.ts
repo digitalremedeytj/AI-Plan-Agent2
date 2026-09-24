@@ -6,6 +6,10 @@
 //
 // This step rewrites the narrative with everything settled in front of it, so the story is told
 // once, by one writer, about the plan that actually ships. The draft is kept if it fails.
+//
+// The executive summary is not written here: it is the executive brief (executiveBrief.ts),
+// written after the plan is delivered so it can follow the planner's edits. Synthesis's draft
+// executiveSummary stays on the profile for the channel engine and for older plans.
 
 export const NARRATIVE_SYSTEM_INSTRUCTION = `You are the senior media planner who owns this plan, writing its final narrative for the client. The audience research, brief of record, personas, charts, CTV publishers and channel plan are settled. Your job is to write the story that ties them together, as one expert planner would.
 
@@ -22,7 +26,6 @@ export const narrativeSchema = {
   type: "object",
   properties: {
     intro: { type: "string", description: "One polished sentence: who the audience is and why they matter for this campaign." },
-    executiveSummary: { type: "string", description: "One paragraph, at most 120 words: the audience opportunity, how the channel plan reaches it, and how that serves the KPIs." },
     takeaways: { type: "array", items: { type: "string" }, description: "Exactly 4 planning takeaways, each grounded in the research or charts." },
     recommendations: {
       type: "array",
@@ -47,7 +50,7 @@ export const narrativeSchema = {
     publisherInsights: { type: "string", description: "50 to 65 words (under 450 characters) on why the CTV publisher mix fits this audience. Never mention tiers." },
   },
   required: [
-    "intro", "executiveSummary", "takeaways", "recommendations", "demographicsOverview", "geographyNotes",
+    "intro", "takeaways", "recommendations", "demographicsOverview", "geographyNotes",
     "browserOverview", "deviceOverview", "temporalOverview", "activationNotes", "publisherInsights",
   ],
 };
@@ -84,7 +87,6 @@ export function buildNarrativeInput(ctx: NarrativeContext): string {
 export function currentNarrative(profile: any) {
   return {
     intro: profile?.intro,
-    executiveSummary: profile?.executiveSummary,
     takeaways: profile?.takeaways,
     recommendations: profile?.recommendations,
     demographicsOverview: profile?.demographics?.overview,
@@ -115,7 +117,6 @@ export function applyNarrative(profile: any, raw: unknown): string[] {
     }
   };
   set("intro", n.intro, (v) => (profile.intro = v));
-  set("executiveSummary", n.executiveSummary, (v) => (profile.executiveSummary = v));
   set("publisherInsights", n.publisherInsights, (v) => (profile.publisherInsights = v));
   const section = (key: string) => (profile[key] && typeof profile[key] === "object" ? profile[key] : (profile[key] = {}));
   set("demographics.overview", n.demographicsOverview, (v) => (section("demographics").overview = v));

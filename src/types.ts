@@ -1,3 +1,4 @@
+import type { ExecutiveBrief } from "./research/executiveBrief";
 import type { PlanningSettings } from "./planning/settings";
 import type { MediaRecommendationPlan, RecommendationStatus, ConfidenceLevel } from "./planning/types";
 export type { CtvPublisherSetting } from "./planning/knowledge/ctvPublishers";
@@ -337,7 +338,10 @@ export interface AudienceProfile {
   deviceTypeIndex: DeviceTypeIndex;
   demographics: Demographics;
   temporalPatterns: TemporalPatterns;
+  /** Legacy one-paragraph summary. Plans saved before the executive brief show it until upgraded. */
   executiveSummary: string;
+  /** The structured executive summary, written after the plan is delivered. See src/research/executiveBrief.ts. */
+  executiveBrief?: ExecutiveBrief;
   sources: Source[];
   ctvPublishers: CtvPublisherRecommendation[];
   publisherInsights: string;

@@ -15,6 +15,9 @@ Generation order: crawl -> Brief of Record -> four research dossiers -> synthesi
 charts, publishers, sources) -> channel plan (engine) -> chart estimates -> narrative written
 last -> QA audit on OpenAI `gpt-6-sol` (high) -> targeted Gemini text patches -> verify
 (`gpt-6-sol`, medium). Every finished run is auto-saved as a "(draft)" plan before it is sent.
+After delivery the client requests segment recommendations, then the executive brief
+(`/api/executive-brief`), which is written from the plan as the planner sees it and can be
+regenerated at any time.
 The whole run must fit Cloud Run's 900s request timeout; late stages check `RUN_BUDGET_MS`.
 
 ## Commands
@@ -78,8 +81,10 @@ src/qa/                 Plan QA. Deterministic chart guardrails (chartSanity, ch
                         server may apply), auditRunner (audit/fix/verify, shared by
                         generation and the manual "Run QA Audit" on a saved plan).
 src/research/           Crawl, Brief of Record (the audience every step is built for),
-                        citation-pool filter, segment recommendations, and planNarrative
-                        (the narrative, written last against the settled plan).
+                        citation-pool filter, segment recommendations, planNarrative
+                        (the narrative, written last against the settled plan), and
+                        executiveBrief (the post-delivery executive summary: plan snapshot,
+                        fingerprint for the out-of-date badge, fact guards, hand edits).
 src/api/                Typed browser client for the shared store + one-time
                         localStorage migration.
 src/components/         Extracted UI (SettingsDrawer, charts, tabs).

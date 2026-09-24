@@ -25,6 +25,8 @@ export interface InteractionLike {
 interface InteractionRequest {
   systemInstruction?: string;
   input: string;
+  /** Images sent after the text, e.g. a generated slide to proofread. Base64 without the data: prefix. */
+  images?: Array<{ data: string; mimeType: string }>;
   thinkingLevel: GeminiThinkingLevel;
   timeoutMs: number;
   model?: string;
@@ -39,7 +41,9 @@ async function createInteraction(
     {
       model: request.model ?? GEMINI_FLASH_MODEL,
       ...(request.systemInstruction ? { system_instruction: request.systemInstruction } : {}),
-      input: request.input,
+      input: request.images?.length
+        ? [{ type: "text", text: request.input }, ...request.images.map((image) => ({ type: "image", data: image.data, mime_type: image.mimeType }))]
+        : request.input,
       generation_config: { thinking_level: request.thinkingLevel },
       // Briefs are client-confidential; nothing here needs server-side conversation state.
       store: false,

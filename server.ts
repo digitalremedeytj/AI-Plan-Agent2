@@ -57,6 +57,8 @@ import {
   type AuditInputs,
 } from "./src/qa/auditRunner";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeSchema } from "./src/research/planNarrative";
+import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
+import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
 import { applyAudienceSkews, audienceSkewSchema, chartsNeedingBaselineEstimates, describeBaselines } from "./src/qa/baselineEstimates";
@@ -187,6 +189,18 @@ const RUN_BUDGET_MS = 870000;
 // thinking first, one medium-thinking fallback. Together they stay inside Cloud Run's 300s.
 const TIMEOUT_SEGMENTS_HIGH_MS = 90000;
 const TIMEOUT_SEGMENTS_FALLBACK_MS = 60000;
+// The executive brief is written after the profile is delivered, from the plan as the planner
+// sees it. High thinking first, one medium fallback, inside Cloud Run's 300s.
+// Proofreading a rendered slide: read its text back and compare. Medium thinking reads small
+// type more reliably; the low fallback keeps a slow read from costing the slide.
+const PROOFREAD_ATTEMPTS: Array<{ thinkingLevel: "medium" | "low"; timeoutMs: number }> = [
+  { thinkingLevel: "medium", timeoutMs: 45000 },
+  { thinkingLevel: "low", timeoutMs: 30000 },
+];
+const BRIEF_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
+  { thinkingLevel: "high", timeoutMs: 90000 },
+  { thinkingLevel: "medium", timeoutMs: 60000 },
+];
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
 const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
 const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
@@ -2231,6 +2245,33 @@ app.post("/api/generate-segments", async (req, res) => {
   }
 });
 
+// The executive brief. The client sends the plan as the planner sees it (edits applied, hidden
+// sections left out) rather than a plan id, so an unsaved or just-edited plan is summarised as it
+// stands. The model writes the words; normalizeBrief fills the facts back in from the plan.
+app.post("/api/executive-brief", async (req, res) => {
+  req.socket.setTimeout(0);
+  try {
+    const snapshot = sanitizeBriefSnapshot(req.body?.snapshot);
+    if (snapshot.channels.length === 0) {
+      res.status(400).json({ error: "This plan has no channel plan yet, so there is nothing to summarise." });
+      return;
+    }
+    const instructions = typeof req.body?.instructions === "string" ? req.body.instructions : "";
+    const { systemInstruction, input } = buildBriefPrompt(snapshot, instructions);
+    const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+      getAiClient(),
+      { systemInstruction, input, schema: buildBriefResponseSchema(snapshot) },
+      BRIEF_ATTEMPTS,
+    );
+    const brief = normalizeBrief(data, snapshot, { instructions, model: `${GEMINI_FLASH_MODEL} (${thinkingLevel})` });
+    console.log(`[API /api/executive-brief] ${brief.sections.length} section(s), ${brief.plannerNotes.length} planner note(s) via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
+    res.json({ brief });
+  } catch (err: any) {
+    console.error("Error in /api/executive-brief:", err);
+    res.status(502).json({ error: "The executive summary could not be written. Please try again.", details: err?.message || String(err) });
+  }
+});
+
 // Configuration for Presentation Slide Studio Aspect Ratios (gpt-image-2.5-sunburst)
 // All sizes adhere to width and height being multiples of 16, within 655,360 - 8,294,400 pixels
 const SLIDE_ASPECT_RATIO_CONFIG: Record<
@@ -3217,6 +3258,74 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
 });
 
 // API: Summarize Publisher Insights with AI if text is too long for presentation slides
+// The executive brief as a slide. The client sends the slide text it built from the brief (and
+// the planner may have edited); it is rendered verbatim, then read back by Gemini and compared,
+// since image models misspell and misnumber dense text. The image is returned inline rather
+// than written to disk: files under assets/ exist only on the Cloud Run instance that wrote them.
+const SLIDE_LAYOUTS = new Set<BriefSlideLayout>(["highlights", "strategy", "execution"]);
+const SLIDE_STYLES = new Set<BriefSlideStyle>(["corporate_light", "modern_dark", "minimal_slate"]);
+const MAX_SLIDE_TEXT = 4000;
+
+app.post("/api/executive-brief/generate-slide", async (req, res) => {
+  req.socket.setTimeout(0);
+  try {
+    const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, MAX_SLIDE_TEXT) : "";
+    if (!text) {
+      res.status(400).json({ error: "The slide has no content." });
+      return;
+    }
+    const layout: BriefSlideLayout = SLIDE_LAYOUTS.has(req.body?.layout) ? req.body.layout : "highlights";
+    const style: BriefSlideStyle = SLIDE_STYLES.has(req.body?.style) ? req.body.style : "corporate_light";
+    const aspectRatio = SLIDE_ASPECT_RATIO_CONFIG[req.body?.aspectRatio] ? String(req.body.aspectRatio) : "16:9";
+    const ratioInfo = SLIDE_ASPECT_RATIO_CONFIG[aspectRatio];
+    const customNotes = typeof req.body?.customNotes === "string" ? req.body.customNotes.trim().slice(0, 600) : "";
+    const proofread = req.body?.proofread !== false;
+
+    const prompt = buildSlideImagePrompt({ text, layout, style, aspectRatio, size: ratioInfo.size, customNotes });
+    console.log(`[API /api/executive-brief/generate-slide] ${layout} slide, ${style}, ${aspectRatio} (${ratioInfo.size}), proofread ${proofread ? "on" : "off"}.`);
+    const genResponse: any = await withTimeout(
+      getOpenaiClient().images.generate({ model: "gpt-image-2.5-sunburst", prompt, size: ratioInfo.size, quality: "xhigh" } as any),
+      180000,
+      null,
+    );
+    const base64 = genResponse?.data?.[0]?.b64_json;
+    if (!base64) throw new Error("gpt-image-2.5-sunburst did not return image data for the executive summary slide.");
+
+    let check: ProofreadResult | null = null;
+    if (proofread) {
+      try {
+        const { data } = await generateStructuredJsonWithFallback(
+          getAiClient(),
+          {
+            systemInstruction: PROOFREAD_SYSTEM_INSTRUCTION,
+            input: `SOURCE TEXT (what the slide was meant to show):\n${text}\n\nThe generated slide image follows. List the differences.`,
+            images: [{ data: base64, mimeType: "image/png" }],
+            schema: proofreadSchema,
+          },
+          PROOFREAD_ATTEMPTS,
+        );
+        check = normalizeProofread(data);
+      } catch (err: any) {
+        console.warn("[API /api/executive-brief/generate-slide] Proofread failed:", err?.message || err);
+        check = { status: "unavailable", issues: [], error: err?.message || String(err) };
+      }
+      console.log(`[API /api/executive-brief/generate-slide] Proofread: ${check.status}${check.issues.length ? ` (${check.issues.length} issue(s))` : ""}.`);
+    }
+
+    res.json({
+      success: true,
+      dataUrl: `data:image/png;base64,${base64}`,
+      model: "gpt-image-2.5-sunburst",
+      aspectRatio,
+      dimensions: { width: ratioInfo.width, height: ratioInfo.height },
+      proofread: check,
+    });
+  } catch (err: any) {
+    console.error("[API /api/executive-brief/generate-slide ERROR]:", err);
+    res.status(500).json({ error: "Failed to generate the executive summary slide.", details: err?.message || String(err) });
+  }
+});
+
 app.post("/api/summarize-publisher-insights", async (req, res) => {
   try {
     const { text, maxWords = 65, maxCharacters = 450 } = req.body || {};
