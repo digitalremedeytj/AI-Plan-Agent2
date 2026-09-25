@@ -11,6 +11,11 @@ export type ThoughtListener = (text: string) => void;
 
 const MAX_LINE_CHARS = 140;
 const HEADLINE = /\*\*([^*\n]{3,200})\*\*/g;
+/**
+ * Headlines about the task rather than the plan ("Defining the Output", "Validating Schema
+ * Accuracy"). Gemini writes these often; they tell the planner nothing, so they are dropped.
+ */
+const ABOUT_THE_TASK = /\b(json|schema|output|format|formatting|structure|structuring|fields?|prompt|instructions?|task|request|focus)\b/i;
 
 function tidy(text: string): string {
   const line = text.replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim().replace(/[.:;,\s]+$/, "");
@@ -41,19 +46,19 @@ export class ThoughtHeadlines {
     while ((match = HEADLINE.exec(this.buffer))) {
       this.scanned = HEADLINE.lastIndex;
       this.sawHeadline = true;
-      const line = tidy(match[1]);
-      if (line) this.onLine(line);
+      this.report(tidy(match[1]));
     }
   }
 
   end(): void {
-    if (!this.sawHeadline) {
-      const line = tidy(firstSentence(this.buffer));
-      if (line) this.onLine(line);
-    }
+    if (!this.sawHeadline) this.report(tidy(firstSentence(this.buffer)));
     this.buffer = "";
     this.scanned = 0;
     this.sawHeadline = false;
+  }
+
+  private report(line: string): void {
+    if (line && !ABOUT_THE_TASK.test(line)) this.onLine(line);
   }
 }
 

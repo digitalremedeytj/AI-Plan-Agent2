@@ -29,6 +29,15 @@ test("a very long headline is trimmed so one thought cannot flood the console", 
   assert.ok(lines[0].endsWith("…"));
 });
 
+test("headlines about the task rather than the plan are dropped", () => {
+  const lines: string[] = [];
+  const headlines = new ThoughtHeadlines((line) => lines.push(line));
+  for (const h of ["Defining the Output", "Validating Schema Accuracy", "Defining the Synthesis Focus", "Summarizing Browser Behavior", "Evaluating claims in advertising"]) {
+    headlines.push(`**${h}**\n\nDetail. `);
+  }
+  assert.deepEqual(lines, ["Summarizing Browser Behavior", "Evaluating claims in advertising"]);
+});
+
 test("lines inside the throttle window are held, and only the newest is sent", async () => {
   const sent: string[] = [];
   const progress = throttledProgress((line) => sent.push(line), 40);
