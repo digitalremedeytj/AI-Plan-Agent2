@@ -6,6 +6,7 @@ const OWNER_LABEL: Record<AuditFindingRecord["owner"], string> = {
   narrative: "Text",
   personas: "Persona text",
   publisherRationale: "Publisher rationale",
+  channelRationale: "Channel rationale",
   chart: "Chart - needs a planner",
   channelStrategy: "Channel plan - needs a planner",
   planner: "Planner decision",

@@ -29,28 +29,58 @@ test("the total score is the sum of the categories, not the number the model wro
 
 test("the prose fixer can change narrative, persona and publisher text, and nothing else", () => {
   const profile: any = {
+    intro: "Old intro.",
     executiveSummary: "Old summary.",
     personas: [{ name: "Core Cat Owner", age: "25-34", narrative: "Old." }],
     ctvPublishers: [{ publisher: "Hulu", why: "Old why." }],
-    channelStrategy: { mediaPlan: { channels: [{ gapAddressed: "Old gap." }] } },
+    channelStrategy: { mediaPlan: { channels: [{ gapAddressed: "Old gap.", role: "awareness" }] } },
   };
   const findings = [finding({ id: "F1" }), finding({ id: "F2", owner: "channelStrategy" })];
   const { applied, rejected } = applyPatches(profile, [
+    { findingId: "F1", path: "intro", value: "New intro." },
+    // Synthesis's draft summary is not shown to anyone, so it is not fixed either.
     { findingId: "F1", path: "executiveSummary", value: "New summary." },
     { findingId: "F1", path: "personas[0].narrative", value: "New." },
     { findingId: "F1", path: "ctvPublishers[0].why", value: "New why." },
     { findingId: "F1", path: "personas[0].name", value: "Dog Owner" },
     { findingId: "F1", path: "personas[0].age", value: "55+" },
-    { findingId: "F1", path: "channelStrategy.mediaPlan.channels[0].gapAddressed", value: "New gap." },
-    { findingId: "F2", path: "executiveSummary", value: "Sneaky." },
+    { findingId: "F1", path: "channelStrategy.mediaPlan.channels[0].role", value: "conversion" },
+    { findingId: "F2", path: "intro", value: "Sneaky." },
     { findingId: "F1", path: "takeaways[7]", value: "Does not exist." },
   ], findings);
-  assert.deepEqual(applied.map((p) => p.path), ["executiveSummary", "personas[0].narrative", "ctvPublishers[0].why"]);
+  assert.deepEqual(applied.map((p) => p.path), ["intro", "personas[0].narrative", "ctvPublishers[0].why"]);
   assert.equal(profile.personas[0].name, "Core Cat Owner");
   assert.equal(profile.personas[0].age, "25-34");
-  assert.equal(profile.channelStrategy.mediaPlan.channels[0].gapAddressed, "Old gap.");
-  assert.equal(profile.executiveSummary, "New summary.");
-  assert.equal(rejected.length, 5);
+  assert.equal(profile.channelStrategy.mediaPlan.channels[0].role, "awareness");
+  assert.equal(profile.intro, "New intro.");
+  assert.equal(profile.executiveSummary, "Old summary.");
+  assert.equal(rejected.length, 6);
+});
+
+test("a channel's written rationale can be fixed, but not its catalog facts, and the fix survives re-adding the channel", () => {
+  const evidence = () => [
+    { sourceType: "audience_research", detail: "Nielsen says women 25-54 lead CTV viewing." },
+    { sourceType: "digital_remedy_rule", detail: "CTV is live and Digital Remedy-executable." },
+  ];
+  const profile: any = {
+    channelStrategy: {
+      mediaPlan: {
+        channels: [{ channelId: "ctv", gapAddressed: "Old gap.", tradeoffs: ["CPMs run $30-40 in this category."], evidence: evidence() }],
+        evaluatedCandidates: [{ product: { id: "ctv" }, gapAddressed: "Old gap.", tradeoffs: ["CPMs run $30-40 in this category."], evidence: evidence() }],
+      },
+    },
+  };
+  const { applied, rejected } = applyPatches(profile, [
+    { findingId: "F1", path: "channelStrategy.mediaPlan.channels[0].tradeoffs[0]", value: "CPMs are a planning assumption to confirm." },
+    { findingId: "F1", path: "channelStrategy.mediaPlan.channels[0].evidence[0].detail", value: "Nielsen reports adults 25-34 stream the most." },
+    { findingId: "F1", path: "channelStrategy.mediaPlan.channels[0].evidence[1].detail", value: "Rewritten catalog fact." },
+  ], [finding({ id: "F1", owner: "channelRationale" })]);
+  assert.equal(applied.length, 2);
+  assert.deepEqual(rejected.map((r) => r.reason), ["catalog evidence is not prose"]);
+  const candidate = profile.channelStrategy.mediaPlan.evaluatedCandidates[0];
+  assert.equal(candidate.tradeoffs[0], "CPMs are a planning assumption to confirm.");
+  assert.equal(candidate.evidence[0].detail, "Nielsen reports adults 25-34 stream the most.");
+  assert.equal(candidate.evidence[1].detail, "CTV is live and Digital Remedy-executable.");
 });
 
 test("the fix list reports only findings a patch actually changed", () => {

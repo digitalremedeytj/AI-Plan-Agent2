@@ -7,6 +7,7 @@
 // written before they existed used them to time shopping and search.
 
 import { PROFILE_CHARTS } from "./generationIntegrity";
+import { CONTEXT_LABEL } from "../research/findingBlurb";
 
 export type ChartProvenance = "research" | "national-baseline" | "estimate" | "empty";
 
@@ -59,6 +60,10 @@ export function describeCharts(profile: any): string {
 const names = (records: any[] | undefined) => (records || []).map((r) => r?.displayName).filter(Boolean).join(", ");
 
 /** The engine's channel plan, compactly: what each channel is for and what it carries. */
+// Evidence code writes from the catalog, brief or uploaded plan: facts about the product, not
+// claims for the auditor to check.
+const CATALOG_EVIDENCE_TYPES = new Set(["digital_remedy_rule", "brief", "uploaded_plan"]);
+
 export function describeChannelPlan(profile: any): string {
   const plan = profile?.channelStrategy?.mediaPlan;
   const channels: any[] = plan?.channels || [];
@@ -68,7 +73,7 @@ export function describeChannelPlan(profile: any): string {
   const lines = [
     `CHANNEL PLAN (built by Digital Remedy's planning engine from its product catalog; it owns budget, channel selection, tactics and measurement. $${Number(plan.workingMediaBudget || 0).toLocaleString()} over ${plan.flightDays ?? "?"} days):`,
   ];
-  for (const c of channels) {
+  channels.forEach((c, i) => {
     const parts = [
       `${c.allocationPercent}% ($${Number(c.allocationDollars || 0).toLocaleString()})`,
       c.role ? `role: ${c.role}` : "",
@@ -77,10 +82,16 @@ export function describeChannelPlan(profile: any): string {
       names(c.measurementCapabilities) ? `measurement: ${names(c.measurementCapabilities)}` : "",
       names(c.publishers) ? `publishers: ${names(c.publishers)}` : "",
     ].filter(Boolean);
-    lines.push(`- ${c.channelName}: ${parts.join("; ")}.`);
-    if (c.gapAddressed) lines.push(`  Why: ${c.gapAddressed}`);
+    // Indexed so a finding can name the exact field ("channels[2].tradeoffs[0]"): the written
+    // rationale is fixable text, and the fixer patches by path.
+    lines.push(`- [channels[${i}]] ${c.channelName}: ${parts.join("; ")}.`);
+    if (c.gapAddressed) lines.push(`  Why (gapAddressed): ${c.gapAddressed}`);
     if (c.allocationRationale) lines.push(`  Allocation rationale: ${c.allocationRationale}`);
-  }
+    (c.tradeoffs || []).forEach((t: string, j: number) => t && lines.push(`  Trade-off [tradeoffs[${j}]]: ${t}`));
+    (c.evidence || []).forEach((e: any, j: number) => {
+      if (e?.detail && !CATALOG_EVIDENCE_TYPES.has(e.sourceType)) lines.push(`  Evidence [evidence[${j}]] (${e.sourceType}): ${e.detail}`);
+    });
+  });
   return lines.join("\n");
 }
 
@@ -93,9 +104,47 @@ export function describePersonas(profile: any): string {
   )].join("\n");
 }
 
-/** Research text for a prompt, each dossier capped so the whole stays a predictable size. */
-export function researchForPrompt(dossiers: Array<{ label: string; text: string; failed?: boolean }>, maxPerDossier: number): string {
+/**
+ * Each dossier as much as a prompt may take. Dossiers run 12-18k characters (saved plans keep up
+ * to 25k), and a 12k cut hid about a third of the longer ones from the auditor and the writers,
+ * while the number check read them whole: a figure could be "found" in research the auditor
+ * never saw. Four dossiers at this cap are about 25k tokens, small next to either model's window.
+ */
+export const RESEARCH_PROMPT_CHARS = 25000;
+
+const TABLE_BORDER = /^[\s+|:=\-─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║]+$/;
+const BOX_CHARS = /[─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║]/g;
+
+/**
+ * A dossier without the bulk that carries no research: the opening lines that restate the brief
+ * (every step already has the brief of record), table and diagram border lines, and rules. Rows
+ * of tables and diagrams are kept, box-drawing characters reduced to "|", since they hold figures.
+ */
+export function cleanDossierText(text: string): string {
+  const out: string[] = [];
+  let inPreamble = true;
+  for (const raw of text.split("\n")) {
+    const line = raw.trimEnd();
+    const trimmed = line.trim();
+    // The preamble ends at the first numbered or research section heading.
+    if (/^#{1,4}\s*(\d|[A-Z]\.|section)/i.test(trimmed)) inPreamble = false;
+    if (inPreamble) {
+      const label = trimmed.replace(/^[-*•]\s+/, "").match(/^\*\*([^*]{1,80}?):?\*\*/);
+      if (label && CONTEXT_LABEL.test(label[1].trim())) continue;
+    }
+    if (!trimmed) {
+      if (out.length && out[out.length - 1] !== "") out.push("");
+      continue;
+    }
+    if (TABLE_BORDER.test(trimmed) || /^[-=_*]{3,}$/.test(trimmed)) continue;
+    out.push(line.replace(BOX_CHARS, "|").replace(/ {3,}/g, "  "));
+  }
+  return out.join("\n").trim();
+}
+
+/** Research text for a prompt: each dossier cleaned, then capped so the whole stays a predictable size. */
+export function researchForPrompt(dossiers: Array<{ label: string; text: string; failed?: boolean }>, maxPerDossier = RESEARCH_PROMPT_CHARS): string {
   return dossiers.map((d) =>
-    `=== RESEARCH DOSSIER: ${d.label} ===\n${d.failed || !d.text ? "(this research did not complete)" : d.text.slice(0, maxPerDossier)}`,
+    `=== RESEARCH DOSSIER: ${d.label} ===\n${d.failed || !d.text ? "(this research did not complete)" : cleanDossierText(d.text).slice(0, maxPerDossier)}`,
   ).join("\n\n");
 }

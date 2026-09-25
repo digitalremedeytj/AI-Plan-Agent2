@@ -61,6 +61,9 @@ import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBri
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { throttledProgress } from "./src/server/thoughtProgress";
+import { EVIDENCE_RULES } from "./src/qa/evidenceRules";
+import type { ResearchDossierText } from "./src/qa/claimLedger";
+import { extractFindingBlurb } from "./src/research/findingBlurb";
 import type { GenerationLogEntry } from "./src/types";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
 import { applyAudienceSkews, audienceSkewSchema, chartsNeedingBaselineEstimates, describeBaselines } from "./src/qa/baselineEstimates";
@@ -174,7 +177,10 @@ const AUDIT_MODEL = "gpt-6-sol";
 const AUDIT_EFFORT: OpenAiEffort = "high";
 // Verify re-scores a plan it has already reviewed; medium scored in the same range at ~40s.
 const VERIFY_EFFORT: OpenAiEffort = "medium";
-const TIMEOUT_AUDIT_MS = 180000;
+// High-effort audits ran 144-180s in live runs (output-bound: ~8k tokens, most of it reasoning),
+// so 180s timed some out and shipped the plan unscored. The run budget has room: the audit
+// starts ~2.5 minutes in, and audit + fix + verify at these limits still ends inside it.
+const TIMEOUT_AUDIT_MS = 300000;
 const TIMEOUT_FIX_MS = 90000;
 const TIMEOUT_VERIFY_MS = 120000;
 const NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
@@ -182,8 +188,6 @@ const NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: n
   { thinkingLevel: "medium", timeoutMs: 50000 },
 ];
 const TIMEOUT_NARRATIVE_MS = NARRATIVE_ATTEMPTS.reduce((sum, attempt) => sum + attempt.timeoutMs, 0);
-// Per-dossier research excerpt the narrative writer reads (the QA steps set their own).
-const NARRATIVE_RESEARCH_CHARS = 12000;
 // The whole generation must finish inside Cloud Run's 900s request timeout. Late stages check
 // what is left and step aside (with an alert) rather than be cut off mid-response.
 const RUN_BUDGET_MS = 870000;
@@ -715,7 +719,7 @@ function aiCandidateProducts(settings: any) {
     .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live");
 }
 
-async function generateCandidateSignals(audienceProfile: any, facts: any): Promise<AiCandidateSignal[]> {
+async function generateCandidateSignals(audienceProfile: any, facts: any, research: Array<ResearchDossierText & { failed?: boolean }> = []): Promise<AiCandidateSignal[]> {
   const customNotes = new Map(
     (facts?.settings?.customProducts || []).map((product: any) => [product.productId, product.planningNotes]),
   );
@@ -746,6 +750,10 @@ A candidate with catalogSource "custom" is a media type the Digital Remedy team 
 
 Score each component from 0 to 100 using campaign-specific evidence. Keep confidence separate from fit by citing evidence source types. Provide concise activation, measurement, tradeoff, allocation-rationale, and scale/stop explanations. Do not calculate final allocations.
 
+Your gapAddressed, evidence, tradeoff and allocation-rationale text is shown to the client and audited against the research below. An 'audience_research' evidence line must carry a finding from the RESEARCH DOSSIERS, with its figure and population as reported and the study it came from; if the dossiers do not support a point, leave it out rather than citing a study from memory. A cost, rate or benchmark the research does not report is an 'industry_benchmark' and must be worded as a planning assumption.
+
+${EVIDENCE_RULES}
+
 CAMPAIGN FACTS:
 ${JSON.stringify({
   advertiserName: facts.advertiserName,
@@ -774,7 +782,7 @@ ${JSON.stringify({
   sources: audienceProfile?.sources?.slice?.(0, 15),
 }, null, 2)}
 
-ALLOWED PRODUCT CANDIDATES:
+${research.length > 0 ? `RESEARCH DOSSIERS (the evidence your rationale may cite):\n${researchForPrompt(research)}\n\n` : ""}ALLOWED PRODUCT CANDIDATES:
 ${JSON.stringify(candidates, null, 2)}
 
 Return one signal object per allowed candidate and no other products.`;
@@ -818,6 +826,8 @@ async function buildChannelStrategy(
     requiredChannelIds?: string[];
     excludedChannelIds?: string[];
     candidateSignals?: AiCandidateSignal[];
+    /** The research dossiers, so the channel reasoning cites findings instead of recalling studies. */
+    research?: Array<ResearchDossierText & { failed?: boolean }>;
   },
 ) {
   const totalRfpBudget = selectedPlanOptions.reduce((acc, opt) => acc + (opt.budget || 0), 0);
@@ -866,7 +876,7 @@ async function buildChannelStrategy(
   const suppliedSignals = Array.isArray(options?.candidateSignals)
     ? options.candidateSignals.filter((signal) => signal && allowedSignalIds.has(signal.channelId))
     : [];
-  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts);
+  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts, options?.research ?? audienceProfile?.researchSnapshot?.dossiers ?? []);
   // Every candidate must carry real AI reasoning. The engine can score a product without one,
   // but those formula scores and stock rationales would be shown as analysis.
   const signalled = new Set(aiSignals.map((signal) => signal.channelId));
@@ -919,26 +929,6 @@ async function buildChannelStrategy(
     mediaPlan,
     ctvPublishers: audienceProfile?.ctvPublishers,
   };
-}
-
-// Helper: Extract concise key finding blurbs from the detailed dossiers to stream to the live console
-function extractFindingBlurb(text: string, label: string): string {
-  if (!text) return "";
-  const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-  
-  // Look for lines that look like statistics, percentages, or bullets
-  const bulletLines = lines.filter(l => l.startsWith("-") || l.startsWith("*") || l.startsWith("1.") || l.startsWith("2.") || l.startsWith("3."));
-  
-  if (bulletLines.length > 0) {
-    // Return up to 2 clean key statistics/findings
-    return bulletLines
-      .slice(0, 2)
-      .map(l => l.replace(/^[-*\s\d.]+(\s*)/, "")) // strip bullet characters
-      .join(" — ");
-  }
-  
-  // Fallback to first non-empty line
-  return lines[0] || `Completed deep-dive search for ${label}`;
 }
 
 // API: Parse media plan spreadsheet using OpenAI Code Interpreter (gpt-5.6)
@@ -3868,6 +3858,9 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
    - Every single statistic or percentage mentioned in the recommendations ('recommendations.why' or 'recommendations.action') or core takeaways ('takeaways') MUST be directly grounded and cross-referenced from the provided parallel research dossiers.
    - If a statistic cannot be verified in the dossiers, leave it out. Do not substitute an industry benchmark, a "typical" rate, or a modeled figure, and do not tag an invented number as a baseline to make it acceptable.
 
+8b. ${EVIDENCE_RULES}
+   These apply to every field you write: personas, takeaways, recommendations, overviews, chart sources and publisher rationales.
+
 ${ctvPublishersSection}
 
 10. EXACTLY 4 PERSONAS (MANDATORY & USER SPECIFICATION / ORIGIN RULES):
@@ -4104,6 +4097,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             workingMediaBudget: Number(workingMediaBudget) || 0,
             campaignFlightDays: Number(campaignFlightDays) || null,
             planningSettings,
+            research: researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
           },
         );
         originalData.channelStrategy = channelStrategy;
@@ -4259,7 +4253,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
               channelPlan: describeChannelPlan(originalData),
               publishers: publishersLine(originalData),
               ledger: ledgerFor(originalData, auditInputs),
-              research: researchForPrompt(auditInputs.research, NARRATIVE_RESEARCH_CHARS),
+              research: researchForPrompt(auditInputs.research),
               draft: currentNarrative(originalData),
             }),
             schema: narrativeSchema,
@@ -4377,6 +4371,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     const isMediaPlanUploaded = Boolean(selectedPlanOptions && selectedPlanOptions.length > 0);
     for (const alert of checkPersonas(finalProfile, { mediaPlanUploaded: isMediaPlanUploaded })) pushAlert(generationAlerts, alert);
     delete finalProfile.expansionReachPercent;
+    // Synthesis's executiveSummary draft has done its job (an audience signal for the channel
+    // engine). It was written before the charts and channel plan were settled and nothing
+    // rewrites it; the executive brief replaces it after delivery. Kept, it leaked stale claims
+    // into the Markdown export and the segment prompt, and showed as an "older summary".
+    delete finalProfile.executiveSummary;
     for (const alert of reportChartsNotFound(finalProfile, generationAlerts)) pushAlert(generationAlerts, alert);
     finalProfile.generationAlerts = generationAlerts;
 

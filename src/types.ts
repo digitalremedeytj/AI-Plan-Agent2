@@ -191,7 +191,7 @@ export interface AuditFindingRecord {
   severity: "critical" | "major" | "minor";
   category: string;
   /** Who can fix it: the text fixer (narrative, personas, publisherRationale) or a person. */
-  owner: "narrative" | "personas" | "publisherRationale" | "chart" | "channelStrategy" | "planner";
+  owner: "narrative" | "personas" | "publisherRationale" | "channelRationale" | "chart" | "channelStrategy" | "planner";
   paths: string[];
   issue: string;
   evidence: string;
@@ -353,8 +353,12 @@ export interface AudienceProfile {
   deviceTypeIndex: DeviceTypeIndex;
   demographics: Demographics;
   temporalPatterns: TemporalPatterns;
-  /** Legacy one-paragraph summary. Plans saved before the executive brief show it until upgraded. */
-  executiveSummary: string;
+  /**
+   * Legacy one-paragraph summary. Plans saved before the executive brief show it until upgraded;
+   * new plans do not carry it (synthesis drafts it for the channel engine, and the server drops
+   * it before delivery).
+   */
+  executiveSummary?: string;
   /** The structured executive summary, written after the plan is delivered. See src/research/executiveBrief.ts. */
   executiveBrief?: ExecutiveBrief;
   sources: Source[];

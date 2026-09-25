@@ -6,12 +6,14 @@ import type { AuditFindingRecord } from "../types";
 
 // The manual QA audit. It audits the saved plan, shows every proposed fix as before and after,
 // and changes nothing until the planner picks which fixes to apply. Fixes that touch the
-// channel plan or charts are never proposed: they are listed as open issues for the planner.
+// channel plan's decisions or the charts are never proposed: they are listed as open issues for
+// the planner. A channel's written rationale is text, and can be fixed like the rest.
 
 const OWNER_NOTE: Record<AuditFindingRecord["owner"], string> = {
   narrative: "Text",
   personas: "Persona text",
   publisherRationale: "Publisher rationale",
+  channelRationale: "Channel rationale",
   chart: "Chart - needs a planner",
   channelStrategy: "Channel plan - needs a planner",
   planner: "Planner decision",
@@ -19,13 +21,19 @@ const OWNER_NOTE: Record<AuditFindingRecord["owner"], string> = {
 
 /** "recommendations[1].why" -> "Recommendation 2 - why" */
 export function describePath(path: string): string {
+  const channel = path.match(/^channelStrategy\.mediaPlan\.channels\[(\d+)\]\.(gapAddressed|allocationRationale|tradeoffs|evidence)(?:\[(\d+)\])?/);
+  if (channel) {
+    const [, index, field, item] = channel;
+    const part = { gapAddressed: "why", allocationRationale: "allocation rationale", tradeoffs: "trade-off", evidence: "evidence" }[field];
+    return `Channel ${Number(index) + 1} - ${part}${item !== undefined ? ` ${Number(item) + 1}` : ""}`;
+  }
   const labels: Record<string, string> = {
     intro: "Introduction", executiveSummary: "Executive summary", publisherInsights: "Publisher insights",
     audienceAnalysis: "Audience analysis", takeaways: "Takeaway", recommendations: "Recommendation",
     personas: "Persona", ctvPublishers: "CTV publisher", demographics: "Demographics", browserAndReach: "Web & domains",
-    deviceTypeIndex: "Devices", temporalPatterns: "Timing",
+    deviceTypeIndex: "Devices", temporalPatterns: "Timing", sources: "Citation",
   };
-  const fields: Record<string, string> = { overview: "overview", geographyNotes: "geography notes", activationNotes: "activation notes", why: "why", action: "action", title: "title", channels: "channels", narrative: "narrative", watch: "watches", browse: "browses", buy: "buys", gender: "gender" };
+  const fields: Record<string, string> = { overview: "overview", geographyNotes: "geography notes", activationNotes: "activation notes", why: "why", action: "action", title: "title", channels: "channels", narrative: "narrative", watch: "watches", browse: "browses", buy: "buys", gender: "gender", supportedClaims: "what it supports" };
   const match = path.match(/^([A-Za-z]+)(?:\[(\d+)\])?(?:\.([A-Za-z]+))?$/);
   if (!match) return path;
   const [, root, index, field] = match;

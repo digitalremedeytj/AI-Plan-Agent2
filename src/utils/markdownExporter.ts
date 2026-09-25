@@ -1,5 +1,6 @@
 import { AudienceProfile, GeoTargeting } from "../types";
 import { geoCoverage } from "../planning/geoTargeting";
+import { effectiveBriefSections } from "../research/executiveBriefSlides";
 
 export function exportProfileToMarkdown(
   profile: AudienceProfile,
@@ -289,10 +290,25 @@ export function exportProfileToMarkdown(
   }
 
   // Executive Summary Blueprint (placed after Channel Strategy)
+  // The executive brief as the planner left it (hand edits, hidden panels). Plans saved before
+  // the brief keep their one-paragraph summary until upgraded.
   if (!hidden.has("blueprint") && !hidden.has("executiveSummary")) {
-    markdown += `## Executive Summary Blueprint\n\n`;
-    markdown += `### Audience Opportunity & Channel Strategy Alignment\n`;
-    markdown += `${profile.executiveSummary}\n\n`;
+    const briefSections = profile.executiveBrief ? effectiveBriefSections(profile.executiveBrief) : [];
+    if (briefSections.length > 0) {
+      markdown += `## Executive Summary Blueprint\n\n`;
+      for (const section of briefSections) {
+        markdown += `### ${section.title}\n`;
+        if (section.headline) markdown += `**${section.headline}**\n\n`;
+        for (const b of section.bullets) markdown += `- ${b.lead ? `**${b.lead}**: ` : ""}${b.text}\n`;
+        for (const c of section.structured?.channels || []) markdown += `- ${c.channelName} (${c.allocationPercent}%, ${c.funnelRole}): ${c.role}\n`;
+        for (const m of section.structured?.measurement || []) markdown += `- ${m.capability}${m.proves ? `: ${m.proves}` : ""}\n`;
+        markdown += `\n`;
+      }
+    } else if (profile.executiveSummary) {
+      markdown += `## Executive Summary Blueprint\n\n`;
+      markdown += `### Audience Opportunity & Channel Strategy Alignment\n`;
+      markdown += `${profile.executiveSummary}\n\n`;
+    }
   }
 
   // Citations

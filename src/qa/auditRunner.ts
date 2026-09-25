@@ -26,8 +26,6 @@ import {
 } from "./planAudit";
 import { REMEDIATION_SYSTEM_INSTRUCTION, buildRemediationInput, remediationSchema, type AppliedPatch } from "./planRemediation";
 
-export const AUDIT_RESEARCH_CHARS = 12000;
-export const FIX_RESEARCH_CHARS = 6000;
 
 export interface AuditInputs {
   briefBlock: string;
@@ -82,7 +80,7 @@ export function auditContextFor(profile: any, inputs: AuditInputs): AuditContext
     publishers: publishersLine(profile),
     ledger: ledgerFor(profile, inputs),
     alerts: alertsLine(inputs.alerts, inputs.researchNote),
-    research: researchForPrompt(inputs.research, AUDIT_RESEARCH_CHARS),
+    research: researchForPrompt(inputs.research),
   };
 }
 
@@ -131,7 +129,7 @@ export async function proposeFixes(
       describeChannelPlan(profile),
       publishersLine(profile),
       ledgerFor(profile, inputs),
-      researchForPrompt(inputs.research, FIX_RESEARCH_CHARS),
+      researchForPrompt(inputs.research),
     ].filter(Boolean).join("\n\n")),
     schema: remediationSchema,
     thinkingLevel: "medium",

@@ -14,6 +14,8 @@
 //   * A verify pass re-scores the plan after fixes, so the score shown is the score of the plan
 //     that ships.
 
+import { EVIDENCE_RULES } from "./evidenceRules";
+
 export const AUDIT_CATEGORIES = [
   "Evidence & Data Integrity",
   "Audience & Brief Fit",
@@ -22,13 +24,17 @@ export const AUDIT_CATEGORIES = [
   "Clarity & Client Readiness",
 ] as const;
 
-export const FINDING_OWNERS = ["narrative", "personas", "publisherRationale", "chart", "channelStrategy", "planner"] as const;
+export const FINDING_OWNERS = ["narrative", "personas", "publisherRationale", "channelRationale", "chart", "channelStrategy", "planner"] as const;
 export type FindingOwner = (typeof FINDING_OWNERS)[number];
 export const FINDING_SEVERITIES = ["critical", "major", "minor"] as const;
 export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 
-/** Owners whose findings the prose fixer is allowed to act on. */
-export const PROSE_OWNERS: ReadonlySet<FindingOwner> = new Set(["narrative", "personas", "publisherRationale"]);
+/**
+ * Owners whose findings the prose fixer is allowed to act on. A channel's written rationale is
+ * prose too: findings about it used to belong to "channelStrategy", which nothing can fix, so the
+ * same evidence errors stayed open every run. The channel decisions stay with a planner.
+ */
+export const PROSE_OWNERS: ReadonlySet<FindingOwner> = new Set(["narrative", "personas", "publisherRationale", "channelRationale"]);
 
 export interface AuditFinding {
   id: string;
@@ -59,9 +65,9 @@ export interface NormalizedAudit {
 }
 
 const RUBRIC = `Score five categories, 0-20 each:
-1. Evidence & Data Integrity: every figure traces to the research, a chart or the plan's own inputs (the NUMBER CHECK shows which do); figures are applied to the population the research describes; estimates are labelled; nothing is statistically implausible.
+1. Evidence & Data Integrity: every figure traces to the research, a chart or the plan's own inputs (the NUMBER CHECK shows which do); figures are applied to the population the research describes; estimates are labelled; nothing is statistically implausible. The writers were given the EVIDENCE RULES below; a breach of one is a finding.
 2. Audience & Brief Fit: the plan serves the brief of record (core segments emphasised, nothing aimed outside it), the KPIs, the geography and any planner-named personas.
-3. Cohesion: the plan reads as if one expert planner wrote it. Personas, charts, narrative, channel rationale, publisher choices and the executive summary describe the same people and do not contradict each other (e.g. a high-income persona reached through a channel justified by low-income reach; a narrative peak the chart does not show; a device called dominant that the chart ranks second).
+3. Cohesion: the plan reads as if one expert planner wrote it. Personas, charts, narrative, channel rationale and publisher choices describe the same people and do not contradict each other (e.g. a high-income persona reached through a channel justified by low-income reach; a narrative peak the chart does not show; a device called dominant that the chart ranks second).
 4. Strategic Quality: channel roles follow from the audience and the KPIs, recommendations are specific and actionable, measurement fits the objective.
 5. Clarity & Client Readiness: clear, confident and concise; free of contradictions, jargon and filler.
 
@@ -72,16 +78,19 @@ Do NOT mark down, or raise findings, for:
 - Personas that are not mutually exclusive or lack assignment/suppression rules. Personas are audience portraits, not targeting logic.
 - Missing operational detail (bid rules, frequency caps, supply-path plans). The channel plan carries execution.
 - Charts marked as ScoutAI estimates, or built from U.S. Census/BLS national baselines adjusted for this audience. They are labelled; judge only whether the prose uses them correctly.
-- A figure the NUMBER CHECK found in the research. You may still flag it as misapplied (wrong population, stated as the advertiser's own behaviour) - say so, and quote the research.`;
+- A figure the NUMBER CHECK found in the research. You may still flag it as misapplied (wrong population, stated as the advertiser's own behaviour) - say so, and quote the research.
+
+${EVIDENCE_RULES}`;
 
 const OWNERSHIP = `Each finding names its 'owner' - who can fix it:
-- "narrative": intro, executiveSummary, takeaways, recommendations, section overviews, activation notes, publisherInsights.
+- "narrative": intro, takeaways, recommendations, section overviews, activation notes, publisherInsights, and a source's supportedClaims (what the citation is said to support).
 - "personas": a persona's watch/browse/buy/narrative/gender text. Not its name, age or income, and never which groups the personas cover.
 - "publisherRationale": a CTV publisher's 'why'. Not which publishers are selected.
 - "chart": chart values (code settles these; a finding here is reported to the planner).
-- "channelStrategy": the channel plan - channels, allocations, tactics, measurement, channel rationale (built by the planning engine; reported to the planner).
+- "channelRationale": a channel's written rationale - its 'why' (gapAddressed), allocationRationale, tradeoffs and the wording of its research evidence lines. Text only; fixed automatically.
+- "channelStrategy": the channel plan's decisions - which channels, allocations, targeting tactics, measurement and publishers (built by the planning engine; reported to the planner). A problem in what a channel's text claims is channelRationale; a problem in what the plan does is channelStrategy.
 - "planner": anything needing a human decision, including any change to who the plan targets.
-'paths' lists the exact fields, e.g. "executiveSummary", "takeaways[2]", "recommendations[1].why", "personas[0].narrative", "ctvPublishers[3].why", "channelStrategy.mediaPlan.channels[2].gapAddressed".`;
+'paths' lists the exact fields, e.g. "intro", "takeaways[2]", "recommendations[1].why", "personas[0].narrative", "ctvPublishers[3].why", "channelStrategy.mediaPlan.channels[2].gapAddressed", "channelStrategy.mediaPlan.channels[2].tradeoffs[0]", "channelStrategy.mediaPlan.channels[2].evidence[1].detail".`;
 
 export function auditSystemInstruction(today: string, currentYear: number): string {
   return `You are a principal media planning director doing the final quality review of an AI-generated audience profile and media plan before it goes to a client. Be exacting and fair: a finding must be specific, evidenced and worth fixing.
@@ -141,7 +150,10 @@ export function buildAuditInput(ctx: AuditContext, extra = ""): string {
 
 /** The plan as the auditor reads it: everything the prose says, without the parts described separately. */
 export function planForAudit(profile: any): string {
-  const { channelStrategy, researchSnapshot, auditResult, generationAlerts, generationLog, segmentRecommendations, briefOfRecord, ...rest } = profile || {};
+  // executiveSummary is synthesis's early draft: planners see the executive brief, written after
+  // QA, so auditing the draft only produced findings about text nobody reads. Plans saved before
+  // the brief still carry it; it is left out for them too, so every plan is scored the same way.
+  const { channelStrategy, researchSnapshot, auditResult, generationAlerts, generationLog, segmentRecommendations, briefOfRecord, executiveSummary, executiveBrief, ...rest } = profile || {};
   const stripCharts = (section: any, keys: string[]) => {
     if (!section || typeof section !== "object") return section;
     const copy = { ...section };

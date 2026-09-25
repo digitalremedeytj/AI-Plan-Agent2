@@ -9,17 +9,42 @@
 // changes the plan actually contains.
 
 import { PROSE_OWNERS, type AuditFinding, type FindingOwner } from "./planAudit";
+import { EVIDENCE_RULES } from "./evidenceRules";
 
 const ALLOWED_PATHS: Array<[FindingOwner, RegExp]> = [
-  ["narrative", /^(intro|executiveSummary|publisherInsights|audienceAnalysis)$/],
+  ["narrative", /^(intro|publisherInsights|audienceAnalysis)$/],
   ["narrative", /^takeaways\[\d+\]$/],
+  // What a citation is said to support is prose; its name, URL and tier are not.
+  ["narrative", /^sources\[\d+\]\.supportedClaims$/],
   ["narrative", /^recommendations\[\d+\]\.(title|action|why|channels)$/],
   ["narrative", /^(demographics\.(overview|geographyNotes)|browserAndReach\.overview|deviceTypeIndex\.overview|temporalPatterns\.(overview|activationNotes))$/],
   // Not name, age or income: those define who the persona is, and changing them changes who
   // the plan targets after the channel plan and publishers were built for them.
   ["personas", /^personas\[\d+\]\.(watch|browse|buy|narrative|gender)$/],
   ["publisherRationale", /^ctvPublishers\[\d+\]\.why$/],
+  // A channel's words, never its numbers, tactics, measurement or which channels exist.
+  ["channelRationale", /^channelStrategy\.mediaPlan\.channels\[\d+\]\.(gapAddressed|allocationRationale|tradeoffs\[\d+\]|evidence\[\d+\]\.detail)$/],
 ];
+
+// Evidence lines code writes from the catalog, the brief or an uploaded plan state facts, not
+// claims about the audience, so the fixer may reword only research and benchmark lines.
+const CATALOG_EVIDENCE = new Set(["digital_remedy_rule", "brief", "uploaded_plan"]);
+const CHANNEL_PATH = /^channelStrategy\.mediaPlan\.channels\[(\d+)\]\.(.+)$/;
+
+/**
+ * A fixed channel field is written to the channel's evaluated candidate too. Adding a removed
+ * media type back rebuilds the channel from that candidate, which would bring the unfixed text
+ * back with it.
+ */
+function mirrorToCandidate(profile: any, path: string, value: string): void {
+  const match = path.match(CHANNEL_PATH);
+  if (!match) return;
+  const plan = profile?.channelStrategy?.mediaPlan;
+  const channelId = plan?.channels?.[Number(match[1])]?.channelId;
+  const index = (plan?.evaluatedCandidates || []).findIndex((c: any) => c?.product?.id === channelId);
+  if (index < 0) return;
+  setAtPath(profile, `channelStrategy.mediaPlan.evaluatedCandidates[${index}].${match[2]}`, value);
+}
 
 export function ownerOfPath(path: string): FindingOwner | null {
   return ALLOWED_PATHS.find(([, pattern]) => pattern.test(path))?.[0] ?? null;
@@ -89,7 +114,10 @@ export function applyPatches(profile: any, patches: unknown, findings: AuditFind
     const before = getAtPath(profile, patch.path);
     if (typeof before !== "string") { reject("field does not exist"); continue; }
     if (before.trim() === patch.value) { reject("no change"); continue; }
+    const evidenceLine = patch.path.match(/^(.+\.evidence\[\d+\])\.detail$/);
+    if (evidenceLine && CATALOG_EVIDENCE.has(String((getAtPath(profile, evidenceLine[1]) as any)?.sourceType))) { reject("catalog evidence is not prose"); continue; }
     if (!setAtPath(profile, patch.path, patch.value)) { reject("field could not be written"); continue; }
+    mirrorToCandidate(profile, patch.path, patch.value);
     applied.push({ ...patch, before });
   }
   return { applied, rejected };
@@ -98,10 +126,14 @@ export function applyPatches(profile: any, patches: unknown, findings: AuditFind
 export const REMEDIATION_SYSTEM_INSTRUCTION = `You are the senior media planner who wrote this plan, correcting it after a QA review. Fix each finding you are given with the smallest edit that resolves it, in the plan's existing voice.
 
 Rules:
-- Return patches: { "findingId", "path", "value" } where 'path' is an exact field (e.g. "executiveSummary", "takeaways[2]", "recommendations[1].why", "personas[0].narrative", "ctvPublishers[3].why") and 'value' is that field's complete new text. Patch only fields the finding concerns, plus any other field that repeats the same problem.
-- Never change who the plan targets, which personas or publishers it has, or the charts and channel plan. If a finding can only be resolved that way, skip it and say so in 'notes'.
+- Return patches: { "findingId", "path", "value" } where 'path' is an exact field (e.g. "intro", "takeaways[2]", "recommendations[1].why", "personas[0].narrative", "ctvPublishers[3].why") and 'value' is that field's complete new text. Patch only fields the finding concerns, plus any other field that repeats the same problem.
+- Never change who the plan targets, which personas or publishers it has, the charts, or the channel plan's decisions (channels, allocations, tactics, measurement). A channel's written rationale is text you may fix: "channelStrategy.mediaPlan.channels[2].gapAddressed", ".allocationRationale", ".tradeoffs[0]", ".evidence[1].detail". If a finding can only be resolved by changing a decision, skip it and say so in 'notes'.
 - Numbers: use only figures in the research, the charts or the plan's own inputs, applied to the population they describe. Removing a misapplied figure is better than keeping it; replacing it with an invented one is never acceptable.
 - Voice: confident and concise. Do not add compliance, consent or legal caveats, and do not stack qualifications.
+- A fix must not break another rule: verify re-reads every patched field against the evidence rules below and flags any new problem.
+
+${EVIDENCE_RULES}
+
 Return JSON: { "patches": [...], "notes": [{ "findingId", "resolution": one sentence describing what you changed, or why you could not }] }`;
 
 export function buildRemediationInput(findings: AuditFinding[], profile: any, context: string): string {
