@@ -4291,7 +4291,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     let audit: NormalizedAudit | null = null;
     let qaBypassed = false;
     if (remainingMs() > 60000) {
-      sendEvent("status", { message: `Auditing the plan with ${AUDIT_MODEL} (${AUDIT_EFFORT} reasoning): evidence, brief fit, cohesion, strategy and client readiness...` });
+      sendEvent("status", { message: "Auditing the plan evidence, brief fit, cohesion, strategy and client readiness..." });
       const auditThoughts = thoughtsFor("QA auditor");
       try {
         audit = await runAudit(getOpenaiClient(), originalData, auditInputs, { ...modelOptions(AUDIT_EFFORT, TIMEOUT_AUDIT_MS), onThought: auditThoughts.onThought });
@@ -4312,11 +4312,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     let autoFixesList: Array<{ issue: string; resolution: string }> = [];
     if (audit) {
       const fixable = audit.findings.filter((f) => PROSE_OWNERS.has(f.owner));
-      sendEvent("status", { message: `QA Scorecard Issued: ${audit.totalScore}/100 with ${audit.findings.length} finding(s); ${fixable.length} can be fixed in the text, ${audit.findings.length - fixable.length} need a channel, chart or planner change.` });
+      sendEvent("status", { message: "Audit complete" });
 
       let applied: AppliedPatch[] = [];
       if (fixable.length > 0 && remainingMs() > TIMEOUT_FIX_MS + 30000) {
-        sendEvent("status", { message: `Applying targeted fixes for ${fixable.length} finding(s)...` });
+        sendEvent("status", { message: "Applying adjustments" });
         const fixThoughts = thoughtsFor("Fixer");
         try {
           const fix = await proposeFixes(ai, audit.findings, originalData, auditInputs, stageTimeout(TIMEOUT_FIX_MS), fixThoughts.onThought);
@@ -4338,7 +4338,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       // Re-scored only when something changed: otherwise the audit's score already describes
       // the plan that ships.
       if (applied.length > 0 && remainingMs() > 45000) {
-        sendEvent("status", { message: "Verifying the fixes and re-scoring the plan..." });
+        sendEvent("status", { message: "Verifying adjustments..." });
         const verifyThoughts = thoughtsFor("QA verifier");
         try {
           verify = await runVerify(getOpenaiClient(), originalData, auditInputs, audit, applied, { ...modelOptions(VERIFY_EFFORT, TIMEOUT_VERIFY_MS), onThought: verifyThoughts.onThought });
@@ -4401,14 +4401,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // the profile has rendered, so image latency no longer gates the result.
     sendEvent("status", { message: "Profile complete. Studio persona portraits will render as they finish generating..." });
 
-    // Stream the QA outcome so the live console shows what changed and what is still open.
-    if (!qaBypassed) {
-      sendEvent("status", { message: verify
-        ? `QA Audit Complete: ${finalAuditResult.originalScore}/100 before fixes, ${finalAuditResult.finalScore}/100 after (verified). ${autoFixesList.length} fix(es) applied.`
-        : `QA Audit Complete: ${finalAuditResult.finalScore}/100. ${autoFixesList.length} fix(es) applied.` });
-      for (const fix of autoFixesList) sendEvent("status", { message: `• [AUTO-FIXED] ${fix.issue}: ${fix.resolution}` });
-      for (const flag of openFlags) sendEvent("status", { message: `• [OPEN] ${flag}` });
-    }
+    // The QA audit and remediation have completed.
+    // Scores and individual finding details remain available in the Plan Audit modal.
 
     for (const alert of generationAlerts) {
       sendEvent("status", { message: `• [${alert.severity === "failed" ? "FAILED" : alert.severity === "not_found" ? "NOT FOUND" : "CHECK"}] ${alert.message}` });

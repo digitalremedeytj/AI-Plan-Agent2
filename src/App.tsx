@@ -1088,10 +1088,10 @@ export default function App() {
     .filter(log => log.message?.trim().startsWith("•"))
     .map(log => log.message!.trim().substring(1).trim());
 
-  // Auto-scroll the live research feed on logs update (if not hovered)
+  // Auto-scroll the live research feed on logs update (if not hovered, keep top visible where newest messages arrive)
   React.useEffect(() => {
     if (logContainerRef.current && !isLogHoveredRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+      logContainerRef.current.scrollTop = 0;
     }
   }, [researchLogs]);
 
@@ -1184,15 +1184,18 @@ export default function App() {
         const batch = serverCompleteData || document.hidden
           ? pendingLogsRef.current.splice(0)
           : [pendingLogsRef.current.shift()];
+        const formattedBatch = batch.map((nextLog) => ({
+          id: Math.random().toString(),
+          // The server's time, so the log shows when each step happened rather than when
+          // this queue got round to displaying it.
+          timestamp: new Date(nextLog.at || Date.now()).toLocaleTimeString(),
+          ...nextLog
+        }));
+        // Most recent message always at the top, pushing older ones down.
+        // For a multi-item batch arriving in chronological order, reversing puts the newest at index 0.
         setResearchLogs(prev => [
-          ...prev,
-          ...batch.map((nextLog) => ({
-            id: Math.random().toString(),
-            // The server's time, so the log shows when each step happened rather than when
-            // this queue got round to displaying it.
-            timestamp: new Date(nextLog.at || Date.now()).toLocaleTimeString(),
-            ...nextLog
-          }))
+          ...formattedBatch.reverse(),
+          ...prev
         ]);
       }
       // If server has sent the completion event, and all real logs are drained, finish up!
@@ -1256,13 +1259,13 @@ export default function App() {
       if (!serverCompleteData && pendingLogsRef.current.length === 0 && Date.now() - lastLogAt >= 15000) {
         lastLogAt = Date.now();
         setResearchLogs(prev => [
-          ...prev,
           {
             id: Math.random().toString(),
             timestamp: new Date().toLocaleTimeString(),
             type: "status",
             message: `Still working... ${Math.round((Date.now() - startedAt) / 1000)}s elapsed.`
-          }
+          },
+          ...prev
         ]);
       }
     };
@@ -5413,7 +5416,7 @@ export default function App() {
                   <div className="text-left">
                     <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">Status</span>
                     <span className="block text-xs font-bold text-slate-200">
-                      {researchLogs[researchLogs.length - 1]?.message || "Analyzing target..."}
+                      {researchLogs[0]?.message || (researchLogs[0]?.label ? `Research: ${researchLogs[0].label}` : "Analyzing target...")}
                     </span>
                   </div>
                 </div>
@@ -5450,7 +5453,7 @@ export default function App() {
                   4. AI Synthesis
                 </div>
                 <div className={`p-2 rounded-lg border transition-all ${
-                  researchLogs.some(log => log.message?.toLowerCase().includes("validation") || log.message?.toLowerCase().includes("qa audit") || log.message?.toLowerCase().includes("sanity check")) 
+                  researchLogs.some(log => log.message?.toLowerCase().includes("validation") || log.message?.toLowerCase().includes("qa audit") || log.message?.toLowerCase().includes("sanity check") || log.message?.toLowerCase().includes("audit") || log.message?.toLowerCase().includes("adjustments")) 
                     ? "bg-emerald-950/35 border-emerald-800 text-emerald-200 shadow-sm shadow-emerald-500/10" 
                     : "border-slate-900 text-slate-600"
                 }`}>
@@ -5469,7 +5472,7 @@ export default function App() {
                   isLogHoveredRef.current = false;
                   setIsLogHovered(false);
                   if (logContainerRef.current) {
-                    logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+                    logContainerRef.current.scrollTop = 0;
                   }
                 }}
                 className="relative flex-1 bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 md:p-5 font-mono text-xs overflow-y-auto min-h-[300px] space-y-4 custom-scrollbar"
@@ -5488,7 +5491,7 @@ export default function App() {
                   </div>
                 )}
                 
-                {researchLogs.map((log) => (
+                {researchLogs.map((log, index) => (
                   <div 
                     key={log.id} 
                     className="space-y-2 border-b border-slate-800/40 pb-3 last:border-0 last:pb-0"
@@ -5496,8 +5499,11 @@ export default function App() {
                     {/* Timestamp & Type header */}
                     <div className="flex items-center justify-between text-[10px] text-slate-500">
                       <span className="flex items-center gap-1.5 font-bold">
-                        <span className="w-1.5 h-1.5 rounded-full bg-slate-600"></span>
+                        <span className={`w-1.5 h-1.5 rounded-full ${index === 0 ? "bg-indigo-400 animate-pulse" : "bg-slate-600"}`}></span>
                         {log.timestamp}
+                        {index === 0 && (
+                          <span className="text-[9px] text-indigo-400 font-normal uppercase tracking-wider font-mono">Latest</span>
+                        )}
                       </span>
                       <span className="uppercase text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-slate-800 text-slate-400 font-mono">
                         {log.type === "research_result" ? `Grounding: ${log.label}` : "System Status"}
