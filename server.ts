@@ -3258,7 +3258,7 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
 // the planner may have edited); it is rendered verbatim, then read back by Gemini and compared,
 // since image models misspell and misnumber dense text. The image is returned inline rather
 // than written to disk: files under assets/ exist only on the Cloud Run instance that wrote them.
-const SLIDE_LAYOUTS = new Set<BriefSlideLayout>(["highlights", "strategy", "execution"]);
+const SLIDE_LAYOUTS = new Set<BriefSlideLayout>(["highlights", "strategy", "audience", "execution"]);
 const SLIDE_STYLES = new Set<BriefSlideStyle>(["corporate_light", "modern_dark", "minimal_slate"]);
 const MAX_SLIDE_TEXT = 4000;
 

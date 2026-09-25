@@ -57,12 +57,55 @@ test("highlights is one slide with every section's headline and the live allocat
   assert.doesNotMatch(slide.text, /word13/, "no bullet bodies on the highlights slide");
 });
 
-test("the full summary is a strategy slide and a media and measurement slide", () => {
+test("the full summary is strategy, audience, then media and measurement, with the glance strip on the first only", () => {
   const slides = buildBriefSlides(brief(), "full", context);
-  assert.deepEqual(slides.map((s) => s.layout), ["strategy", "execution"]);
-  assert.match(slides[0].text, /SECTION: Audience Strategy[\s\S]*Premium dog owners → Premium Pet Food Buyers/);
-  assert.match(slides[1].text, /SLIDE TITLE: Executive Summary: Media & Measurement/);
-  assert.match(slides[1].text, /CTV \| 55% \| Awareness \| Builds reach\./);
+  assert.deepEqual(slides.map((s) => s.layout), ["strategy", "audience", "execution"]);
+  assert.deepEqual(slides.map((s) => s.label), ["1. Strategy", "2. Audience", "3. Media & Measurement"]);
+  assert.doesNotMatch(slides[0].text, /Audience Strategy/);
+  assert.match(slides[1].text, /SECTION: Audience Strategy[\s\S]*Premium dog owners → Premium Pet Food Buyers\n    Proven spend\./);
+  assert.match(slides[2].text, /SLIDE TITLE: Executive Summary: Media & Measurement/);
+  assert.match(slides[2].text, /CTV \| 55% \| Awareness \| Builds reach\./);
+  assert.deepEqual(slides.map((s) => s.text.includes("AT A GLANCE")), [true, false, false]);
+  const withoutStrategy = buildBriefSlides(brief({ hiddenPanels: ["understanding", "strategicPov"] }), "full", context);
+  assert.match(withoutStrategy[0].text, /AT A GLANCE/, "the glance strip moves to whichever slide comes first");
+});
+
+const channels = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({ channelId: `c${i}`, channelName: `Channel ${i + 1}`, allocationPercent: 10, funnelRole: "Consideration" as const, role: "Does things." }));
+
+test("the full summary keeps every persona, trimming their detail before dropping one", () => {
+  const b = brief();
+  const audience = b.sections.find((s) => s.key === "audience")!;
+  audience.bullets = bullets(4, 24);
+  audience.audienceMatches = Array.from({ length: 4 }, (_, i) => ({
+    audience: `Persona ${i + 1}`, reachedWith: ["Segment A", "Segment B", "Segment C", "Segment D"], why: bullets(1, 22)[0].text,
+  }));
+  const slide = buildBriefSlides(b, "full", context).find((s) => s.layout === "audience")!;
+  for (let i = 1; i <= 4; i++) assert.match(slide.text, new RegExp(`Persona ${i} → Segment A, Segment B, Segment C, Segment D`));
+  assert.ok(countWords(slide.text) <= SLIDE_WORD_BUDGET.full, `${countWords(slide.text)} words`);
+});
+
+test("highlights shows every channel, dropping the % before the funnel role, and says when it rolls some up", () => {
+  const withChannels = (n: number) => {
+    const b = brief();
+    b.sections.find((s) => s.key === "media")!.channels = channels(n);
+    return buildBriefSlides(b, "highlights", {}).at(0)!.text;
+  };
+  const few = withChannels(3);
+  assert.match(few, /Channel 3 \| 10% \| Consideration/);
+  const ten = withChannels(10);
+  for (let i = 1; i <= 10; i++) assert.match(ten, new RegExp(`Channel ${i} (\\| 10% )?\\| Consideration`), `Channel ${i}`);
+  assert.doesNotMatch(ten, /more channel/);
+
+  // A long brief forces the roll-up; the slide then says how many channels it left out.
+  const long = brief();
+  for (const section of long.sections) section.headline = bullets(1, 28)[0].text;
+  long.sections.find((s) => s.key === "media")!.channels = channels(12);
+  const rolled = buildBriefSlides(long, "highlights", {})[0].text;
+  const shown = (rolled.match(/Channel \d+ \| Consideration/g) || []).length;
+  assert.doesNotMatch(rolled, /10%/, "the % goes before the funnel role");
+  assert.ok(shown < 12);
+  assert.match(rolled, new RegExp(`\\+ ${12 - shown} more channels`));
 });
 
 test("slides stay inside the word budget by dropping whole lines, never cutting a sentence", () => {
@@ -102,8 +145,8 @@ test("the image prompt asks for verbatim text, a title, and no logo or footer", 
 test("the Google Slides prompt carries the same text, one block per slide, with the brand", () => {
   const slides = buildBriefSlides(brief(), "full", context);
   const prompt = buildGoogleSlidesPrompt(slides, { advertiserName: "Acme Pets" });
-  assert.match(prompt, /^Create 2 slides for a client presentation: the executive summary of a media plan for Acme Pets\./);
-  assert.match(prompt, /SLIDE 1 \(Strategy\)[\s\S]*SLIDE 2 \(Media & Measurement\)/);
+  assert.match(prompt, /^Create 3 slides for a client presentation: the executive summary of a media plan for Acme Pets\./);
+  assert.match(prompt, /SLIDE 1 \(Strategy\)[\s\S]*SLIDE 2 \(Audience\)[\s\S]*SLIDE 3 \(Media & Measurement\)/);
   for (const slide of slides) assert.ok(prompt.includes(slide.text));
   assert.match(prompt, /Lexend/);
   assert.match(prompt, /#0e8f86/);

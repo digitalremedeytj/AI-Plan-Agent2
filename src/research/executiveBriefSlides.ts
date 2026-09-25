@@ -13,14 +13,14 @@ import { BRIEF_SECTION_LABELS, parseEditText, type BriefBullet, type BriefSectio
 export type BriefSlideVariant = "highlights" | "full";
 
 export const BRIEF_SLIDE_VARIANTS: Record<BriefSlideVariant, { label: string; description: string }> = {
-  highlights: { label: "Highlights", description: "1 concise slide: every section's headline, the top channels and the measurement." },
-  full: { label: "Full summary", description: "2 slides: strategy (understanding, POV, audience), then media and measurement." },
+  highlights: { label: "Highlights", description: "1 concise slide: every section's headline, every channel and the measurement." },
+  full: { label: "Full summary", description: "3 slides: strategy (understanding, POV), audience (every persona), then media and measurement." },
 };
 
 /** Past these the renderer starts dropping and misspelling words. */
 export const SLIDE_WORD_BUDGET: Record<BriefSlideVariant, number> = { highlights: 150, full: 240 };
 
-export type BriefSlideLayout = "highlights" | "strategy" | "execution";
+export type BriefSlideLayout = "highlights" | "strategy" | "audience" | "execution";
 
 export interface BriefSlideSpec {
   id: string;
@@ -80,28 +80,38 @@ export function effectiveBriefSections(brief: ExecutiveBrief): EffectiveSection[
 // slide reads as a mistake. The generous word caps only guard against a runaway hand edit.
 const bulletLine = (b: BriefBullet) => `• ${b.lead ? `${b.lead}: ` : ""}${trimWords(b.text, 30)}`;
 
-function header(title: string, context: BriefSlideContext): string[] {
+// The at-a-glance strip goes on the first slide only: repeating it costs every slide room.
+function header(title: string, context: BriefSlideContext, withGlance = true): string[] {
   const subtitle = [context.advertiserName, context.geography].filter(Boolean).join(" · ");
   const lines = [`SLIDE TITLE: ${title}`];
   if (subtitle) lines.push(`SUBTITLE: ${subtitle}`);
-  const glance = (context.glance || []).map((f) => `${f.label}: ${f.value}`);
+  const glance = withGlance ? (context.glance || []).map((f) => `${f.label}: ${f.value}`) : [];
   if (glance.length) lines.push(`AT A GLANCE: ${glance.join(" | ")}`);
   return lines;
 }
 
-function channelRows(section: EffectiveSection, context: BriefSlideContext, limit: number, withRole: boolean) {
-  return [...(section.structured?.channels || [])]
+// Rows cut to fit end in a "+N more" line, so a shortened list never reads as the whole plan.
+function channelRows(section: EffectiveSection, context: BriefSlideContext, opts: { limit?: number; percent?: boolean; role?: boolean }) {
+  const all = [...(section.structured?.channels || [])]
     .map((c) => ({ ...c, live: context.livePercents?.[c.channelId] ?? c.allocationPercent }))
-    .sort((a, b) => b.live - a.live)
-    .slice(0, limit)
-    .map((c) => `  - ${c.channelName} | ${percent(c.live)} | ${c.funnelRole}${withRole && c.role ? ` | ${trimWords(c.role, 30)}` : ""}`);
+    .sort((a, b) => b.live - a.live);
+  const withPercent = opts.percent ?? true;
+  const shown = all.slice(0, opts.limit ?? all.length);
+  const rows = shown.map((c) => `  - ${c.channelName}${withPercent ? ` | ${percent(c.live)}` : ""} | ${c.funnelRole}${opts.role && c.role ? ` | ${trimWords(c.role, 30)}` : ""}`);
+  const rest = all.slice(shown.length);
+  if (rest.length) {
+    const share = rest.reduce((sum, c) => sum + c.live, 0);
+    rows.push(`  - + ${rest.length} more channel${rest.length === 1 ? "" : "s"}${withPercent ? ` | ${percent(share)}` : ""}`);
+  }
+  return rows;
 }
 
-function measurementRows(section: EffectiveSection, limit: number, withProves: boolean) {
-  return [...(section.structured?.measurement || [])]
-    .sort((a, b) => Number(b.advanced) - Number(a.advanced))
-    .slice(0, limit)
-    .map((m) => `  - ${m.capability}${m.advanced ? ` ${IMPACT_TAG}` : ""}${withProves && m.proves ? ` | ${trimWords(m.proves, 30)}` : ""}${withProves && m.kpi ? ` | KPI: ${m.kpi}` : ""}`);
+function measurementRows(section: EffectiveSection, opts: { limit?: number; proves?: boolean }) {
+  const all = [...(section.structured?.measurement || [])].sort((a, b) => Number(b.advanced) - Number(a.advanced));
+  const shown = all.slice(0, opts.limit ?? all.length);
+  const rows = shown.map((m) => `  - ${m.capability}${m.advanced ? ` ${IMPACT_TAG}` : ""}${opts.proves && m.proves ? ` | ${trimWords(m.proves, 30)}` : ""}${opts.proves && m.kpi ? ` | KPI: ${m.kpi}` : ""}`);
+  if (all.length > shown.length) rows.push(`  - + ${all.length - shown.length} more`);
+  return rows;
 }
 
 /**
@@ -111,10 +121,16 @@ function measurementRows(section: EffectiveSection, limit: number, withProves: b
  */
 export const IMPACT_TAG = "(Business impact)";
 
-// Each list is one fitting level, most detailed first.
-const HIGHLIGHT_LEVELS = [{ channels: 4, measurement: 4 }, { channels: 3, measurement: 3 }, { channels: 3, measurement: 0 }];
-const STRATEGY_LEVELS = [
-  { bullets: 3, matches: 3 }, { bullets: 2, matches: 3 }, { bullets: 2, matches: 2 }, { bullets: 1, matches: 2 }, { bullets: 1, matches: 0 },
+// Each list is one fitting level, most detailed first. Highlights keeps every channel as long as it
+// can: the % goes before the funnel role, and only then are channels rolled into "+N more".
+const HIGHLIGHT_LEVELS: Array<{ channels?: number; percent: boolean; measurement?: number }> = [
+  { percent: true }, { percent: false }, { percent: false, measurement: 4 },
+  { channels: 7, percent: false, measurement: 3 }, { channels: 5, percent: false, measurement: 3 },
+];
+const STRATEGY_LEVELS = [{ bullets: 3 }, { bullets: 2 }, { bullets: 1 }, { bullets: 0 }];
+// Every persona stays; their detail and the section's bullets give way instead.
+const AUDIENCE_LEVELS = [
+  { bullets: 3, why: true }, { bullets: 2, why: true }, { bullets: 1, why: true }, { bullets: 0, why: true }, { bullets: 0, why: false },
 ];
 const EXECUTION_LEVELS = [
   { bullets: 2, roles: true, proves: true }, { bullets: 1, roles: true, proves: true }, { bullets: 0, roles: true, proves: true },
@@ -127,43 +143,55 @@ function highlightsSlide(sections: EffectiveSection[], context: BriefSlideContex
   for (const section of sections) {
     const headline = section.headline || section.bullets[0]?.text || "";
     lines.push("", `${section.title.toUpperCase()}: ${trimWords(headline, 30)}`);
-    if (section.key === "media") lines.push(...channelRows(section, context, lv.channels, false));
-    if (section.key === "measurement") lines.push(...measurementRows(section, lv.measurement, false));
+    if (section.key === "media") lines.push(...channelRows(section, context, { limit: lv.channels, percent: lv.percent }));
+    if (section.key === "measurement") lines.push(...measurementRows(section, { limit: lv.measurement }));
   }
   return lines.join("\n");
 }
 
-function strategySlide(sections: EffectiveSection[], context: BriefSlideContext, level: number): string {
+function strategySlide(sections: EffectiveSection[], context: BriefSlideContext, withGlance: boolean, level: number): string {
   const lv = STRATEGY_LEVELS[level];
-  const lines = header("Executive Summary: Strategy", context);
+  const lines = header("Executive Summary: Strategy", context, withGlance);
   for (const section of sections) {
     lines.push("", `SECTION: ${section.title} (${section.subtitle})`);
     if (section.headline) lines.push(`HEADLINE: ${trimWords(section.headline, 30)}`);
-    for (const b of section.bullets.slice(0, lv.bullets)) lines.push(bulletLine(b));
-    const matches = (section.structured?.audienceMatches || []).slice(0, lv.matches);
-    if (matches.length) {
-      lines.push("WHO → HOW WE REACH THEM:");
-      for (const m of matches) lines.push(`  - ${m.audience} → ${m.reachedWith.slice(0, 3).join(", ")}`);
+    for (const b of section.bullets.slice(0, section.structured ? lv.bullets : 6)) lines.push(bulletLine(b));
+  }
+  return lines.join("\n");
+}
+
+function audienceSlide(section: EffectiveSection, context: BriefSlideContext, withGlance: boolean, level: number): string {
+  const lv = AUDIENCE_LEVELS[level];
+  const lines = header("Executive Summary: Audience", context, withGlance);
+  lines.push("", `SECTION: ${section.title} (${section.subtitle})`);
+  if (section.headline) lines.push(`HEADLINE: ${trimWords(section.headline, 30)}`);
+  for (const b of section.bullets.slice(0, section.structured ? lv.bullets : 6)) lines.push(bulletLine(b));
+  const matches = section.structured?.audienceMatches || [];
+  if (matches.length) {
+    lines.push("WHO → HOW WE REACH THEM:");
+    for (const m of matches) {
+      lines.push(`  - ${m.audience} → ${m.reachedWith.join(", ")}`);
+      if (lv.why && m.why) lines.push(`    ${trimWords(m.why, 30)}`);
     }
   }
   return lines.join("\n");
 }
 
-function executionSlide(sections: EffectiveSection[], context: BriefSlideContext, level: number): string {
+function executionSlide(sections: EffectiveSection[], context: BriefSlideContext, withGlance: boolean, level: number): string {
   const lv = EXECUTION_LEVELS[level];
   const hasMeasurement = sections.some((s) => s.key === "measurement");
-  const lines = header(hasMeasurement ? "Executive Summary: Media & Measurement" : "Executive Summary: Media Strategy", context);
+  const lines = header(hasMeasurement ? "Executive Summary: Media & Measurement" : "Executive Summary: Media Strategy", context, withGlance);
   for (const section of sections) {
     lines.push("", `SECTION: ${section.title} (${section.subtitle})`);
     if (section.headline) lines.push(`HEADLINE: ${trimWords(section.headline, 30)}`);
     // A hand-edited section has no rows; its bullets are the content, so they all stay.
     for (const b of section.bullets.slice(0, section.structured ? lv.bullets : 6)) lines.push(bulletLine(b));
     if (section.key === "media") {
-      const rows = channelRows(section, context, 10, lv.roles);
+      const rows = channelRows(section, context, { role: lv.roles });
       if (rows.length) lines.push(`CHANNEL | ALLOCATION | FUNNEL ROLE${lv.roles ? " | ROLE" : ""}`, ...rows);
     }
     if (section.key === "measurement") {
-      const rows = measurementRows(section, 6, lv.proves);
+      const rows = measurementRows(section, { proves: lv.proves });
       if (rows.length) lines.push(`MEASUREMENT${lv.proves ? " | WHAT IT PROVES | KPI" : ""}`, ...rows);
     }
   }
@@ -184,16 +212,26 @@ export function buildBriefSlides(brief: ExecutiveBrief, variant: BriefSlideVaria
   if (variant === "highlights") {
     return [{ id: "highlights", label: "Highlights", layout: "highlights", text: fit((l) => highlightsSlide(sections, context, l), budget, HIGHLIGHT_LEVELS.length) }];
   }
-  const strategy = sections.filter((s) => s.key === "understanding" || s.key === "strategicPov" || s.key === "audience");
+  const strategy = sections.filter((s) => s.key === "understanding" || s.key === "strategicPov");
+  const audience = sections.find((s) => s.key === "audience");
   const execution = sections.filter((s) => s.key === "media" || s.key === "measurement");
   const slides: BriefSlideSpec[] = [];
-  if (strategy.length) slides.push({ id: "strategy", label: "1. Strategy", layout: "strategy", text: fit((l) => strategySlide(strategy, context, l), budget, STRATEGY_LEVELS.length) });
+  const first = () => slides.length === 0;
+  if (strategy.length) {
+    const glance = first();
+    slides.push({ id: "strategy", label: "1. Strategy", layout: "strategy", text: fit((l) => strategySlide(strategy, context, glance, l), budget, STRATEGY_LEVELS.length) });
+  }
+  if (audience) {
+    const glance = first();
+    slides.push({ id: "audience", label: `${slides.length + 1}. Audience`, layout: "audience", text: fit((l) => audienceSlide(audience, context, glance, l), budget, AUDIENCE_LEVELS.length) });
+  }
   if (execution.length) {
+    const glance = first();
     slides.push({
       id: "execution",
       label: `${slides.length + 1}. ${execution.some((s) => s.key === "measurement") ? "Media & Measurement" : "Media"}`,
       layout: "execution",
-      text: fit((l) => executionSlide(execution, context, l), budget, EXECUTION_LEVELS.length),
+      text: fit((l) => executionSlide(execution, context, glance, l), budget, EXECUTION_LEVELS.length),
     });
   }
   return slides;
@@ -212,9 +250,10 @@ const PALETTES: Record<BriefSlideStyle, string> = {
 export const BRAND_TYPE = "Lexend throughout. Slide title Lexend Bold with tight leading; section eyebrow labels Lexend SemiBold UPPERCASE with 0.08em tracking in teal #0e8f86; headlines Lexend SemiBold; body Lexend Regular at 1.4 leading.";
 
 const LAYOUTS: Record<BriefSlideLayout, string> = {
-  highlights: "Title and subtitle top-left. Beneath them, a slim row of 'AT A GLANCE' metric tiles. Then one card per section in a balanced grid (for five sections: three cards on the first row, two wider cards on the second). Each card: the section name as an eyebrow label, then its headline. The Media Strategy card lists its channels as compact rows with the allocation % and a thin proportional bar. The Measurement Strategy card shows its capabilities as chips, with a capability ending in (Business impact) shown as a lime-highlighted chip that carries that tag.",
-  strategy: "Title and subtitle top-left, then a slim row of 'AT A GLANCE' metric tiles. Below, three equal columns, one per section: eyebrow label, headline, then the bullets. The Audience Strategy column ends with the 'who → how we reach them' lines as small audience-to-data pairings.",
-  execution: "Title and subtitle top-left, then a slim row of 'AT A GLANCE' metric tiles. Below, the media section on the left (about 60% width): its headline and bullets, then the channel rows as a clean table with a proportional allocation bar and a funnel-role pill per channel. On the right (about 40%): the measurement section as stacked cards, a capability ending in (Business impact) highlighted in lime with that tag. With no measurement section, the channel table spans the full width.",
+  highlights: "Title and subtitle top-left. Beneath them, a slim row of 'AT A GLANCE' metric tiles. Then one card per section in a balanced grid (for five sections: three cards on the first row, two wider cards on the second). Each card: the section name as an eyebrow label, then its headline. The Media Strategy card lists every channel line given as compact rows, each with a funnel-role pill, plus the allocation % and a thin proportional bar when a % is given; a '+ N more' line is a quieter final row. The Measurement Strategy card shows its capabilities as chips, with a capability ending in (Business impact) shown as a lime-highlighted chip that carries that tag.",
+  strategy: "Title and subtitle top-left, then (when the content has an AT A GLANCE line) a slim row of metric tiles. Below, two equal columns, one per section: eyebrow label, headline, then the bullets.",
+  audience: "Title and subtitle top-left, then (when the content has an AT A GLANCE line) a slim row of metric tiles. Below, the section eyebrow label, headline and bullets across the full width. Then one card per 'who → how we reach them' line in an even grid (for four: a 2×2 grid, or four across on a wide canvas): the audience name as the card title, the data it is reached with as small chips, and the indented line beneath it (if any) as the card's body text.",
+  execution: "Title and subtitle top-left, then (when the content has an AT A GLANCE line) a slim row of metric tiles. Below, the media section on the left (about 60% width): its headline and bullets, then the channel rows as a clean table with a proportional allocation bar and a funnel-role pill per channel. On the right (about 40%): the measurement section as stacked cards, a capability ending in (Business impact) highlighted in lime with that tag. With no measurement section, the channel table spans the full width.",
 };
 
 function ratioAdaptation(aspectRatio: string): string {
