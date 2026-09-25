@@ -385,7 +385,7 @@ export const ExecutiveBriefSection: React.FC<ExecutiveBriefSectionProps> = ({
   const [showRegenerate, setShowRegenerate] = useState(false);
   const [slideModalOpen, setSlideModalOpen] = useState(false);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
-  const [promptCopied, setPromptCopied] = useState<BriefSlideVariant | null>(null);
+  const [promptCopied, setPromptCopied] = useState<string | null>(null);
   const slideContext = { advertiserName, geography, livePercents, glance };
   const promptMenuRef = useRef<HTMLDivElement>(null);
 
@@ -398,12 +398,14 @@ export const ExecutiveBriefSection: React.FC<ExecutiveBriefSectionProps> = ({
     return () => document.removeEventListener('mousedown', close);
   }, [promptMenuOpen]);
 
-  const copyGoogleSlidesPrompt = async (variant: BriefSlideVariant) => {
+  // Gemini in Google Slides builds one slide per request, so each slide has its own prompt.
+  const copyGoogleSlidesPrompt = async (variant: BriefSlideVariant, index: number) => {
     if (!brief) return;
     setPromptMenuOpen(false);
+    const slides = buildBriefSlides(brief, variant, slideContext);
     try {
-      await navigator.clipboard.writeText(buildGoogleSlidesPrompt(buildBriefSlides(brief, variant, slideContext), { advertiserName }));
-      setPromptCopied(variant);
+      await navigator.clipboard.writeText(buildGoogleSlidesPrompt(slides[index], { advertiserName, position: { index, count: slides.length } }));
+      setPromptCopied(`${variant}:${index}`);
       setTimeout(() => setPromptCopied(null), 2500);
     } catch (err) {
       console.error('Copying the Google Slides prompt failed:', err);
@@ -503,19 +505,29 @@ export const ExecutiveBriefSection: React.FC<ExecutiveBriefSectionProps> = ({
                 </button>
                 {promptMenuOpen && (
                   <div role="menu" className="absolute right-0 z-20 mt-1 w-72 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg">
-                    {(Object.keys(BRIEF_SLIDE_VARIANTS) as BriefSlideVariant[]).map((variant) => (
-                      <button
-                        key={variant}
-                        type="button"
-                        role="menuitem"
-                        onClick={() => copyGoogleSlidesPrompt(variant)}
-                        className="block w-full rounded-lg px-3 py-2 text-left hover:bg-slate-50"
-                      >
-                        <span className="block text-xs font-bold text-slate-900">Copy {BRIEF_SLIDE_VARIANTS[variant].label.toLowerCase()} prompt</span>
-                        <span className="block text-[11px] text-slate-500">{BRIEF_SLIDE_VARIANTS[variant].description}</span>
-                      </button>
-                    ))}
-                    <p className="px-3 pb-1 pt-1.5 text-[10px] text-slate-400">Paste into the Gemini chat in Google Slides.</p>
+                    {(Object.keys(BRIEF_SLIDE_VARIANTS) as BriefSlideVariant[]).map((variant) => {
+                      const slides = buildBriefSlides(brief, variant, slideContext);
+                      if (!slides.length) return null;
+                      return (
+                        <div key={variant} className="py-0.5">
+                          <p className="px-3 pb-0.5 pt-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            {BRIEF_SLIDE_VARIANTS[variant].label}
+                          </p>
+                          {slides.map((slide, index) => (
+                            <button
+                              key={slide.id}
+                              type="button"
+                              role="menuitem"
+                              onClick={() => copyGoogleSlidesPrompt(variant, index)}
+                              className="block w-full rounded-lg px-3 py-1.5 text-left text-xs font-semibold text-slate-900 hover:bg-slate-50"
+                            >
+                              {slides.length === 1 ? 'Copy overview slide prompt' : `Copy slide ${index + 1}: ${slide.label.replace(/^\d+\.\s*/, '')}`}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })}
+                    <p className="px-3 pb-1 pt-1.5 text-[10px] text-slate-400">Gemini in Google Slides builds one slide at a time: paste each prompt into a new chat request.</p>
                   </div>
                 )}
               </div>

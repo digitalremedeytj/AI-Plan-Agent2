@@ -302,14 +302,20 @@ ${customNotes ? `\nADDITIONAL DIRECTIVE (style and emphasis only; never change o
 
 // --- Google Slides prompt ---------------------------------------------------------------------
 
-export function buildGoogleSlidesPrompt(slides: BriefSlideSpec[], options: { advertiserName?: string; style?: BriefSlideStyle } = {}): string {
-  const count = slides.length;
+// Gemini in Google Slides builds one slide per request, so each slide gets a prompt of its own.
+// A slide from a multi-slide set says where it sits, so the planner can keep the set consistent.
+export function buildGoogleSlidesPrompt(
+  slide: BriefSlideSpec,
+  options: { advertiserName?: string; style?: BriefSlideStyle; position?: { index: number; count: number } } = {},
+): string {
+  const { position } = options;
+  const part = position && position.count > 1 ? `slide ${position.index + 1} of ${position.count} of ` : "";
   const lines = [
-    `Create ${count === 1 ? "one slide" : `${count} slides`} for a client presentation: the executive summary of a media plan${options.advertiserName ? ` for ${options.advertiserName}` : ""}.`,
+    `Create one slide for a client presentation: ${part}the executive summary of a media plan${options.advertiserName ? ` for ${options.advertiserName}` : ""}.`,
     "",
     "CONTENT RULES",
     "- Use the text below exactly as written. Do not rewrite, shorten, summarize, reorder or add content, and keep every number and percentage exactly as given.",
-    `- ${count === 1 ? "Put everything on a single slide." : "Make one slide per SLIDE block below, in order."}`,
+    "- Put everything on this single slide.",
     "- The labels SLIDE TITLE, SUBTITLE, SECTION and HEADLINE describe the structure; don't print the labels themselves. Show rows written as \"A | B | C\" as a table.",
     `- Show \"${IMPACT_TAG}\" as a highlighted tag only on the items that carry it; don't add badges or tags the content doesn't state.`,
     "- Do not add a logo, footer, page number, confidentiality notice or images of people.",
@@ -318,10 +324,12 @@ export function buildGoogleSlidesPrompt(slides: BriefSlideSpec[], options: { adv
     `- Font: ${BRAND_TYPE}`,
     `- Colors: ${PALETTES[options.style || "corporate_light"]}`,
     "- Generous whitespace, rounded cards with light borders, a clear grid, and text large enough to read when projected. Simple line icons beside section labels are fine.",
+    "",
+    `LAYOUT: ${LAYOUTS[slide.layout]}`,
+    "",
+    "CONTENT",
+    slide.text,
   ];
-  slides.forEach((slide, i) => {
-    lines.push("", `SLIDE ${i + 1} (${slide.label.replace(/^\d+\.\s*/, "")})`, `Layout: ${LAYOUTS[slide.layout]}`, "Content:", slide.text);
-  });
   return lines.join("\n");
 }
 

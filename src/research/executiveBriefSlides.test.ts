@@ -142,16 +142,20 @@ test("the image prompt asks for verbatim text, a title, and no logo or footer", 
   assert.ok(prompt.endsWith(slide.text + "\n"), "the slide text is passed through untouched");
 });
 
-test("the Google Slides prompt carries the same text, one block per slide, with the brand", () => {
+test("each Google Slides prompt builds one slide, with its place in the set and the brand", () => {
   const slides = buildBriefSlides(brief(), "full", context);
-  const prompt = buildGoogleSlidesPrompt(slides, { advertiserName: "Acme Pets" });
-  assert.match(prompt, /^Create 3 slides for a client presentation: the executive summary of a media plan for Acme Pets\./);
-  assert.match(prompt, /SLIDE 1 \(Strategy\)[\s\S]*SLIDE 2 \(Audience\)[\s\S]*SLIDE 3 \(Media & Measurement\)/);
-  for (const slide of slides) assert.ok(prompt.includes(slide.text));
-  assert.match(prompt, /Lexend/);
-  assert.match(prompt, /#0e8f86/);
-  assert.match(prompt, /Do not add a logo, footer/);
-  assert.match(buildGoogleSlidesPrompt(buildBriefSlides(brief(), "highlights", context)), /^Create one slide/);
+  const prompts = slides.map((slide, index) => buildGoogleSlidesPrompt(slide, { advertiserName: "Acme Pets", position: { index, count: slides.length } }));
+  assert.match(prompts[1], /^Create one slide for a client presentation: slide 2 of 3 of the executive summary of a media plan for Acme Pets\./);
+  prompts.forEach((prompt, i) => {
+    assert.ok(prompt.endsWith(slides[i].text), "the slide text is passed through untouched");
+    for (const other of slides.filter((_, j) => j !== i)) assert.ok(!prompt.includes(other.text), "no other slide's content");
+    assert.doesNotMatch(prompt, /SLIDE \d+ \(/);
+  });
+  assert.match(prompts[0], /Lexend/);
+  assert.match(prompts[0], /#0e8f86/);
+  assert.match(prompts[0], /Do not add a logo, footer/);
+  const [highlights] = buildBriefSlides(brief(), "highlights", context);
+  assert.match(buildGoogleSlidesPrompt(highlights), /^Create one slide for a client presentation: the executive summary of a media plan\./);
 });
 
 test("the proofread keeps real differences and drops ones that only differ in case", () => {

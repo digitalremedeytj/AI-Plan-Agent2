@@ -88,7 +88,8 @@ export const ExecutiveBriefSlideModal: React.FC<ExecutiveBriefSlideModalProps> =
   const [activeIndex, setActiveIndex] = useState(0);
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<'image' | 'prompt' | null>(null);
+  // 'image', or the id of the slide whose Google Slides prompt was copied.
+  const [copied, setCopied] = useState<string | null>(null);
   const [isZoomed, setIsZoomed] = useState(false);
 
   const buildSpecs = () => ({
@@ -115,7 +116,7 @@ export const ExecutiveBriefSlideModal: React.FC<ExecutiveBriefSlideModalProps> =
   const budget = SLIDE_WORD_BUDGET[variant];
   const ratioOption = ASPECT_RATIO_OPTIONS.find((o) => o.value === aspectRatio) || ASPECT_RATIO_OPTIONS[2];
 
-  const flash = (kind: 'image' | 'prompt') => {
+  const flash = (kind: string) => {
     setCopied(kind);
     setTimeout(() => setCopied(null), 2500);
   };
@@ -194,10 +195,12 @@ export const ExecutiveBriefSlideModal: React.FC<ExecutiveBriefSlideModalProps> =
     }
   };
 
-  const copyPrompt = async () => {
+  // Gemini in Google Slides builds one slide per request, so each slide has its own prompt.
+  const copyPrompt = async (index: number) => {
+    const spec = currentSpecs[index];
     try {
-      await copyText(buildGoogleSlidesPrompt(currentSpecs, { advertiserName: context.advertiserName, style }));
-      flash('prompt');
+      await copyText(buildGoogleSlidesPrompt(spec, { advertiserName: context.advertiserName, style, position: { index, count: currentSpecs.length } }));
+      flash(spec.id);
     } catch (err) {
       console.error('Copying the Google Slides prompt failed:', err);
       setError('Your browser blocked the clipboard. Try again after clicking inside the page.');
@@ -385,16 +388,23 @@ export const ExecutiveBriefSlideModal: React.FC<ExecutiveBriefSlideModalProps> =
 
           {/* Actions */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <button
-              type="button"
-              onClick={copyPrompt}
-              disabled={currentSpecs.length === 0}
-              className="flex items-center gap-1.5 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              title="Copies a prompt for the Gemini chat in Google Slides, with this content and the brand design"
-            >
-              {copied === 'prompt' ? <Check className="h-4 w-4 text-emerald-600" /> : <ClipboardCopy className="h-4 w-4" />}
-              {copied === 'prompt' ? 'Copied: paste into Gemini in Google Slides' : 'Copy Google Slides prompt'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {currentSpecs.length > 1 && <span className="text-xs font-semibold text-slate-500">Google Slides prompts, one per slide:</span>}
+              {currentSpecs.map((spec, index) => (
+                <button
+                  key={spec.id}
+                  type="button"
+                  onClick={() => copyPrompt(index)}
+                  className="flex items-center gap-1.5 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  title="Copies a prompt for the Gemini chat in Google Slides, with this slide's content and the brand design"
+                >
+                  {copied === spec.id ? <Check className="h-4 w-4 text-emerald-600" /> : <ClipboardCopy className="h-4 w-4" />}
+                  {copied === spec.id
+                    ? 'Copied: paste into Gemini in Google Slides'
+                    : currentSpecs.length === 1 ? 'Copy Google Slides prompt' : `Slide ${index + 1}: ${spec.label.replace(/^\d+\.\s*/, '')}`}
+                </button>
+              ))}
+            </div>
             <button
               type="button"
               onClick={() => generate()}
