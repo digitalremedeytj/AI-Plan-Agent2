@@ -84,3 +84,20 @@ test("a core segment the model left out of scope is added to it, and a brief wit
   const fallback = normalizeBriefOfRecord({ ...jinx, includedSegments: ["A", "B", "C"], coreSegments: [] }, "brief only")!;
   assert.deepEqual(fallback.coreSegments, ["A", "B"]);
 });
+
+test("the website's advertiser facts reach every prompt as the only product and offer claims the plan may make", () => {
+  const brief = normalizeBriefOfRecord({ ...jinx, advertiserFacts: ["Probiotic dry kibble for dogs", "Sold at Walmart and Chewy"] }, "brief + website")!;
+  const block = formatBriefOfRecord(brief);
+  assert.match(block, /Verified advertiser facts \(from the advertiser's website; the ONLY products/);
+  assert.match(block, /Probiotic dry kibble for dogs; Sold at Walmart and Chewy/);
+});
+
+test("with no facts stated, the brief tells writers to describe the category instead of naming products", () => {
+  const block = formatBriefOfRecord(normalizeBriefOfRecord({ ...jinx, advertiserFacts: [] }, "brief only")!);
+  assert.match(block, /Verified advertiser facts: none stated by the brief\. Describe the category/);
+});
+
+test("a brief saved before advertiser facts existed says nothing about them, so older plans are audited as before", () => {
+  const { advertiserFacts: _facts, ...legacy } = normalizeBriefOfRecord(jinx, "brief + website")!;
+  assert.doesNotMatch(formatBriefOfRecord(legacy), /advertiser facts/i);
+});

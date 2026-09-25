@@ -9,6 +9,12 @@
 //
 // It describes the advertiser and the audience; it carries no statistics. Numbers belong to the
 // research, where they can be checked against a source.
+//
+// It also lists the advertiser facts the website states (products, offers, retailers,
+// fulfilment). Without them, the writers filled personas and recommendations with plausible
+// products and discounts, and QA flagged them as unverified in nine of ten test runs, often as
+// critical: the brief kept one sentence about what the advertiser sells, so nothing downstream
+// could tell a real product from an invented one.
 
 import type { BriefOfRecord } from "../types";
 
@@ -41,6 +47,7 @@ Describe who the advertiser is and who the campaign is for. Rules:
 - 'excludedSegments' is only for groups the advertiser clearly does not serve, or that the planner excluded. Leave it empty when nothing is clearly out of scope.
 - 'audienceType' is B2B only when the buyer is a business (decision-makers, firms, procurement). A retailer or brand selling to households is B2C. B2B2C is for a business sold through to consumers.
 - Write no statistics, percentages, market sizes or rankings. Describe; do not quantify.
+- 'advertiserFacts' lists what the WEBSITE TEXT (or, without it, the WEB SEARCH SUMMARY) actually states about the advertiser: named products and product lines, formulations and formats, offers and promotions, prices, subscription or loyalty programs, where it sells (its own site, named retailers, stores) and fulfilment options. One short, specific fact per item, as the source states it. Nothing inferred, typical or assumed; leave it empty when the source states nothing specific. Later steps may present only these as facts about the advertiser.
 - If something cannot be known from the inputs, say so in 'uncertainties' rather than guessing.`;
 
 export function buildBriefOfRecordInput(input: BriefOfRecordInput): string {
@@ -70,6 +77,7 @@ export const briefOfRecordSchema = {
     advertiser: { type: "string", description: "Advertiser name as the brand presents itself." },
     whatTheySell: { type: "string", description: "One or two sentences: products and services offered." },
     productCategories: { type: "array", items: { type: "string" }, description: "Main product or service categories, each a short label (e.g. 'Dog food', 'Grooming services')." },
+    advertiserFacts: { type: "array", items: { type: "string" }, description: "Specific facts the website text (or search summary) states: products, formats, offers, prices, programs, retailers, fulfilment. One per item; empty if none are stated." },
     businessModel: { type: "string", description: "How it sells, e.g. 'Omnichannel specialty retailer with stores, e-commerce and in-store services'." },
     priceTier: { type: "string", enum: [...PRICE_TIERS] },
     audienceType: { type: "string", enum: [...AUDIENCE_TYPES] },
@@ -83,7 +91,7 @@ export const briefOfRecordSchema = {
     uncertainties: { type: "array", items: { type: "string" }, description: "What the inputs could not establish." },
   },
   required: [
-    "advertiser", "whatTheySell", "productCategories", "businessModel", "priceTier", "audienceType",
+    "advertiser", "whatTheySell", "productCategories", "advertiserFacts", "businessModel", "priceTier", "audienceType",
     "primaryAudience", "includedSegments", "coreSegments", "excludedSegments", "campaignObjective", "funnelEmphasis",
     "geography", "uncertainties",
   ],
@@ -133,6 +141,7 @@ export function normalizeBriefOfRecord(raw: unknown, basis: BriefOfRecord["basis
     advertiser: text(r.advertiser, 200),
     whatTheySell: text(r.whatTheySell, 500),
     productCategories: list(r.productCategories, 10, 120),
+    advertiserFacts: list(r.advertiserFacts, 15, 200),
     businessModel: text(r.businessModel, 300),
     priceTier: oneOf(r.priceTier, PRICE_TIERS, "unknown"),
     // Unknown defaults to consumer: every brief this tool has run is a consumer brand, and the
@@ -175,6 +184,14 @@ export function formatBriefOfRecord(brief: BriefOfRecord | null | undefined): st
     lines.push(`- In scope: ${brief.includedSegments.join("; ") || "see primary audience"}`);
   }
   if (brief.excludedSegments.length > 0) lines.push(`- Out of scope: ${brief.excludedSegments.join("; ")}`);
+  // Briefs saved before the facts existed carry no list; saying "none verified" for them would
+  // turn every product mention in an older plan into a finding.
+  if (Array.isArray(brief.advertiserFacts)) {
+    const source = brief.basis === "brief + website" ? "the advertiser's website" : brief.basis === "brief + web search" ? "a web search of the advertiser" : "the brief";
+    lines.push(brief.advertiserFacts.length > 0
+      ? `- Verified advertiser facts (from ${source}; the ONLY products, offers, prices, retailers and fulfilment options the plan may state as fact): ${brief.advertiserFacts.join("; ")}`
+      : `- Verified advertiser facts: none stated by ${source}. Describe the category and shopper behaviour; do not name the advertiser's products, offers, prices, retailers or fulfilment options.`);
+  }
   lines.push(`- Objective: ${brief.campaignObjective} (funnel emphasis: ${brief.funnelEmphasis})`);
   if (brief.geography) lines.push(`- Geography: ${brief.geography}`);
   if (brief.uncertainties.length > 0) lines.push(`- Not established: ${brief.uncertainties.join("; ")}`);

@@ -410,7 +410,7 @@ const audienceProfileSchema = {
           age: { type: Type.STRING, description: "Age range, e.g. '25 - 39'" },
           watch: { type: Type.STRING, description: "Specific media/services they watch, e.g., ad-supported CTV, YouTube, live sports" },
           browse: { type: Type.STRING, description: "Specific digital platforms and apps they browse" },
-          buy: { type: Type.STRING, description: "Key shopping categories, brands, or products they buy" },
+          buy: { type: Type.STRING, description: "How and where they shop the category: what they look for, where they buy (online, in store) and why. A buying habit, not an advertiser program. Name the advertiser's products, offers or retailers only if they are in the brief of record's verified advertiser facts." },
           narrative: { type: Type.STRING, description: "A highly realistic narrative paragraph describing their motivations, lifestyle, and media activation context." },
           sourceType: { type: Type.STRING, description: "Must be 'User' if persona was explicitly specified by the user in the brief, 'RFP' if derived from uploaded media plan listed audiences, or 'ScoutAI' if it is an AI recommended / expansion audience by ScoutAI." }
         },
@@ -3609,11 +3609,11 @@ ${briefBlock ? `\n${briefBlock}\nResearch the audience defined above, across eve
 TASK:
 Search the web for real, reputable statistics regarding:
 1. Top websites, apps, and digital platforms visited or preferred by this specific audience segment.
-2. Direct traffic patterns, engagement times, or indexed affinities for specific categories of sites (e.g., tech, gaming, news, finance, lifestyle).
-3. Find 5 to 8 real domains (e.g. specific URLs or root domains like twitch.tv, nytimes.com, ign.com, reddit.com, discord.com) that have high affinity from this demographic, along with estimated Affinity Index metrics (where 100% represents average internet user likelihood).
+2. Direct traffic patterns, engagement times, or indexed affinities for categories of sites this audience uses (e.g., the category's retailers and brands, specialist publishers and communities, news, lifestyle).
+3. Find 5 to 8 real root domains (e.g. the category's leading retailers, specialist publishers, communities and forums) that have high affinity from this audience, along with estimated Affinity Index metrics (where 100% represents average internet user likelihood).
 
 INSTRUCTIONS:
-- Search using tools like Similarweb, Semrush, Comscore, Newzoo, Exploding Topics, or trade studies.
+- Search using tools like Similarweb, Semrush, Comscore, Exploding Topics, or trade studies.
 - Write a detailed, bulleted, quantitative web affinity report featuring actual domain names, specific Affinity Index scores (e.g., 125%, 160%, 210%), and high-authority source citations.`;
 
     // 3. CTV & Devices Sub-Call Prompt
@@ -3635,8 +3635,11 @@ INSTRUCTIONS:
 - Search for data from high-authority sources like Wurl, eMarketer, Insider Intelligence, Nielsen, IAB, Comscore, or major trade press.
 - Write a detailed, bulleted, quantitative device usage report including exact platform splits and CTV activation insights.`;
 
-    // 4. Temporal & Purchase Patterns Sub-Call Prompt
-    const promptTemporalPurchase = `Research and compile temporal activity peaks, day-of-week, hour-of-day habits, and purchase triggers/behaviors for this target audience.
+    // 4. Temporal & Purchase Patterns Sub-Call Prompt. It used to ask for "browser gaming weekday
+    // peaks" and name CrazyGames as a source - left over from a gaming brief - so every plan's
+    // timing research came back with gaming-session data, and the writers timed pet-food search
+    // and display from it. It now asks for the advertiser's category and labels general data.
+    const promptTemporalPurchase = `Research and compile when this target audience researches, shops and buys in the advertiser's category, when it watches streaming TV, and its purchase triggers.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
 Geography/Market: ${geography}
 Campaign Focus/Goal: ${campaignFocus}
@@ -3646,14 +3649,16 @@ Additional Context: ${cleanAdditionalContext || "None provided"}
 ${briefBlock ? `\n${briefBlock}\nResearch the audience defined above, across every in-scope group.\n` : ""}
 TASK:
 Search the web for real, reputable statistics regarding:
-1. Online activity peaks (weekday vs. weekend habits, daytime vs. prime-time/late-night streaming, weekday web/browser activity trends like browser gaming weekday peaks).
-2. Hour of day peak engagement blocks for digital media or CTV.
-3. Key consumer buying habits, main shopping categories (e.g. apparel, consumer tech, CPG, home goods), and specific brand affinities.
-4. Primary purchase triggers and consumer motivations (e.g. deals, quality, sustainability, social media recommendations).
+1. Category timing: when this audience researches and buys in the advertiser's product categories - day of week, time of day, seasonality, replenishment or purchase cycles, and online versus in-store timing.
+2. Streaming and CTV viewing timing for this audience: weekday versus weekend, and prime-time, daytime and late-night dayparts.
+3. Buying habits in the category: where they buy (the brand's own site, retailers, marketplaces, stores), subscription and repeat-purchase behaviour, and brand or retailer preferences.
+4. Primary purchase triggers and motivations in the category (e.g. health needs, price and deals, ingredients or quality, recommendations).
 
 INSTRUCTIONS:
-- Search for studies (such as CrazyGames, Statista, Semrush, eMarketer, or trade press) describing their shopping triggers and online habits.
-- Write a detailed, bulleted, quantitative temporal and buying habits report with specific timings, peak hours, and purchase motivations.`;
+- Prefer studies about this category and this audience: category trade associations, retailer and earnings reports, Numerator, NielsenIQ, Circana, Nielsen, Comscore, eMarketer, Statista and category trade press.
+- For every figure, state the population and the category or activity it measures.
+- Where only general data exists (all e-commerce, all U.S. adults, all TV viewing, another product category), label it "GENERAL - not specific to this category" and do not present it as this audience's behaviour. Leave out data about unrelated activities (such as gaming) unless the brief of record defines the audience by them.
+- Write a detailed, bulleted, quantitative report on category timing, viewing timing and buying habits, with specific timings, peak periods and purchase motivations.`;
 
     const ai = getAiClient();
 
@@ -3872,9 +3877,10 @@ ${cleanTargetPersonas.map((p, idx) => `     * Persona Slot ${idx + 1}: "${p}" (M
      1. You MUST assign these exact ${cleanTargetPersonas.length} user-specified personas to the first ${cleanTargetPersonas.length} slot(s) of the 'personas' array.
      2. Keep the 'name' strictly identical or directly faithful to what the user typed (e.g. "${cleanTargetPersonas[0]}"). DO NOT rename, omit, replace, or dilute them.
      3. Set 'sourceType' to 'User' for each of these user-specified personas.
-     4. Build rich, realistic demographics, watch, browse, buy, and narrative profiles around each of these specific archetypes, informed by the advertiser and research dossiers.
+     4. Build rich, realistic demographics, watch, browse, buy, and narrative profiles around each of these specific archetypes, informed by the research dossiers and the brief of record. Advertiser specifics (products, offers, retailers, fulfilment) come only from its verified advertiser facts.
      ${cleanTargetPersonas.length < 4 ? `5. For the remaining ${4 - cleanTargetPersonas.length} persona slot(s) (Slots ${cleanTargetPersonas.length + 1} through 4): You MUST autonomously generate complementary, high-potential expansion personas that broaden campaign addressable reach. Set 'sourceType' to 'ScoutAI' for these additional generated personas.` : '5. All 4 personas have been user-specified, so set \'sourceType\' to \'User\' for all 4.'}` : `   - STANDARD BRIEF MODE (when NO target personas entered and NO uploaded media plan / RFP):
      * Generate 4 distinct consumer personas representing the core target market. Set 'sourceType' to 'ScoutAI' for all 4.
+     * Personas are audience portraits grounded in the research. Where a persona's story touches the advertiser, use only the brief of record's verified advertiser facts; otherwise describe the category ("a probiotic topper"), not a product, offer or service the brief does not list.
    - UPLOADED MEDIA PLAN / RFP MODE (when an uploaded media plan IS provided and no user personas specified):
      * You MUST generate EXACTLY 4 personas in total.
      * Up to 3 personas MUST be derived directly from the listed target audiences in the uploaded media plan RFP (set 'sourceType': 'RFP' for these personas).
@@ -3888,7 +3894,7 @@ ${cleanTargetPersonas.map((p, idx) => `     * Persona Slot ${idx + 1}: "${p}" (M
 12. EXECUTIVE SUMMARY BLUEPRINT (MANDATORY):
     Write an executive-ready, highly actionable strategic synthesis for 'executiveSummary'. You MUST explicitly emphasize:
     - Why the cross-screen channel strategy effectively reaches this audience where they actually are (e.g. living room Connected TV co-viewing, mobile digital companion screens, and high-affinity contextual domains during peak activity dayparts).
-    - Why this media mix and tactical allocation is specifically engineered to hit the campaign's target KPIs (e.g., brand lift, view-through rates, incremental household reach, or direct conversion goals).
+    - How this media mix pursues the campaign's target KPIs and how each will be measured (e.g., brand lift, view-through rates, incremental household reach, or direct conversion goals). Describe the approach; do not promise results.
 
 STRATEGY 2: AUTHORITY FILTERING & CITATION LOGIC:
 You are provided with a pool of real URLs discovered during search research. You MUST evaluate, filter, and structure these sources into the 'sources' array of the JSON response following these authority guidelines:

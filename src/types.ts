@@ -294,6 +294,12 @@ export interface BriefOfRecord {
   advertiser: string;
   whatTheySell: string;
   productCategories: string[];
+  /**
+   * What the advertiser's own website (or, without one, a grounded search) states about its
+   * products, offers, prices, retailers and fulfilment. The only advertiser specifics the plan
+   * may present as fact. Optional because briefs saved before it do not carry it.
+   */
+  advertiserFacts?: string[];
   businessModel: string;
   priceTier: "value" | "mid-market" | "premium" | "luxury" | "mixed" | "unknown";
   audienceType: "B2C" | "B2B" | "B2B2C";
