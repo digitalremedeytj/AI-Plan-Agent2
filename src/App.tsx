@@ -1283,6 +1283,9 @@ export default function App() {
   const [regenType, setRegenType] = useState<string | null>(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [pdfGenerating, setPdfGenerating] = useState(false);
+  // Deliberately not persisted: the same people demo and plan for real, so forgetting to
+  // untick it should fall back to the full, audited run.
+  const [quickMode, setQuickMode] = useState(false);
 
   // Persona Avatar Customizer Modal State
   const [editingAvatarPersonaIndex, setEditingAvatarPersonaIndex] = useState<number | null>(null);
@@ -2890,6 +2893,7 @@ export default function App() {
           campaignFlightDays: budgetNormalization.campaignFlightDays,
           planningSettings,
           ctvPublishers,
+          quickMode,
           // What the server needs, beyond the brief above, to save the finished run as a draft.
           draft: {
             title: advertiserName.trim()
@@ -3943,7 +3947,7 @@ export default function App() {
                   <button
                     onClick={() => setIsExportOpen(!isExportOpen)}
                     className="inline-flex items-center justify-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
-                    title="Export this profile to PDF or Markdown formats"
+                    title="Export this profile to Markdown or text formats"
                   >
                     <Download className="w-3.5 h-3.5" />
                     <span>Export Plan</span>
@@ -3995,24 +3999,6 @@ export default function App() {
                           <div>
                             <span className="block font-semibold">{copyProfileCopied ? "Copied!" : "Copy to Clipboard"}</span>
                             <span className="block text-[9px] text-slate-400 font-mono">Markdown content</span>
-                          </div>
-                        </button>
-                        <button
-                          onClick={async () => {
-                            setIsExportOpen(false);
-                            await handleDownloadPDF();
-                          }}
-                          disabled={pdfGenerating}
-                          className="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-700 flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
-                        >
-                          {pdfGenerating ? (
-                            <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
-                          ) : (
-                            <BookOpen className="w-4 h-4 text-slate-400 shrink-0" />
-                          )}
-                          <div>
-                            <span className="block font-semibold">{pdfGenerating ? "Generating..." : "Download PDF"}</span>
-                            <span className="block text-[9px] text-slate-400 font-mono">High-fidelity visual (.pdf)</span>
                           </div>
                         </button>
                       </div>
@@ -5002,6 +4988,19 @@ export default function App() {
 
               {/* Fixed Bottom Submit Button Container */}
               <div className="p-4 pt-3 bg-white border-t border-slate-100 shrink-0 shadow-[0_-4px_12px_rgba(0,0,0,0.03)] z-10">
+                <label className="flex items-start gap-2 mb-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={quickMode}
+                    onChange={(e) => setQuickMode(e.target.checked)}
+                    disabled={loading}
+                    className="mt-0.5 w-3.5 h-3.5 accent-indigo-600 cursor-pointer"
+                  />
+                  <span className="text-[11px] leading-snug text-slate-600">
+                    <span className="font-semibold text-slate-800">Quick mode</span>
+                    <span className="block text-[10px] text-slate-400">For live demos: skips the QA audit (about 4-6 min faster). Run QA Audit before sharing with a client.</span>
+                  </span>
+                </label>
                 <button
                   type="submit"
                   disabled={
@@ -7119,7 +7118,13 @@ export default function App() {
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
-                          {profileData.auditResult.findings?.some((f) => f.status !== "resolved" && f.severity !== "minor") ? (
+                          {/* An unscored plan has no findings, which must not read as verified. */}
+                          {profileData.auditResult.qaBypassed ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200">
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                              {profileData.auditResult.quickMode ? "Quick Mode: Not Audited" : "Not Audited"}
+                            </span>
+                          ) : profileData.auditResult.findings?.some((f) => f.status !== "resolved" && f.severity !== "minor") ? (
                             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200">
                               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                               Open Issues to Review
@@ -7211,7 +7216,9 @@ export default function App() {
                             <p className="text-[9px] text-slate-500 font-mono">Audited by {profileData.auditResult.auditModel}</p>
                           )}
                           <p className={`text-[11px] leading-relaxed px-2 font-medium ${profileData.auditResult.qaBypassed ? "text-amber-300" : "text-slate-300"}`}>
-                            {profileData.auditResult.qaBypassed
+                            {profileData.auditResult.quickMode
+                              ? "Quick mode — not audited. Run QA Audit before sharing with a client."
+                              : profileData.auditResult.qaBypassed
                               ? "QA agent unavailable — profile is unverified. Review before presenting."
                               : (profileData.auditResult.finalScore >= 95
                                 ? "Excellent (Presentation Approved)"

@@ -334,7 +334,9 @@ export function exportProfileToMarkdown(
     markdown += `> ${profile.auditResult.executiveSummary}\n\n`;
     markdown += `- **Overall Media Planning Score**: **${profile.auditResult.finalScore}/100** ${profile.auditResult.originalScore !== profile.auditResult.finalScore ? `(Remediated from ${profile.auditResult.originalScore}/100)` : ""}\n`;
     // States what happened, never an approval the pipeline did not give.
-    const qaStatus = profile.auditResult.qaBypassed
+    const qaStatus = profile.auditResult.quickMode
+      ? "Not scored - generated in Quick mode, which skips the QA audit"
+      : profile.auditResult.qaBypassed
       ? "Not scored - the QA agent did not run"
       : profile.auditResult.remediationApplied
         ? "Scored, then auto-remediated (the remediated version was not re-scored)"

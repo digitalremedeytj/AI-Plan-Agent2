@@ -185,21 +185,28 @@ export function buildAuditResult(args: {
   findings: AuditFinding[];
   autoFixes: Array<{ issue: string; resolution: string }>;
   qaBypassed: boolean;
+  /** Generated in Quick mode: the audit was skipped on purpose, not unavailable. */
+  quickMode?: boolean;
   auditModel: string;
 }) {
   const { audit, verify, findings, autoFixes, qaBypassed, auditModel } = args;
+  const quickMode = Boolean(args.quickMode);
   const scored = verify ?? audit;
   const openFlags = openFindingsAsFlags(findings);
   return {
-    executiveSummary: scored?.executiveSummary || "The independent QA audit was unavailable, so this profile has not been externally verified. Review it before client presentation.",
-    scorecard: scored?.scorecard ?? AUDIT_CATEGORIES.map((category) => ({ category, score: 0, notes: "Not evaluated - QA audit unavailable" })),
+    executiveSummary: scored?.executiveSummary || (quickMode
+      ? "Generated in Quick mode, so the QA audit was skipped. Run QA Audit on the saved plan before sharing it with a client."
+      : "The independent QA audit was unavailable, so this profile has not been externally verified. Review it before client presentation."),
+    scorecard: scored?.scorecard ?? AUDIT_CATEGORIES.map((category) => ({ category, score: 0, notes: quickMode ? "Not evaluated - Quick mode" : "Not evaluated - QA audit unavailable" })),
     originalScore: audit?.totalScore ?? 0,
     // The verified score when fixes were re-scored; otherwise the audit's own score, which then
     // describes the plan as it stands because nothing changed after it.
     finalScore: scored?.totalScore ?? 0,
     verified: Boolean(verify),
     remediationApplied: autoFixes.length > 0,
-    criticalRedFlags: qaBypassed
+    criticalRedFlags: quickMode
+      ? ["Not audited - generated in Quick mode."]
+      : qaBypassed
       ? ["QA scoring did not run - this profile has not been independently verified."]
       : openFlags.length > 0 ? openFlags : ["Clean - no open major issues."],
     strategicHighlights: scored?.strategicHighlights || [],
@@ -207,5 +214,6 @@ export function buildAuditResult(args: {
     findings,
     auditModel,
     qaBypassed,
+    ...(quickMode ? { quickMode: true } : {}),
   };
 }

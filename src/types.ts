@@ -176,6 +176,8 @@ export interface AuditResult {
   remediationApplied?: boolean;
   /** True when the QA scoring agent was unavailable and the profile went out unverified. */
   qaBypassed?: boolean;
+  /** True when the plan was generated in Quick mode, which skips the audit on purpose. */
+  quickMode?: boolean;
   /** True when the plan was re-scored after fixes, so finalScore describes the shipped plan. */
   verified?: boolean;
   /** Structured audit findings, with their status after verification. Absent on older plans. */

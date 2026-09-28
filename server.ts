@@ -188,6 +188,12 @@ const NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: n
   { thinkingLevel: "medium", timeoutMs: 50000 },
 ];
 const TIMEOUT_NARRATIVE_MS = NARRATIVE_ATTEMPTS.reduce((sum, attempt) => sum + attempt.timeoutMs, 0);
+// Quick mode (live demos) skips the QA audit, fix and verify, which are 4-6 minutes of a run,
+// and writes the narrative at medium. Synthesis and research stay at high: medium synthesis
+// mis-copied citation URLs and medium research returned about half the sources (see below).
+const QUICK_NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
+  { thinkingLevel: "medium", timeoutMs: 60000 },
+];
 // The whole generation must finish inside Cloud Run's 900s request timeout. Late stages check
 // what is left and step aside (with an alert) rather than be cut off mid-response.
 const RUN_BUDGET_MS = 870000;
@@ -3402,6 +3408,7 @@ app.post("/api/generate-profile", async (req, res) => {
     ctvPublishers,
     draft,
   } = req.body;
+  const quickMode = req.body?.quickMode === true;
 
   // SSE Setup Headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -4242,7 +4249,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
 
     // The narrative is written last, by one writer, with the settled plan in front of it. Skipped
     // (keeping synthesis's draft) only when the run is short of time, so the audit always runs.
-    if (remainingMs() > TIMEOUT_NARRATIVE_MS + TIMEOUT_AUDIT_MS) {
+    const narrativeAttempts = quickMode ? QUICK_NARRATIVE_ATTEMPTS : NARRATIVE_ATTEMPTS;
+    const narrativeReserveMs = quickMode
+      ? narrativeAttempts.reduce((sum, attempt) => sum + attempt.timeoutMs, 0)
+      : TIMEOUT_NARRATIVE_MS + TIMEOUT_AUDIT_MS;
+    if (remainingMs() > narrativeReserveMs) {
       sendEvent("status", { message: "Writing the final plan narrative against the settled charts, channel plan and research..." });
       const narrativeStartedAt = Date.now();
       const narrativeThoughts = thoughtsFor("Narrative writer");
@@ -4265,7 +4276,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             schema: narrativeSchema,
             onThought: narrativeThoughts.onThought,
           },
-          NARRATIVE_ATTEMPTS,
+          narrativeAttempts,
           (failed, next) => sendEvent("status", { message: `Narrative writing (${failed} reasoning) ran long; retrying with ${next} reasoning...` }),
         );
         const replaced = applyNarrative(originalData, data);
@@ -4290,7 +4301,9 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
 
     let audit: NormalizedAudit | null = null;
     let qaBypassed = false;
-    if (remainingMs() > 60000) {
+    if (quickMode) {
+      sendEvent("status", { message: "Quick mode: skipping the QA audit. Run QA Audit on the saved plan before sharing it with a client." });
+    } else if (remainingMs() > 60000) {
       sendEvent("status", { message: "Auditing the plan evidence, brief fit, cohesion, strategy and client readiness..." });
       const auditThoughts = thoughtsFor("QA auditor");
       try {
@@ -4301,7 +4314,9 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         auditThoughts.done();
       }
     }
-    if (!audit) {
+    if (quickMode) {
+      qaBypassed = true;
+    } else if (!audit) {
       qaBypassed = true;
       console.warn("[QA BYPASS] The QA audit did not run. This profile was NOT independently scored.");
       pushAlert(generationAlerts, { section: "qa", severity: "failed", message: "QA scoring did not run (timed out or failed), so this profile has not been independently scored." });
@@ -4361,7 +4376,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
 
     const findings = audit ? mergeFindings(audit, verify) : [];
     const openFlags = openFindingsAsFlags(findings);
-    const finalAuditResult = buildAuditResult({ audit, verify, findings, autoFixes: autoFixesList, qaBypassed, auditModel: `${AUDIT_MODEL} (${AUDIT_EFFORT})` });
+    const finalAuditResult = buildAuditResult({ audit, verify, findings, autoFixes: autoFixesList, qaBypassed, quickMode, auditModel: quickMode ? "" : `${AUDIT_MODEL} (${AUDIT_EFFORT})` });
 
     // Embed the audit results into the final profile
     finalProfile.auditResult = finalAuditResult;
