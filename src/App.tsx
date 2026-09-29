@@ -134,6 +134,7 @@ import { QaFindings } from "./components/QaFindings";
 import { GenerationLog } from "./components/GenerationLog";
 import { PlanAuditModal } from "./components/PlanAuditModal";
 import { ScoutAssistantPanel, type ScoutFollowUpAction, type ScoutPreview } from "./components/ScoutAssistantPanel";
+import { syncCtvChannelPublishers } from "./planning/ctvChannel";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
@@ -3066,22 +3067,34 @@ export default function App() {
 
   const handleScoutApplied = (plan: api.StoredPlan) => {
     const saved = plan.payload.profile as AudienceProfile | undefined;
+    // Read before markPlanPersisted replaces it below.
+    const previousProfile = lastPersistedPlanRef.current?.payload?.profile as AudienceProfile | undefined;
     if (saved) {
-      // ScoutAI never edits the auto-saved fields, and an edit to one may still be waiting on its
-      // debounce, so the live values are kept; their auto-save then lands on the new revision.
+      // The auto-saved fields (segments, hidden sections, the brief, channel panel edits) may hold
+      // an edit still waiting on its debounce. Where the change left a field as it was, the live
+      // value is kept and its auto-save lands on the new revision; where the change edited it,
+      // the saved value is what the planner approved.
+      const changed = (a: unknown, b: unknown) => JSON.stringify(a ?? null) !== JSON.stringify(b ?? null);
+      const pick = <K extends keyof AudienceProfile>(key: K, live: AudienceProfile | null): AudienceProfile[K] =>
+        changed(saved[key], previousProfile?.[key]) || !live ? saved[key] : live[key];
       setProfileData((prev) => ({
         ...saved,
-        personas: (saved.personas || []).map((persona, i) => ({
-          ...persona,
-          avatarUrl: persona.avatarUrl || prev?.personas?.[i]?.avatarUrl,
-          avatarHistory: persona.avatarHistory || prev?.personas?.[i]?.avatarHistory,
-        })),
-        segmentRecommendations: prev?.segmentRecommendations ?? saved.segmentRecommendations,
-        hiddenSections: prev?.hiddenSections ?? saved.hiddenSections,
-        executiveBrief: prev?.executiveBrief ?? saved.executiveBrief,
-        slideExports: prev?.slideExports ?? saved.slideExports,
+        personas: (saved.personas || []).map((persona) => {
+          // A persona's headshot may exist only in the browser (headshots wait for a manual Save).
+          const live = prev?.personas?.find((p) => p.name === persona.name);
+          return { ...persona, avatarUrl: persona.avatarUrl || live?.avatarUrl, avatarHistory: persona.avatarHistory || live?.avatarHistory };
+        }),
+        segmentRecommendations: pick("segmentRecommendations", prev),
+        hiddenSections: pick("hiddenSections", prev),
+        executiveBrief: pick("executiveBrief", prev),
+        slideExports: pick("slideExports", prev),
         channelStrategy: saved.channelStrategy
-          ? { ...saved.channelStrategy, channelOverrides: prev?.channelStrategy?.channelOverrides ?? saved.channelStrategy.channelOverrides }
+          ? {
+              ...saved.channelStrategy,
+              channelOverrides: changed(saved.channelStrategy.channelOverrides, previousProfile?.channelStrategy?.channelOverrides) || !prev
+                ? saved.channelStrategy.channelOverrides
+                : prev.channelStrategy?.channelOverrides,
+            }
           : saved.channelStrategy,
       }));
     }
@@ -3159,9 +3172,10 @@ export default function App() {
     });
   };
 
-  const handleScoutFollowUp = (action: ScoutFollowUpAction) => {
+  const handleScoutFollowUp = (action: ScoutFollowUpAction, instructions?: string) => {
     if (action === "executive_summary") {
-      requestExecutiveBrief();
+      requestExecutiveBrief({ instructions: instructions || "" });
+      document.getElementById("executive-brief")?.scrollIntoView({ behavior: "smooth", block: "start" });
     } else if (action === "qa_audit") {
       setIsAuditModalOpen(true);
     } else if (action === "regenerate_plan") {
@@ -3416,7 +3430,8 @@ export default function App() {
   const handleUpdateCtvPublishers = (updated: CtvPublisherRecommendation[]) => {
     setProfileData((previous) => {
       if (!previous) return null;
-      return {
+      // The CTV media types list the same publishers, so exports and the executive summary agree.
+      return syncCtvChannelPublishers({
         ...previous,
         ctvPublishers: updated,
         channelStrategy: previous.channelStrategy
@@ -3425,7 +3440,7 @@ export default function App() {
               ctvPublishers: updated,
             }
           : undefined,
-      };
+      });
     });
   };
 

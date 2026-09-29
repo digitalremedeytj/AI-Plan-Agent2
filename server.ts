@@ -2053,11 +2053,13 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       res.status(400).json({ error: "Send the planner's message to answer." });
       return;
     }
-    const plan = await (await getStorage()).getPlan(req.params.id);
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
     if (!plan || plan.archived) {
       res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
       return;
     }
+    const context = await scoutApplyContext(storage);
 
     // Newline-delimited JSON: thought headlines while the model works, then one result line.
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
@@ -2071,7 +2073,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       getAiClient(),
       {
         systemInstruction: SCOUT_SYSTEM_INSTRUCTION,
-        input: buildScoutInput(buildPlanContext(plan), turns),
+        input: buildScoutInput(buildPlanContext(plan, context), turns),
         schema: scoutResponseSchema,
         onThought: (text) => send({ type: "thought", text }),
       },
@@ -2084,7 +2086,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     // then together, which is what Apply saves when every item is kept.
     const dropped: string[] = [];
     const items = response.items.flatMap((item, index) => {
-      const dryRun = item.ops.length > 0 ? applyOps(plan.payload, item.ops) : null;
+      const dryRun = item.ops.length > 0 ? applyOps(plan.payload, item.ops, context) : null;
       const reasons = [...item.rejected, ...(dryRun?.rejected ?? [])].map((r) => r.reason);
       if (!dryRun || dryRun.changes.length === 0) {
         if (item.ops.length > 0 || item.rejected.length > 0) dropped.push(`${item.title}: ${reasons.join("; ") || "it would not change anything"}`);
@@ -2093,12 +2095,12 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       return [{ id: `item-${index}`, title: item.title, why: item.why, ops: dryRun.ops, changes: dryRun.changes, rejected: reasons }];
     });
     if (items.length > 0) {
-      const combined = applyOps(plan.payload, items.flatMap((item) => item.ops));
+      const combined = applyOps(plan.payload, items.flatMap((item) => item.ops), context);
       proposal = { summary: response.summary, items, changes: combined.changes, rejected: combined.rejected.map((r) => r.reason), baseRevision: plan.revision };
     }
     if (dropped.length > 0) reply += `\n\n_Left out because the plan doesn't allow it: ${dropped.join(" · ")}._`;
     console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
-    send({ type: "result", reply, proposal, revision: plan.revision });
+    send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision });
     res.end();
   } catch (err: any) {
     console.error("[SCOUTAI] Chat failed:", err);
@@ -2112,10 +2114,17 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
   }
 });
 
+// What operations need beyond the plan: the publisher catalog a CTV publisher may be added from.
+async function scoutApplyContext(storage: StorageAdapter) {
+  const { publishers } = await storage.getCurrentPublishers();
+  return { publisherCatalog: publishers.map((p) => ({ name: p.name, category: p.category, enabled: p.enabled })) };
+}
+
 // Dry run of the items a planner has kept, so the card shows the combined result before Apply.
 app.post("/api/plans/:id/assistant/preview", async (req, res) => {
   try {
-    const plan = await (await getStorage()).getPlan(req.params.id);
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
     if (!plan || plan.archived) {
       res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
       return;
@@ -2125,7 +2134,7 @@ app.post("/api/plans/:id/assistant/preview", async (req, res) => {
       return;
     }
     const { ops, rejected: unreadable } = parseOps(req.body?.ops);
-    const result = applyOps(plan.payload, ops);
+    const result = applyOps(plan.payload, ops, await scoutApplyContext(storage));
     res.json({ changes: result.changes, rejected: [...unreadable, ...result.rejected].map((r) => r.reason) });
   } catch (err: any) {
     respondToStorageError(res, err, "preview the ScoutAI change");
@@ -2156,7 +2165,7 @@ app.post("/api/plans/:id/assistant/apply", async (req, res) => {
       return;
     }
     // The planner approved a specific result. If any part of it no longer applies, apply none of it.
-    const result = applyOps(plan.payload, ops);
+    const result = applyOps(plan.payload, ops, await scoutApplyContext(storage));
     if (result.rejected.length > 0 || result.changes.length === 0) {
       res.status(422).json({
         error: result.changes.length === 0 ? "This change would not alter the plan." : "Part of this change no longer applies to the plan, so nothing was changed.",

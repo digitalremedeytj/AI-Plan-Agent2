@@ -315,6 +315,8 @@ export interface ScoutProposal {
 export interface ScoutReply {
   reply: string;
   proposal: ScoutProposal | null;
+  /** Instructions for the executive summary generator, when ScoutAI suggests rewriting it. */
+  executiveSummaryInstructions: string | null;
   revision: number;
 }
 
@@ -347,7 +349,14 @@ export async function askScout(
     if (!line.trim()) return;
     const event = JSON.parse(line);
     if (event.type === "thought" && typeof event.text === "string") onThought(event.text);
-    else if (event.type === "result") result = { reply: String(event.reply ?? ""), proposal: event.proposal ?? null, revision: Number(event.revision) };
+    else if (event.type === "result") {
+      result = {
+        reply: String(event.reply ?? ""),
+        proposal: event.proposal ?? null,
+        executiveSummaryInstructions: typeof event.executiveSummaryInstructions === "string" ? event.executiveSummaryInstructions : null,
+        revision: Number(event.revision),
+      };
+    }
     else if (event.type === "error") throw new ApiError(502, event.error || "ScoutAI couldn't answer just now.", event);
   };
   for (;;) {

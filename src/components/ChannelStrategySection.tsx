@@ -14,39 +14,8 @@ import {
   type AllocationBasisPoints,
 } from '../planning/manualAllocations';
 
-export const isCtvOrPerformanceTvChannel = (
-  channelId?: string,
-  channelName?: string,
-  canonicalId?: string,
-): boolean => {
-  const id = (channelId || '').toLowerCase().trim();
-  const name = (channelName || '').toLowerCase().trim();
-  const canonical = (canonicalId || '').toLowerCase().trim();
-
-  return (
-    id === 'channel.ctv' ||
-    id === 'channel.performance_tv' ||
-    id === 'ctv' ||
-    id === 'ctv_ott' ||
-    id === 'performance_tv' ||
-    id === 'performance_ctv' ||
-    canonical === 'ctv' ||
-    canonical === 'ctv_ott' ||
-    canonical === 'performance_tv' ||
-    name === 'ctv / ott' ||
-    name === 'ctv/ott' ||
-    name === 'performance tv' ||
-    name === 'performance ctv' ||
-    name === 'connected tv' ||
-    id.includes('channel.ctv') ||
-    id.includes('performance_tv') ||
-    id.includes('performancetv') ||
-    name.includes('performance tv') ||
-    name.includes('performance ctv') ||
-    name.includes('ctv / ott') ||
-    name.includes('ctv/ott')
-  );
-};
+export { isCtvOrPerformanceTvChannel } from '../planning/ctvChannel';
+import { isCtvOrPerformanceTvChannel } from '../planning/ctvChannel';
 
 export interface ChannelStrategySectionProps {
   data: ChannelStrategyData;

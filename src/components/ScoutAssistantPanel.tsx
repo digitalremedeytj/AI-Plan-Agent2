@@ -1,6 +1,6 @@
 import React from "react";
 import Markdown from "react-markdown";
-import { AlertTriangle, ArrowRight, Check, ChevronDown, Eye, EyeOff, Loader2, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, ChevronDown, Eye, EyeOff, FileText, Loader2, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
 import * as api from "../api/client";
 import { ApiError, type AssistantOp, type ChatTurn, type FollowUp, type ProposalChange, type ScoutProposal } from "../api/client";
 import type { AudienceProfile } from "../types";
@@ -34,6 +34,8 @@ interface Message {
   role: "user" | "assistant";
   text: string;
   proposal?: ProposalState;
+  /** A suggested executive summary rewrite, which runs the summary's own generator. */
+  summaryRewrite?: { instructions: string; status: "pending" | "started" | "dismissed" };
   isError?: boolean;
 }
 
@@ -61,7 +63,7 @@ interface Props {
   isBriefStale: boolean;
   hasAudit: boolean;
   onApplied: (plan: api.StoredPlan) => void;
-  onFollowUp: (action: ScoutFollowUpAction) => void;
+  onFollowUp: (action: ScoutFollowUpAction, instructions?: string) => void;
   onUnread: (unread: boolean) => void;
   preview: ScoutPreview | null;
   onPreview: (preview: ScoutPreview | null) => void;
@@ -103,6 +105,10 @@ const TURN_STATUS: Record<ProposalStatus, NonNullable<ChatTurn["proposal"]>["sta
 
 function toTurns(messages: Message[]): ChatTurn[] {
   return messages.filter((m) => !m.isError).map((m) => {
+    if (m.summaryRewrite) {
+      const status = m.summaryRewrite.status === "started" ? "applied" : m.summaryRewrite.status;
+      return { role: m.role, text: m.text, proposal: { summary: `Rewrite the executive summary: ${m.summaryRewrite.instructions}`, status } };
+    }
     if (!m.proposal) return { role: m.role, text: m.text };
     const p = m.proposal;
     const kept = p.items.filter((item) => p.selected.includes(item.id)).map((item) => item.title);
@@ -417,6 +423,7 @@ export function ScoutAssistantPanel({
         role: "assistant",
         text: result.reply,
         ...(result.proposal ? { proposal: { ...result.proposal, status: "pending" as const, selected: result.proposal.items.map((item) => item.id) } } : {}),
+        ...(result.executiveSummaryInstructions ? { summaryRewrite: { instructions: result.executiveSummaryInstructions, status: "pending" as const } } : {}),
       }]);
       if (!visibleRef.current) onUnread(true);
     } catch (err: any) {
@@ -575,6 +582,37 @@ export function ScoutAssistantPanel({
               ) : (
                 <div className="scout-markdown text-xs leading-relaxed text-slate-700">
                   <Markdown>{message.text}</Markdown>
+                </div>
+              )}
+              {message.summaryRewrite && (
+                <div className={`mt-2 rounded-xl border bg-white shadow-xs px-3 py-2.5 ${message.summaryRewrite.status === "pending" ? "border-indigo-200" : "border-slate-200 opacity-70"}`}>
+                  <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-800">
+                    <FileText className="w-3.5 h-3.5 text-indigo-500" /> Rewrite the executive summary
+                  </div>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-600">{message.summaryRewrite.instructions}</p>
+                  {message.summaryRewrite.status === "pending" ? (
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          onFollowUp("executive_summary", message.summaryRewrite!.instructions);
+                          setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, summaryRewrite: { ...m.summaryRewrite!, status: "started" } } : m)));
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white text-[11px] font-bold hover:bg-indigo-700 cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3" /> Rewrite summary
+                      </button>
+                      <button
+                        onClick={() => setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, summaryRewrite: { ...m.summaryRewrite!, status: "dismissed" } } : m)))}
+                        className="ml-auto flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-50 cursor-pointer"
+                      >
+                        <X className="w-3 h-3" /> Dismiss
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="mt-1.5 text-[10px] font-semibold text-slate-400">
+                      {message.summaryRewrite.status === "started" ? "Rewriting in the Executive Summary section. Its Undo restores the previous version." : "Dismissed"}
+                    </p>
+                  )}
                 </div>
               )}
               {message.proposal && (

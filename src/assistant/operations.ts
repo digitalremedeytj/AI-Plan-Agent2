@@ -19,6 +19,8 @@ import {
 import type { MediaRecommendationPlan } from "../planning/types";
 import { getAtPath, writeProseField } from "../qa/planRemediation";
 import { applyAudienceOps, applyBriefOps, PERSONA_FIELDS, type PersonaFields } from "./profileOps";
+import { applyListOps, applySectionOps, NARRATIVE_LISTS, type NarrativeList } from "./narrativeOps";
+import { syncCtvChannelPublishers } from "../planning/ctvChannel";
 
 export type AssistantOp =
   | { type: "set_allocation"; channelId: string; percent: number }
@@ -40,24 +42,48 @@ export type AssistantOp =
   | { type: "set_kpis"; values: string[] }
   // `config` comes only from a revert, restoring the structured geography picker state.
   | { type: "set_geography"; value: string; config?: unknown }
+  | { type: "add_takeaway"; value: string; position?: number }
+  | { type: "remove_takeaway"; index: number }
+  | { type: "add_recommendation"; title: string; action: string; why: string; channels: string; position?: number }
+  | { type: "remove_recommendation"; index: number }
+  | { type: "move_item"; list: NarrativeList; index: number; position: number }
+  | { type: "set_section_visibility"; section: string; hidden: boolean }
+  | { type: "hide_section"; section: string }
+  | { type: "show_section"; section: string }
+  | { type: "add_ctv_publisher"; publisher: string; why: string }
   // Restores come only from a revert: they put back exactly what a change removed, which the
   // model has no way to describe (a publisher from the catalog, a persona's headshot).
   | { type: "restore_ctv_publisher"; publisher: string; category: string; why: string; index: number; isUserAdded?: boolean }
   | { type: "restore_persona"; index: number; persona: any; segmentIds: string[] }
-  | { type: "restore_segment"; index: number; segment: any; personas: string[] };
+  | { type: "restore_segment"; index: number; segment: any; personas: string[] }
+  | { type: "set_list"; list: NarrativeList; items: any[] };
 
 export type AssistantOpType = AssistantOp["type"];
 
 export const MODEL_OP_TYPES: ReadonlySet<AssistantOpType> = new Set([
   "set_allocation", "add_channel", "remove_channel", "set_budget", "lock_channel", "unlock_channel", "remove_ctv_publisher", "edit_text",
   "update_persona", "add_persona", "remove_persona", "add_segment", "edit_segment", "remove_segment", "edit_brief", "set_kpis", "set_geography",
+  "add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_section_visibility", "hide_section", "show_section", "add_ctv_publisher",
 ]);
-const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment"]);
+const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment", "set_list"]);
+
+/** A CTV publisher the plan may add: the shared publisher catalog, as settings store it. */
+export interface CatalogPublisher {
+  name: string;
+  category: string;
+  enabled: boolean;
+}
+
+export interface ApplyContext {
+  /** Needed only to add CTV publishers; without it, adding one is refused. */
+  publisherCatalog?: CatalogPublisher[];
+}
 
 export interface ProposalChange {
   kind:
     | "allocation" | "channel_added" | "channel_removed" | "budget" | "lock" | "publisher" | "text"
-    | "persona" | "persona_added" | "persona_removed" | "segment" | "segment_added" | "segment_removed" | "brief" | "input";
+    | "persona" | "persona_added" | "persona_removed" | "segment" | "segment_added" | "segment_removed" | "brief" | "input"
+    | "item_added" | "item_removed" | "item_moved" | "section";
   label: string;
   before: string;
   after: string;
@@ -208,6 +234,56 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
         ops.push({ type, value, ...(allowRestore && it.config && typeof it.config === "object" ? { config: it.config } : {}) });
         break;
       }
+      case "add_takeaway": {
+        const value = str(it.value);
+        if (!value) { reject("needs the takeaway's text"); break; }
+        ops.push({ type, value, ...(Number.isInteger(it.position) && it.position >= 0 ? { position: it.position } : {}) });
+        break;
+      }
+      case "add_recommendation":
+        ops.push({ type, title: str(it.title), action: str(it.action), why: str(it.why), channels: str(it.channels), ...(Number.isInteger(it.position) && it.position >= 0 ? { position: it.position } : {}) });
+        break;
+      case "remove_takeaway":
+      case "remove_recommendation": {
+        const index = Number(it.index);
+        if (!Number.isInteger(index) || index < 0) { reject("needs the item's index"); break; }
+        ops.push({ type, index });
+        break;
+      }
+      case "move_item": {
+        const index = Number(it.index);
+        const position = Number(it.position);
+        if (!(NARRATIVE_LISTS as readonly string[]).includes(it.list) || !Number.isInteger(index) || index < 0 || !Number.isInteger(position) || position < 0) {
+          reject("needs a list (takeaways or recommendations), an index and a position");
+          break;
+        }
+        ops.push({ type, list: it.list, index, position });
+        break;
+      }
+      // The model asks with hide_section / show_section; a true/false flag is the easiest field
+      // for it to send as text or leave out, so set_section_visibility (what a revert sends) also
+      // reads "true"/"false".
+      case "hide_section":
+      case "show_section":
+      case "set_section_visibility": {
+        const section = str(it.section);
+        const flag = typeof it.hidden === "boolean" ? it.hidden : it.hidden === "true" ? true : it.hidden === "false" ? false : undefined;
+        const hidden = type === "hide_section" ? true : type === "show_section" ? false : flag;
+        if (!section || hidden === undefined) { reject("needs a section and whether it is hidden"); break; }
+        ops.push({ type: "set_section_visibility", section, hidden });
+        break;
+      }
+      case "add_ctv_publisher": {
+        const publisher = str(it.publisher);
+        if (!publisher) { reject("needs a publisher from the catalog"); break; }
+        ops.push({ type, publisher, why: str(it.why) });
+        break;
+      }
+      case "set_list": {
+        if (!(NARRATIVE_LISTS as readonly string[]).includes(it.list) || !Array.isArray(it.items)) { reject("needs a list and its items"); break; }
+        ops.push({ type, list: it.list, items: it.items });
+        break;
+      }
       case "restore_persona": {
         const index = Number(it.index);
         if (!it.persona || typeof it.persona !== "object" || !str(it.persona.name) || !Number.isInteger(index) || index < 0) { reject("needs a persona and an index"); break; }
@@ -276,7 +352,7 @@ export function addableChannels(plan: MediaRecommendationPlan | undefined) {
  * An operation that cannot be performed is reported in `rejected` and skipped; the rest still
  * apply, so the planner sees exactly what would change and why anything was left out.
  */
-export function applyOps(payload: any, rawOps: AssistantOp[]): OpsResult {
+export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyContext = {}): OpsResult {
   const next = JSON.parse(JSON.stringify(payload ?? {}));
   const profile = next.profile ?? (next.profile = {});
   const rejected: RejectedOp[] = [];
@@ -296,6 +372,11 @@ export function applyOps(payload: any, rawOps: AssistantOp[]): OpsResult {
   // rest of the proposal moves it. Editing an item the same proposal removes is refused.
   const removedChannels = new Set(byType(["remove_channel"]).map((op) => (op as { channelId: string }).channelId));
   const removedPublishers = new Set(byType(["remove_ctv_publisher"]).map((op) => (op as { publisher: string }).publisher.toLowerCase()));
+  const removedItems = new Set([
+    ...byType(["remove_takeaway"]).map((op) => `takeaways[${(op as { index: number }).index}]`),
+    ...byType(["remove_recommendation"]).map((op) => `recommendations[${(op as { index: number }).index}]`),
+  ]);
+  const listsBefore = Object.fromEntries(NARRATIVE_LISTS.map((list) => [list, JSON.parse(JSON.stringify(profile[list] ?? []))])) as Record<NarrativeList, unknown[]>;
   const textTargets: Array<{ op: AssistantOp; path: string; before: string; channelId?: string; publisher?: any }> = [];
   for (const op of byType(["edit_text"]) as Array<{ type: "edit_text"; path: string; value: string }>) {
     if (/^personas\[/.test(op.path)) { rejected.push({ op, reason: "persona fields are changed with update_persona" }); continue; }
@@ -303,7 +384,8 @@ export function applyOps(payload: any, rawOps: AssistantOp[]): OpsResult {
     const channelId = channelMatch ? profile.channelStrategy?.mediaPlan?.channels?.[Number(channelMatch[1])]?.channelId : undefined;
     const publisherMatch = op.path.match(/^ctvPublishers\[(\d+)\]\./);
     const publisher = publisherMatch ? profile.ctvPublishers?.[Number(publisherMatch[1])] : undefined;
-    if ((channelId && removedChannels.has(channelId)) || (publisher && removedPublishers.has(str(publisher.publisher).toLowerCase()))) {
+    const listItem = op.path.match(/^((?:takeaways|recommendations)\[\d+\])/)?.[1];
+    if ((channelId && removedChannels.has(channelId)) || (publisher && removedPublishers.has(str(publisher.publisher).toLowerCase())) || (listItem && removedItems.has(listItem))) {
       rejected.push({ op, reason: "that item is removed in the same proposal" });
       continue;
     }
@@ -315,9 +397,11 @@ export function applyOps(payload: any, rawOps: AssistantOp[]): OpsResult {
     applied.push(op);
   }
 
+  const lists = applyListOps(profile, byType(["add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_list"]), listsBefore);
+  const sections = applySectionOps(profile, byType(["set_section_visibility"]));
   const brief = applyBriefOps(next, byType(["edit_brief", "set_kpis", "set_geography"]));
   const audience = applyAudienceOps(next, byType(["update_persona", "add_persona", "remove_persona", "restore_persona", "add_segment", "edit_segment", "remove_segment", "restore_segment"]));
-  for (const outcome of [brief, audience]) {
+  for (const outcome of [lists, sections, brief, audience]) {
     applied.push(...outcome.applied);
     rejected.push(...outcome.rejected);
   }
@@ -449,9 +533,18 @@ export function applyOps(payload: any, rawOps: AssistantOp[]): OpsResult {
     if (profile.channelStrategy) profile.channelStrategy = { ...profile.channelStrategy, ctvPublishers: profile.ctvPublishers };
   };
 
-  for (const op of byType(["remove_ctv_publisher", "restore_ctv_publisher"]) as Array<Extract<AssistantOp, { type: "remove_ctv_publisher" | "restore_ctv_publisher" }>>) {
+  for (const op of byType(["remove_ctv_publisher", "restore_ctv_publisher", "add_ctv_publisher"]) as Array<Extract<AssistantOp, { type: "remove_ctv_publisher" | "restore_ctv_publisher" | "add_ctv_publisher" }>>) {
     const list: any[] = Array.isArray(profile.ctvPublishers) ? profile.ctvPublishers : [];
-    if (op.type === "remove_ctv_publisher") {
+    if (op.type === "add_ctv_publisher") {
+      const entry = context.publisherCatalog?.find((p) => p.enabled && str(p.name).toLowerCase() === op.publisher.toLowerCase());
+      if (!entry) { rejected.push({ op, reason: `${op.publisher} is not an available publisher in the catalog` }); continue; }
+      if (list.some((p) => str(p?.publisher).toLowerCase() === entry.name.toLowerCase())) { rejected.push({ op, reason: `${entry.name} is already in the plan` }); continue; }
+      profile.ctvPublishers = [...list, { publisher: entry.name, category: entry.category, why: op.why }];
+      syncStrategyPublishers();
+      publisherChanges.push({ kind: "publisher", label: `CTV publisher – ${entry.name}`, before: "Not in plan", after: op.why || "Included" });
+      revertPublishers.unshift({ type: "remove_ctv_publisher", publisher: entry.name });
+      applied.push(op);
+    } else if (op.type === "remove_ctv_publisher") {
       const index = list.findIndex((p) => str(p?.publisher).toLowerCase() === op.publisher.toLowerCase());
       if (index < 0) { rejected.push({ op, reason: `${op.publisher} is not one of the plan's CTV publishers` }); continue; }
       const [removed] = list.splice(index, 1);
@@ -472,8 +565,13 @@ export function applyOps(payload: any, rawOps: AssistantOp[]): OpsResult {
   }
 
   if (textTargets.some((t) => t.publisher)) syncStrategyPublishers();
+  if (publisherChanges.length > 0 || textTargets.some((t) => t.publisher)) {
+    profile.channelStrategy = syncCtvChannelPublishers(profile).channelStrategy;
+  }
   const revertText: AssistantOp[] = [];
   for (const target of textTargets) {
+    // A list this proposal reshaped is restored whole by its revert, text included.
+    if (NARRATIVE_LISTS.some((list) => lists.reshaped.has(list) && target.path.startsWith(`${list}[`))) continue;
     // Where the edited item sits once everything else in the proposal has run.
     let path = target.path;
     if (target.channelId) {
@@ -490,9 +588,9 @@ export function applyOps(payload: any, rawOps: AssistantOp[]): OpsResult {
   return {
     payload: next,
     ops: applied,
-    changes: [...brief.changes, ...audience.changes, ...channel.changes, ...publisherChanges, ...textChanges],
+    changes: [...brief.changes, ...audience.changes, ...channel.changes, ...publisherChanges, ...lists.changes, ...sections.changes, ...textChanges],
     rejected,
-    revertOps: [...brief.revertOps, ...audience.revertOps, ...channel.revertOps, ...revertPublishers, ...revertText],
+    revertOps: [...brief.revertOps, ...audience.revertOps, ...channel.revertOps, ...revertPublishers, ...lists.revertOps, ...sections.revertOps, ...revertText],
   };
 }
 

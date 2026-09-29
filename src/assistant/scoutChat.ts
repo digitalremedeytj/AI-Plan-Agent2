@@ -7,7 +7,9 @@
 
 import { AUDIENCE_TYPES, FUNNEL_EMPHASES, PRICE_TIERS } from "../research/briefOfRecord";
 import { SEGMENT_DIMENSIONS, SEGMENT_TIERS } from "../research/segmentRecommendations";
-import { addableChannels, parseOps, type AssistantOp, type RejectedOp } from "./operations";
+import { addableChannels, parseOps, type AssistantOp, type CatalogPublisher, type RejectedOp } from "./operations";
+import { PLAN_SECTIONS } from "./narrativeOps";
+import { MAX_BRIEF_INSTRUCTIONS } from "../research/executiveBrief";
 import type { MediaRecommendationPlan } from "../planning/types";
 
 export interface ChatTurn {
@@ -49,7 +51,7 @@ export function sanitizeTurns(raw: unknown): ChatTurn[] {
  * name the field; everything else is read-only context. The generation log, raw chart data and
  * research dossiers are left out: they are large and the planner does not see them.
  */
-export function buildPlanContext(stored: { title?: string; advertiserName?: string; payload?: any }): string {
+export function buildPlanContext(stored: { title?: string; advertiserName?: string; payload?: any }, { publisherCatalog = [] }: { publisherCatalog?: CatalogPublisher[] } = {}): string {
   const payload = stored?.payload ?? {};
   const profile = payload.profile ?? {};
   const strategy = profile.channelStrategy;
@@ -133,8 +135,13 @@ export function buildPlanContext(stored: { title?: string; advertiserName?: stri
 
   const publishers: any[] = Array.isArray(profile.ctvPublishers) ? profile.ctvPublishers : [];
   if (publishers.length) {
-    out.push(["CTV PUBLISHERS (remove with remove_ctv_publisher; adding one is done in the plan's CTV publisher editor):",
+    out.push(["CTV PUBLISHERS IN THE PLAN (remove with remove_ctv_publisher):",
       ...publishers.map((p, i) => `* ${clip(p.publisher, 100)} (${clip(p.category, 50)}) [ctvPublishers[${i}].why] ${clip(p.why, 500)}`)].join("\n"));
+  }
+  const inPlan = new Set(publishers.map((p) => String(p?.publisher ?? "").toLowerCase()));
+  const catalog = publisherCatalog.filter((p) => p.enabled && !inPlan.has(p.name.toLowerCase())).slice(0, 80);
+  if (catalog.length) {
+    out.push(`CTV PUBLISHERS THAT CAN BE ADDED (add_ctv_publisher with the exact name): ${catalog.map((p) => `${p.name} (${p.category})`).join("; ")}`);
   }
   if (profile.publisherInsights) out.push(`[publisherInsights] ${clip(profile.publisherInsights)}`);
 
@@ -203,7 +210,8 @@ export function buildPlanContext(stored: { title?: string; advertiserName?: stri
 
   const sources: any[] = Array.isArray(profile.sources) ? profile.sources : [];
   if (sources.length) out.push(`SOURCES CITED: ${sources.slice(0, 20).map((s) => clip(s.name, 120)).join("; ")}`);
-  if (hidden.size) out.push(`SECTIONS HIDDEN FROM THE CLIENT VIEW: ${[...hidden].join(", ")}`);
+  out.push(`PLAN SECTIONS (show or hide on the client view with hide_section / show_section): ${Object.entries(PLAN_SECTIONS)
+    .map(([key, section]) => `${key} = ${section.label} (${[key, ...section.aliases].some((k) => hidden.has(k)) ? "hidden" : "shown"})`).join("; ")}`);
 
   return out.join("\n\n");
 }
@@ -236,17 +244,23 @@ How you edit:
   * edit_brief {field, value} for a text or choice field, or {field, values} for a list field, using the Brief of Record's field keys.
   * set_kpis {values}: the complete new KPI list.
   * set_geography {value}: "United States", or "State: " or "DMA: " followed by a comma-separated list.
+  * add_takeaway {value, position} / remove_takeaway {index}: index is the number in the takeaway's path (takeaways[2] is index 2); position is where it goes, 0 for the top, omitted for the end.
+  * add_recommendation {title, action, why, channels, position} / remove_recommendation {index}
+  * move_item {list, index, position}: list is "takeaways" or "recommendations". All indexes refer to the lists as shown, even when the same proposal adds or removes items.
+  * add_ctv_publisher {publisher, why}: only a publisher listed as one that can be added, with a one-sentence reason it fits this audience.
+  * hide_section {section} / show_section {section}: hides or shows a section of the client view; section is one of the section keys shown (for example "domainAffinity").
 - Numbers: never compute or state the resulting dollars, percentages or totals; the card shows the computed result. You may state the targets you asked for.
 - New personas and segments must fit the Brief of Record and rest on the research excerpts. When you change the Brief of Record, KPIs or geography, say that the research, personas and channels were built from the earlier version and that regenerating the plan rebuilds them.
-- Not editable here: chart figures, research, the executive summary (the planner regenerates it from the plan), channel tactics, measurement and panel details, adding CTV publishers (the plan's CTV publisher editor does that), budget mode and flight length (regenerate the plan). There is no persona editor in the app: persona changes go through you.
+- The executive summary is written from the plan by its own generator. To change it, return "rewriteExecutiveSummary" with instructions for that generator (for example "lead with CTV reach; keep it to four sections") instead of a proposal item; the planner runs it with one click and can undo it in the summary.
+- Not editable here: chart figures, research, channel tactics, measurement and panel details, budget mode and flight length (regenerate the plan). There is no persona editor in the app: persona changes go through you.
 - The conversation shows what happened to earlier proposals. An applied proposal is already in the plan you are reading.
 
-Return JSON: { "reply": markdown for the planner, "proposal": { "summary": one short line, "items": [{ "title", "why", "ops": [...] }] } }. Omit "proposal" when you are not proposing a change.`;
+Return JSON: { "reply": markdown for the planner, "proposal": { "summary": one short line, "items": [{ "title", "why", "ops": [...] }] }, "rewriteExecutiveSummary": { "instructions" } }. Omit "proposal" and "rewriteExecutiveSummary" when you are not proposing them.`;
 
 const opSchema = {
   type: "object",
   properties: {
-    type: { type: "string", description: "set_allocation | add_channel | remove_channel | lock_channel | unlock_channel | set_budget | remove_ctv_publisher | edit_text | update_persona | add_persona | remove_persona | add_segment | edit_segment | remove_segment | edit_brief | set_kpis | set_geography" },
+    type: { type: "string", description: "set_allocation | add_channel | remove_channel | lock_channel | unlock_channel | set_budget | remove_ctv_publisher | edit_text | update_persona | add_persona | remove_persona | add_segment | edit_segment | remove_segment | edit_brief | set_kpis | set_geography | add_takeaway | remove_takeaway | add_recommendation | remove_recommendation | move_item | hide_section | show_section | add_ctv_publisher" },
     channelId: { type: "string" },
     percent: { type: "integer" },
     amount: { type: "number" },
@@ -266,6 +280,15 @@ const opSchema = {
     personas: { type: "array", items: { type: "string" } },
     field: { type: "string" },
     values: { type: "array", items: { type: "string" } },
+    index: { type: "integer" },
+    position: { type: "integer" },
+    list: { type: "string" },
+    section: { type: "string" },
+    hidden: { type: "boolean" },
+    title: { type: "string" },
+    action: { type: "string" },
+    why: { type: "string" },
+    channels: { type: "string" },
   },
   required: ["type"],
 };
@@ -292,6 +315,11 @@ export const scoutResponseSchema = {
         },
       },
       required: ["summary", "items"],
+    },
+    rewriteExecutiveSummary: {
+      type: "object",
+      properties: { instructions: { type: "string" } },
+      required: ["instructions"],
     },
   },
   required: ["reply"],
@@ -322,6 +350,8 @@ export interface ScoutResponse {
   reply: string;
   summary: string | null;
   items: ScoutItem[];
+  /** Instructions for the executive summary generator, which the planner runs with one click. */
+  executiveSummaryInstructions: string | null;
 }
 
 const MAX_ITEMS = 6;
@@ -334,5 +364,6 @@ export function normalizeScoutResponse(raw: any): ScoutResponse {
   });
   const usable = items.filter((item) => item.ops.length > 0);
   const summary = typeof raw?.proposal?.summary === "string" ? clip(raw.proposal.summary, 200) : "";
-  return { reply, summary: usable.length ? summary || usable[0].title : null, items };
+  const instructions = clip(raw?.rewriteExecutiveSummary?.instructions, MAX_BRIEF_INSTRUCTIONS);
+  return { reply, summary: usable.length ? summary || usable[0].title : null, items, executiveSummaryInstructions: instructions || null };
 }
