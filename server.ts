@@ -60,6 +60,9 @@ import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, curr
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
+import { applyOps, parseOps } from "./src/assistant/operations";
+import { detectFollowUps } from "./src/assistant/followUps";
+import { SCOUT_SYSTEM_INSTRUCTION, buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./src/assistant/scoutChat";
 import { throttledProgress } from "./src/server/thoughtProgress";
 import { EVIDENCE_RULES } from "./src/qa/evidenceRules";
 import type { ResearchDossierText } from "./src/qa/claimLedger";
@@ -212,6 +215,12 @@ const PROOFREAD_ATTEMPTS: Array<{ thinkingLevel: "medium" | "low"; timeoutMs: nu
 const BRIEF_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
   { thinkingLevel: "high", timeoutMs: 90000 },
   { thinkingLevel: "medium", timeoutMs: 60000 },
+];
+// ScoutAI chat turns. The planner is waiting in a chat, so medium thinking with a quick low
+// fallback: a slow answer is worse than a slightly less considered one.
+const SCOUT_ATTEMPTS: Array<{ thinkingLevel: "medium" | "low"; timeoutMs: number }> = [
+  { thinkingLevel: "medium", timeoutMs: 60000 },
+  { thinkingLevel: "low", timeoutMs: 40000 },
 ];
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
 const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
@@ -2029,6 +2038,143 @@ app.post("/api/plans/:id/audit/apply", async (req, res) => {
   }
 });
 
+// ---- ScoutAI plan assistant ----
+// Chat answers questions about the saved plan and may propose edits as operations. A proposal is
+// dry-run here, so the planner approves the computed result, not the model's description of it.
+// Nothing is written until /apply, which re-runs the same operations against the revision the
+// proposal was built from and saves with compare-and-swap.
+
+app.post("/api/plans/:id/assistant/chat", async (req, res) => {
+  req.socket.setTimeout(0);
+  let streaming = false;
+  try {
+    const turns = sanitizeTurns(req.body?.messages);
+    if (turns.length === 0 || turns[turns.length - 1].role !== "user") {
+      res.status(400).json({ error: "Send the planner's message to answer." });
+      return;
+    }
+    const plan = await (await getStorage()).getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+
+    // Newline-delimited JSON: thought headlines while the model works, then one result line.
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+    streaming = true;
+    const send = (event: Record<string, unknown>) => res.write(`${JSON.stringify(event)}\n`);
+
+    const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+      getAiClient(),
+      {
+        systemInstruction: SCOUT_SYSTEM_INSTRUCTION,
+        input: buildScoutInput(buildPlanContext(plan), turns),
+        schema: scoutResponseSchema,
+        onThought: (text) => send({ type: "thought", text }),
+      },
+      SCOUT_ATTEMPTS,
+    );
+    const response = normalizeScoutResponse(data);
+    let reply = response.reply;
+    let proposal: Record<string, unknown> | null = null;
+    // Each item is dry-run on its own, so the planner sees what each recommendation does, and
+    // then together, which is what Apply saves when every item is kept.
+    const dropped: string[] = [];
+    const items = response.items.flatMap((item, index) => {
+      const dryRun = item.ops.length > 0 ? applyOps(plan.payload, item.ops) : null;
+      const reasons = [...item.rejected, ...(dryRun?.rejected ?? [])].map((r) => r.reason);
+      if (!dryRun || dryRun.changes.length === 0) {
+        if (item.ops.length > 0 || item.rejected.length > 0) dropped.push(`${item.title}: ${reasons.join("; ") || "it would not change anything"}`);
+        return [];
+      }
+      return [{ id: `item-${index}`, title: item.title, why: item.why, ops: dryRun.ops, changes: dryRun.changes, rejected: reasons }];
+    });
+    if (items.length > 0) {
+      const combined = applyOps(plan.payload, items.flatMap((item) => item.ops));
+      proposal = { summary: response.summary, items, changes: combined.changes, rejected: combined.rejected.map((r) => r.reason), baseRevision: plan.revision };
+    }
+    if (dropped.length > 0) reply += `\n\n_Left out because the plan doesn't allow it: ${dropped.join(" · ")}._`;
+    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
+    send({ type: "result", reply, proposal, revision: plan.revision });
+    res.end();
+  } catch (err: any) {
+    console.error("[SCOUTAI] Chat failed:", err);
+    const error = "ScoutAI couldn't answer just now. Please try again.";
+    if (streaming) {
+      res.write(`${JSON.stringify({ type: "error", error, details: err?.message || String(err) })}\n`);
+      res.end();
+    } else {
+      res.status(502).json({ error, details: err?.message || String(err) });
+    }
+  }
+});
+
+// Dry run of the items a planner has kept, so the card shows the combined result before Apply.
+app.post("/api/plans/:id/assistant/preview", async (req, res) => {
+  try {
+    const plan = await (await getStorage()).getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    if (plan.revision !== Number(req.body?.baseRevision)) {
+      res.status(409).json({ error: "This plan changed after ScoutAI proposed this.", code: "REVISION_CONFLICT", currentRevision: plan.revision });
+      return;
+    }
+    const { ops, rejected: unreadable } = parseOps(req.body?.ops);
+    const result = applyOps(plan.payload, ops);
+    res.json({ changes: result.changes, rejected: [...unreadable, ...result.rejected].map((r) => r.reason) });
+  } catch (err: any) {
+    respondToStorageError(res, err, "preview the ScoutAI change");
+  }
+});
+
+app.post("/api/plans/:id/assistant/apply", async (req, res) => {
+  try {
+    const expectedRevision = Number(req.body?.baseRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "The revision this change was proposed against is required.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    if (plan.revision !== expectedRevision) {
+      res.status(409).json({ error: "This plan changed after ScoutAI proposed this. Ask ScoutAI to propose it again.", code: "REVISION_CONFLICT", currentRevision: plan.revision });
+      return;
+    }
+    // A revert may restore a removed publisher; a model proposal may not.
+    const { ops, rejected: unreadable } = parseOps(req.body?.ops, { allowRestore: req.body?.revert === true });
+    if (ops.length === 0 || unreadable.length > 0) {
+      res.status(400).json({ error: "The change to apply is missing or unreadable.", reasons: unreadable.map((r) => r.reason) });
+      return;
+    }
+    // The planner approved a specific result. If any part of it no longer applies, apply none of it.
+    const result = applyOps(plan.payload, ops);
+    if (result.rejected.length > 0 || result.changes.length === 0) {
+      res.status(422).json({
+        error: result.changes.length === 0 ? "This change would not alter the plan." : "Part of this change no longer applies to the plan, so nothing was changed.",
+        reasons: result.rejected.map((r) => r.reason),
+      });
+      return;
+    }
+    const updated = await storage.updatePlan(plan.id, {
+      ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload: result.payload }),
+      actor: actorName(req),
+    }, expectedRevision);
+    console.log(`[SCOUTAI] Plan ${plan.id}: ${req.body?.revert === true ? "reverted" : "applied"} ${result.changes.length} change(s) by ${actorName(req)}, r${expectedRevision} -> r${updated.revision}.`);
+    res.json({ success: true, plan: updated, changes: result.changes, revertOps: result.revertOps, followUps: detectFollowUps(plan.payload, result.payload) });
+  } catch (err: any) {
+    respondToStorageError(res, err, "apply the ScoutAI change");
+  }
+});
+
 // Soft delete. Plans are never destroyed, so a mis-click is always recoverable.
 app.delete("/api/plans/:id", async (req, res) => {
   try {
@@ -3513,9 +3659,17 @@ app.post("/api/generate-profile", async (req, res) => {
     // Brief of Record: one settled answer to "who is this plan for?", written before research so
     // the dossiers, synthesis, channel reasoning and QA all work from the same definition rather
     // than each inferring its own. When the crawl got nothing usable, a grounded search stands in.
-    sendEvent("status", { message: "Defining the brief of record: advertiser offering, audience in scope and campaign objective..." });
     let briefOfRecord: BriefOfRecord | null = null;
-    try {
+    // A planner who edited the Brief of Record (through ScoutAI) and regenerates wants the plan
+    // rebuilt from their brief, not a fresh one written from the form inputs.
+    const pinnedBrief = req.body?.pinnedBriefOfRecord
+      ? normalizeBriefOfRecord(req.body.pinnedBriefOfRecord, ["brief + website", "brief + web search", "brief only"].includes(req.body.pinnedBriefOfRecord?.basis) ? req.body.pinnedBriefOfRecord.basis : "brief only")
+      : null;
+    if (pinnedBrief) {
+      briefOfRecord = pinnedBrief;
+      sendEvent("status", { message: `Using the planner's edited brief of record: ${pinnedBrief.primaryAudience}` });
+    } else try {
+      sendEvent("status", { message: "Defining the brief of record: advertiser offering, audience in scope and campaign objective..." });
       const briefAi = getAiClient();
       let searchSummary = "";
       if (!crawledPageText && (cleanAdvertiserName || cleanUrl)) {

@@ -5,6 +5,7 @@ import { EditableDetailCard } from './EditableDetailCard';
 import { SectionVisibilityButton } from './SectionVisibilityButton';
 import type { AttachedPlanningRecord, CandidateScoreComponents } from '../planning/types';
 import { isNonMediaItem } from '../utils/mediaTaxonomy';
+import type { ProposalChange } from '../assistant/operations';
 import {
   allocationBasisPoints,
   applyBasisPointAllocations,
@@ -68,6 +69,8 @@ export interface ChannelStrategySectionProps {
   onUpdateChannelOverrides?: (overrides: ChannelOverridesMap) => void;
   isInactive?: boolean;
   onToggleActive?: (inactive: boolean) => void;
+  /** A ScoutAI proposal being previewed: its channel changes are highlighted on the plan, unsaved. */
+  scoutPreview?: ProposalChange[] | null;
 }
 
 export interface InternalOnlyVisibility {
@@ -488,7 +491,19 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   onUpdateChannelOverrides,
   isInactive = false,
   onToggleActive,
+  scoutPreview = null,
 }) => {
+  // One badge per row: an allocation or removal says more than a lock on the same channel.
+  const previewByChannel = new Map<string, ProposalChange>();
+  (scoutPreview || []).forEach((c) => {
+    if (c.channelId && c.kind !== 'channel_added' && !previewByChannel.has(c.channelId)) previewByChannel.set(c.channelId, c);
+  });
+  const previewAdded = (scoutPreview || []).filter((c) => c.kind === 'channel_added');
+  const previewBudget = (scoutPreview || []).find((c) => c.kind === 'budget');
+  const previewAnchorRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (scoutPreview?.some((c) => c.channelId || c.kind === 'budget')) previewAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [scoutPreview]);
   const handleUpdateChannelOverride = (channelId: string, override: ChannelPanelOverride) => {
     if (!onUpdateChannelOverrides) return;
     const nextOverrides: ChannelOverridesMap = {
@@ -1082,6 +1097,19 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                 )}
               </div>
             )}
+            {scoutPreview && (previewByChannel.size > 0 || previewAdded.length > 0 || previewBudget) && (
+              <div ref={previewAnchorRef} className="scroll-mt-28 border-b border-indigo-200 bg-indigo-50/70 px-4 py-3 md:px-5">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-800">
+                  <Sparkles className="h-3.5 w-3.5" /> Previewing a ScoutAI change. Nothing is saved until you apply it in the ScoutAI panel.
+                </div>
+                {(previewBudget || previewAdded.length > 0) && (
+                  <ul className="mt-2 space-y-1 text-xs text-indigo-950">
+                    {previewBudget && <li>Working media budget: <span className="text-slate-500 line-through">{previewBudget.before}</span> → <span className="font-bold">{previewBudget.after}</span></li>}
+                    {previewAdded.map((c) => <li key={c.channelId}><span className="font-bold">+ {c.label}</span> would be added at {c.after}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
             {mediaPlan.channels.length === 0 ? (
               <div className="p-5 text-sm text-slate-700">No product cleared every hard constraint. Review the excluded candidate reasons before allocating budget.</div>
             ) : (
@@ -1089,8 +1117,19 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                 {mediaPlan.channels.map((channel) => {
                   const evaluatedCandidate = mediaPlan.evaluatedCandidates.find((candidate) => candidate.product.id === channel.channelId);
                   const detailsId = `media-type-details-${channel.channelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+                  const preview = previewByChannel.get(channel.channelId);
                   return (
-                  <article key={channel.channelId} className="p-4 md:p-5">
+                  <article key={channel.channelId} className={`p-4 md:p-5 transition-colors ${preview ? (preview.kind === 'channel_removed' ? 'bg-rose-50/60 ring-1 ring-inset ring-rose-200' : 'bg-indigo-50/50 ring-1 ring-inset ring-indigo-200') : ''}`}>
+                    {preview && (
+                      <div className={`mb-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${preview.kind === 'channel_removed' ? 'bg-rose-100 text-rose-800' : 'bg-indigo-100 text-indigo-800'}`}>
+                        <Sparkles className="h-3 w-3" />
+                        {preview.kind === 'channel_removed'
+                          ? 'ScoutAI would remove this media type'
+                          : preview.kind === 'lock'
+                            ? `ScoutAI: ${preview.before} → ${preview.after}`
+                            : <>ScoutAI: <span className="font-semibold line-through opacity-60">{preview.before}</span> → {preview.after}</>}
+                      </div>
+                    )}
                     <div className="flex items-start gap-2">
                       <button
                         type="button"

@@ -1,6 +1,9 @@
 import type { SavedProfile } from "../types";
 import type { PlanningSettings } from "../planning/settings";
 import type { CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
+import type { AssistantOp, ProposalChange } from "../assistant/operations";
+import type { ChatTurn } from "../assistant/scoutChat";
+import type { FollowUp } from "../assistant/followUps";
 
 /**
  * Client for the shared server store.
@@ -49,6 +52,8 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
   readonly currentRevision?: number;
+  /** Why a request was refused item by item, e.g. the parts of a ScoutAI change that no longer apply. */
+  readonly reasons?: string[];
 
   constructor(status: number, message: string, body?: any) {
     super(message);
@@ -56,6 +61,7 @@ export class ApiError extends Error {
     this.status = status;
     this.code = body?.code;
     this.currentRevision = body?.currentRevision;
+    this.reasons = Array.isArray(body?.reasons) ? body.reasons.map(String) : undefined;
   }
 
   /** Someone else saved this plan while the user was editing it. */
@@ -278,6 +284,101 @@ export async function applyPlanAudit(
   body: { expectedRevision: number; audit: PlanAuditResponse["audit"]; accepted: AuditProposal[]; notes: unknown },
 ): Promise<{ plan: StoredPlan; applied: number; stale: number; verifyError: string | null }> {
   return request(`/api/plans/${encodeURIComponent(id)}/audit/apply`, { method: "POST", body: JSON.stringify(body) });
+}
+
+// --- ScoutAI plan assistant ---------------------------------------------------
+
+export type { AssistantOp, ProposalChange, ChatTurn, FollowUp };
+
+/** One recommendation in a proposal, which the planner can keep or leave out. */
+export interface ScoutItem {
+  id: string;
+  title: string;
+  why: string;
+  ops: AssistantOp[];
+  /** This item's effect on its own, from a server dry run. */
+  changes: ProposalChange[];
+  rejected: string[];
+}
+
+export interface ScoutProposal {
+  summary: string;
+  items: ScoutItem[];
+  /** Every item together, from a server dry run: exactly what Apply saves when all are kept. */
+  changes: ProposalChange[];
+  /** Parts of the request that could not be included, and why. */
+  rejected: string[];
+  /** The plan revision the dry run read. Apply is refused if the plan has moved on. */
+  baseRevision: number;
+}
+
+export interface ScoutReply {
+  reply: string;
+  proposal: ScoutProposal | null;
+  revision: number;
+}
+
+/**
+ * One ScoutAI turn. The server streams newline-delimited JSON: thought headlines while the
+ * model works, then the reply. `onThought` receives each headline as it arrives.
+ */
+export async function askScout(
+  id: string,
+  messages: ChatTurn[],
+  onThought: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<ScoutReply> {
+  const res = await authFetch(`/api/plans/${encodeURIComponent(id)}/assistant/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    let body: any = null;
+    try { body = await res.json(); } catch { /* non-JSON error page */ }
+    throw new ApiError(res.status, body?.error || `ScoutAI request failed (${res.status}).`, body);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: ScoutReply | null = null;
+  const handle = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === "thought" && typeof event.text === "string") onThought(event.text);
+    else if (event.type === "result") result = { reply: String(event.reply ?? ""), proposal: event.proposal ?? null, revision: Number(event.revision) };
+    else if (event.type === "error") throw new ApiError(502, event.error || "ScoutAI couldn't answer just now.", event);
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline: number;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      handle(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+    }
+  }
+  handle(buffer + decoder.decode());
+  if (!result) throw new ApiError(502, "ScoutAI's answer was cut off. Please try again.");
+  return result;
+}
+
+/** Dry-runs the items a planner has kept. Changes nothing. */
+export async function previewScoutChange(
+  id: string,
+  body: { ops: AssistantOp[]; baseRevision: number },
+): Promise<{ changes: ProposalChange[]; rejected: string[] }> {
+  return request(`/api/plans/${encodeURIComponent(id)}/assistant/preview`, { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Applies a ScoutAI change (or reverts one) and saves the plan. */
+export async function applyScoutChange(
+  id: string,
+  body: { ops: AssistantOp[]; baseRevision: number; revert?: boolean },
+): Promise<{ plan: StoredPlan; changes: ProposalChange[]; revertOps: AssistantOp[]; followUps: FollowUp[] }> {
+  return request(`/api/plans/${encodeURIComponent(id)}/assistant/apply`, { method: "POST", body: JSON.stringify(body) });
 }
 
 export async function archivePlan(id: string): Promise<void> {

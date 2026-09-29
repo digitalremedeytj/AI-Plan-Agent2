@@ -99,6 +99,26 @@ export interface RejectedPatch extends Patch {
 
 const MAX_PATCH_CHARS = 3000;
 
+/**
+ * Writes one prose field if the prose fixer may touch it. Shared by the QA fixer and the ScoutAI
+ * assistant, so both are held to the same list of fields that are words rather than decisions.
+ */
+export function writeProseField(profile: any, rawPath: string, rawValue: unknown): { ok: true; before: string } | { ok: false; reason: string } {
+  const path = String(rawPath ?? "").trim();
+  const value = typeof rawValue === "string" ? rawValue.trim() : "";
+  const owner = ownerOfPath(path);
+  if (!owner || !PROSE_OWNERS.has(owner)) return { ok: false, reason: "field is not editable by the prose fixer" };
+  if (!value || value.length > MAX_PATCH_CHARS) return { ok: false, reason: "empty or oversized value" };
+  const before = getAtPath(profile, path);
+  if (typeof before !== "string") return { ok: false, reason: "field does not exist" };
+  if (before.trim() === value) return { ok: false, reason: "no change" };
+  const evidenceLine = path.match(/^(.+\.evidence\[\d+\])\.detail$/);
+  if (evidenceLine && CATALOG_EVIDENCE.has(String((getAtPath(profile, evidenceLine[1]) as any)?.sourceType))) return { ok: false, reason: "catalog evidence is not prose" };
+  if (!setAtPath(profile, path, value)) return { ok: false, reason: "field could not be written" };
+  mirrorToCandidate(profile, path, value);
+  return { ok: true, before };
+}
+
 /** Applies what may be applied; returns both sides so the caller can report honestly. */
 export function applyPatches(profile: any, patches: unknown, findings: AuditFinding[]): { applied: AppliedPatch[]; rejected: RejectedPatch[] } {
   const applied: AppliedPatch[] = [];
@@ -106,19 +126,10 @@ export function applyPatches(profile: any, patches: unknown, findings: AuditFind
   const fixable = new Map(findings.filter((f) => PROSE_OWNERS.has(f.owner)).map((f) => [f.id, f]));
   for (const raw of Array.isArray(patches) ? patches : []) {
     const patch: Patch = { findingId: String(raw?.findingId ?? ""), path: String(raw?.path ?? "").trim(), value: typeof raw?.value === "string" ? raw.value.trim() : "" };
-    const reject = (reason: string) => rejected.push({ ...patch, reason });
-    if (!fixable.has(patch.findingId)) { reject("not a finding the prose fixer may act on"); continue; }
-    const owner = ownerOfPath(patch.path);
-    if (!owner || !PROSE_OWNERS.has(owner)) { reject("field is not editable by the prose fixer"); continue; }
-    if (!patch.value || patch.value.length > MAX_PATCH_CHARS) { reject("empty or oversized value"); continue; }
-    const before = getAtPath(profile, patch.path);
-    if (typeof before !== "string") { reject("field does not exist"); continue; }
-    if (before.trim() === patch.value) { reject("no change"); continue; }
-    const evidenceLine = patch.path.match(/^(.+\.evidence\[\d+\])\.detail$/);
-    if (evidenceLine && CATALOG_EVIDENCE.has(String((getAtPath(profile, evidenceLine[1]) as any)?.sourceType))) { reject("catalog evidence is not prose"); continue; }
-    if (!setAtPath(profile, patch.path, patch.value)) { reject("field could not be written"); continue; }
-    mirrorToCandidate(profile, patch.path, patch.value);
-    applied.push({ ...patch, before });
+    if (!fixable.has(patch.findingId)) { rejected.push({ ...patch, reason: "not a finding the prose fixer may act on" }); continue; }
+    const result = writeProseField(profile, patch.path, patch.value);
+    if ("reason" in result) rejected.push({ ...patch, reason: result.reason });
+    else applied.push({ ...patch, before: result.before });
   }
   return { applied, rejected };
 }

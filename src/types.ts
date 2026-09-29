@@ -381,6 +381,8 @@ export interface AudienceProfile {
   geoTargeting?: GeoTargeting;
   hiddenSections?: string[];
   slideExports?: SlideExportVersion[];
+  /** Set when a planner edits the Brief of Record after the plan was built from it; a regenerate then keeps their brief. */
+  briefOfRecordEdited?: { at: string; fields: string[] };
 }
 
 export interface GenerateProfileResponse {

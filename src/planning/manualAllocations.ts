@@ -20,7 +20,7 @@ function roundBasisPoints(value: number): number {
   return Math.round(value / 100) * 100;
 }
 
-function effectiveBounds(channel: ChannelPlanRecommendation, totalBudget: number) {
+export function effectiveBounds(channel: ChannelPlanRecommendation, totalBudget: number) {
   if (channel.manuallyForced) {
     return { minimum: MANUAL_FLOOR_BASIS_POINTS, maximum: TOTAL_BASIS_POINTS };
   }

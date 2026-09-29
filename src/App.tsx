@@ -58,7 +58,7 @@ import {
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
+import { AudienceProfile, type Persona, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
@@ -133,6 +133,7 @@ import { briefFingerprint, buildBriefSnapshot, withoutHistory, type ExecutiveBri
 import { QaFindings } from "./components/QaFindings";
 import { GenerationLog } from "./components/GenerationLog";
 import { PlanAuditModal } from "./components/PlanAuditModal";
+import { ScoutAssistantPanel, type ScoutFollowUpAction, type ScoutPreview } from "./components/ScoutAssistantPanel";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
@@ -1443,20 +1444,25 @@ export default function App() {
   }, [isAuthenticated, refreshPlans, settingsRevision]);
 
   // Saved profiles interaction states
-  const [leftTab, setLeftTab] = useState<"brief" | "saved" | "overview">("brief");
+  const [leftTab, setLeftTab] = useState<"brief" | "saved" | "overview" | "scout">("brief");
   const prevProfileDataRef = React.useRef<AudienceProfile | null>(null);
 
-  // Auto-switch to overview tab when output results arrive / update, fallback to brief if cleared
+  // Auto-switch to overview tab when output results arrive / update, fallback to brief if cleared.
+  // The ScoutAI tab stays put: applying one of its changes updates the plan, and switching away
+  // would pull the planner out of the conversation that made the change.
   React.useEffect(() => {
     if (!profileData) {
-      if (leftTab === "overview") {
+      if (leftTab === "overview" || leftTab === "scout") {
         setLeftTab("brief");
       }
-    } else if (profileData !== prevProfileDataRef.current) {
+    } else if (profileData !== prevProfileDataRef.current && leftTab !== "scout") {
       setLeftTab("overview");
     }
     prevProfileDataRef.current = profileData;
   }, [profileData]);
+  const [scoutUnread, setScoutUnread] = useState(false);
+  const [scoutPreview, setScoutPreview] = useState<ScoutPreview | null>(null);
+  const [scoutRevisionBump, setScoutRevisionBump] = useState<{ from: number; to: number } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveTitle, setSaveTitle] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1465,6 +1471,13 @@ export default function App() {
   /** Id of the plan currently being fetched, so the list can show a spinner on that row. */
   const [loadingPlanId, setLoadingPlanId] = useState<string | null>(null);
   const [activeSavedId, setActiveSavedId] = useState<string | null>(null);
+
+  // A different plan starts a different ScoutAI conversation; land on its overview as usual.
+  React.useEffect(() => {
+    setScoutPreview(null);
+    setScoutUnread(false);
+    setLeftTab((tab) => (tab === "scout" ? "overview" : tab));
+  }, [activeSavedId]);
   const [activeSavedTitle, setActiveSavedTitle] = useState<string | null>(null);
 
   const currentPlanTitle = React.useMemo(() => {
@@ -2224,44 +2237,49 @@ export default function App() {
   /**
    * Applies stored plan payload into workspace states.
    */
+  /** The geography picker's state from a saved payload: its structured config, or else the text. */
+  const restoreGeographyFromPayload = (body: any) => {
+      if (body.geographyConfig) {
+        setGeographyType(body.geographyConfig.type || "National");
+        setGeoTargets(Array.isArray(body.geographyConfig.targets) ? body.geographyConfig.targets : []);
+        setGeoRawInput(body.geographyConfig.rawInput || "");
+        setGeoUnrecognized([]);
+        setGeoUploadNotice(null);
+      } else if (body.geography) {
+        const savedGeo = String(body.geography);
+        if (savedGeo.toLowerCase().includes("dma")) {
+          setGeographyType("DMA");
+          const parsed = parseGeoTextInput(savedGeo.replace(/^dma[\s:(-]+/i, "").replace(/[)]+$/, ""), "DMA");
+          setGeoTargets(parsed.valid);
+          setGeoRawInput("");
+        } else if (savedGeo.toLowerCase().includes("state")) {
+          setGeographyType("State");
+          const parsed = parseGeoTextInput(savedGeo.replace(/^state[\s:(-]+/i, "").replace(/[)]+$/, ""), "State");
+          setGeoTargets(parsed.valid);
+          setGeoRawInput("");
+        } else {
+          setGeographyType(savedGeo === "United States" ? "National" : (savedGeo as any));
+          setGeoTargets([]);
+          setGeoRawInput("");
+        }
+        setGeoUnrecognized([]);
+        setGeoUploadNotice(null);
+      } else {
+        setGeographyType("National");
+        setGeoTargets([]);
+        setGeoRawInput("");
+        setGeoUnrecognized([]);
+        setGeoUploadNotice(null);
+      }
+  };
+
   const applyPlanToWorkspace = (saved: api.StoredPlan, isSharedViewMode = false) => {
     const body = saved.payload as any;
     setAdvertiserName(saved.advertiserName || "");
     setKpis(body.kpis && body.kpis.length > 0 ? body.kpis : [""]);
     setAudienceDescription(body.audienceDescription || "");
     setUrl(body.url || "");
-    if (body.geographyConfig) {
-      setGeographyType(body.geographyConfig.type || "National");
-      setGeoTargets(Array.isArray(body.geographyConfig.targets) ? body.geographyConfig.targets : []);
-      setGeoRawInput(body.geographyConfig.rawInput || "");
-      setGeoUnrecognized([]);
-      setGeoUploadNotice(null);
-    } else if (body.geography) {
-      const savedGeo = String(body.geography);
-      if (savedGeo.toLowerCase().includes("dma")) {
-        setGeographyType("DMA");
-        const parsed = parseGeoTextInput(savedGeo.replace(/^dma[\s:(-]+/i, "").replace(/[)]+$/, ""), "DMA");
-        setGeoTargets(parsed.valid);
-        setGeoRawInput("");
-      } else if (savedGeo.toLowerCase().includes("state")) {
-        setGeographyType("State");
-        const parsed = parseGeoTextInput(savedGeo.replace(/^state[\s:(-]+/i, "").replace(/[)]+$/, ""), "State");
-        setGeoTargets(parsed.valid);
-        setGeoRawInput("");
-      } else {
-        setGeographyType(savedGeo === "United States" ? "National" : (savedGeo as any));
-        setGeoTargets([]);
-        setGeoRawInput("");
-      }
-      setGeoUnrecognized([]);
-      setGeoUploadNotice(null);
-    } else {
-      setGeographyType("National");
-      setGeoTargets([]);
-      setGeoRawInput("");
-      setGeoUnrecognized([]);
-      setGeoUploadNotice(null);
-    }
+    restoreGeographyFromPayload(body);
     setCampaignFocus(body.campaignFocus || "Full-funnel digital media plan");
     setAdditionalContext(body.additionalContext || "");
     if (Array.isArray(body.targetPersonas) && body.targetPersonas.length > 0) {
@@ -2809,8 +2827,11 @@ export default function App() {
   };
 
   // Submit handler
-  const handleGenerate = async (e?: React.FormEvent, typeOverride?: string) => {
+  const handleGenerate = async (e?: React.FormEvent, typeOverride?: string, { pinBrief = false }: { pinBrief?: boolean } = {}) => {
     if (e) e.preventDefault();
+    // Regenerating a plan whose Brief of Record a planner edited keeps their brief. A run from the
+    // Brief tab is a new plan and writes its own.
+    const pinnedBriefOfRecord = (typeOverride || pinBrief) && profileData?.briefOfRecordEdited ? profileData.briefOfRecord : undefined;
 
     if (briefMode === "upload") {
       if (!uploadedFileText && !rfpAnalysis && extractedPlacements.length === 0) {
@@ -2886,6 +2907,7 @@ export default function App() {
           additionalContext,
           targetPersonas: targetPersonas.map(p => p.trim()).filter(p => p.length > 0),
           regenerateType: typeOverride,
+          pinnedBriefOfRecord,
           selectedPlanOptions: selectedOpts,
           budgetStrategyMode,
           rfpAnalysis,
@@ -3030,6 +3052,124 @@ export default function App() {
       result.verifyError ? `The fixes were saved but could not be re-verified (${result.verifyError}).` : "",
     ].filter(Boolean);
     setActionError(notes.length > 0 ? notes.join(" ") : null);
+  };
+
+  // ScoutAI reads and edits the saved plan. Edits the planner has not saved yet would be lost
+  // under an applied change, so the panel holds Apply until they are saved. The fields that
+  // auto-save (segments, overrides, hidden sections, the brief) are not counted.
+  const scoutHasUnsavedChanges = React.useMemo(() => {
+    const persisted = lastPersistedPlanRef.current;
+    if (!profileData || !persisted || persisted.id !== activeSavedId) return false;
+    return profileBaselineFingerprint(persisted.payload.profile) !== profileBaselineFingerprint(profileData);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileData, activePlanRevision, activeSavedId]);
+
+  const handleScoutApplied = (plan: api.StoredPlan) => {
+    const saved = plan.payload.profile as AudienceProfile | undefined;
+    if (saved) {
+      // ScoutAI never edits the auto-saved fields, and an edit to one may still be waiting on its
+      // debounce, so the live values are kept; their auto-save then lands on the new revision.
+      setProfileData((prev) => ({
+        ...saved,
+        personas: (saved.personas || []).map((persona, i) => ({
+          ...persona,
+          avatarUrl: persona.avatarUrl || prev?.personas?.[i]?.avatarUrl,
+          avatarHistory: persona.avatarHistory || prev?.personas?.[i]?.avatarHistory,
+        })),
+        segmentRecommendations: prev?.segmentRecommendations ?? saved.segmentRecommendations,
+        hiddenSections: prev?.hiddenSections ?? saved.hiddenSections,
+        executiveBrief: prev?.executiveBrief ?? saved.executiveBrief,
+        slideExports: prev?.slideExports ?? saved.slideExports,
+        channelStrategy: saved.channelStrategy
+          ? { ...saved.channelStrategy, channelOverrides: prev?.channelStrategy?.channelOverrides ?? saved.channelStrategy.channelOverrides }
+          : saved.channelStrategy,
+      }));
+    }
+    // The brief fields ScoutAI may change, so the Brief tab shows what was saved.
+    // Only fields the change touched are reset, so an unrelated apply keeps the form as it is.
+    const body = plan.payload as any;
+    const previous = (lastPersistedPlanRef.current?.payload ?? {}) as any;
+    if (typeof body.budget === "string" && body.budget !== previous.budget) setBudget(body.budget);
+    if (Array.isArray(body.kpis) && JSON.stringify(body.kpis) !== JSON.stringify(previous.kpis)) setKpis(body.kpis.length > 0 ? body.kpis : [""]);
+    if ((body.geography ?? "") !== (previous.geography ?? "")) restoreGeographyFromPayload(body);
+    // The one-step channel undo would restore the pre-ScoutAI plan as an unsaved edit; the
+    // ScoutAI card's Revert is the saved way back.
+    setChannelStrategyUndo(null);
+    markPlanPersisted(plan);
+    refreshPlans().catch(() => undefined);
+    generateScoutHeadshots(plan);
+  };
+
+  // A persona ScoutAI added or replaced has no headshot. It gets one straight away, saved onto the
+  // plan (headshots otherwise wait for the next manual Save), so a new persona never appears
+  // faceless on a reload or a share link.
+  const generateScoutHeadshots = (plan: api.StoredPlan) => {
+    const personas = (plan.payload.profile?.personas || []) as Persona[];
+    personas.forEach((persona, index) => {
+      if (persona.avatarUrl) return;
+      setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, index])));
+      markAvatarFailed(index, false);
+      api.authFetch("/api/generate-persona-avatar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ persona: { ...persona, avatarHistory: undefined } }),
+      })
+        .then((res) => res.json())
+        .then(async (data) => {
+          if (!data.success || !data.avatarUrl) { markAvatarFailed(index, true); return; }
+          const avatarUrl = (await compressAvatarUrl(data.avatarUrl)) || data.avatarUrl;
+          const version: PersonaAvatarVersion = {
+            id: `v-${Date.now()}`,
+            url: avatarUrl,
+            prompt: "ScoutAI persona portrait",
+            createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          };
+          const withHeadshot = (p: Persona): Persona => ({ ...p, avatarUrl, avatarHistory: [version, ...(p.avatarHistory || [])].slice(0, 8) });
+          // Matched by name: the persona may have moved, or been changed again, since.
+          setProfileData((prev) => prev ? { ...prev, personas: prev.personas.map((p) => (p.name === persona.name && !p.avatarUrl ? withHeadshot(p) : p)) } : prev);
+          segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
+            const persisted = lastPersistedPlanRef.current;
+            const revision = activePlanRevisionRef.current;
+            const savedPersonas: Persona[] = persisted?.payload?.profile?.personas || [];
+            if (!persisted || persisted.id !== plan.id || revision === null) return;
+            if (!savedPersonas.some((p) => p.name === persona.name && !p.avatarUrl)) return;
+            try {
+              const updated = await api.updatePlan(plan.id, revision, {
+                title: persisted.title,
+                advertiserName: persisted.advertiserName,
+                settingsRevision: persisted.settingsRevision,
+                payload: {
+                  ...persisted.payload,
+                  profile: { ...persisted.payload.profile, personas: savedPersonas.map((p) => (p.name === persona.name && !p.avatarUrl ? withHeadshot(p) : p)) },
+                },
+              });
+              markPlanPersisted(updated);
+              // Only the headshot changed, so pending ScoutAI proposals and its Revert still hold.
+              setScoutRevisionBump({ from: revision, to: updated.revision });
+            } catch (err) {
+              console.error("Could not save the new persona headshot:", err);
+            }
+          });
+        })
+        .catch((err) => {
+          console.error("Could not generate a headshot for the new persona:", err);
+          markAvatarFailed(index, true);
+        })
+        .finally(() => setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index)));
+    });
+  };
+
+  const handleScoutFollowUp = (action: ScoutFollowUpAction) => {
+    if (action === "executive_summary") {
+      requestExecutiveBrief();
+    } else if (action === "qa_audit") {
+      setIsAuditModalOpen(true);
+    } else if (action === "regenerate_plan") {
+      const confirmed = window.confirm(
+        "Regenerate this plan from its current brief? Research, personas, segments and the channel plan are rebuilt, which takes several minutes. The result is saved as a new draft; this version stays in your saved plans.",
+      );
+      if (confirmed) handleGenerate(undefined, undefined, { pinBrief: true });
+    }
   };
 
   // Reset workspace to a fresh blank brief and clear the active plan
@@ -4078,7 +4218,8 @@ export default function App() {
         {/* Left Column: Media Planner Inputs (350px fixed on lg) */}
         <section
           className="w-full lg:w-[350px] shrink-0 bg-white border border-slate-100 rounded-2xl shadow-xs sticky lg:top-24 flex flex-col overflow-hidden"
-          style={{ maxHeight: "calc(100vh - 120px)" }}
+          // The chat needs the full height so its input sits at the bottom of the column.
+          style={{ maxHeight: "calc(100vh - 120px)", ...(!isShareView && leftTab === "scout" ? { height: "calc(100vh - 120px)" } : {}) }}
         >
           {/* Tabs header: shown for authenticated planners, hidden on shared read-only link */}
           {!isShareView ? (
@@ -4116,6 +4257,23 @@ export default function App() {
                 >
                   <TrendingUp className="w-3.5 h-3.5 shrink-0" />
                   <span>Overview</span>
+                </button>
+              )}
+              {profileData && (
+                <button
+                  onClick={() => setLeftTab("scout")}
+                  title="Ask ScoutAI about this plan"
+                  className={`relative flex-1 flex items-center justify-center gap-1 py-2 px-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                    leftTab === "scout"
+                      ? "bg-indigo-50 text-indigo-700 font-bold"
+                      : "text-slate-500 hover:text-indigo-700 hover:bg-indigo-50/60"
+                  }`}
+                >
+                  <Sparkles className={`w-3.5 h-3.5 shrink-0 ${leftTab === "scout" ? "" : "text-indigo-500"}`} />
+                  <span>ScoutAI</span>
+                  {scoutUnread && leftTab !== "scout" && (
+                    <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-indigo-500" aria-label="New reply" />
+                  )}
                 </button>
               )}
             </div>
@@ -5370,6 +5528,35 @@ export default function App() {
               </ErrorBoundary>
             </div>
           ) : null}
+
+          {/* Kept mounted while hidden so the conversation survives switching tabs. */}
+          {!isShareView && profileData && (
+            <div className={leftTab === "scout" ? "flex-1 min-h-0 flex flex-col" : "hidden"}>
+              {activeSavedId ? (
+                <ScoutAssistantPanel
+                  key={activeSavedId}
+                  planId={activeSavedId}
+                  profile={profileData}
+                  revision={activePlanRevision}
+                  revisionBump={scoutRevisionBump}
+                  hasUnsavedChanges={scoutHasUnsavedChanges}
+                  isVisible={leftTab === "scout"}
+                  isBriefStale={isBriefStale}
+                  hasAudit={Boolean(profileData.auditResult && !profileData.auditResult.quickMode)}
+                  onApplied={handleScoutApplied}
+                  onFollowUp={handleScoutFollowUp}
+                  onUnread={setScoutUnread}
+                  preview={scoutPreview}
+                  onPreview={setScoutPreview}
+                />
+              ) : (
+                <div className="p-6 text-center text-xs text-slate-500">
+                  <Sparkles className="w-5 h-5 text-indigo-400 mx-auto mb-2" />
+                  Save this plan to chat with ScoutAI about it.
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Right Column: Output / Workspace Workspace (fluid width) */}
@@ -6928,6 +7115,7 @@ export default function App() {
                     onUpdateChannelOverrides={handleUpdateChannelOverrides}
                     isInactive={isChannelsHidden}
                     onToggleActive={(inactive) => handleToggleSectionActive("channels", inactive)}
+                    scoutPreview={!isShareView ? scoutPreview?.changes : null}
                   />
                 )}
 
