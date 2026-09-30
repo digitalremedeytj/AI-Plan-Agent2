@@ -71,6 +71,7 @@ interface Props {
 
 const storageKey = (planId: string) => `scoutai_chat_${planId}`;
 const newId = () => Math.random().toString(36).slice(2, 10);
+const MAX_INPUT_LINES = 4;
 
 function loadMessages(planId: string): Message[] {
   try {
@@ -385,6 +386,31 @@ export function ScoutAssistantPanel({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages.length, thought, isThinking]);
 
+  // Grow the input with its wrapped content, one line at a time, then scroll past MAX_INPUT_LINES.
+  const fitInput = React.useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const cs = getComputedStyle(el);
+    const max = parseFloat(cs.lineHeight) * MAX_INPUT_LINES + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+    el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
+  }, []);
+  React.useLayoutEffect(fitInput, [draft, fitInput]);
+  // Re-wrap when the panel width changes (column resize, or the panel becoming visible).
+  React.useEffect(() => {
+    const el = inputRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fitInput();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [fitInput]);
+
   // A headshot save moved the revision without touching anything a proposal or revert reads.
   React.useEffect(() => {
     if (!revisionBump) return;
@@ -661,9 +687,9 @@ export function ScoutAssistantPanel({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
-            rows={Math.min(5, Math.max(1, draft.split("\n").length))}
+            rows={1}
             placeholder="Ask about or change this plan…"
-            className="flex-1 resize-none bg-transparent text-xs leading-relaxed text-slate-800 placeholder:text-slate-400 outline-none max-h-32"
+            className="flex-1 resize-none overflow-y-hidden bg-transparent text-xs leading-snug text-slate-800 placeholder:text-slate-400 outline-none"
           />
           <button
             onClick={() => send(draft)}
