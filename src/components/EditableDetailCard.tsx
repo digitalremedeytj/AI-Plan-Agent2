@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Eye, EyeOff, Edit2, RotateCcw } from 'lucide-react';
+import { PlanText } from './PlanText';
+import { hasPlanTextList } from '../utils/planText';
 
 export interface EditableDetailCardProps {
   panelKey: string;
@@ -216,9 +218,14 @@ export const EditableDetailCard: React.FC<EditableDetailCardProps> = ({
             {effectiveTitle}
             {effectiveTitle.endsWith(':') ? ' ' : ': '}
           </span>
-          <span className="text-slate-700 leading-relaxed whitespace-pre-wrap">
-            {contentOverride === undefined && customView ? customView : (effectiveContent || 'None specified.')}
-          </span>
+          {contentOverride === undefined && customView ? (
+            <span className="text-slate-700 leading-relaxed whitespace-pre-wrap">{customView}</span>
+          ) : hasPlanTextList(effectiveContent || '') ? (
+            // A bulleted list cannot sit inline after the title, so it drops below it.
+            <PlanText text={effectiveContent} className="mt-1 text-slate-700 leading-relaxed" />
+          ) : (
+            <span className="text-slate-700 leading-relaxed whitespace-pre-wrap">{effectiveContent || 'None specified.'}</span>
+          )}
           {isInactive && !readOnly && (
             <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
               Inactive in share link

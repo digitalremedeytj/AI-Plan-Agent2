@@ -136,6 +136,7 @@ function saveMediaPlanCacheToDisk(map: Map<string, CachedParsedPlan>) {
 
 const mediaPlanParseCache = loadMediaPlanCacheFromDisk();
 import { summarizeSelectedPlansForPrompt } from "./src/utils/planPromptOptimizer";
+import { hasPlanTextList, normalizePlanText } from "./src/utils/planText";
 import {
   buildSegmentPrompt,
   buildSegmentResponseSchema,
@@ -3501,7 +3502,7 @@ app.post("/api/summarize-publisher-insights", async (req, res) => {
       return;
     }
 
-    const trimmed = text.trim();
+    const trimmed = normalizePlanText(text);
     const words = trimmed.split(/\s+/);
 
     // If it's already within limits, return immediately without calling AI
@@ -3513,15 +3514,21 @@ app.post("/api/summarize-publisher-insights", async (req, res) => {
     console.log(`[AI SUMMARIZER] Summarizing publisher insights (${trimmed.length} chars, ${words.length} words) to max ${maxWords} words...`);
 
     const ai = getAiClient();
+    // A planner who asked for bullets should still get bullets on the slide, just shorter ones.
+    const isList = hasPlanTextList(trimmed);
+    const shape = isList
+      ? `4. Keep the same structure: the lead-in sentence (if any), then the same bullets in the same order, one per line starting with "- ". Keep each bullet's short label before its colon and shorten the text after it to one brief clause.
+5. No markdown: no asterisks, bold, headers or quotes. Return ONLY the summarized text.`
+      : `4. Do NOT use bullet points, headers, quotes, or markdown.
+5. Return ONLY the single summarized paragraph.`;
     const prompt = `You are a media planning strategist.
-Summarize the following CTV "Publisher Alignment" insight paragraph into a single concise, high-impact paragraph designed for an executive presentation slide.
+Summarize the following CTV "Publisher Alignment" insight ${isList ? "text" : "paragraph"} into ${isList ? "concise, high-impact text" : "a single concise, high-impact paragraph"} designed for an executive presentation slide.
 
 STRICT REQUIREMENTS:
 1. Maximum ${maxWords} words total.
 2. Under ${maxCharacters} characters total.
 3. Preserve the core strategic rationale (the strategic combination of premium SVOD, ad-supported FAST, OS reach, and contextual network affinity) and campaign fit.
-4. Do NOT use bullet points, headers, quotes, or markdown.
-5. Return ONLY the single summarized paragraph.
+${shape}
 
 Original text:
 ${trimmed}`;
@@ -3532,7 +3539,7 @@ ${trimmed}`;
       timeoutMs: TIMEOUT_SUMMARIZE_INSIGHTS_MS,
     });
 
-    const summaryText = response.text.trim().replace(/^["']|["']$/g, "").trim();
+    const summaryText = normalizePlanText(response.text.trim().replace(/^["']|["']$/g, ""));
 
     if (summaryText && summaryText.length > 20) {
       console.log(`[AI SUMMARIZER] Successfully summarized to ${summaryText.split(/\s+/).length} words (${summaryText.length} chars).`);

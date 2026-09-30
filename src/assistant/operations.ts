@@ -18,6 +18,7 @@ import {
 } from "../planning/manualAllocations";
 import type { MediaRecommendationPlan } from "../planning/types";
 import { getAtPath, writeProseField } from "../qa/planRemediation";
+import { normalizePlanText } from "../utils/planText";
 import { applyAudienceOps, applyBriefOps, PERSONA_FIELDS, type PersonaFields } from "./profileOps";
 import { applyListOps, applySectionOps, NARRATIVE_LISTS, type NarrativeList } from "./narrativeOps";
 import { syncCtvChannelPublishers } from "../planning/ctvChannel";
@@ -171,7 +172,8 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
       }
       case "edit_text": {
         const path = str((item as any).path);
-        const value = str((item as any).value);
+        // Plan text is plain text; a revert restores exactly what was there.
+        const value = allowRestore ? str((item as any).value) : normalizePlanText(str((item as any).value));
         if (!path || !value) { reject("needs a path and a value"); break; }
         ops.push({ type, path, value });
         break;
@@ -307,7 +309,7 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
       }
       case "edit_channel_panel": {
         const panel = str(it.panel);
-        const content = str(it.content);
+        const content = allowRestore ? str(it.content) : normalizePlanText(str(it.content));
         if (!channelId || !panel || !content) { reject("needs a channelId, a panel and the panel's new text"); break; }
         ops.push({ type, channelId, panel, content });
         break;

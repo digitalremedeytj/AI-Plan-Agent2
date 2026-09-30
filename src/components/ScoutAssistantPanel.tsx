@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowRight, Check, ChevronDown, Eye, EyeOff, FileText, L
 import * as api from "../api/client";
 import { ApiError, type AssistantOp, type ChatTurn, type FollowUp, type ProposalChange, type ScoutProposal } from "../api/client";
 import type { AudienceProfile } from "../types";
+import { PlanText } from "./PlanText";
 
 // The ScoutAI chat in the plan's left column. The conversation lives for the browser session
 // only (sessionStorage, per plan): it is a working aid, not part of the plan. Everything that
@@ -154,10 +155,11 @@ function ChangeRow({ change }: { change: ProposalChange }) {
             </button>
           )}
         </div>
-        <p className={`mt-1 text-[11px] leading-relaxed rounded-md px-2 py-1 ${removed ? "text-rose-800 bg-rose-50/70" : "text-emerald-800 bg-emerald-50/70"} ${expanded ? "" : "line-clamp-3"}`}>
-          {removed ? change.before : change.after}
-        </p>
-        {expanded && <p className="mt-1 text-[11px] leading-relaxed text-slate-500 line-through decoration-slate-300 bg-slate-50 rounded-md px-2 py-1">{change.before}</p>}
+        <PlanText
+          text={removed ? change.before : change.after}
+          className={`mt-1 text-[11px] leading-relaxed rounded-md px-2 py-1 ${removed ? "text-rose-800 bg-rose-50/70" : "text-emerald-800 bg-emerald-50/70"} ${expanded ? "" : "line-clamp-3"}`}
+        />
+        {expanded && <PlanText text={change.before} className="mt-1 text-[11px] leading-relaxed text-slate-500 line-through decoration-slate-300 bg-slate-50 rounded-md px-2 py-1" />}
       </li>
     );
   }

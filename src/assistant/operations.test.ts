@@ -286,3 +286,11 @@ test("operations from the model are parsed strictly and a restore is accepted on
   assert.equal(rejected.length, 4);
   assert.equal(parseOps([{ type: "restore_ctv_publisher", publisher: "Hulu", index: 0 }], { allowRestore: true }).ops.length, 1);
 });
+
+test("markdown bullets in a proposed text edit are stored as plain '- ' lines, but a revert restores the text exactly", () => {
+  const value = "Lead in: * **Reach (Hulu)**: wide. * **Scale (Tubi)**: cheap.";
+  const [proposed] = parseOps([{ type: "edit_text", path: "publisherInsights", value }]).ops as Array<{ value: string }>;
+  assert.equal(proposed.value, "Lead in:\n- Reach (Hulu): wide.\n- Scale (Tubi): cheap.");
+  const [reverted] = parseOps([{ type: "edit_text", path: "publisherInsights", value }], { allowRestore: true }).ops as Array<{ value: string }>;
+  assert.equal(reverted.value, value);
+});

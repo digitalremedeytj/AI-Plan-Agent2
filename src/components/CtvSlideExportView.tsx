@@ -1,6 +1,7 @@
 import React, { forwardRef, useState, useEffect, useMemo } from 'react';
 import { Tv, TrendingUp, Sparkles } from 'lucide-react';
 import { type CtvPublisherRecommendation } from '../types';
+import { PlanText } from './PlanText';
 import { type CtvPublisherSetting, getPublisherLogo } from '../planning/knowledge/ctvPublishers';
 
 export interface CtvSlideExportViewProps {
@@ -442,7 +443,8 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                   Publisher Alignment
                 </h3>
 
-                <p
+                <PlanText
+                  text={displayText}
                   style={{
                     fontSize: '21px',
                     lineHeight: '1.8',
@@ -450,9 +452,7 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                     fontWeight: '400',
                     margin: 0,
                   }}
-                >
-                  {displayText}
-                </p>
+                />
               </div>
 
             </div>
@@ -511,7 +511,8 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                   Publisher Alignment
                 </h3>
 
-                <p
+                <PlanText
+                  text={displayText}
                   style={{
                     fontSize: '18px',
                     lineHeight: '1.75',
@@ -519,9 +520,7 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                     fontWeight: '400',
                     margin: 0,
                   }}
-                >
-                  {displayText}
-                </p>
+                />
               </div>
 
             </div>

@@ -134,6 +134,7 @@ import { QaFindings } from "./components/QaFindings";
 import { GenerationLog } from "./components/GenerationLog";
 import { PlanAuditModal } from "./components/PlanAuditModal";
 import { ScoutAssistantPanel, type ScoutFollowUpAction, type ScoutPreview } from "./components/ScoutAssistantPanel";
+import { PlanText } from "./components/PlanText";
 import { syncCtvChannelPublishers } from "./planning/ctvChannel";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
@@ -5985,16 +5986,12 @@ export default function App() {
                       )}
                     </div>
                     <h3 className="text-lg font-display font-bold text-slate-900 leading-snug mb-3">Audience Overview</h3>
-                    <p className="text-slate-600 text-sm leading-relaxed font-medium">
-                      {profileData.intro}
-                    </p>
+                    <PlanText text={profileData.intro} className="text-slate-600 text-sm leading-relaxed font-medium" />
 
                     {profileData.audienceAnalysis && profileData.audienceAnalysis.trim() && (
                       <div className="mt-5 pt-5 border-t border-slate-100">
                         <h3 className="text-lg font-display font-bold text-slate-900 leading-snug mb-3">Audience Analysis</h3>
-                        <p className="text-slate-600 text-sm leading-relaxed font-medium">
-                          {profileData.audienceAnalysis}
-                        </p>
+                        <PlanText text={profileData.audienceAnalysis} className="text-slate-600 text-sm leading-relaxed font-medium" />
                       </div>
                     )}
                   </div>
@@ -6487,9 +6484,9 @@ export default function App() {
                           <span>Publisher Insights</span>
                         </div>
                         <h3 className="text-base font-display font-bold text-slate-800 mb-3">Publisher Alignment</h3>
-                        <p className="text-xs text-slate-600 leading-relaxed mb-4">
-                          {profileData.publisherInsights || <span className="italic text-slate-400">Publisher insights were not generated for this plan.</span>}
-                        </p>
+                        {profileData.publisherInsights
+                          ? <PlanText text={profileData.publisherInsights} className="text-xs text-slate-600 leading-relaxed mb-4" />
+                          : <p className="text-xs italic text-slate-400 leading-relaxed mb-4">Publisher insights were not generated for this plan.</p>}
                       </div>
                     </div>
                   </div>
@@ -6671,9 +6668,9 @@ export default function App() {
                             <span>Publisher Insights</span>
                           </div>
                           <h3 className="text-base font-display font-bold text-slate-800 mb-3">Publisher Alignment</h3>
-                          <p className="text-xs text-slate-600 leading-relaxed mb-4">
-                            {profileData.publisherInsights || <span className="italic text-slate-400">Publisher insights were not generated for this plan.</span>}
-                          </p>
+                          {profileData.publisherInsights
+                            ? <PlanText text={profileData.publisherInsights} className="text-xs text-slate-600 leading-relaxed mb-4" />
+                            : <p className="text-xs italic text-slate-400 leading-relaxed mb-4">Publisher insights were not generated for this plan.</p>}
                         </div>
                       </div>
                     </div>
