@@ -245,7 +245,7 @@ function channelDetailLines(channel: any, plan: MediaRecommendationPlan, strateg
 export const SCOUT_SYSTEM_INSTRUCTION = `You are ScoutAI, the senior media planner built into Digital Remedy's plan builder. A planner is reviewing a CTV-first media plan with you. You help them understand it, pressure-test it against what the client asked for, and improve it.
 
 How you answer:
-- Use only the plan, the Brief of Record, the original request, the research excerpts and the sources provided. If the plan does not contain something (a CPM it does not list, reach it did not estimate, a publisher it does not name), say so plainly. Never invent figures, research, benchmarks or expected results.
+- Use only the plan, the Brief of Record, the original request, the research excerpts, the sources and, when given, the past campaign performance provided. If the plan does not contain something (a CPM it does not list, reach it did not estimate, a publisher it does not name), say so plainly. Never invent figures, research, benchmarks or expected results.
 - Be concise: you are in a narrow side panel. Lead with the answer. Short paragraphs or a few bullets; markdown is fine in your reply (never in text you write into the plan); no tables. Refer to media types by name, never by channelId or segmentId.
 - Check the plan against the original request and the Brief of Record when it matters: budget, KPIs, audience, geography, RFP asks. Point out conflicts the planner may not have noticed.
 - Channel numbers come from Digital Remedy's planning engine and its catalog rules (minimums, maximums, minimum spend). Explain them from the plan's rationale and limits; do not second-guess the catalog.
@@ -287,7 +287,7 @@ How you edit:
 - Not editable here: chart figures, research, budget mode and flight length (regenerate the plan). There is no persona editor in the app: persona changes go through you.
 - The conversation shows what happened to earlier proposals. An applied proposal is already in the plan you are reading.
 
-Return JSON: { "reply": markdown for the planner, "proposal": { "summary": one short line, "items": [{ "title", "why", "ops": [...] }] }, "rewriteExecutiveSummary": { "instructions" } }. Omit "proposal" and "rewriteExecutiveSummary" when you are not proposing them.`;
+Return JSON: { "reply": markdown for the planner, "proposal": { "summary": one short line, "items": [{ "title", "why", "evidence" (only when the item rests on past performance), "ops": [...] }] }, "rewriteExecutiveSummary": { "instructions" } }. Omit "proposal" and "rewriteExecutiveSummary" when you are not proposing them.`;
 
 // Each operation has its own shape, offered to the model as alternatives. One flat shape with
 // every field optional did not hold up: Gemini dropped the fields particular operations need
@@ -356,6 +356,7 @@ export const scoutResponseSchema = {
             properties: {
               title: { type: "string" },
               why: { type: "string" },
+              evidence: { type: "string" },
               ops: { type: "array", items: opSchema },
             },
             required: ["title", "why", "ops"],
@@ -373,7 +374,7 @@ export const scoutResponseSchema = {
   required: ["reply"],
 };
 
-export function buildScoutInput(context: string, turns: ChatTurn[]): string {
+export function buildScoutInput(context: string, turns: ChatTurn[], performance = ""): string {
   const history = turns.slice(0, -1).map((turn) => {
     const note = turn.proposal ? `\n(Proposed: ${turn.proposal.summary} - ${turn.proposal.status})` : "";
     return `${turn.role === "user" ? "PLANNER" : "SCOUTAI"}: ${turn.text}${note}`;
@@ -382,6 +383,7 @@ export function buildScoutInput(context: string, turns: ChatTurn[]): string {
   return [
     "THE PLAN (as currently saved):",
     context,
+    performance,
     history.length ? `CONVERSATION SO FAR:\n${history.join("\n\n")}` : "",
     `PLANNER'S LATEST MESSAGE:\n${latest?.text ?? ""}`,
   ].filter(Boolean).join("\n\n");
@@ -390,6 +392,8 @@ export function buildScoutInput(context: string, turns: ChatTurn[]): string {
 export interface ScoutItem {
   title: string;
   why: string;
+  /** The past-performance figures an item rests on, when it rests on any. */
+  evidence: string | null;
   ops: AssistantOp[];
   rejected: RejectedOp[];
 }
@@ -408,7 +412,7 @@ export function normalizeScoutResponse(raw: any): ScoutResponse {
   const reply = typeof raw?.reply === "string" && raw.reply.trim() ? raw.reply.trim() : "I couldn't put an answer together. Try asking again.";
   const items: ScoutItem[] = (Array.isArray(raw?.proposal?.items) ? raw.proposal.items : []).slice(0, MAX_ITEMS).map((item: any) => {
     const { ops, rejected } = parseOps(item?.ops);
-    return { title: clip(item?.title, 160) || "Proposed change", why: clip(item?.why, 600), ops, rejected };
+    return { title: clip(item?.title, 160) || "Proposed change", why: clip(item?.why, 600), evidence: clip(item?.evidence, 600) || null, ops, rejected };
   });
   const usable = items.filter((item) => item.ops.length > 0);
   const summary = typeof raw?.proposal?.summary === "string" ? clip(raw.proposal.summary, 200) : "";

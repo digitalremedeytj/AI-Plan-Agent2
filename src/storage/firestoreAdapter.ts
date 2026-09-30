@@ -5,6 +5,9 @@ import { getAccessToken } from "./googleAuth";
 import { decodeFields, encodeFields } from "./firestoreValue";
 import { sortByUpdatedDesc, toSummary } from "./localFileAdapter";
 import {
+  assertCampaignFits,
+  buildCampaignRecord,
+  CampaignNotFoundError,
   CreatePlanInput,
   ListPlansOptions,
   PlanNotFoundError,
@@ -14,7 +17,11 @@ import {
   SettingsRecord,
   StorageAdapter,
   StoredPlan,
+  toCampaignSummary,
   UpdatePlanInput,
+  type PerformanceCampaign,
+  type PerformanceCampaignInput,
+  type PerformanceCampaignSummary,
 } from "./types";
 
 /**
@@ -25,6 +32,7 @@ import {
  *   settings/current            pointer to the live settings revision
  *   settings_revisions/{n}      immutable history, referenced by each plan
  *   publishers/current          live CTV publisher list
+ *   performance_campaigns/{id}  past campaign report sets: metadata fields + filesJson
  *
  * Concurrency is compare-and-swap: every write carries a currentDocument precondition
  * on the updateTime we read, so two people saving the same plan cannot silently clobber
@@ -37,6 +45,12 @@ const SETTINGS = "settings";
 const SETTINGS_REVISIONS = "settings_revisions";
 const PUBLISHERS = "publishers";
 const CURRENT_DOC = "current";
+const PERFORMANCE = "performance_campaigns";
+
+const CAMPAIGN_SUMMARY_FIELDS = [
+  "id", "revision", "advertiserName", "advertiserKey", "name", "flightStart", "flightEnd", "conversionLabel", "campaignGoal", "notes",
+  "linkedPlanIdsJson", "fileCount", "createdAt", "createdBy", "updatedAt", "updatedBy", "archived",
+];
 
 /** Metadata fields fetched when listing, so the sidebar never downloads plan payloads. */
 const SUMMARY_FIELDS = [
@@ -463,6 +477,103 @@ export class FirestoreAdapter implements StorageAdapter {
       }
     }
     throw new Error("Could not save CTV publishers after repeated write conflicts. Please retry.");
+  }
+
+  // --- past campaign performance ---------------------------------------------
+
+  async listPerformanceCampaigns(options: ListPlansOptions = {}): Promise<PerformanceCampaignSummary[]> {
+    const docs = await this.listDocuments(PERFORMANCE, CAMPAIGN_SUMMARY_FIELDS);
+    const summaries = docs
+      .map((doc) => this.documentToCampaign(doc, false))
+      .filter((c): c is PerformanceCampaign => Boolean(c?.id))
+      .filter((c) => options.includeArchived || !c.archived)
+      .map(toCampaignSummary);
+    return sortByUpdatedDesc(summaries);
+  }
+
+  async getPerformanceCampaign(id: string): Promise<PerformanceCampaign | null> {
+    const doc = await this.getDocument(PERFORMANCE, id);
+    return doc ? this.documentToCampaign(doc, true) : null;
+  }
+
+  async createPerformanceCampaign(input: PerformanceCampaignInput): Promise<PerformanceCampaign> {
+    assertCampaignFits(input.files);
+    const campaign = buildCampaignRecord(crypto.randomUUID(), input, null, new Date().toISOString());
+    await this.putDocument(PERFORMANCE, campaign.id, this.campaignToFields(campaign), { requireAbsent: true });
+    return campaign;
+  }
+
+  async updatePerformanceCampaign(id: string, input: PerformanceCampaignInput, expectedRevision: number): Promise<PerformanceCampaign> {
+    const doc = await this.getDocument(PERFORMANCE, id);
+    if (!doc) throw new CampaignNotFoundError(id);
+    const existing = this.documentToCampaign(doc, false)!;
+    if (existing.revision !== expectedRevision) throw new RevisionConflictError(existing.revision, "This campaign was changed by someone else.");
+    assertCampaignFits(input.files);
+    const campaign = buildCampaignRecord(id, input, existing, new Date().toISOString());
+    try {
+      await this.putDocument(PERFORMANCE, id, this.campaignToFields(campaign), { expectedUpdateTime: doc.updateTime });
+    } catch (err) {
+      if (this.isPreconditionFailure(err)) {
+        const latest = await this.getDocument(PERFORMANCE, id);
+        throw new RevisionConflictError(latest ? this.documentToCampaign(latest, false)!.revision : expectedRevision, "This campaign was changed by someone else.");
+      }
+      throw err;
+    }
+    return campaign;
+  }
+
+  async archivePerformanceCampaign(id: string, actor: string): Promise<void> {
+    const doc = await this.getDocument(PERFORMANCE, id);
+    if (!doc) throw new CampaignNotFoundError(id);
+    const existing = this.documentToCampaign(doc, true)!;
+    const archived = { ...existing, archived: true, revision: existing.revision + 1, updatedAt: new Date().toISOString(), updatedBy: actor };
+    try {
+      await this.putDocument(PERFORMANCE, id, this.campaignToFields(archived), { expectedUpdateTime: doc.updateTime });
+    } catch (err) {
+      if (this.isPreconditionFailure(err)) throw new RevisionConflictError(existing.revision, "This campaign was changed by someone else.");
+      throw err;
+    }
+  }
+
+  // Lists and files are JSON strings for the same reason plan payloads are: Firestore refuses
+  // nested arrays, and report rows are nothing but.
+  private campaignToFields(campaign: PerformanceCampaign): Record<string, unknown> {
+    const { files, linkedPlanIds, ...summary } = campaign;
+    return { ...summary, linkedPlanIdsJson: JSON.stringify(linkedPlanIds), filesJson: JSON.stringify(files) };
+  }
+
+  private documentToCampaign(doc: FirestoreDocument, withFiles: boolean): PerformanceCampaign | null {
+    const fields = decodeFields(doc.fields || {}) as Record<string, any>;
+    if (!fields.id) return null;
+    const parse = (json: unknown, fallback: any) => {
+      try {
+        return typeof json === "string" ? JSON.parse(json) : fallback;
+      } catch (err) {
+        console.error(`[STORAGE:firestore] Campaign ${fields.id} has unparseable JSON:`, err);
+        return fallback;
+      }
+    };
+    const orNull = (v: unknown) => (v === undefined || v === null || v === "" ? null : String(v));
+    return {
+      id: fields.id,
+      revision: Number(fields.revision) || 1,
+      advertiserName: fields.advertiserName || "",
+      advertiserKey: fields.advertiserKey || "",
+      name: fields.name || "Untitled campaign",
+      flightStart: orNull(fields.flightStart),
+      flightEnd: orNull(fields.flightEnd),
+      conversionLabel: orNull(fields.conversionLabel),
+      campaignGoal: orNull(fields.campaignGoal),
+      notes: orNull(fields.notes),
+      linkedPlanIds: parse(fields.linkedPlanIdsJson, []),
+      fileCount: Number(fields.fileCount) || 0,
+      createdAt: fields.createdAt,
+      createdBy: fields.createdBy,
+      updatedAt: fields.updatedAt,
+      updatedBy: fields.updatedBy,
+      archived: Boolean(fields.archived),
+      files: withFiles ? parse(fields.filesJson, []) : [],
+    };
   }
 
   private documentToPublishers(doc: FirestoreDocument): PublishersRecord | null {

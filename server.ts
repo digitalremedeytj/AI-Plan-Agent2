@@ -14,7 +14,7 @@ import { validateProductRegistry } from "./src/planning/knowledge/registry";
 import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
-import { createStorage, PlanNotFoundError, RevisionConflictError, type StorageAdapter } from "./src/storage";
+import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter } from "./src/storage";
 import {
   actorName,
   clearSessionCookie,
@@ -62,6 +62,9 @@ import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { applyOps, parseOps } from "./src/assistant/operations";
 import { detectFollowUps } from "./src/assistant/followUps";
+import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, suggestedDetails } from "./src/performance/library";
+import { CAMPAIGN_GOALS } from "./src/performance/constants";
+import { buildPerformanceContext, PERFORMANCE_INSTRUCTION, type LinkedCampaign } from "./src/assistant/performanceContext";
 import { SCOUT_SYSTEM_INSTRUCTION, buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./src/assistant/scoutChat";
 import { throttledProgress } from "./src/server/thoughtProgress";
 import { EVIDENCE_RULES } from "./src/qa/evidenceRules";
@@ -223,6 +226,13 @@ const SCOUT_ATTEMPTS: Array<{ thinkingLevel: "medium" | "low"; timeoutMs: number
   { thinkingLevel: "medium", timeoutMs: 60000 },
   { thinkingLevel: "low", timeoutMs: 40000 },
 ];
+// Reading past performance against the plan is the one chat task that is real analysis
+// (attribution, sample size, what maps to what), so it gets high thinking and a longer wait.
+const SCOUT_ANALYSIS_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
+  { thinkingLevel: "high", timeoutMs: 100000 },
+  { thinkingLevel: "medium", timeoutMs: 60000 },
+];
+const PERFORMANCE_QUESTION = /\b(perform|past|previous|last|prior|historic|campaign|report|results?|data|worked|analy[sz]|learn|cpa|roas|pm|conversions?|checkouts?)/i;
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
 const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
 const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
@@ -2061,6 +2071,14 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       return;
     }
     const context = await scoutApplyContext(storage, plan);
+    const linked = await linkedCampaigns(storage, plan.id);
+    const performance = buildPerformanceContext(linked, {
+      planAdvertiser: plan.advertiserName || "",
+      plan: (plan.payload as any)?.profile?.channelStrategy?.mediaPlan,
+      planPublishers: ((plan.payload as any)?.profile?.ctvPublishers || []).map((p: any) => String(p?.publisher ?? "")).filter(Boolean),
+      catalog: context.publisherCatalog,
+    });
+    const analysisTurn = Boolean(performance) && PERFORMANCE_QUESTION.test(turns[turns.length - 1].text);
 
     // Newline-delimited JSON: thought headlines while the model works, then one result line.
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
@@ -2073,12 +2091,12 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
       getAiClient(),
       {
-        systemInstruction: SCOUT_SYSTEM_INSTRUCTION,
-        input: buildScoutInput(buildPlanContext(plan, context), turns),
+        systemInstruction: performance ? `${SCOUT_SYSTEM_INSTRUCTION}\n\n${PERFORMANCE_INSTRUCTION}` : SCOUT_SYSTEM_INSTRUCTION,
+        input: buildScoutInput(buildPlanContext(plan, context), turns, performance),
         schema: scoutResponseSchema,
         onThought: (text) => send({ type: "thought", text }),
       },
-      SCOUT_ATTEMPTS,
+      analysisTurn ? SCOUT_ANALYSIS_ATTEMPTS : SCOUT_ATTEMPTS,
     );
     const response = normalizeScoutResponse(data);
     let reply = response.reply;
@@ -2093,14 +2111,14 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
         if (item.ops.length > 0 || item.rejected.length > 0) dropped.push(`${item.title}: ${reasons.join("; ") || "it would not change anything"}`);
         return [];
       }
-      return [{ id: `item-${index}`, title: item.title, why: item.why, ops: dryRun.ops, changes: dryRun.changes, rejected: reasons }];
+      return [{ id: `item-${index}`, title: item.title, why: item.why, evidence: item.evidence, ops: dryRun.ops, changes: dryRun.changes, rejected: reasons }];
     });
     if (items.length > 0) {
       const combined = applyOps(plan.payload, items.flatMap((item) => item.ops), context);
       proposal = { summary: response.summary, items, changes: combined.changes, rejected: combined.rejected.map((r) => r.reason), baseRevision: plan.revision };
     }
     if (dropped.length > 0) reply += `\n\n_Left out because the plan doesn't allow it: ${dropped.join(" · ")}._`;
-    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
+    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${linked.length ? `${linked.length} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
     send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision });
     res.end();
   } catch (err: any) {
@@ -2114,6 +2132,19 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     }
   }
 });
+
+// The past campaigns linked to a plan, analysed. A campaign that fails to load is left out rather
+// than failing the chat: the plan conversation still works without it.
+async function linkedCampaigns(storage: StorageAdapter, planId: string): Promise<LinkedCampaign[]> {
+  try {
+    const summaries = (await storage.listPerformanceCampaigns()).filter((c) => c.linkedPlanIds.includes(planId));
+    const campaigns = await Promise.all(summaries.map((c) => storage.getPerformanceCampaign(c.id)));
+    return campaigns.filter((c): c is PerformanceCampaign => Boolean(c && !c.archived)).map((campaign) => ({ campaign, analysis: analyzeFiles(campaign.files, campaign) }));
+  } catch (err) {
+    console.error("[SCOUTAI] Could not load past campaigns:", err);
+    return [];
+  }
+}
 
 // What operations need beyond the plan: the publisher catalog a CTV publisher may be added from,
 // and the settings the plan was built with, whose catalog its channel records come from. A plan
@@ -2192,6 +2223,151 @@ app.post("/api/plans/:id/assistant/apply", async (req, res) => {
     res.json({ success: true, plan: updated, changes: result.changes, revertOps: result.revertOps, followUps: detectFollowUps(plan.payload, result.payload) });
   } catch (err: any) {
     respondToStorageError(res, err, "apply the ScoutAI change");
+  }
+});
+
+// ---- Past campaign performance ----
+// An advertiser's library of past campaigns: report sets the planner uploads so ScoutAI can say
+// what worked and what to change. A campaign is its own record, linked to plans, so an upload
+// never moves a plan's revision. Its analysis is recomputed from the stored files on every read.
+
+function respondToCampaignError(res: any, err: any, context: string) {
+  if (err instanceof RevisionConflictError) {
+    res.status(409).json({ error: "This campaign was changed by someone else. Reload it and try again.", code: "REVISION_CONFLICT", currentRevision: err.currentRevision });
+    return;
+  }
+  if (err instanceof CampaignNotFoundError) {
+    res.status(404).json({ error: err.message, code: "NOT_FOUND" });
+    return;
+  }
+  if (err instanceof CampaignTooLargeError) {
+    res.status(413).json({ error: err.message, code: "TOO_LARGE" });
+    return;
+  }
+  console.error(`Error in ${context}:`, err);
+  res.status(500).json({ error: `Failed to ${context}`, details: err?.message || String(err) });
+}
+
+async function linkablePlanIds(storage: StorageAdapter, ids: unknown[]): Promise<string[]> {
+  const plans = await Promise.all(ids.filter((id): id is string => typeof id === "string" && id.length > 0).map((id) => storage.getPlan(id)));
+  return plans.filter((p): p is NonNullable<typeof p> => Boolean(p && !p.archived)).map((p) => p.id);
+}
+
+function campaignResponse(campaign: PerformanceCampaign) {
+  const analysis = analyzeFiles(campaign.files, campaign);
+  return { campaign: publicCampaign(campaign), analysis, advertiserMismatch: advertiserMismatch(campaign, analysis) };
+}
+
+app.get("/api/performance/campaigns", async (req, res) => {
+  try {
+    const advertiser = typeof req.query.advertiser === "string" ? toAdvertiserKey(req.query.advertiser) : "";
+    const planId = typeof req.query.planId === "string" ? req.query.planId : "";
+    const campaigns = (await (await getStorage()).listPerformanceCampaigns())
+      .filter((c) => (!advertiser && !planId) || (advertiser && c.advertiserKey === advertiser) || (planId && c.linkedPlanIds.includes(planId)));
+    res.json({ campaigns, goals: CAMPAIGN_GOALS });
+  } catch (err: any) {
+    respondToCampaignError(res, err, "list campaigns");
+  }
+});
+
+// What a set of files would add up to, before anything is saved: the planner confirms the flight,
+// the conversion event and the advertiser against what was read.
+app.post("/api/performance/preview", async (req, res) => {
+  try {
+    const { files: added, rejected } = readUploadedFiles(req.body?.files, actorName(req));
+    let existing: any = null;
+    if (typeof req.body?.campaignId === "string" && req.body.campaignId) {
+      existing = await (await getStorage()).getPerformanceCampaign(req.body.campaignId);
+      if (!existing || existing.archived) throw new CampaignNotFoundError(req.body.campaignId);
+    }
+    const { files, duplicates } = mergeFiles(existing?.files ?? [], added);
+    const suggested = suggestedDetails(analyzeFiles(files, { flightStart: null, flightEnd: null, conversionLabel: null }));
+    // What the planner has set wins over what was saved, which wins over what the files suggest.
+    const saved = Object.fromEntries(Object.entries(existing ?? {}).filter(([, v]) => v !== null && v !== ""));
+    const merged = { ...suggested, ...saved, ...(req.body?.details ?? {}) };
+    const details = readCampaignDetails({ ...merged, advertiserName: merged.advertiserName || "Unnamed advertiser" }).details;
+    const analysis = analyzeFiles(files, details ?? { flightStart: null, flightEnd: null, conversionLabel: null });
+    res.json({ analysis, suggested, duplicates, rejected, advertiserMismatch: merged.advertiserName ? advertiserMismatch({ advertiserName: merged.advertiserName }, analysis) : null });
+  } catch (err: any) {
+    respondToCampaignError(res, err, "read the reports");
+  }
+});
+
+app.post("/api/performance/campaigns", async (req, res) => {
+  try {
+    const storage = await getStorage();
+    const { files: uploaded, rejected } = readUploadedFiles(req.body?.files, actorName(req));
+    if (uploaded.length === 0) {
+      res.status(400).json({ error: rejected[0] || "Add at least one report.", reasons: rejected });
+      return;
+    }
+    const { files, duplicates } = mergeFiles([], uploaded);
+    const { details, error } = readCampaignDetails(req.body?.details, suggestedDetails(analyzeFiles(files, { flightStart: null, flightEnd: null, conversionLabel: null })));
+    if (!details) {
+      res.status(400).json({ error });
+      return;
+    }
+    const linkedPlanIds = await linkablePlanIds(storage, [req.body?.planId]);
+    const campaign = await storage.createPerformanceCampaign({ ...details, linkedPlanIds, files, actor: actorName(req) });
+    console.log(`[PERFORMANCE] Campaign ${campaign.id} for ${campaign.advertiserName}: ${files.length} file(s) by ${actorName(req)}.`);
+    res.json({ ...campaignResponse(campaign), rejected, duplicates });
+  } catch (err: any) {
+    respondToCampaignError(res, err, "save the campaign");
+  }
+});
+
+app.get("/api/performance/campaigns/:id", async (req, res) => {
+  try {
+    const campaign = await (await getStorage()).getPerformanceCampaign(req.params.id);
+    if (!campaign || campaign.archived) throw new CampaignNotFoundError(req.params.id);
+    res.json(campaignResponse(campaign));
+  } catch (err: any) {
+    respondToCampaignError(res, err, "load the campaign");
+  }
+});
+
+// Details, files and plan links in one revision-checked write. Every field is optional; what is
+// left out stays as it is.
+app.put("/api/performance/campaigns/:id", async (req, res) => {
+  try {
+    const expectedRevision = Number(req.get("If-Match"));
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "An If-Match revision is required to update a campaign.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const existing = await storage.getPerformanceCampaign(req.params.id);
+    if (!existing || existing.archived) throw new CampaignNotFoundError(req.params.id);
+    const { details, error } = readCampaignDetails(req.body?.details ?? {}, existing);
+    if (!details) {
+      res.status(400).json({ error });
+      return;
+    }
+    const remove = new Set(Array.isArray(req.body?.removeFileIds) ? req.body.removeFileIds : []);
+    const { files: added, rejected } = readUploadedFiles(req.body?.addFiles, actorName(req));
+    const { files, duplicates } = mergeFiles(existing.files.filter((f) => !remove.has(f.id)), added);
+    if (files.length === 0) {
+      res.status(400).json({ error: "A campaign needs at least one report. Archive it instead." });
+      return;
+    }
+    const unlink = new Set(Array.isArray(req.body?.unlinkPlanIds) ? req.body.unlinkPlanIds : []);
+    const linkedPlanIds = [
+      ...existing.linkedPlanIds.filter((id) => !unlink.has(id)),
+      ...(await linkablePlanIds(storage, Array.isArray(req.body?.linkPlanIds) ? req.body.linkPlanIds : [])),
+    ];
+    const campaign = await storage.updatePerformanceCampaign(existing.id, { ...details, linkedPlanIds, files, actor: actorName(req) }, expectedRevision);
+    res.json({ ...campaignResponse(campaign), rejected, duplicates });
+  } catch (err: any) {
+    respondToCampaignError(res, err, "update the campaign");
+  }
+});
+
+app.delete("/api/performance/campaigns/:id", async (req, res) => {
+  try {
+    await (await getStorage()).archivePerformanceCampaign(req.params.id, actorName(req));
+    res.json({ success: true });
+  } catch (err: any) {
+    respondToCampaignError(res, err, "archive the campaign");
   }
 });
 

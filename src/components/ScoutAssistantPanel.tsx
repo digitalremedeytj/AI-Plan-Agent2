@@ -1,10 +1,11 @@
 import React from "react";
 import Markdown from "react-markdown";
-import { AlertTriangle, ArrowRight, Check, ChevronDown, Eye, EyeOff, FileText, Loader2, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, BarChart3, Check, ChevronDown, Eye, EyeOff, FileText, Loader2, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
 import * as api from "../api/client";
 import { ApiError, type AssistantOp, type ChatTurn, type FollowUp, type ProposalChange, type ScoutProposal } from "../api/client";
 import type { AudienceProfile } from "../types";
 import { PlanText } from "./PlanText";
+import { PastPerformanceModal } from "./PastPerformanceModal";
 
 // The ScoutAI chat in the plan's left column. The conversation lives for the browser session
 // only (sessionStorage, per plan): it is a working aid, not part of the plan. Everything that
@@ -50,6 +51,8 @@ export type ScoutFollowUpAction = "executive_summary" | "qa_audit" | "regenerate
 
 interface Props {
   planId: string;
+  /** The plan's advertiser, whose library of past campaigns can be linked to it. */
+  advertiserName: string;
   profile: AudienceProfile;
   /** The revision on screen. Proposals made against another revision cannot be applied. */
   revision: number | null;
@@ -119,16 +122,17 @@ function toTurns(messages: Message[]): ChatTurn[] {
   });
 }
 
-function suggestedPrompts(profile: AudienceProfile): string[] {
+function suggestedPrompts(profile: AudienceProfile, hasPastPerformance: boolean): string[] {
   const channels = profile.channelStrategy?.mediaPlan?.channels || [];
   const largest = [...channels].sort((a, b) => b.allocationPercent - a.allocationPercent)[0];
   const openFindings = (profile.auditResult?.findings || []).filter((f) => f.status !== "resolved").length;
   return [
+    hasPastPerformance ? "Analyse our past campaign: what worked, what didn't, and what should this plan change?" : "",
     "What would you change to improve performance toward our KPIs?",
     "Does this plan deliver what the brief asked for?",
     largest ? `Why does ${largest.channelName} get ${Math.round(largest.allocationPercent)}% of the budget?` : "",
     openFindings > 0 ? `How should we handle the ${openFindings} open QA finding${openFindings === 1 ? "" : "s"}?` : "Which persona fits the brief least well, and what would you replace it with?",
-  ].filter(Boolean);
+  ].filter(Boolean).slice(0, 4);
 }
 
 const selectionKey = (ids: string[]) => [...ids].sort().join("|");
@@ -244,6 +248,11 @@ function ProposalCard({
                   <span className="min-w-0">
                     <span className="block text-[11px] font-bold text-slate-800 leading-snug">{index + 1}. {item.title}</span>
                     {item.why && <span className="mt-0.5 block text-[11px] leading-relaxed text-slate-600">{item.why}</span>}
+                    {item.evidence && (
+                      <span className="mt-1 flex items-start gap-1 rounded-md bg-indigo-50/70 border border-indigo-100 px-1.5 py-1 text-[10px] leading-snug text-indigo-900">
+                        <BarChart3 className="w-3 h-3 shrink-0 mt-px text-indigo-500" /> <span><span className="font-bold">From past performance:</span> {item.evidence}</span>
+                      </span>
+                    )}
                   </span>
                 </label>
                 <button
@@ -362,7 +371,7 @@ function ProposalCard({
 }
 
 export function ScoutAssistantPanel({
-  planId, profile, revision, revisionBump, hasUnsavedChanges, isVisible, isBriefStale, hasAudit,
+  planId, advertiserName, profile, revision, revisionBump, hasUnsavedChanges, isVisible, isBriefStale, hasAudit,
   onApplied, onFollowUp, onUnread, preview, onPreview,
 }: Props) {
   const [messages, setMessages] = React.useState<Message[]>(() => loadMessages(planId));
@@ -374,6 +383,12 @@ export function ScoutAssistantPanel({
   const abortRef = React.useRef<AbortController | null>(null);
   const visibleRef = React.useRef(isVisible);
   visibleRef.current = isVisible;
+  const [pastCampaigns, setPastCampaigns] = React.useState<api.PerformanceCampaignSummary[]>([]);
+  const [showPastPerformance, setShowPastPerformance] = React.useState(false);
+  const loadPastCampaigns = React.useCallback(() => {
+    api.listPerformanceCampaigns({ planId }).then(setPastCampaigns).catch(() => setPastCampaigns([]));
+  }, [planId]);
+  React.useEffect(loadPastCampaigns, [loadPastCampaigns]);
 
   React.useEffect(() => saveMessages(planId, messages), [planId, messages]);
   React.useEffect(() => () => abortRef.current?.abort(), []);
@@ -567,6 +582,24 @@ export function ScoutAssistantPanel({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      <div className="shrink-0 flex items-center gap-2 border-b border-slate-100 px-4 py-2 bg-slate-50/60">
+        <BarChart3 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+        <span className="flex-1 min-w-0 truncate text-[11px] text-slate-600" title={pastCampaigns.map((c) => c.name).join(", ")}>
+          {pastCampaigns.length === 0
+            ? "No past campaign data linked"
+            : `Past performance: ${pastCampaigns.length === 1 ? pastCampaigns[0].name : `${pastCampaigns.length} campaigns`}`}
+        </span>
+        <button onClick={() => setShowPastPerformance(true)} className="shrink-0 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer">
+          {pastCampaigns.length === 0 ? "Add reports" : "Manage"}
+        </button>
+      </div>
+      <PastPerformanceModal
+        isOpen={showPastPerformance}
+        onClose={() => setShowPastPerformance(false)}
+        planId={planId}
+        advertiserName={advertiserName}
+        onChanged={loadPastCampaigns}
+      />
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-4 py-3 space-y-3">
         {messages.length === 0 && !isThinking ? (
           <div className="pt-4">
@@ -576,14 +609,14 @@ export function ScoutAssistantPanel({
               </div>
               <div>
                 <p className="text-sm font-bold text-slate-800">Ask ScoutAI about this plan</p>
-                <p className="text-[11px] text-slate-500">It has read the plan, the Brief of Record, the research and what you asked for.</p>
+                <p className="text-[11px] text-slate-500">It has read the plan, the Brief of Record, the research{pastCampaigns.length ? ", the linked past campaign data" : ""} and what you asked for.</p>
               </div>
             </div>
             <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
               Ask why the plan looks the way it does, check it against the brief, or ask for changes and recommendations: channels, budget, personas, segments, the brief and the plan's text. Nothing is saved until you apply it.
             </p>
             <div className="mt-4 flex flex-col gap-1.5">
-              {suggestedPrompts(profile).map((prompt) => (
+              {suggestedPrompts(profile, pastCampaigns.length > 0).map((prompt) => (
                 <button
                   key={prompt}
                   onClick={() => send(prompt)}

@@ -5559,6 +5559,7 @@ export default function App() {
                 <ScoutAssistantPanel
                   key={activeSavedId}
                   planId={activeSavedId}
+                  advertiserName={advertiserName || planSummaries.find((p) => p.id === activeSavedId)?.advertiserName || ""}
                   profile={profileData}
                   revision={activePlanRevision}
                   revisionBump={scoutRevisionBump}

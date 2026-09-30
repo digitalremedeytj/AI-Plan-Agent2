@@ -4,6 +4,9 @@ import type { CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import type { AssistantOp, ProposalChange } from "../assistant/operations";
 import type { ChatTurn } from "../assistant/scoutChat";
 import type { FollowUp } from "../assistant/followUps";
+import type { CampaignAnalysis } from "../performance/campaign";
+import type { PreparedFile } from "../performance/browserFiles";
+import type { PerformanceCampaignSummary } from "../storage/types";
 
 /**
  * Client for the shared server store.
@@ -295,6 +298,8 @@ export interface ScoutItem {
   id: string;
   title: string;
   why: string;
+  /** The past-performance figures this recommendation rests on, when it rests on any. */
+  evidence?: string | null;
   ops: AssistantOp[];
   /** This item's effect on its own, from a server dry run. */
   changes: ProposalChange[];
@@ -450,4 +455,74 @@ export async function savePublishers(
   publishers: CtvPublisherSetting[],
 ): Promise<{ publishers: CtvPublisherSetting[]; revision: number }> {
   return request("/api/ctv-publishers", { method: "PUT", body: JSON.stringify({ publishers }) });
+}
+
+// --- past campaign performance --------------------------------------------------
+
+export type { CampaignAnalysis, Warning as PerformanceWarning } from "../performance/campaign";
+export type { PerformanceCampaignSummary, PreparedFile };
+
+export interface CampaignDetailsInput {
+  advertiserName?: string;
+  name?: string;
+  flightStart?: string | null;
+  flightEnd?: string | null;
+  conversionLabel?: string | null;
+  campaignGoal?: string | null;
+  notes?: string | null;
+}
+
+export interface PerformanceCampaignView extends PerformanceCampaignSummary {
+  files: Array<{ id: string; fileName: string; sizeBytes: number; uploadedAt: string; uploadedBy: string; source: "export" | "browser-summary" }>;
+}
+
+export interface CampaignResponse {
+  campaign: PerformanceCampaignView;
+  analysis: CampaignAnalysis;
+  /** The advertiser the files name, when it is not the campaign's. */
+  advertiserMismatch: string | null;
+  rejected?: string[];
+  duplicates?: string[];
+}
+
+export interface PerformancePreview {
+  analysis: CampaignAnalysis;
+  suggested: CampaignDetailsInput;
+  duplicates: string[];
+  rejected: string[];
+  advertiserMismatch: string | null;
+}
+
+export async function listPerformanceCampaigns(filter: { advertiser?: string; planId?: string }): Promise<PerformanceCampaignSummary[]> {
+  const query = new URLSearchParams(Object.entries(filter).filter(([, v]) => v) as string[][]).toString();
+  const body = await request<{ campaigns: PerformanceCampaignSummary[] }>(`/api/performance/campaigns${query ? `?${query}` : ""}`);
+  return body.campaigns || [];
+}
+
+export function previewPerformanceFiles(input: { files: PreparedFile[]; campaignId?: string; details?: CampaignDetailsInput }): Promise<PerformancePreview> {
+  return request<PerformancePreview>("/api/performance/preview", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function createPerformanceCampaign(input: { details: CampaignDetailsInput; files: PreparedFile[]; planId?: string }): Promise<CampaignResponse> {
+  return request<CampaignResponse>("/api/performance/campaigns", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function getPerformanceCampaign(id: string): Promise<CampaignResponse> {
+  return request<CampaignResponse>(`/api/performance/campaigns/${encodeURIComponent(id)}`);
+}
+
+export function updatePerformanceCampaign(
+  id: string,
+  expectedRevision: number,
+  input: { details?: CampaignDetailsInput; addFiles?: PreparedFile[]; removeFileIds?: string[]; linkPlanIds?: string[]; unlinkPlanIds?: string[] },
+): Promise<CampaignResponse> {
+  return request<CampaignResponse>(`/api/performance/campaigns/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "If-Match": String(expectedRevision) },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function archivePerformanceCampaign(id: string): Promise<void> {
+  await request(`/api/performance/campaigns/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

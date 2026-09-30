@@ -4,6 +4,9 @@ import crypto from "crypto";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings, PlanningSettings } from "../planning/settings";
 import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, enrichPublishersWithKnownLogos, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import {
+  assertCampaignFits,
+  buildCampaignRecord,
+  CampaignNotFoundError,
   CreatePlanInput,
   ListPlansOptions,
   PlanNotFoundError,
@@ -13,7 +16,11 @@ import {
   SettingsRecord,
   StorageAdapter,
   StoredPlan,
+  toCampaignSummary,
   UpdatePlanInput,
+  type PerformanceCampaign,
+  type PerformanceCampaignInput,
+  type PerformanceCampaignSummary,
 } from "./types";
 
 /**
@@ -29,16 +36,18 @@ export class LocalFileAdapter implements StorageAdapter {
   private readonly plansDir: string;
   private readonly settingsDir: string;
   private readonly publishersDir: string;
+  private readonly performanceDir: string;
 
   constructor(rootDir: string = path.join(process.cwd(), "data", "store")) {
     this.rootDir = rootDir;
     this.plansDir = path.join(rootDir, "plans");
     this.settingsDir = path.join(rootDir, "settings");
     this.publishersDir = path.join(rootDir, "publishers");
+    this.performanceDir = path.join(rootDir, "performance");
   }
 
   async init(): Promise<void> {
-    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir]) {
+    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
@@ -247,6 +256,54 @@ export class LocalFileAdapter implements StorageAdapter {
     };
     writeJsonAtomic(path.join(this.publishersDir, "current.json"), record);
     return record;
+  }
+
+  // --- past campaign performance ---------------------------------------------
+
+  async listPerformanceCampaigns(options: ListPlansOptions = {}): Promise<PerformanceCampaignSummary[]> {
+    await this.init();
+    const summaries: PerformanceCampaignSummary[] = [];
+    for (const file of fs.readdirSync(this.performanceDir).filter((f) => f.endsWith(".json"))) {
+      const campaign = readJson<PerformanceCampaign>(path.join(this.performanceDir, file));
+      if (!campaign?.id || (campaign.archived && !options.includeArchived)) continue;
+      summaries.push(toCampaignSummary(campaign));
+    }
+    return sortByUpdatedDesc(summaries);
+  }
+
+  async getPerformanceCampaign(id: string): Promise<PerformanceCampaign | null> {
+    await this.init();
+    return readJson<PerformanceCampaign>(this.campaignPath(id));
+  }
+
+  async createPerformanceCampaign(input: PerformanceCampaignInput): Promise<PerformanceCampaign> {
+    await this.init();
+    assertCampaignFits(input.files);
+    const campaign = buildCampaignRecord(crypto.randomUUID(), input, null, new Date().toISOString());
+    writeJsonAtomic(this.campaignPath(campaign.id), campaign);
+    return campaign;
+  }
+
+  async updatePerformanceCampaign(id: string, input: PerformanceCampaignInput, expectedRevision: number): Promise<PerformanceCampaign> {
+    await this.init();
+    const existing = readJson<PerformanceCampaign>(this.campaignPath(id));
+    if (!existing) throw new CampaignNotFoundError(id);
+    if (existing.revision !== expectedRevision) throw new RevisionConflictError(existing.revision, "This campaign was changed by someone else.");
+    assertCampaignFits(input.files);
+    const campaign = buildCampaignRecord(id, input, existing, new Date().toISOString());
+    writeJsonAtomic(this.campaignPath(id), campaign);
+    return campaign;
+  }
+
+  async archivePerformanceCampaign(id: string, actor: string): Promise<void> {
+    await this.init();
+    const existing = readJson<PerformanceCampaign>(this.campaignPath(id));
+    if (!existing) throw new CampaignNotFoundError(id);
+    writeJsonAtomic(this.campaignPath(id), { ...existing, archived: true, revision: existing.revision + 1, updatedAt: new Date().toISOString(), updatedBy: actor });
+  }
+
+  private campaignPath(id: string): string {
+    return path.join(this.performanceDir, `${id.replace(/[^a-zA-Z0-9._-]/g, "")}.json`);
   }
 }
 

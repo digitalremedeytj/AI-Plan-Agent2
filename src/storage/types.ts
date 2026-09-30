@@ -97,6 +97,130 @@ export interface ListPlansOptions {
   includeArchived?: boolean;
 }
 
+// --- past campaign performance --------------------------------------------------
+
+/**
+ * One uploaded report. A summarised export keeps its text, so the server re-reads it with
+ * whatever the reader knows today. A touch-level export arrives as the browser's summary: its
+ * rows are household-level (hashed IPs) and too large to upload, so they never leave the browser.
+ */
+export interface PerformanceFileRecord {
+  id: string;
+  fileName: string;
+  sizeBytes: number;
+  /** Used to skip a file uploaded twice: the text's SHA-256, or name/size/modified time for a summary. */
+  fingerprint: string;
+  uploadedAt: string;
+  uploadedBy: string;
+  text?: string;
+  touchReport?: unknown;
+}
+
+/**
+ * A past campaign in an advertiser's library: the report set for one flight. It is its own
+ * record, linked to plans rather than stored in them, so uploading reports never moves a plan's
+ * revision (which would invalidate pending ScoutAI proposals) and the next plan for the same
+ * advertiser can draw on it too.
+ */
+export interface PerformanceCampaignSummary {
+  id: string;
+  revision: number;
+  advertiserName: string;
+  /** Lowercased and trimmed, so "Acme " and "acme" are one advertiser's library. */
+  advertiserKey: string;
+  name: string;
+  /** The flight the planner confirmed, YYYY-MM-DD. */
+  flightStart: string | null;
+  flightEnd: string | null;
+  /** What the pixel conversion is; the exports never say. */
+  conversionLabel: string | null;
+  /** What the campaign optimised for, which decides what "performed well" means. */
+  campaignGoal: string | null;
+  notes: string | null;
+  linkedPlanIds: string[];
+  fileCount: number;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+  archived: boolean;
+}
+
+export interface PerformanceCampaign extends PerformanceCampaignSummary {
+  files: PerformanceFileRecord[];
+}
+
+export interface PerformanceCampaignInput {
+  advertiserName: string;
+  name: string;
+  flightStart: string | null;
+  flightEnd: string | null;
+  conversionLabel: string | null;
+  campaignGoal: string | null;
+  notes: string | null;
+  linkedPlanIds: string[];
+  files: PerformanceFileRecord[];
+  actor: string;
+}
+
+/** A campaign is one Firestore document; its files must leave room under the 1MB limit. */
+export const MAX_PERFORMANCE_FILES_BYTES = 900_000;
+
+export const toAdvertiserKey = (name: string) => name.trim().toLowerCase().replace(/\s+/g, " ");
+
+export class CampaignNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Campaign '${id}' was not found.`);
+    this.name = "CampaignNotFoundError";
+  }
+}
+
+export class CampaignTooLargeError extends Error {
+  constructor(bytes: number) {
+    super(`These reports take ${Math.round(bytes / 1000)}KB, more than the ${Math.round(MAX_PERFORMANCE_FILES_BYTES / 1000)}KB a campaign can hold. Remove a file, or split the reports into two campaigns.`);
+    this.name = "CampaignTooLargeError";
+  }
+}
+
+/** Shared by both drivers so a campaign too big for Firestore is refused in development as well. */
+export function assertCampaignFits(files: PerformanceFileRecord[]): void {
+  const bytes = new TextEncoder().encode(JSON.stringify(files)).length;
+  if (bytes > MAX_PERFORMANCE_FILES_BYTES) throw new CampaignTooLargeError(bytes);
+}
+
+export function buildCampaignRecord(
+  id: string,
+  input: PerformanceCampaignInput,
+  existing: Pick<PerformanceCampaign, "revision" | "createdAt" | "createdBy" | "archived"> | null,
+  now: string,
+): PerformanceCampaign {
+  return {
+    id,
+    revision: existing ? existing.revision + 1 : 1,
+    advertiserName: input.advertiserName,
+    advertiserKey: toAdvertiserKey(input.advertiserName),
+    name: input.name,
+    flightStart: input.flightStart,
+    flightEnd: input.flightEnd,
+    conversionLabel: input.conversionLabel,
+    campaignGoal: input.campaignGoal,
+    notes: input.notes,
+    linkedPlanIds: [...new Set(input.linkedPlanIds)],
+    fileCount: input.files.length,
+    createdAt: existing?.createdAt ?? now,
+    createdBy: existing?.createdBy ?? input.actor,
+    updatedAt: now,
+    updatedBy: input.actor,
+    archived: existing?.archived ?? false,
+    files: input.files,
+  };
+}
+
+export function toCampaignSummary(campaign: PerformanceCampaign): PerformanceCampaignSummary {
+  const { files, ...summary } = campaign;
+  return summary;
+}
+
 /** Raised when a caller's If-Match revision no longer matches the stored plan. */
 export class RevisionConflictError extends Error {
   readonly currentRevision: number;
@@ -142,4 +266,14 @@ export interface StorageAdapter {
 
   getCurrentPublishers(): Promise<PublishersRecord>;
   savePublishers(publishers: CtvPublisherSetting[], actor: string): Promise<PublishersRecord>;
+
+  /** Summaries only: listing never downloads report files. */
+  listPerformanceCampaigns(options?: ListPlansOptions): Promise<PerformanceCampaignSummary[]>;
+  getPerformanceCampaign(id: string): Promise<PerformanceCampaign | null>;
+  /** Throws CampaignTooLargeError if the files would not fit in one document. */
+  createPerformanceCampaign(input: PerformanceCampaignInput): Promise<PerformanceCampaign>;
+  /** Replaces the campaign. Throws RevisionConflictError if stale, CampaignNotFoundError if absent. */
+  updatePerformanceCampaign(id: string, input: PerformanceCampaignInput, expectedRevision: number): Promise<PerformanceCampaign>;
+  /** Soft delete, like plans. */
+  archivePerformanceCampaign(id: string, actor: string): Promise<void>;
 }

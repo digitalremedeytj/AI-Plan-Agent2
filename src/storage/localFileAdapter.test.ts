@@ -4,7 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { LocalFileAdapter } from "./localFileAdapter";
-import { PlanNotFoundError, RevisionConflictError } from "./types";
+import { CampaignTooLargeError, PlanNotFoundError, RevisionConflictError } from "./types";
 import { clonePlanningSettings, DEFAULT_PLANNING_SETTINGS } from "../planning/settings";
 
 function freshAdapter(): LocalFileAdapter {
@@ -186,3 +186,54 @@ test("an archived plan cannot be fetched by share token", async () => {
   assert.equal(found, null);
 });
 
+
+// --- past campaign performance ---------------------------------------------
+
+const campaignInput = (overrides: Record<string, unknown> = {}) => ({
+  advertiserName: "Acme Auto ",
+  name: "Feb flight",
+  flightStart: "2026-02-09",
+  flightEnd: "2026-03-10",
+  conversionLabel: "Checkouts",
+  campaignGoal: "cpa",
+  notes: null,
+  linkedPlanIds: ["plan-1", "plan-1"],
+  files: [{ id: "f1", fileName: "a.csv", sizeBytes: 3, fingerprint: "x", uploadedAt: "t", uploadedBy: "a", text: "a,b" }],
+  actor: "tj",
+  ...overrides,
+});
+
+test("a campaign is listed by summary only, under its normalised advertiser", async () => {
+  const adapter = freshAdapter();
+  const created = await adapter.createPerformanceCampaign(campaignInput());
+  assert.equal(created.advertiserKey, "acme auto");
+  assert.deepEqual(created.linkedPlanIds, ["plan-1"], "a plan is linked once however often it is sent");
+  const [summary] = await adapter.listPerformanceCampaigns();
+  assert.equal(summary.fileCount, 1);
+  assert.equal((summary as any).files, undefined);
+  assert.equal((await adapter.getPerformanceCampaign(created.id))?.files[0].text, "a,b");
+});
+
+test("a stale campaign revision is rejected instead of clobbering the other upload", async () => {
+  const adapter = freshAdapter();
+  const created = await adapter.createPerformanceCampaign(campaignInput());
+  const updated = await adapter.updatePerformanceCampaign(created.id, campaignInput({ name: "Renamed" }), 1);
+  assert.equal(updated.revision, 2);
+  assert.equal(updated.createdBy, "tj");
+  await assert.rejects(adapter.updatePerformanceCampaign(created.id, campaignInput({ name: "Late" }), 1), RevisionConflictError);
+});
+
+test("a campaign too large for one Firestore document is refused in development too", async () => {
+  const adapter = freshAdapter();
+  const big = [{ id: "f", fileName: "big.csv", sizeBytes: 1, fingerprint: "y", uploadedAt: "t", uploadedBy: "a", text: "x".repeat(950_000) }];
+  await assert.rejects(adapter.createPerformanceCampaign(campaignInput({ files: big })), CampaignTooLargeError);
+});
+
+test("an archived campaign drops out of the library but is kept", async () => {
+  const adapter = freshAdapter();
+  const created = await adapter.createPerformanceCampaign(campaignInput());
+  await adapter.archivePerformanceCampaign(created.id, "jo");
+  assert.equal((await adapter.listPerformanceCampaigns()).length, 0);
+  assert.equal((await adapter.listPerformanceCampaigns({ includeArchived: true })).length, 1);
+  assert.equal((await adapter.getPerformanceCampaign(created.id))?.files.length, 1);
+});
