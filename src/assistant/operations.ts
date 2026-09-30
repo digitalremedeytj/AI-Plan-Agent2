@@ -21,6 +21,8 @@ import { getAtPath, writeProseField } from "../qa/planRemediation";
 import { applyAudienceOps, applyBriefOps, PERSONA_FIELDS, type PersonaFields } from "./profileOps";
 import { applyListOps, applySectionOps, NARRATIVE_LISTS, type NarrativeList } from "./narrativeOps";
 import { syncCtvChannelPublishers } from "../planning/ctvChannel";
+import { applyChannelDetailOps } from "./channelDetailOps";
+import type { PlanningSettings } from "../planning/settings";
 
 export type AssistantOp =
   | { type: "set_allocation"; channelId: string; percent: number }
@@ -51,12 +53,19 @@ export type AssistantOp =
   | { type: "hide_section"; section: string }
   | { type: "show_section"; section: string }
   | { type: "add_ctv_publisher"; publisher: string; why: string }
+  | { type: "add_channel_record"; channelId: string; recordType: string; recordId: string; rationale?: string }
+  | { type: "remove_channel_record"; channelId: string; recordType: string; recordId: string }
+  | { type: "edit_channel_panel"; channelId: string; panel: string; content: string }
+  | { type: "hide_channel_panel"; channelId: string; panel: string }
+  | { type: "show_channel_panel"; channelId: string; panel: string }
   // Restores come only from a revert: they put back exactly what a change removed, which the
   // model has no way to describe (a publisher from the catalog, a persona's headshot).
   | { type: "restore_ctv_publisher"; publisher: string; category: string; why: string; index: number; isUserAdded?: boolean }
   | { type: "restore_persona"; index: number; persona: any; segmentIds: string[] }
   | { type: "restore_segment"; index: number; segment: any; personas: string[] }
-  | { type: "set_list"; list: NarrativeList; items: any[] };
+  | { type: "set_list"; list: NarrativeList; items: any[] }
+  | { type: "set_channel_records"; channelId: string; recordType: string; records: any[] }
+  | { type: "set_channel_override"; channelId: string; override: any | null };
 
 export type AssistantOpType = AssistantOp["type"];
 
@@ -64,8 +73,9 @@ export const MODEL_OP_TYPES: ReadonlySet<AssistantOpType> = new Set([
   "set_allocation", "add_channel", "remove_channel", "set_budget", "lock_channel", "unlock_channel", "remove_ctv_publisher", "edit_text",
   "update_persona", "add_persona", "remove_persona", "add_segment", "edit_segment", "remove_segment", "edit_brief", "set_kpis", "set_geography",
   "add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_section_visibility", "hide_section", "show_section", "add_ctv_publisher",
+  "add_channel_record", "remove_channel_record", "edit_channel_panel", "hide_channel_panel", "show_channel_panel",
 ]);
-const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment", "set_list"]);
+const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment", "set_list", "set_channel_records", "set_channel_override"]);
 
 /** A CTV publisher the plan may add: the shared publisher catalog, as settings store it. */
 export interface CatalogPublisher {
@@ -77,13 +87,15 @@ export interface CatalogPublisher {
 export interface ApplyContext {
   /** Needed only to add CTV publishers; without it, adding one is refused. */
   publisherCatalog?: CatalogPublisher[];
+  /** The settings the plan was built with, whose catalog channel records are added from. */
+  planningSettings?: PlanningSettings;
 }
 
 export interface ProposalChange {
   kind:
     | "allocation" | "channel_added" | "channel_removed" | "budget" | "lock" | "publisher" | "text"
     | "persona" | "persona_added" | "persona_removed" | "segment" | "segment_added" | "segment_removed" | "brief" | "input"
-    | "item_added" | "item_removed" | "item_moved" | "section";
+    | "item_added" | "item_removed" | "item_moved" | "section" | "channel_detail";
   label: string;
   before: string;
   after: string;
@@ -277,6 +289,44 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
         const publisher = str(it.publisher);
         if (!publisher) { reject("needs a publisher from the catalog"); break; }
         ops.push({ type, publisher, why: str(it.why) });
+        break;
+      }
+      case "add_channel_record":
+      case "remove_channel_record": {
+        const recordType = str(it.recordType);
+        // The record's name or the end of its id finds it as well as the full id (see
+        // matchesRecord), and a reason sent as "why" is still the reason.
+        // Gemini tends to send the record in "value", and as the end of its id ("brand_lift").
+        const recordId = str(it.recordId) || str(it.value) || str(it.record) || str(it.recordName) || str(it.name);
+        const rationale = str(it.rationale) || str(it.why);
+        if (!channelId || !recordType || !recordId) { reject("needs a channelId, a recordType and a recordId"); break; }
+        ops.push(type === "add_channel_record"
+          ? { type, channelId, recordType, recordId, ...(rationale ? { rationale } : {}) }
+          : { type, channelId, recordType, recordId });
+        break;
+      }
+      case "edit_channel_panel": {
+        const panel = str(it.panel);
+        const content = str(it.content);
+        if (!channelId || !panel || !content) { reject("needs a channelId, a panel and the panel's new text"); break; }
+        ops.push({ type, channelId, panel, content });
+        break;
+      }
+      case "hide_channel_panel":
+      case "show_channel_panel": {
+        const panel = str(it.panel);
+        if (!channelId || !panel) { reject("needs a channelId and a panel"); break; }
+        ops.push({ type, channelId, panel });
+        break;
+      }
+      case "set_channel_records": {
+        if (!channelId || !str(it.recordType) || !Array.isArray(it.records)) { reject("needs a channelId, a recordType and its records"); break; }
+        ops.push({ type, channelId, recordType: str(it.recordType), records: it.records });
+        break;
+      }
+      case "set_channel_override": {
+        if (!channelId || (it.override !== null && typeof it.override !== "object")) { reject("needs a channelId and an override"); break; }
+        ops.push({ type, channelId, override: it.override ?? null });
         break;
       }
       case "set_list": {
@@ -564,6 +614,15 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
     }
   }
 
+  const details = applyChannelDetailOps(
+    profile,
+    byType(["add_channel_record", "remove_channel_record", "set_channel_records", "edit_channel_panel", "hide_channel_panel", "show_channel_panel", "set_channel_override"]),
+    context.planningSettings,
+    new Set((planBefore?.channels || []).map((c) => c.channelId)),
+  );
+  applied.push(...details.applied);
+  rejected.push(...details.rejected);
+
   if (textTargets.some((t) => t.publisher)) syncStrategyPublishers();
   if (publisherChanges.length > 0 || textTargets.some((t) => t.publisher)) {
     profile.channelStrategy = syncCtvChannelPublishers(profile).channelStrategy;
@@ -588,9 +647,9 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
   return {
     payload: next,
     ops: applied,
-    changes: [...brief.changes, ...audience.changes, ...channel.changes, ...publisherChanges, ...lists.changes, ...sections.changes, ...textChanges],
+    changes: [...brief.changes, ...audience.changes, ...channel.changes, ...details.changes, ...publisherChanges, ...lists.changes, ...sections.changes, ...textChanges],
     rejected,
-    revertOps: [...brief.revertOps, ...audience.revertOps, ...channel.revertOps, ...revertPublishers, ...lists.revertOps, ...sections.revertOps, ...revertText],
+    revertOps: [...brief.revertOps, ...audience.revertOps, ...channel.revertOps, ...details.revertOps, ...revertPublishers, ...lists.revertOps, ...sections.revertOps, ...revertText],
   };
 }
 

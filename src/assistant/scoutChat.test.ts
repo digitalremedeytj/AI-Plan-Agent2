@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCampaignFacts, buildMediaRecommendationPlan } from "../planning/engine";
 import { clonePlanningSettings, DEFAULT_PLANNING_SETTINGS } from "../planning/settings";
-import { buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns } from "./scoutChat";
+import { buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./scoutChat";
+import { MODEL_OP_TYPES } from "./operations";
 
 function storedPlan() {
   const mediaPlan = buildMediaRecommendationPlan(buildCampaignFacts({
@@ -88,4 +89,13 @@ test("a reply without valid operations carries no proposal, and each recommendat
   ] } });
   assert.equal(good.summary, "Improve awareness");
   assert.deepEqual(good.items.map((i) => i.ops.length), [1, 1]);
+});
+
+test("every operation the model may propose has its own shape in the response schema", () => {
+  const shapes = (scoutResponseSchema as any).properties.proposal.properties.items.items.properties.ops.items.anyOf;
+  const offered = new Set(shapes.map((shape: any) => shape.properties.type.enum[0]));
+  // set_section_visibility is what a revert sends; the model hides and shows with hide_section / show_section.
+  const expected = [...MODEL_OP_TYPES].filter((type) => type !== "set_section_visibility");
+  assert.deepEqual(expected.filter((type) => !offered.has(type)), []);
+  for (const shape of shapes) assert.ok(shape.required.includes("type"));
 });

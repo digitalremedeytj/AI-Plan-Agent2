@@ -7,7 +7,7 @@ import {
 } from "./knowledge/registry";
 import { planningKnowledgeBase } from "./knowledge/normalizeWorkbook";
 import { findEffectiveProduct, resolveEffectiveProducts } from "./effectiveProducts";
-import { findBudgetChannelTier, normalizeCampaignBudget } from "./settings";
+import { findBudgetChannelTier, normalizeCampaignBudget, type PlanningSettings } from "./settings";
 import type {
   AiCandidateSignal,
   AllocationAuditEntry,
@@ -1042,5 +1042,40 @@ export function profileSignals(profile: AudienceProfile | null | undefined): { a
     // Walmart, Chewy and Amazon"), which is what the retailer-data tactics check for.
     audienceDescriptions: [profile.briefOfRecord?.businessModel || "", profile.intro, profile.audienceAnalysis || "", profile.executiveSummary].filter(Boolean),
     audienceSignals: (profile.personas || []).flatMap((persona) => [persona.watch, persona.browse, persona.buy, persona.narrative]).filter(Boolean),
+  };
+}
+
+export const CHANNEL_RECORD_TYPES = ["targetingTactics", "publishers", "creativeEnhancements", "inventoryControls", "measurementCapabilities"] as const;
+export type ChannelRecordType = (typeof CHANNEL_RECORD_TYPES)[number];
+
+/**
+ * Every record a planner may attach to a media type: what the catalog marks as compatible with
+ * the product and available to sell, without the campaign-fit ranking and caps the engine uses to
+ * choose its defaults. A planner asking for a tactic overrides that ranking, as a manual channel
+ * add overrides budget minimums; compatibility and availability are never overridden. CTV
+ * publishers come from the plan's CTV publisher list instead, so none are offered here for CTV.
+ */
+export function channelRecordOptions(product: MediaProductRecord, settings: PlanningSettings): Record<ChannelRecordType, AttachedPlanningRecord[]> {
+  const compatibleTactics = new Set(planningKnowledgeBase.compatibilityEdges
+    .filter((edge) => edge.toId === product.id && edge.relationship === "compatible")
+    .map((edge) => edge.fromId));
+  return {
+    targetingTactics: planningKnowledgeBase.targetingTactics
+      .filter((record) => record.recommendationEligible && (compatibleTactics.has(record.id) || product.id === "channel.display_retargeting"))
+      .map(({ id, displayName, rationale }) => ({ id, displayName, rationale })),
+    publishers: isCtvOrPerformanceTvProduct(product)
+      ? []
+      : settings.publishers
+        .filter((record) => record.recommendationEligible && attachmentMatches(record.attachesTo, product))
+        .map((record) => ({ id: record.publisherId, displayName: record.displayName, rationale: record.notes || `${record.displayName} inventory for this media type.` })),
+    creativeEnhancements: settings.enhancements
+      .filter((record) => record.recommendationEligible && attachmentMatches(record.attachesTo, product))
+      .map((record) => ({ id: record.enhancementId, displayName: record.displayName, rationale: `${record.trigger}. Format: ${record.formatType}.`, limitation: record.specificationNotes })),
+    inventoryControls: planningKnowledgeBase.inventoryControls
+      .filter((record) => attachmentMatches(record.attachesTo, product))
+      .map(({ id, displayName, rationale }) => ({ id, displayName, rationale })),
+    measurementCapabilities: planningKnowledgeBase.measurementCapabilities
+      .filter((record) => record.status === "live" && record.recommendationEligible && attachmentMatches(record.attachesTo, product))
+      .map(({ id, displayName, rationale, pricing, limitation }) => ({ id, displayName, rationale, pricing, limitation })),
   };
 }

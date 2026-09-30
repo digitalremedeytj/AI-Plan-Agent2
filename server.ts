@@ -2059,7 +2059,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
       return;
     }
-    const context = await scoutApplyContext(storage);
+    const context = await scoutApplyContext(storage, plan);
 
     // Newline-delimited JSON: thought headlines while the model works, then one result line.
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
@@ -2114,10 +2114,20 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
   }
 });
 
-// What operations need beyond the plan: the publisher catalog a CTV publisher may be added from.
-async function scoutApplyContext(storage: StorageAdapter) {
-  const { publishers } = await storage.getCurrentPublishers();
-  return { publisherCatalog: publishers.map((p) => ({ name: p.name, category: p.category, enabled: p.enabled })) };
+// What operations need beyond the plan: the publisher catalog a CTV publisher may be added from,
+// and the settings the plan was built with, whose catalog its channel records come from. A plan
+// pins its settings revision, so a later settings change cannot offer it records it was not built
+// against.
+async function scoutApplyContext(storage: StorageAdapter, plan: { settingsRevision?: number | null }) {
+  const [{ publishers }, settingsRecord] = await Promise.all([
+    storage.getCurrentPublishers(),
+    Number.isInteger(plan.settingsRevision) ? storage.getSettingsRevision(plan.settingsRevision as number) : storage.getCurrentSettings(),
+  ]);
+  const validated = validatePlanningSettings(settingsRecord?.settings);
+  return {
+    publisherCatalog: publishers.map((p) => ({ name: p.name, category: p.category, enabled: p.enabled })),
+    planningSettings: validated.valid && validated.settings ? validated.settings : DEFAULT_PLANNING_SETTINGS,
+  };
 }
 
 // Dry run of the items a planner has kept, so the card shows the combined result before Apply.
@@ -2134,7 +2144,7 @@ app.post("/api/plans/:id/assistant/preview", async (req, res) => {
       return;
     }
     const { ops, rejected: unreadable } = parseOps(req.body?.ops);
-    const result = applyOps(plan.payload, ops, await scoutApplyContext(storage));
+    const result = applyOps(plan.payload, ops, await scoutApplyContext(storage, plan));
     res.json({ changes: result.changes, rejected: [...unreadable, ...result.rejected].map((r) => r.reason) });
   } catch (err: any) {
     respondToStorageError(res, err, "preview the ScoutAI change");
@@ -2165,7 +2175,7 @@ app.post("/api/plans/:id/assistant/apply", async (req, res) => {
       return;
     }
     // The planner approved a specific result. If any part of it no longer applies, apply none of it.
-    const result = applyOps(plan.payload, ops, await scoutApplyContext(storage));
+    const result = applyOps(plan.payload, ops, await scoutApplyContext(storage, plan));
     if (result.rejected.length > 0 || result.changes.length === 0) {
       res.status(422).json({
         error: result.changes.length === 0 ? "This change would not alter the plan." : "Part of this change no longer applies to the plan, so nothing was changed.",

@@ -9,6 +9,9 @@ import { AUDIENCE_TYPES, FUNNEL_EMPHASES, PRICE_TIERS } from "../research/briefO
 import { SEGMENT_DIMENSIONS, SEGMENT_TIERS } from "../research/segmentRecommendations";
 import { addableChannels, parseOps, type AssistantOp, type CatalogPublisher, type RejectedOp } from "./operations";
 import { PLAN_SECTIONS } from "./narrativeOps";
+import { CHANNEL_PANELS, CHANNEL_RECORD_TYPES, RECORD_LABELS } from "./channelDetailOps";
+import { channelRecordOptions } from "../planning/engine";
+import type { PlanningSettings } from "../planning/settings";
 import { MAX_BRIEF_INSTRUCTIONS } from "../research/executiveBrief";
 import type { MediaRecommendationPlan } from "../planning/types";
 
@@ -31,7 +34,6 @@ const clip = (value: unknown, max = MAX_FIELD_CHARS) => {
 };
 const list = (value: unknown): string[] => (Array.isArray(value) ? value.map((v) => clip(v, 300)).filter(Boolean) : []);
 const money = (value: unknown) => `$${Math.round(Number(value) || 0).toLocaleString("en-US")}`;
-const names = (records: unknown, max = 6) => (Array.isArray(records) ? records.slice(0, max).map((r: any) => r?.displayName || r?.name).filter(Boolean).join(", ") : "");
 
 /** Browser-supplied conversation, trimmed to what the prompt can carry. */
 export function sanitizeTurns(raw: unknown): ChatTurn[] {
@@ -51,7 +53,10 @@ export function sanitizeTurns(raw: unknown): ChatTurn[] {
  * name the field; everything else is read-only context. The generation log, raw chart data and
  * research dossiers are left out: they are large and the planner does not see them.
  */
-export function buildPlanContext(stored: { title?: string; advertiserName?: string; payload?: any }, { publisherCatalog = [] }: { publisherCatalog?: CatalogPublisher[] } = {}): string {
+export function buildPlanContext(
+  stored: { title?: string; advertiserName?: string; payload?: any },
+  { publisherCatalog = [], planningSettings }: { publisherCatalog?: CatalogPublisher[]; planningSettings?: PlanningSettings } = {},
+): string {
   const payload = stored?.payload ?? {};
   const profile = payload.profile ?? {};
   const strategy = profile.channelStrategy;
@@ -108,9 +113,7 @@ export function buildPlanContext(stored: { title?: string; advertiserName?: stri
         `  [${p}.gapAddressed] ${clip(c.gapAddressed)}`,
         `  [${p}.allocationRationale] ${clip(c.allocationRationale)}`,
         ...(c.tradeoffs || []).map((t, i) => `  [${p}.tradeoffs[${i}]] ${clip(t, 400)}`),
-        names(c.targetingTactics) ? `  targeting: ${names(c.targetingTactics)}` : "",
-        names(c.publishers) ? `  publishers: ${names(c.publishers)}` : "",
-        names(c.measurementCapabilities) ? `  measurement: ${names(c.measurementCapabilities)}` : "",
+        ...channelDetailLines(c, plan, strategy, planningSettings),
       ].filter(Boolean).join("\n");
     });
     out.push([
@@ -216,6 +219,29 @@ export function buildPlanContext(stored: { title?: string; advertiserName?: stri
   return out.join("\n\n");
 }
 
+const records = (list: unknown) => (Array.isArray(list) ? list : []).map((r: any) => `${clip(r?.displayName, 80)} [${r?.id}]`).join("; ") || "none";
+
+/** A media type's attached records, what could be attached, and its detail panels' text. */
+function channelDetailLines(channel: any, plan: MediaRecommendationPlan, strategy: any, settings: PlanningSettings | undefined): string[] {
+  const candidate: any = plan.evaluatedCandidates.find((c) => c.product.id === channel.channelId);
+  const options = candidate && settings ? channelRecordOptions(candidate.product, settings) : null;
+  const override = strategy?.channelOverrides?.[channel.channelId];
+  const lines: string[] = [];
+  for (const type of CHANNEL_RECORD_TYPES) {
+    const attached = new Set((channel[type] || []).map((r: any) => r?.id));
+    const available = (options?.[type] || []).filter((o) => !attached.has(o.id)).slice(0, 12);
+    lines.push(`  ${RECORD_LABELS[type]} (${type}): ${records(channel[type])}${available.length ? `; can add: ${available.map((o) => `${clip(o.displayName, 80)} [${o.id}]`).join("; ")}` : ""}`);
+  }
+  if (candidate?.activationGuidance) lines.push(`  panel activationGuidance: ${clip(candidate.activationGuidance, 600)}`);
+  if (candidate?.measurementApproach) lines.push(`  panel measurementApproach: ${clip(candidate.measurementApproach, 600)}`);
+  if (channel.decisionRule) lines.push(`  panel decisionRule: ${clip(channel.decisionRule, 400)}`);
+  for (const [panel, edit] of Object.entries(override?.fieldEdits || {}) as Array<[string, any]>) {
+    if (edit?.content !== undefined) lines.push(`  panel ${panel} is hand-edited to: ${clip(edit.content, 600)}`);
+  }
+  if (override?.hiddenPanels?.length) lines.push(`  hidden panels: ${override.hiddenPanels.join(", ")}`);
+  return lines;
+}
+
 export const SCOUT_SYSTEM_INSTRUCTION = `You are ScoutAI, the senior media planner built into Digital Remedy's plan builder. A planner is reviewing a CTV-first media plan with you. You help them understand it, pressure-test it against what the client asked for, and improve it.
 
 How you answer:
@@ -249,48 +275,66 @@ How you edit:
   * move_item {list, index, position}: list is "takeaways" or "recommendations". All indexes refer to the lists as shown, even when the same proposal adds or removes items.
   * add_ctv_publisher {publisher, why}: only a publisher listed as one that can be added, with a one-sentence reason it fits this audience.
   * hide_section {section} / show_section {section}: hides or shows a section of the client view; section is one of the section keys shown (for example "domainAffinity").
+  * add_channel_record {channelId, recordType, recordId, rationale} / remove_channel_record {channelId, recordType, recordId}: recordType is one of ${CHANNEL_RECORD_TYPES.join(", ")}; recordId is the id in brackets. Only records listed under "can add" for that media type can be added; rationale is one sentence on why it fits this plan. A CTV media type's publishers are the plan's CTV publisher list: use add_ctv_publisher / remove_ctv_publisher for those.
+  * edit_channel_panel {channelId, panel, content} / hide_channel_panel {channelId, panel} / show_channel_panel {channelId, panel}: rewrites or hides the text a media type's detail panel shows. panel is one of ${Object.keys(CHANNEL_PANELS).join(", ")}. Use it for activationGuidance, measurementApproach and decisionRule; to reword gapAddressed or the allocation rationale use edit_text on the channel's path; to change a list (targeting, measurement and so on) change its records instead of its text.
 - Numbers: never compute or state the resulting dollars, percentages or totals; the card shows the computed result. You may state the targets you asked for.
 - New personas and segments must fit the Brief of Record and rest on the research excerpts. When you change the Brief of Record, KPIs or geography, say that the research, personas and channels were built from the earlier version and that regenerating the plan rebuilds them.
 - The executive summary is written from the plan by its own generator. To change it, return "rewriteExecutiveSummary" with instructions for that generator (for example "lead with CTV reach; keep it to four sections") instead of a proposal item; the planner runs it with one click and can undo it in the summary.
-- Not editable here: chart figures, research, channel tactics, measurement and panel details, budget mode and flight length (regenerate the plan). There is no persona editor in the app: persona changes go through you.
+- Not editable here: chart figures, research, budget mode and flight length (regenerate the plan). There is no persona editor in the app: persona changes go through you.
 - The conversation shows what happened to earlier proposals. An applied proposal is already in the plan you are reading.
 
 Return JSON: { "reply": markdown for the planner, "proposal": { "summary": one short line, "items": [{ "title", "why", "ops": [...] }] }, "rewriteExecutiveSummary": { "instructions" } }. Omit "proposal" and "rewriteExecutiveSummary" when you are not proposing them.`;
 
-const opSchema = {
+// Each operation has its own shape, offered to the model as alternatives. One flat shape with
+// every field optional did not hold up: Gemini dropped the fields particular operations need
+// (recordId, content, rationale) and put the value in whichever generic field it favoured, or
+// left it empty. With a shape per operation, its required fields are required.
+const S = { type: "string" };
+const INT = { type: "integer" };
+const oneOf = (values: readonly string[]) => ({ type: "string", enum: [...values] });
+const opShape = (type: string, required: Record<string, unknown>, optional: Record<string, unknown> = {}) => ({
   type: "object",
-  properties: {
-    type: { type: "string", description: "set_allocation | add_channel | remove_channel | lock_channel | unlock_channel | set_budget | remove_ctv_publisher | edit_text | update_persona | add_persona | remove_persona | add_segment | edit_segment | remove_segment | edit_brief | set_kpis | set_geography | add_takeaway | remove_takeaway | add_recommendation | remove_recommendation | move_item | hide_section | show_section | add_ctv_publisher" },
-    channelId: { type: "string" },
-    percent: { type: "integer" },
-    amount: { type: "number" },
-    publisher: { type: "string" },
-    path: { type: "string" },
-    value: { type: "string" },
-    persona: { type: "string" },
-    fields: {
-      type: "object",
-      properties: Object.fromEntries(["name", "age", "income", "gender", "watch", "browse", "buy", "narrative"].map((f) => [f, { type: "string" }])),
-    },
-    segmentId: { type: "string" },
-    name: { type: "string" },
-    dimension: { type: "string" },
-    justification: { type: "string" },
-    tier: { type: "string" },
-    personas: { type: "array", items: { type: "string" } },
-    field: { type: "string" },
-    values: { type: "array", items: { type: "string" } },
-    index: { type: "integer" },
-    position: { type: "integer" },
-    list: { type: "string" },
-    section: { type: "string" },
-    hidden: { type: "boolean" },
-    title: { type: "string" },
-    action: { type: "string" },
-    why: { type: "string" },
-    channels: { type: "string" },
-  },
-  required: ["type"],
+  properties: { type: oneOf([type]), ...required, ...optional },
+  required: ["type", ...Object.keys(required)],
+});
+const PERSONA_KEYS = ["name", "age", "income", "gender", "watch", "browse", "buy", "narrative"];
+const personaFields = (allRequired: boolean) => ({
+  type: "object",
+  properties: Object.fromEntries(PERSONA_KEYS.map((f) => [f, S])),
+  ...(allRequired ? { required: PERSONA_KEYS } : {}),
+});
+const channelPanels = oneOf(Object.keys(CHANNEL_PANELS));
+
+const opSchema = {
+  anyOf: [
+    opShape("set_allocation", { channelId: S, percent: INT }),
+    ...["add_channel", "remove_channel", "lock_channel", "unlock_channel"].map((type) => opShape(type, { channelId: S })),
+    opShape("set_budget", { amount: { type: "number" } }),
+    opShape("remove_ctv_publisher", { publisher: S }),
+    opShape("add_ctv_publisher", { publisher: S, why: S }),
+    opShape("edit_text", { path: S, value: S }),
+    opShape("update_persona", { persona: S, fields: personaFields(false) }),
+    opShape("add_persona", { fields: personaFields(true) }),
+    opShape("remove_persona", { persona: S }),
+    opShape("add_segment", { name: S, dimension: oneOf(SEGMENT_DIMENSIONS), justification: S }, { tier: oneOf(SEGMENT_TIERS), personas: { type: "array", items: S } }),
+    opShape("edit_segment", { segmentId: S }, { name: S, dimension: oneOf(SEGMENT_DIMENSIONS), justification: S, tier: oneOf(SEGMENT_TIERS), personas: { type: "array", items: S } }),
+    opShape("remove_segment", { segmentId: S }),
+    opShape("edit_brief", { field: S }, { value: S, values: { type: "array", items: S } }),
+    opShape("set_kpis", { values: { type: "array", items: S } }),
+    opShape("set_geography", { value: S }),
+    opShape("add_takeaway", { value: S }, { position: INT }),
+    opShape("remove_takeaway", { index: INT }),
+    opShape("add_recommendation", { title: S, action: S, why: S, channels: S }, { position: INT }),
+    opShape("remove_recommendation", { index: INT }),
+    opShape("move_item", { list: oneOf(["takeaways", "recommendations"]), index: INT, position: INT }),
+    opShape("hide_section", { section: oneOf(Object.keys(PLAN_SECTIONS)) }),
+    opShape("show_section", { section: oneOf(Object.keys(PLAN_SECTIONS)) }),
+    opShape("add_channel_record", { channelId: S, recordType: oneOf(CHANNEL_RECORD_TYPES), recordId: S, rationale: S }),
+    opShape("remove_channel_record", { channelId: S, recordType: oneOf(CHANNEL_RECORD_TYPES), recordId: S }),
+    opShape("edit_channel_panel", { channelId: S, panel: channelPanels, content: S }),
+    opShape("hide_channel_panel", { channelId: S, panel: channelPanels }),
+    opShape("show_channel_panel", { channelId: S, panel: channelPanels }),
+  ],
 };
 
 export const scoutResponseSchema = {

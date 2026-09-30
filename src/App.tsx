@@ -3328,7 +3328,14 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success && data.channelStrategy) {
-        setProfileData(prev => prev ? { ...prev, channelStrategy: data.channelStrategy } : null);
+        // The re-analysis rebuilds the allocations but not the planner's panel edits, which belong
+        // to the media type rather than its numbers; they carry over for every media type kept.
+        setProfileData(prev => {
+          if (!prev) return null;
+          const kept = new Set((data.channelStrategy.mediaPlan?.channels || []).map((c: any) => c.channelId));
+          const overrides = Object.fromEntries(Object.entries(prev.channelStrategy?.channelOverrides || {}).filter(([id]) => kept.has(id)));
+          return { ...prev, channelStrategy: { ...data.channelStrategy, ...(Object.keys(overrides).length ? { channelOverrides: overrides } : {}) } };
+        });
         setActionError(null);
       } else {
         throw new Error(data.details || data.error || "The media plan could not be re-analyzed.");

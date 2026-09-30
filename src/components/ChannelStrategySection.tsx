@@ -1094,6 +1094,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                         <Sparkles className="h-3 w-3" />
                         {preview.kind === 'channel_removed'
                           ? 'ScoutAI would remove this media type'
+                          : preview.kind === 'channel_detail'
+                            ? `ScoutAI would change: ${(scoutPreview || []).filter((c) => c.channelId === channel.channelId && c.kind === 'channel_detail').map((c) => c.label.split(' – ').slice(1).join(' – ')).join(', ')}`
                           : preview.kind === 'lock'
                             ? `ScoutAI: ${preview.before} → ${preview.after}`
                             : <>ScoutAI: <span className="font-semibold line-through opacity-60">{preview.before}</span> → {preview.after}</>}
