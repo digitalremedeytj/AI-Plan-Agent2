@@ -497,8 +497,8 @@ export class FirestoreAdapter implements StorageAdapter {
   }
 
   async createPerformanceCampaign(input: PerformanceCampaignInput): Promise<PerformanceCampaign> {
-    assertCampaignFits(input.files);
     const campaign = buildCampaignRecord(crypto.randomUUID(), input, null, new Date().toISOString());
+    assertCampaignFits(campaign.files, campaign.review);
     await this.putDocument(PERFORMANCE, campaign.id, this.campaignToFields(campaign), { requireAbsent: true });
     return campaign;
   }
@@ -506,10 +506,10 @@ export class FirestoreAdapter implements StorageAdapter {
   async updatePerformanceCampaign(id: string, input: PerformanceCampaignInput, expectedRevision: number): Promise<PerformanceCampaign> {
     const doc = await this.getDocument(PERFORMANCE, id);
     if (!doc) throw new CampaignNotFoundError(id);
-    const existing = this.documentToCampaign(doc, false)!;
+    const existing = this.documentToCampaign(doc, true)!;
     if (existing.revision !== expectedRevision) throw new RevisionConflictError(existing.revision, "This campaign was changed by someone else.");
-    assertCampaignFits(input.files);
     const campaign = buildCampaignRecord(id, input, existing, new Date().toISOString());
+    assertCampaignFits(campaign.files, campaign.review);
     try {
       await this.putDocument(PERFORMANCE, id, this.campaignToFields(campaign), { expectedUpdateTime: doc.updateTime });
     } catch (err) {
@@ -538,8 +538,8 @@ export class FirestoreAdapter implements StorageAdapter {
   // Lists and files are JSON strings for the same reason plan payloads are: Firestore refuses
   // nested arrays, and report rows are nothing but.
   private campaignToFields(campaign: PerformanceCampaign): Record<string, unknown> {
-    const { files, linkedPlanIds, ...summary } = campaign;
-    return { ...summary, linkedPlanIdsJson: JSON.stringify(linkedPlanIds), filesJson: JSON.stringify(files) };
+    const { files, linkedPlanIds, review, ...summary } = campaign;
+    return { ...summary, linkedPlanIdsJson: JSON.stringify(linkedPlanIds), filesJson: JSON.stringify(files), reviewJson: JSON.stringify(review ?? null) };
   }
 
   private documentToCampaign(doc: FirestoreDocument, withFiles: boolean): PerformanceCampaign | null {
@@ -573,6 +573,7 @@ export class FirestoreAdapter implements StorageAdapter {
       updatedBy: fields.updatedBy,
       archived: Boolean(fields.archived),
       files: withFiles ? parse(fields.filesJson, []) : [],
+      review: withFiles ? parse(fields.reviewJson, null) : null,
     };
   }
 

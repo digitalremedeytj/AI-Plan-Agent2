@@ -148,6 +148,8 @@ export interface PerformanceCampaignSummary {
 
 export interface PerformanceCampaign extends PerformanceCampaignSummary {
   files: PerformanceFileRecord[];
+  /** The saved Performance Review (src/performance/review), opaque to storage. */
+  review: unknown | null;
 }
 
 export interface PerformanceCampaignInput {
@@ -160,6 +162,8 @@ export interface PerformanceCampaignInput {
   notes: string | null;
   linkedPlanIds: string[];
   files: PerformanceFileRecord[];
+  /** Left out to keep the saved review; null clears it. */
+  review?: unknown | null;
   actor: string;
 }
 
@@ -183,15 +187,15 @@ export class CampaignTooLargeError extends Error {
 }
 
 /** Shared by both drivers so a campaign too big for Firestore is refused in development as well. */
-export function assertCampaignFits(files: PerformanceFileRecord[]): void {
-  const bytes = new TextEncoder().encode(JSON.stringify(files)).length;
+export function assertCampaignFits(files: PerformanceFileRecord[], review: unknown = null): void {
+  const bytes = new TextEncoder().encode(JSON.stringify(files)).length + new TextEncoder().encode(JSON.stringify(review)).length;
   if (bytes > MAX_PERFORMANCE_FILES_BYTES) throw new CampaignTooLargeError(bytes);
 }
 
 export function buildCampaignRecord(
   id: string,
   input: PerformanceCampaignInput,
-  existing: Pick<PerformanceCampaign, "revision" | "createdAt" | "createdBy" | "archived"> | null,
+  existing: Pick<PerformanceCampaign, "revision" | "createdAt" | "createdBy" | "archived" | "review"> | null,
   now: string,
 ): PerformanceCampaign {
   return {
@@ -213,11 +217,12 @@ export function buildCampaignRecord(
     updatedBy: input.actor,
     archived: existing?.archived ?? false,
     files: input.files,
+    review: input.review !== undefined ? input.review : existing?.review ?? null,
   };
 }
 
 export function toCampaignSummary(campaign: PerformanceCampaign): PerformanceCampaignSummary {
-  const { files, ...summary } = campaign;
+  const { files, review, ...summary } = campaign;
   return summary;
 }
 

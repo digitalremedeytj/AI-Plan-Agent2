@@ -52,10 +52,10 @@ test("best and weakest rows are stated from the data, leaving out thin rows and 
   const text = digest();
   const publisher = text.split("\n").find((line) => line.startsWith("- Ranked by PM among CTV publishers"))!;
   assert.ok(publisher, "the publisher report is ranked among CTV publishers only");
-  assert.match(publisher, /best CBS 0\.74/);
+  assert.match(publisher, /best CBS PM 0\.74/);
   assert.doesNotMatch(publisher, /Display Retargeting|Pre-Roll/);
   const rankings = text.split("\n").filter((l) => l.startsWith("- Ranked by PM"));
   assert.ok(rankings.every((l) => !l.includes("Gym Bros")), "rows under 30 conversions are not ranked");
   const mediaTypes = rankings[0];
-  assert.match(mediaTypes, /best Display Retargeting 4\.75 \(CPA \$4\.99\), Display 3\.66 \(CPA \$6\.48\); weakest OTT 0\.44 \(CPA \$53\.85\), Pre-Roll\/Mid-Roll 1\.18/, "a short report is split without overlap");
+  assert.match(mediaTypes, /best Display Retargeting PM 4\.75 \(CPA \$4\.99\), Display PM 3\.66 \(CPA \$6\.48\); weakest OTT PM 0\.44 \(CPA \$53\.85\), Pre-Roll\/Mid-Roll PM 1\.18/, "a short report is split without overlap");
 });

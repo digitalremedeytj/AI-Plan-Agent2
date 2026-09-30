@@ -1,6 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
-import { AlertCircle, AlertTriangle, BarChart3, FileSpreadsheet, Info, Link2, Loader2, Trash2, Unlink, Upload, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, BarChart3, CheckCircle2, ChevronDown, FileSpreadsheet, Info, Link2, Loader2, RefreshCw, Sparkles, Trash2, Unlink, Upload, X, XCircle } from "lucide-react";
 import * as api from "../api/client";
 import type { CampaignAnalysis, CampaignDetailsInput, PerformanceCampaignSummary, PerformanceCampaignView, PreparedFile } from "../api/client";
 import { prepareFiles } from "../performance/browserFiles";
@@ -20,7 +20,7 @@ interface Props {
   onChanged: () => void;
 }
 
-type View = { mode: "list" } | { mode: "upload"; campaign?: PerformanceCampaignView } | { mode: "campaign"; id: string };
+type View = { mode: "list" } | { mode: "upload"; campaign?: PerformanceCampaignView } | { mode: "campaign"; id: string; writeReview?: boolean };
 
 const money = (v: number | null | undefined) => (v === null || v === undefined ? "n/a" : `$${Math.round(v).toLocaleString("en-US")}`);
 const count = (v: number | null | undefined) => (v === null || v === undefined ? "n/a" : Math.round(v).toLocaleString("en-US"));
@@ -62,13 +62,15 @@ export function PastPerformanceModal({ isOpen, onClose, planId, advertiserName, 
               onCancel={() => setView(view.campaign ? { mode: "campaign", id: view.campaign.id } : { mode: "list" })}
               onSaved={(id) => {
                 onChanged();
-                setView({ mode: "campaign", id });
+                // New reports mean a new read: the review is written straight away.
+                setView({ mode: "campaign", id, writeReview: true });
               }}
             />
           )}
           {view.mode === "campaign" && (
             <CampaignStep
               id={view.id}
+              writeReview={Boolean(view.writeReview)}
               planId={planId}
               onBack={() => setView({ mode: "list" })}
               onAddFiles={(campaign) => setView({ mode: "upload", campaign })}
@@ -361,8 +363,10 @@ function DetailFields({ details, edit }: { details: CampaignDetailsInput; edit: 
 
 // --- one campaign ----------------------------------------------------------------
 
-function CampaignStep({ id, planId, onBack, onAddFiles, onChanged }: { id: string; planId: string; onBack: () => void; onAddFiles: (c: PerformanceCampaignView) => void; onChanged: () => void }) {
+function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }: { id: string; writeReview: boolean; planId: string; onBack: () => void; onAddFiles: (c: PerformanceCampaignView) => void; onChanged: () => void }) {
   const [data, setData] = React.useState<api.CampaignResponse | null>(null);
+  const [reviewing, setReviewing] = React.useState(false);
+  const [reviewError, setReviewError] = React.useState<string | null>(null);
   const [details, setDetails] = React.useState<CampaignDetailsInput>({});
   const [dirty, setDirty] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
@@ -374,8 +378,24 @@ function CampaignStep({ id, planId, onBack, onAddFiles, onChanged }: { id: strin
     setDetails({ advertiserName: c.advertiserName, name: c.name, flightStart: c.flightStart, flightEnd: c.flightEnd, conversionLabel: c.conversionLabel, campaignGoal: c.campaignGoal });
     setDirty(false);
   };
+  const review = async (campaign: PerformanceCampaignView) => {
+    setReviewing(true);
+    setReviewError(null);
+    try {
+      apply(await api.reviewPerformanceCampaign(campaign.id, campaign.revision));
+      onChanged();
+    } catch (err: any) {
+      setReviewError(err?.message || "The review could not be written. Try again.");
+    } finally {
+      setReviewing(false);
+    }
+  };
   React.useEffect(() => {
-    api.getPerformanceCampaign(id).then(apply).catch((err) => setError(err?.message || "Could not load the campaign."));
+    api.getPerformanceCampaign(id).then((response) => {
+      apply(response);
+      if (writeReview && !response.review) review(response.campaign);
+    }).catch((err) => setError(err?.message || "Could not load the campaign."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const run = async (action: () => Promise<api.CampaignResponse | void>) => {
@@ -440,6 +460,7 @@ function CampaignStep({ id, planId, onBack, onAddFiles, onChanged }: { id: strin
         </div>
       )}
       {data.advertiserMismatch && <Notice tone="caution" text={`These files are for ${data.advertiserMismatch}, not ${c.advertiserName}. They will not appear in anything client-facing unless the advertisers match.`} />}
+      <ReviewPanel review={data.review} stale={data.reviewStale} busy={reviewing || busy} error={reviewError} onWrite={() => review(c)} />
       <AnalysisView
         analysis={data.analysis}
         removable={c.files.length > 1 ? c.files.map((f) => f.fileName) : []}
@@ -448,6 +469,81 @@ function CampaignStep({ id, planId, onBack, onAddFiles, onChanged }: { id: strin
           if (file && window.confirm(`Remove ${fileName} from this campaign?`)) run(() => api.updatePerformanceCampaign(c.id, c.revision, { removeFileIds: [file.id] }));
         }}
       />
+    </div>
+  );
+}
+
+// --- the saved review ------------------------------------------------------------------
+
+const KIND: Record<api.ReviewFinding["kind"], { label: string; icon: React.ReactNode }> = {
+  worked: { label: "What worked", icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> },
+  didnt: { label: "What didn't", icon: <XCircle className="w-3.5 h-3.5 text-rose-600" /> },
+  watch: { label: "Read with care", icon: <AlertTriangle className="w-3.5 h-3.5 text-amber-600" /> },
+};
+const CONFIDENCE_STYLE: Record<string, string> = {
+  high: "bg-emerald-50 text-emerald-700 border-emerald-100",
+  medium: "bg-sky-50 text-sky-700 border-sky-100",
+  low: "bg-slate-100 text-slate-600 border-slate-200",
+};
+
+function ReviewPanel({ review, stale, busy, error, onWrite }: { review: api.PerformanceReview | null; stale: boolean; busy: boolean; error: string | null; onWrite: () => void }) {
+  const [open, setOpen] = React.useState<string | null>(null);
+  if (!review) {
+    return (
+      <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 px-4 py-3">
+        {busy ? (
+          <div className="flex items-center gap-2 text-xs text-indigo-900"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Writing the review. This takes about a minute…</div>
+        ) : (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-slate-600">No review yet. ScoutAI reads the reports once and saves what worked, what didn't and what to read with care, for every plan to build on.</p>
+            <button onClick={onWrite} className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-[11px] font-bold hover:bg-indigo-700 cursor-pointer"><Sparkles className="w-3 h-3" /> Write the review</button>
+          </div>
+        )}
+        {error && <div className="mt-2"><ErrorBox text={error} /></div>}
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-slate-200">
+      <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-100">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-600">Performance review</div>
+          <p className="mt-1 text-xs leading-relaxed text-slate-700">{review.summary}</p>
+          <p className="mt-1 text-[10px] text-slate-400">Written {new Date(review.generatedAt).toLocaleDateString()} · requested by {review.generatedBy}</p>
+        </div>
+        <button disabled={busy} onClick={onWrite} className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 cursor-pointer disabled:opacity-50">
+          {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Rewrite
+        </button>
+      </div>
+      {stale && <div className="px-4 pt-3"><Notice tone="caution" text="The reports or details changed after this review was written. Rewrite it before using it for client learnings." /></div>}
+      {error && <div className="px-4 pt-3"><ErrorBox text={error} /></div>}
+      <div className="p-4 space-y-3">
+        {(["worked", "didnt", "watch"] as const).map((kind) => {
+          const findings = review.findings.filter((f) => f.kind === kind);
+          if (!findings.length) return null;
+          return (
+            <div key={kind}>
+              <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-700 mb-1.5">{KIND[kind].icon} {KIND[kind].label}</div>
+              <ul className="space-y-1.5">
+                {findings.map((f) => (
+                  <li key={f.id} className="rounded-lg border border-slate-100 bg-slate-50/50 px-3 py-2">
+                    <button onClick={() => setOpen(open === f.id ? null : f.id)} className="w-full flex items-start gap-2 text-left cursor-pointer">
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-[11px] font-bold text-slate-800">{f.headline}</span>
+                        <span className="block text-[11px] leading-relaxed text-slate-600">{f.detail}</span>
+                      </span>
+                      <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded border ${CONFIDENCE_STYLE[f.confidence]}`}>{f.confidence}</span>
+                      <ChevronDown className={`w-3.5 h-3.5 shrink-0 text-slate-400 transition-transform ${open === f.id ? "rotate-180" : ""}`} />
+                    </button>
+                    {open === f.id && <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500"><span className="font-bold">Evidence:</span> {f.evidence}</p>}
+                    {f.unverified.length > 0 && <p className="mt-1.5 text-[10px] text-amber-800">Figures not found in the data: {f.unverified.join(", ")}. This finding is kept out of anything client-facing.</p>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

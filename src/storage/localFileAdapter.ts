@@ -278,8 +278,8 @@ export class LocalFileAdapter implements StorageAdapter {
 
   async createPerformanceCampaign(input: PerformanceCampaignInput): Promise<PerformanceCampaign> {
     await this.init();
-    assertCampaignFits(input.files);
     const campaign = buildCampaignRecord(crypto.randomUUID(), input, null, new Date().toISOString());
+    assertCampaignFits(campaign.files, campaign.review);
     writeJsonAtomic(this.campaignPath(campaign.id), campaign);
     return campaign;
   }
@@ -289,8 +289,8 @@ export class LocalFileAdapter implements StorageAdapter {
     const existing = readJson<PerformanceCampaign>(this.campaignPath(id));
     if (!existing) throw new CampaignNotFoundError(id);
     if (existing.revision !== expectedRevision) throw new RevisionConflictError(existing.revision, "This campaign was changed by someone else.");
-    assertCampaignFits(input.files);
     const campaign = buildCampaignRecord(id, input, existing, new Date().toISOString());
+    assertCampaignFits(campaign.files, campaign.review);
     writeJsonAtomic(this.campaignPath(id), campaign);
     return campaign;
   }

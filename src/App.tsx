@@ -76,6 +76,7 @@ import { MediaPlanSelector } from "./components/MediaPlanSelector";
 import { TaxonomyVerificationBadge } from "./components/TaxonomyVerificationBadge";
 import { ALL_INTERNAL_VISIBLE, ChannelStrategySection, type InternalOnlyVisibility } from "./components/ChannelStrategySection";
 import { SectionVisibilityButton } from "./components/SectionVisibilityButton";
+import { PerformanceLearningsSection } from "./components/PerformanceLearningsSection";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SharePlanModal } from "./components/SharePlanModal";
@@ -6399,6 +6400,13 @@ export default function App() {
                   )}
                 </div>
               )}
+
+                <PerformanceLearningsSection
+                  learnings={profileData.performanceLearnings || []}
+                  isHidden={hiddenSections.has("performanceLearnings")}
+                  isShareView={isShareView}
+                  onToggle={handleToggleSectionActive}
+                />
 
                 {/* Dynamic Domain Affinity & CTV Publishers Bento Rows */}
                 {/* Case 1: CTV-First - SHOW CTV Publishers and REPLACE Domains */}

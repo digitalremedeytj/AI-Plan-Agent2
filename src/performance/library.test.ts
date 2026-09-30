@@ -83,7 +83,7 @@ test("the flight the planner confirmed decides which files are reference", () =>
 
 test("the browser never receives report contents", () => {
   const files = readUploadedFiles([{ fileName: "a.csv", text: "name,Spend\nOTT,1\n" }], "tj").files;
-  const view = publicCampaign({ id: "c", revision: 1, advertiserName: "A", advertiserKey: "a", name: "n", flightStart: null, flightEnd: null, conversionLabel: null, campaignGoal: null, notes: null, linkedPlanIds: [], fileCount: 1, createdAt: "", createdBy: "", updatedAt: "", updatedBy: "", archived: false, files });
+  const view = publicCampaign({ id: "c", revision: 1, advertiserName: "A", advertiserKey: "a", name: "n", flightStart: null, flightEnd: null, conversionLabel: null, campaignGoal: null, notes: null, linkedPlanIds: [], fileCount: 1, createdAt: "", createdBy: "", updatedAt: "", updatedBy: "", archived: false, files, review: null });
   assert.equal(JSON.stringify(view).includes("OTT,1"), false);
   assert.equal(view.files[0].source, "export");
 });

@@ -64,7 +64,7 @@ function rankingLine(b: BreakdownDigest): string {
   const rows = b.rows.filter((r) => r.pm !== null && !r.flags.includes("low-sample") && !r.flags.includes("media-type-row"));
   if (rows.length < 4) return "";
   const byPm = [...rows].sort((a, z) => (z.pm ?? 0) - (a.pm ?? 0));
-  const show = (list: DigestRow[]) => list.map((r) => `${r.name} ${r.pm!.toFixed(2)} (CPA ${dollars(r.cpa)})`).join(", ");
+  const show = (list: DigestRow[]) => list.map((r) => `${r.name} PM ${r.pm!.toFixed(2)} (CPA ${dollars(r.cpa)})`).join(", ");
   // A short report is split in half, so no row is both one of the best and one of the weakest.
   const n = Math.min(RANKED, Math.floor(rows.length / 2));
   return `- Ranked by PM among ${publisherReport ? "CTV publishers" : "rows"} with ${MIN_CONVERSIONS}+ conversions (${rows.length} of ${b.rows.length}): best ${show(byPm.slice(0, n))}; weakest ${show(byPm.slice(-n).reverse())}.`;

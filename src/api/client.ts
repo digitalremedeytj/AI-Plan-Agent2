@@ -5,6 +5,7 @@ import type { AssistantOp, ProposalChange } from "../assistant/operations";
 import type { ChatTurn } from "../assistant/scoutChat";
 import type { FollowUp } from "../assistant/followUps";
 import type { CampaignAnalysis } from "../performance/campaign";
+import type { PerformanceReview, ReviewFinding } from "../performance/review";
 import type { PreparedFile } from "../performance/browserFiles";
 import type { PerformanceCampaignSummary } from "../storage/types";
 
@@ -300,6 +301,8 @@ export interface ScoutItem {
   why: string;
   /** The past-performance figures this recommendation rests on, when it rests on any. */
   evidence?: string | null;
+  /** Figures in this recommendation that are in neither the campaign data nor the plan. */
+  unverifiedFigures?: string[];
   ops: AssistantOp[];
   /** This item's effect on its own, from a server dry run. */
   changes: ProposalChange[];
@@ -460,7 +463,7 @@ export async function savePublishers(
 // --- past campaign performance --------------------------------------------------
 
 export type { CampaignAnalysis, Warning as PerformanceWarning } from "../performance/campaign";
-export type { PerformanceCampaignSummary, PreparedFile };
+export type { PerformanceCampaignSummary, PreparedFile, PerformanceReview, ReviewFinding };
 
 export interface CampaignDetailsInput {
   advertiserName?: string;
@@ -479,6 +482,9 @@ export interface PerformanceCampaignView extends PerformanceCampaignSummary {
 export interface CampaignResponse {
   campaign: PerformanceCampaignView;
   analysis: CampaignAnalysis;
+  review: PerformanceReview | null;
+  /** The reports or details changed after the review was written. */
+  reviewStale: boolean;
   /** The advertiser the files name, when it is not the campaign's. */
   advertiserMismatch: string | null;
   rejected?: string[];
@@ -525,4 +531,12 @@ export function updatePerformanceCampaign(
 
 export async function archivePerformanceCampaign(id: string): Promise<void> {
   await request(`/api/performance/campaigns/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Writes (or rewrites) the campaign's saved review. Takes up to a couple of minutes. */
+export function reviewPerformanceCampaign(id: string, expectedRevision: number): Promise<CampaignResponse> {
+  return request<CampaignResponse>(`/api/performance/campaigns/${encodeURIComponent(id)}/review`, {
+    method: "POST",
+    headers: { "If-Match": String(expectedRevision) },
+  });
 }

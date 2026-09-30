@@ -122,12 +122,13 @@ function toTurns(messages: Message[]): ChatTurn[] {
   });
 }
 
-function suggestedPrompts(profile: AudienceProfile, hasPastPerformance: boolean): string[] {
+function suggestedPrompts(profile: AudienceProfile, pastPerformance: "none" | "reference" | "own"): string[] {
   const channels = profile.channelStrategy?.mediaPlan?.channels || [];
   const largest = [...channels].sort((a, b) => b.allocationPercent - a.allocationPercent)[0];
   const openFindings = (profile.auditResult?.findings || []).filter((f) => f.status !== "resolved").length;
   return [
-    hasPastPerformance ? "Analyse our past campaign: what worked, what didn't, and what should this plan change?" : "",
+    pastPerformance !== "none" ? "Analyse our past campaign: what worked, what didn't, and what should this plan change?" : "",
+    pastPerformance === "own" && !(profile.performanceLearnings || []).length ? "Draft the client-facing learnings from our past campaign" : "",
     "What would you change to improve performance toward our KPIs?",
     "Does this plan deliver what the brief asked for?",
     largest ? `Why does ${largest.channelName} get ${Math.round(largest.allocationPercent)}% of the budget?` : "",
@@ -251,6 +252,12 @@ function ProposalCard({
                     {item.evidence && (
                       <span className="mt-1 flex items-start gap-1 rounded-md bg-indigo-50/70 border border-indigo-100 px-1.5 py-1 text-[10px] leading-snug text-indigo-900">
                         <BarChart3 className="w-3 h-3 shrink-0 mt-px text-indigo-500" /> <span><span className="font-bold">From past performance:</span> {item.evidence}</span>
+                      </span>
+                    )}
+                    {item.unverifiedFigures && item.unverifiedFigures.length > 0 && (
+                      <span className="mt-1 flex items-start gap-1 rounded-md bg-amber-50 border border-amber-200 px-1.5 py-1 text-[10px] leading-snug text-amber-900">
+                        <AlertTriangle className="w-3 h-3 shrink-0 mt-px text-amber-600" />
+                        <span>Not in the campaign data or the plan: {item.unverifiedFigures.join(", ")}. Check before applying.</span>
                       </span>
                     )}
                   </span>
@@ -616,7 +623,7 @@ export function ScoutAssistantPanel({
               Ask why the plan looks the way it does, check it against the brief, or ask for changes and recommendations: channels, budget, personas, segments, the brief and the plan's text. Nothing is saved until you apply it.
             </p>
             <div className="mt-4 flex flex-col gap-1.5">
-              {suggestedPrompts(profile, pastCampaigns.length > 0).map((prompt) => (
+              {suggestedPrompts(profile, pastCampaigns.length === 0 ? "none" : pastCampaigns.some((c) => c.advertiserKey === advertiserName.trim().toLowerCase().replace(/\s+/g, " ")) ? "own" : "reference").map((prompt) => (
                 <button
                   key={prompt}
                   onClick={() => send(prompt)}

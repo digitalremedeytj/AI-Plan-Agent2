@@ -27,6 +27,7 @@ export const PLAN_SECTIONS: Record<string, { label: string; aliases: string[] }>
   channels: { label: "Channel strategy", aliases: [] },
   executiveSummary: { label: "Executive summary", aliases: ["blueprint"] },
   sources: { label: "Sources", aliases: [] },
+  performanceLearnings: { label: "Built on your campaign history", aliases: [] },
 };
 
 export interface ListOutcome {

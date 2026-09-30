@@ -149,9 +149,18 @@ export function suggestedDetails(analysis: CampaignAnalysis): Partial<CampaignDe
   };
 }
 
+/**
+ * What a review was written from. Changing a file, the flight, the conversion event, the goal or
+ * the notes changes what the data says, so the saved review is then marked out of date.
+ */
+export function reviewFingerprint(campaign: Pick<PerformanceCampaign, "files" | "flightStart" | "flightEnd" | "conversionLabel" | "campaignGoal" | "notes">): string {
+  const basis = [campaign.files.map((f) => f.fingerprint).sort(), campaign.flightStart, campaign.flightEnd, campaign.conversionLabel, campaign.campaignGoal, campaign.notes];
+  return createHash("sha256").update(JSON.stringify(basis)).digest("hex").slice(0, 32);
+}
+
 /** The campaign as the browser sees it: file details but never file contents. */
 export function publicCampaign(campaign: PerformanceCampaign) {
-  const { files, ...summary } = campaign;
+  const { files, review, ...summary } = campaign;
   return {
     ...summary,
     files: files.map((f) => ({ id: f.id, fileName: f.fileName, sizeBytes: f.sizeBytes, uploadedAt: f.uploadedAt, uploadedBy: f.uploadedBy, source: typeof f.text === "string" ? "export" as const : "browser-summary" as const })),

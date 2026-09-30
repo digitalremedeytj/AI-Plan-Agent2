@@ -19,8 +19,10 @@ const plan = () => buildMediaRecommendationPlan(buildCampaignFacts({
 
 const channels = () => plan().evaluatedCandidates.map((c: any) => ({ id: c.product.id, name: c.product.displayName, aliases: c.product.aliases || [] }));
 const linked = (advertiserName = "Acme Auto Accessories", campaignGoal: string | null = "cpa") => [{
-  campaign: { name: "Feb 9 to Mar 10", advertiserName, campaignGoal, flightEnd: "2026-03-10" },
+  campaign: { id: "c1", name: "Feb 9 to Mar 10", advertiserName, campaignGoal, flightEnd: "2026-03-10" },
   analysis: analyzeReportFiles(platformReports()),
+  review: null,
+  reviewStale: false,
 }];
 const catalog = [
   { name: "Hulu", category: "SVOD", enabled: true },

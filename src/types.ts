@@ -380,6 +380,8 @@ export interface AudienceProfile {
   geoInsights?: string;
   geoTargeting?: GeoTargeting;
   hiddenSections?: string[];
+  /** "Built on your campaign history": learnings from the client's past campaigns, added through ScoutAI. */
+  performanceLearnings?: Array<{ campaignId: string; campaignName: string; findingId: string; learning: string; action: string }>;
   slideExports?: SlideExportVersion[];
   /** Set when a planner edits the Brief of Record after the plan was built from it; a regenerate then keeps their brief. */
   briefOfRecordEdited?: { at: string; fields: string[] };

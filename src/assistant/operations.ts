@@ -23,6 +23,7 @@ import { applyAudienceOps, applyBriefOps, PERSONA_FIELDS, type PersonaFields } f
 import { applyListOps, applySectionOps, NARRATIVE_LISTS, type NarrativeList } from "./narrativeOps";
 import { syncCtvChannelPublishers } from "../planning/ctvChannel";
 import { applyChannelDetailOps } from "./channelDetailOps";
+import { applyLearningOps, type LearningCampaign } from "./learningOps";
 import type { PlanningSettings } from "../planning/settings";
 
 export type AssistantOp =
@@ -59,6 +60,9 @@ export type AssistantOp =
   | { type: "edit_channel_panel"; channelId: string; panel: string; content: string }
   | { type: "hide_channel_panel"; channelId: string; panel: string }
   | { type: "show_channel_panel"; channelId: string; panel: string }
+  | { type: "add_learning"; campaignId: string; findingId: string; learning: string; action: string; position?: number }
+  | { type: "edit_learning"; index: number; learning?: string; action?: string }
+  | { type: "remove_learning"; index: number }
   // Restores come only from a revert: they put back exactly what a change removed, which the
   // model has no way to describe (a publisher from the catalog, a persona's headshot).
   | { type: "restore_ctv_publisher"; publisher: string; category: string; why: string; index: number; isUserAdded?: boolean }
@@ -66,7 +70,8 @@ export type AssistantOp =
   | { type: "restore_segment"; index: number; segment: any; personas: string[] }
   | { type: "set_list"; list: NarrativeList; items: any[] }
   | { type: "set_channel_records"; channelId: string; recordType: string; records: any[] }
-  | { type: "set_channel_override"; channelId: string; override: any | null };
+  | { type: "set_channel_override"; channelId: string; override: any | null }
+  | { type: "set_learnings"; items: any[] };
 
 export type AssistantOpType = AssistantOp["type"];
 
@@ -75,8 +80,9 @@ export const MODEL_OP_TYPES: ReadonlySet<AssistantOpType> = new Set([
   "update_persona", "add_persona", "remove_persona", "add_segment", "edit_segment", "remove_segment", "edit_brief", "set_kpis", "set_geography",
   "add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_section_visibility", "hide_section", "show_section", "add_ctv_publisher",
   "add_channel_record", "remove_channel_record", "edit_channel_panel", "hide_channel_panel", "show_channel_panel",
+  "add_learning", "edit_learning", "remove_learning",
 ]);
-const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment", "set_list", "set_channel_records", "set_channel_override"]);
+const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment", "set_list", "set_channel_records", "set_channel_override", "set_learnings"]);
 
 /** A CTV publisher the plan may add: the shared publisher catalog, as settings store it. */
 export interface CatalogPublisher {
@@ -90,6 +96,8 @@ export interface ApplyContext {
   publisherCatalog?: CatalogPublisher[];
   /** The settings the plan was built with, whose catalog channel records are added from. */
   planningSettings?: PlanningSettings;
+  /** Past campaigns linked to the plan, which client learnings are drawn from. */
+  learningCampaigns?: LearningCampaign[];
 }
 
 export interface ProposalChange {
@@ -246,6 +254,25 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
         const value = str(it.value);
         if (!value) { reject("needs a geography"); break; }
         ops.push({ type, value, ...(allowRestore && it.config && typeof it.config === "object" ? { config: it.config } : {}) });
+        break;
+      }
+      case "add_learning": {
+        const campaignId = str(it.campaignId);
+        const findingId = str(it.findingId);
+        if (!campaignId || !findingId || !str(it.learning) || !str(it.action)) { reject("needs a campaignId, a findingId, the learning and the action"); break; }
+        ops.push({ type, campaignId, findingId, learning: str(it.learning), action: str(it.action), ...(Number.isInteger(it.position) && it.position >= 0 ? { position: it.position } : {}) });
+        break;
+      }
+      case "edit_learning":
+      case "remove_learning": {
+        const index = Number(it.index);
+        if (!Number.isInteger(index) || index < 0) { reject("needs the learning's index"); break; }
+        if (type === "remove_learning") ops.push({ type, index });
+        else ops.push({ type, index, ...(str(it.learning) ? { learning: str(it.learning) } : {}), ...(str(it.action) ? { action: str(it.action) } : {}) });
+        break;
+      }
+      case "set_learnings": {
+        ops.push({ type, items: Array.isArray(it.items) ? it.items : [] });
         break;
       }
       case "add_takeaway": {
@@ -450,10 +477,11 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
   }
 
   const lists = applyListOps(profile, byType(["add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_list"]), listsBefore);
+  const learnings = applyLearningOps(profile, byType(["add_learning", "edit_learning", "remove_learning", "set_learnings"]), context.learningCampaigns);
   const sections = applySectionOps(profile, byType(["set_section_visibility"]));
   const brief = applyBriefOps(next, byType(["edit_brief", "set_kpis", "set_geography"]));
   const audience = applyAudienceOps(next, byType(["update_persona", "add_persona", "remove_persona", "restore_persona", "add_segment", "edit_segment", "remove_segment", "restore_segment"]));
-  for (const outcome of [lists, sections, brief, audience]) {
+  for (const outcome of [lists, learnings, sections, brief, audience]) {
     applied.push(...outcome.applied);
     rejected.push(...outcome.rejected);
   }
@@ -649,9 +677,9 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
   return {
     payload: next,
     ops: applied,
-    changes: [...brief.changes, ...audience.changes, ...channel.changes, ...details.changes, ...publisherChanges, ...lists.changes, ...sections.changes, ...textChanges],
+    changes: [...brief.changes, ...audience.changes, ...channel.changes, ...details.changes, ...publisherChanges, ...lists.changes, ...learnings.changes, ...sections.changes, ...textChanges],
     rejected,
-    revertOps: [...brief.revertOps, ...audience.revertOps, ...channel.revertOps, ...details.revertOps, ...revertPublishers, ...lists.revertOps, ...sections.revertOps, ...revertText],
+    revertOps: [...brief.revertOps, ...audience.revertOps, ...channel.revertOps, ...details.revertOps, ...revertPublishers, ...lists.revertOps, ...learnings.revertOps, ...sections.revertOps, ...revertText],
   };
 }
 

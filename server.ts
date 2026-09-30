@@ -62,9 +62,12 @@ import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { applyOps, parseOps } from "./src/assistant/operations";
 import { detectFollowUps } from "./src/assistant/followUps";
-import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, suggestedDetails } from "./src/performance/library";
+import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, reviewFingerprint, suggestedDetails } from "./src/performance/library";
 import { CAMPAIGN_GOALS } from "./src/performance/constants";
-import { buildPerformanceContext, PERFORMANCE_INSTRUCTION, type LinkedCampaign } from "./src/assistant/performanceContext";
+import { figureReference, unverifiedFigures } from "./src/performance/figureCheck";
+import { renderDigest } from "./src/performance/digest";
+import { buildReviewInput, normalizeReview, readStoredReview, REVIEW_SYSTEM_INSTRUCTION, reviewSchema } from "./src/performance/review";
+import { buildPerformanceContext, PERFORMANCE_INSTRUCTION, toLearningCampaign, type LinkedCampaign } from "./src/assistant/performanceContext";
 import { SCOUT_SYSTEM_INSTRUCTION, buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./src/assistant/scoutChat";
 import { throttledProgress } from "./src/server/thoughtProgress";
 import { EVIDENCE_RULES } from "./src/qa/evidenceRules";
@@ -2071,14 +2074,20 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       return;
     }
     const context = await scoutApplyContext(storage, plan);
-    const linked = await linkedCampaigns(storage, plan.id);
+    const linked = context.linked;
     const performance = buildPerformanceContext(linked, {
       planAdvertiser: plan.advertiserName || "",
       plan: (plan.payload as any)?.profile?.channelStrategy?.mediaPlan,
       planPublishers: ((plan.payload as any)?.profile?.ctvPublishers || []).map((p: any) => String(p?.publisher ?? "")).filter(Boolean),
       catalog: context.publisherCatalog,
+      profile: (plan.payload as any)?.profile,
     });
     const analysisTurn = Boolean(performance) && PERFORMANCE_QUESTION.test(turns[turns.length - 1].text);
+    const planContext = buildPlanContext(plan, context);
+    // Figures about past performance must come from its data or the plan; anything else is flagged.
+    // Checked against each campaign's whole digest, not the part that fit in the prompt: a row
+    // cut for length is still a real figure.
+    const knownFigures = performance ? [performance, planContext, ...linked.map((l) => renderDigest(l.analysis, { maxChars: 1_000_000 }))] : null;
 
     // Newline-delimited JSON: thought headlines while the model works, then one result line.
     res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
@@ -2092,7 +2101,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       getAiClient(),
       {
         systemInstruction: performance ? `${SCOUT_SYSTEM_INSTRUCTION}\n\n${PERFORMANCE_INSTRUCTION}` : SCOUT_SYSTEM_INSTRUCTION,
-        input: buildScoutInput(buildPlanContext(plan, context), turns, performance),
+        input: buildScoutInput(planContext, turns, performance),
         schema: scoutResponseSchema,
         onThought: (text) => send({ type: "thought", text }),
       },
@@ -2111,13 +2120,19 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
         if (item.ops.length > 0 || item.rejected.length > 0) dropped.push(`${item.title}: ${reasons.join("; ") || "it would not change anything"}`);
         return [];
       }
-      return [{ id: `item-${index}`, title: item.title, why: item.why, evidence: item.evidence, ops: dryRun.ops, changes: dryRun.changes, rejected: reasons }];
+      return [{ id: `item-${index}`, title: item.title, why: item.why, evidence: item.evidence, unverifiedFigures: [] as string[], ops: dryRun.ops, changes: dryRun.changes, rejected: reasons }];
     });
     if (items.length > 0) {
       const combined = applyOps(plan.payload, items.flatMap((item) => item.ops), context);
       proposal = { summary: response.summary, items, changes: combined.changes, rejected: combined.rejected.map((r) => r.reason), baseRevision: plan.revision };
     }
     if (dropped.length > 0) reply += `\n\n_Left out because the plan doesn't allow it: ${dropped.join(" · ")}._`;
+    // The proposal's own results ("OLV 25% · $62,500") are known figures too: the card computed them.
+    const proposed = items.flatMap((item) => item.changes.map((c) => `${c.before} ${c.after}`));
+    const figures = knownFigures ? figureReference(...knownFigures, ...proposed) : null;
+    if (figures) for (const item of items) item.unverifiedFigures = unverifiedFigures([item.title, item.why, item.evidence ?? "", ...opTexts(item.ops)].join(" \n "), figures);
+    const replyUnverified = figures ? unverifiedFigures(response.reply, figures) : [];
+    if (replyUnverified.length > 0) reply += `\n\n_Not found in the campaign data or the plan, so check before using: ${replyUnverified.join(", ")}._`;
     console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${linked.length ? `${linked.length} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
     send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision });
     res.end();
@@ -2133,13 +2148,29 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
   }
 });
 
+// The free text an operation would write into the plan, for the number check. Ids and keys are not text.
+const NON_TEXT_KEYS = new Set(["type", "channelId", "segmentId", "recordId", "recordType", "campaignId", "findingId", "path", "section", "panel", "dimension", "tier", "list"]);
+function opTexts(ops: unknown[]): string[] {
+  const out: string[] = [];
+  const walk = (value: unknown, key = "") => {
+    if (typeof value === "string" && !NON_TEXT_KEYS.has(key)) out.push(value);
+    else if (Array.isArray(value)) value.forEach((v) => walk(v, key));
+    else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) walk(v, k);
+  };
+  walk(ops);
+  return out;
+}
+
 // The past campaigns linked to a plan, analysed. A campaign that fails to load is left out rather
 // than failing the chat: the plan conversation still works without it.
 async function linkedCampaigns(storage: StorageAdapter, planId: string): Promise<LinkedCampaign[]> {
   try {
     const summaries = (await storage.listPerformanceCampaigns()).filter((c) => c.linkedPlanIds.includes(planId));
     const campaigns = await Promise.all(summaries.map((c) => storage.getPerformanceCampaign(c.id)));
-    return campaigns.filter((c): c is PerformanceCampaign => Boolean(c && !c.archived)).map((campaign) => ({ campaign, analysis: analyzeFiles(campaign.files, campaign) }));
+    return campaigns.filter((c): c is PerformanceCampaign => Boolean(c && !c.archived)).map((campaign) => {
+      const review = readStoredReview(campaign.review);
+      return { campaign, analysis: analyzeFiles(campaign.files, campaign), review, reviewStale: Boolean(review && review.fingerprint !== reviewFingerprint(campaign)) };
+    });
   } catch (err) {
     console.error("[SCOUTAI] Could not load past campaigns:", err);
     return [];
@@ -2150,15 +2181,20 @@ async function linkedCampaigns(storage: StorageAdapter, planId: string): Promise
 // and the settings the plan was built with, whose catalog its channel records come from. A plan
 // pins its settings revision, so a later settings change cannot offer it records it was not built
 // against.
-async function scoutApplyContext(storage: StorageAdapter, plan: { settingsRevision?: number | null }) {
+async function scoutApplyContext(storage: StorageAdapter, plan: { id: string; advertiserName?: string; settingsRevision?: number | null }) {
   const [{ publishers }, settingsRecord] = await Promise.all([
     storage.getCurrentPublishers(),
     Number.isInteger(plan.settingsRevision) ? storage.getSettingsRevision(plan.settingsRevision as number) : storage.getCurrentSettings(),
   ]);
   const validated = validatePlanningSettings(settingsRecord?.settings);
+  // Client learnings are checked against the campaigns linked to the plan when they are proposed
+  // and again when they are applied, so a campaign unlinked in between cannot slip one through.
+  const linked = await linkedCampaigns(storage, plan.id);
   return {
     publisherCatalog: publishers.map((p) => ({ name: p.name, category: p.category, enabled: p.enabled })),
     planningSettings: validated.valid && validated.settings ? validated.settings : DEFAULT_PLANNING_SETTINGS,
+    linked,
+    learningCampaigns: linked.map((l) => toLearningCampaign(l, plan.advertiserName || "")),
   };
 }
 
@@ -2255,7 +2291,14 @@ async function linkablePlanIds(storage: StorageAdapter, ids: unknown[]): Promise
 
 function campaignResponse(campaign: PerformanceCampaign) {
   const analysis = analyzeFiles(campaign.files, campaign);
-  return { campaign: publicCampaign(campaign), analysis, advertiserMismatch: advertiserMismatch(campaign, analysis) };
+  const review = readStoredReview(campaign.review);
+  return {
+    campaign: publicCampaign(campaign),
+    analysis,
+    advertiserMismatch: advertiserMismatch(campaign, analysis),
+    review,
+    reviewStale: Boolean(review && review.fingerprint !== reviewFingerprint(campaign)),
+  };
 }
 
 app.get("/api/performance/campaigns", async (req, res) => {
@@ -2359,6 +2402,38 @@ app.put("/api/performance/campaigns/:id", async (req, res) => {
     res.json({ ...campaignResponse(campaign), rejected, duplicates });
   } catch (err: any) {
     respondToCampaignError(res, err, "update the campaign");
+  }
+});
+
+// The saved review: one high-thinking read of the campaign, figures checked against its data.
+// The planner waits for it once, after upload, and can rewrite it when the files change.
+app.post("/api/performance/campaigns/:id/review", async (req, res) => {
+  req.socket.setTimeout(0);
+  try {
+    const expectedRevision = Number(req.get("If-Match"));
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "An If-Match revision is required to review a campaign.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const campaign = await storage.getPerformanceCampaign(req.params.id);
+    if (!campaign || campaign.archived) throw new CampaignNotFoundError(req.params.id);
+    if (campaign.revision !== expectedRevision) throw new RevisionConflictError(campaign.revision);
+    const analysis = analyzeFiles(campaign.files, campaign);
+    const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+      getAiClient(),
+      { systemInstruction: REVIEW_SYSTEM_INSTRUCTION, input: buildReviewInput(campaign, analysis), schema: reviewSchema },
+      BRIEF_ATTEMPTS,
+    );
+    const review = normalizeReview(data, analysis, { actor: actorName(req), fingerprint: reviewFingerprint(campaign) });
+    if (review.findings.length === 0) throw new Error("The review came back with no findings.");
+    const { files, review: _old, ...details } = campaign;
+    const updated = await storage.updatePerformanceCampaign(campaign.id, { ...details, files, review, actor: actorName(req) }, expectedRevision);
+    const unverified = review.findings.filter((f) => f.unverified.length).length;
+    console.log(`[PERFORMANCE] Review of ${campaign.id}: ${review.findings.length} finding(s)${unverified ? `, ${unverified} with unverified figures` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
+    res.json(campaignResponse(updated));
+  } catch (err: any) {
+    respondToCampaignError(res, err, "write the review");
   }
 });
 

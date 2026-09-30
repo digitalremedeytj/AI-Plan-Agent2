@@ -338,6 +338,9 @@ const opSchema = {
     opShape("edit_channel_panel", { channelId: S, panel: channelPanels, content: S }),
     opShape("hide_channel_panel", { channelId: S, panel: channelPanels }),
     opShape("show_channel_panel", { channelId: S, panel: channelPanels }),
+    opShape("add_learning", { campaignId: S, findingId: S, learning: S, action: S }, { position: INT }),
+    opShape("edit_learning", { index: INT }, { learning: S, action: S }),
+    opShape("remove_learning", { index: INT }),
   ],
 };
 
