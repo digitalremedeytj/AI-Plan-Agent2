@@ -382,6 +382,8 @@ export interface AudienceProfile {
   hiddenSections?: string[];
   /** "Built on your campaign history": learnings from the client's past campaigns, added through ScoutAI. */
   performanceLearnings?: Array<{ campaignId: string; campaignName: string; findingId: string; learning: string; action: string }>;
+  /** Past campaigns from the advertiser's library that the plan was generated with. */
+  pastCampaignsUsed?: Array<{ id: string; name: string; own: boolean }>;
   slideExports?: SlideExportVersion[];
   /** Set when a planner edits the Brief of Record after the plan was built from it; a regenerate then keeps their brief. */
   briefOfRecordEdited?: { at: string; fields: string[] };

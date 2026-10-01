@@ -68,6 +68,7 @@ import { figureReference, unverifiedFigures } from "./src/performance/figureChec
 import { renderDigest } from "./src/performance/digest";
 import { buildReviewInput, normalizeReview, readStoredReview, REVIEW_SYSTEM_INSTRUCTION, reviewSchema } from "./src/performance/review";
 import { buildPerformanceContext, PERFORMANCE_INSTRUCTION, toLearningCampaign, type LinkedCampaign } from "./src/assistant/performanceContext";
+import { buildGenerationHistory, type GenerationHistory } from "./src/research/pastPerformance";
 import { SCOUT_SYSTEM_INSTRUCTION, buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./src/assistant/scoutChat";
 import { throttledProgress } from "./src/server/thoughtProgress";
 import { EVIDENCE_RULES } from "./src/qa/evidenceRules";
@@ -748,7 +749,7 @@ function aiCandidateProducts(settings: any) {
     .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live");
 }
 
-async function generateCandidateSignals(audienceProfile: any, facts: any, research: Array<ResearchDossierText & { failed?: boolean }> = []): Promise<AiCandidateSignal[]> {
+async function generateCandidateSignals(audienceProfile: any, facts: any, research: Array<ResearchDossierText & { failed?: boolean }> = [], history = ""): Promise<AiCandidateSignal[]> {
   const customNotes = new Map(
     (facts?.settings?.customProducts || []).map((product: any) => [product.productId, product.planningNotes]),
   );
@@ -811,7 +812,7 @@ ${JSON.stringify({
   sources: audienceProfile?.sources?.slice?.(0, 15),
 }, null, 2)}
 
-${research.length > 0 ? `RESEARCH DOSSIERS (the evidence your rationale may cite):\n${researchForPrompt(research)}\n\n` : ""}ALLOWED PRODUCT CANDIDATES:
+${research.length > 0 ? `RESEARCH DOSSIERS (the evidence your rationale may cite):\n${researchForPrompt(research)}\n\n` : ""}${history ? `${history}\n\n` : ""}ALLOWED PRODUCT CANDIDATES:
 ${JSON.stringify(candidates, null, 2)}
 
 Return one signal object per allowed candidate and no other products.`;
@@ -857,6 +858,8 @@ async function buildChannelStrategy(
     candidateSignals?: AiCandidateSignal[];
     /** The research dossiers, so the channel reasoning cites findings instead of recalling studies. */
     research?: Array<ResearchDossierText & { failed?: boolean }>;
+    /** Past campaigns the planner chose, for the channel reasoning (see src/research/pastPerformance). */
+    history?: string;
   },
 ) {
   const totalRfpBudget = selectedPlanOptions.reduce((acc, opt) => acc + (opt.budget || 0), 0);
@@ -905,7 +908,7 @@ async function buildChannelStrategy(
   const suppliedSignals = Array.isArray(options?.candidateSignals)
     ? options.candidateSignals.filter((signal) => signal && allowedSignalIds.has(signal.channelId))
     : [];
-  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts, options?.research ?? audienceProfile?.researchSnapshot?.dossiers ?? []);
+  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts, options?.research ?? audienceProfile?.researchSnapshot?.dossiers ?? [], options?.history ?? "");
   // Every candidate must carry real AI reasoning. The engine can score a product without one,
   // but those formula scores and stock rationales would be shown as analysis.
   const signalled = new Set(aiSignals.map((signal) => signal.channelId));
@@ -2161,20 +2164,26 @@ function opTexts(ops: unknown[]): string[] {
   return out;
 }
 
+const enabledPublishersForHistory = (publishers: any[]) => publishers.filter((p) => p && p.enabled !== false && p.name).map((p) => String(p.name));
+
 // The past campaigns linked to a plan, analysed. A campaign that fails to load is left out rather
 // than failing the chat: the plan conversation still works without it.
 async function linkedCampaigns(storage: StorageAdapter, planId: string): Promise<LinkedCampaign[]> {
   try {
     const summaries = (await storage.listPerformanceCampaigns()).filter((c) => c.linkedPlanIds.includes(planId));
-    const campaigns = await Promise.all(summaries.map((c) => storage.getPerformanceCampaign(c.id)));
-    return campaigns.filter((c): c is PerformanceCampaign => Boolean(c && !c.archived)).map((campaign) => {
-      const review = readStoredReview(campaign.review);
-      return { campaign, analysis: analyzeFiles(campaign.files, campaign), review, reviewStale: Boolean(review && review.fingerprint !== reviewFingerprint(campaign)) };
-    });
+    return await campaignsById(storage, summaries.map((c) => c.id));
   } catch (err) {
     console.error("[SCOUTAI] Could not load past campaigns:", err);
     return [];
   }
+}
+
+async function campaignsById(storage: StorageAdapter, ids: string[]): Promise<LinkedCampaign[]> {
+  const campaigns = await Promise.all(ids.map((id) => storage.getPerformanceCampaign(id)));
+  return campaigns.filter((c): c is PerformanceCampaign => Boolean(c && !c.archived)).map((campaign) => {
+    const review = readStoredReview(campaign.review);
+    return { campaign, analysis: analyzeFiles(campaign.files, campaign), review, reviewStale: Boolean(review && review.fingerprint !== reviewFingerprint(campaign)) };
+  });
 }
 
 // What operations need beyond the plan: the publisher catalog a CTV publisher may be added from,
@@ -3832,6 +3841,9 @@ app.post("/api/generate-profile", async (req, res) => {
     draft,
   } = req.body;
   const quickMode = req.body?.quickMode === true;
+  const pastCampaignIds: string[] = Array.isArray(req.body?.pastCampaignIds)
+    ? req.body.pastCampaignIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 10)
+    : [];
 
   // SSE Setup Headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -4242,6 +4254,26 @@ INSTRUCTIONS:
     const pubTier2 = enabledPublishers.filter((p: any) => Number(p.tier) === 2 || !p.tier);
     const pubTier3 = enabledPublishers.filter((p: any) => Number(p.tier) === 3);
 
+    // Past campaigns the planner chose from the advertiser's library. A campaign that fails to
+    // load is reported and left out; the plan is still built from the research.
+    let history: GenerationHistory | null = null;
+    if (pastCampaignIds.length > 0) {
+      try {
+        const past = await campaignsById(await getStorage(), pastCampaignIds);
+        const validated = validatePlanningSettings(planningSettings);
+        const channels = aiCandidateProducts(validated.valid && validated.settings ? validated.settings : DEFAULT_PLANNING_SETTINGS)
+          .map((product: any) => ({ id: product.id, name: product.displayName, aliases: product.aliases || [] }));
+        history = buildGenerationHistory(past, { advertiser: cleanAdvertiserName, channels, publisherPool: enabledPublishersForHistory(effectivePublishers) });
+        if (history) {
+          sendEvent("status", { message: `Reading ${history.used.length} past campaign${history.used.length === 1 ? "" : "s"} from the library: ${history.used.map((c) => `${c.name}${c.own ? "" : " (another advertiser's, patterns only)"}`).join("; ")}.` });
+        }
+        if (past.length < pastCampaignIds.length) pushAlert(generationAlerts, { section: "pastPerformance", severity: "flagged", message: `${pastCampaignIds.length - past.length} chosen past campaign(s) could not be found and were left out.` });
+      } catch (err: any) {
+        console.error("[GENERATE] Could not read past campaigns:", err?.message || err);
+        pushAlert(generationAlerts, { section: "pastPerformance", severity: "failed", message: `The chosen past campaigns could not be read (${err?.message || err}); the plan was built without them.` });
+      }
+    }
+
     const formatPublisherLine = (p: any) => `      - '${p.name}' (Category: '${p.category}'${p.notes ? ` | Targeting Rules / When to Include: "${p.notes}"` : ''})`;
 
     const ctvPublishersSection = `9. CTV PUBLISHER RECOMMENDATIONS (MANDATORY & TARGETING RULE GROUNDED):
@@ -4273,7 +4305,7 @@ ${pubTier3.map(formatPublisherLine).join('\n') || '      - None currently enable
    * 'publisher': The exact publisher name as listed in the approved pool.
    * 'category': The publisher category ('App' | 'Network' | 'OS').
    * 'why': A highly specific, evidence-grounded justification explaining why this publisher's programming, viewer demographics, or platform environment fits the persona and fulfills its targeting rule. (Remember: NEVER mention tiers here!)
-   Also, write a professional, cohesive, and concise paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign. Keep it strictly between 50 to 65 words (under 450 characters) so it fits slide presentation layouts without overflowing. (Remember: NEVER mention tiers here!)`;
+   Also, write a professional, cohesive, and concise paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign. Keep it strictly between 50 to 65 words (under 450 characters) so it fits slide presentation layouts without overflowing. (Remember: NEVER mention tiers here!)${history?.publisherBrief ? `\n\n${history.publisherBrief}` : ""}`;
 
     // Synthesis & Strategy 2 (Authority Filtering)
     const synthesisSystemInstruction = `You are a senior digital media director, veteran audience research partner, and master data synthesizer.
@@ -4541,7 +4573,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             workingMediaBudget: Number(workingMediaBudget) || 0,
             campaignFlightDays: Number(campaignFlightDays) || null,
             planningSettings,
-            research: researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
+            research: [
+              ...researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
+              ...(history?.dossier ? [{ ...history.dossier, failed: false }] : []),
+            ],
+            history: history?.channelBrief,
           },
         );
         originalData.channelStrategy = channelStrategy;
@@ -4671,7 +4707,12 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         uploadedPlan: Boolean(selectedPlanOptions?.length),
         rfp: Boolean(rfpAnalysis),
       }),
-      research: researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
+      // The client's own past campaign data is a source the plan may quote; without it here the
+      // number check would flag every figure taken from it as unsupported.
+      research: [
+        ...researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
+        ...(history?.dossier ? [{ ...history.dossier, failed: false }] : []),
+      ],
       planInputs: { workingMediaBudget: Number(originalData.channelStrategy?.mediaPlan?.workingMediaBudget ?? workingMediaBudget) || 0, flightDays: Number(campaignFlightDays) || null },
       // The live array, so alerts raised by the narrative step reach the auditor.
       alerts: generationAlerts,
@@ -4836,7 +4877,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // the plan stays well inside Firestore's 1MB document limit.
     finalProfile.researchSnapshot = {
       capturedAt: new Date().toISOString(),
-      dossiers: researchResults.map((result) => ({ label: result.label, failed: Boolean(result.failed), text: result.failed ? "" : result.text.slice(0, RESEARCH_SNAPSHOT_MAX_CHARS) })),
+      dossiers: [
+        ...researchResults.map((result) => ({ label: result.label, failed: Boolean(result.failed), text: result.failed ? "" : result.text.slice(0, RESEARCH_SNAPSHOT_MAX_CHARS) })),
+        // Kept with the plan so a later manual QA audit traces the same figures.
+        ...(history?.dossier ? [{ label: history.dossier.label, failed: false, text: history.dossier.text.slice(0, RESEARCH_SNAPSHOT_MAX_CHARS) }] : []),
+      ],
       ...(crawl ? { crawl: { url: crawl.url, ok: crawl.ok, chars: crawl.text.length } } : {}),
     };
 
@@ -4855,6 +4900,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     }
 
     finalProfile.generationLog = generationLog;
+    if (history) finalProfile.pastCampaignsUsed = history.used;
 
     // Every finished run is saved as a draft before it is sent, so a browser tab that crashes,
     // reloads or closes cannot lose a run that took minutes. Clicking Save later updates this
@@ -4889,6 +4935,19 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       });
       savedPlanId = record.id;
       console.log(`[DRAFT] Saved the finished run as plan ${record.id} ("${record.title}").`);
+      // The campaigns the plan was built from stay linked to it, so ScoutAI reads them and their
+      // learnings can go to the client. Linking is best effort: the plan is already saved.
+      for (const used of history?.used ?? []) {
+        try {
+          const storage = await getStorage();
+          const campaign = await storage.getPerformanceCampaign(used.id);
+          if (!campaign || campaign.archived || campaign.linkedPlanIds.includes(record.id)) continue;
+          const { files, review, linkedPlanIds, ...details } = campaign;
+          await storage.updatePerformanceCampaign(campaign.id, { ...details, files, linkedPlanIds: [...linkedPlanIds, record.id], actor: actorName(req) }, campaign.revision);
+        } catch (err: any) {
+          console.error(`[DRAFT] Could not link past campaign ${used.id}:`, err?.message || err);
+        }
+      }
     } catch (err: any) {
       console.error("[DRAFT] Could not auto-save the finished run:", err?.message || err);
       sendEvent("status", { message: `• [CHECK] The plan could not be auto-saved (${err?.message || err}). Save it manually before leaving the page.` });

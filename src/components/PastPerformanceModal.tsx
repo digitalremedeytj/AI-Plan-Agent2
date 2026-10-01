@@ -14,7 +14,8 @@ import { CAMPAIGN_GOALS, CONVERSION_EVENTS } from "../performance/constants";
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  planId: string;
+  /** The plan the library is opened from; absent from the brief form, before there is a plan. */
+  planId?: string;
   /** The plan's advertiser: the library shown, and the default for new campaigns. */
   advertiserName: string;
   onChanged: () => void;
@@ -84,7 +85,7 @@ export function PastPerformanceModal({ isOpen, onClose, planId, advertiserName, 
   );
 }
 
-function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { planId: string; advertiserName: string; onOpen: (id: string) => void; onUpload: () => void; onChanged: () => void }) {
+function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { planId?: string; advertiserName: string; onOpen: (id: string) => void; onUpload: () => void; onChanged: () => void }) {
   const [campaigns, setCampaigns] = React.useState<PerformanceCampaignSummary[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -92,7 +93,7 @@ function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { plan
   const load = React.useCallback(async () => {
     try {
       const [linked, library] = await Promise.all([
-        api.listPerformanceCampaigns({ planId }),
+        planId ? api.listPerformanceCampaigns({ planId }) : Promise.resolve([]),
         advertiserName.trim() ? api.listPerformanceCampaigns({ advertiser: advertiserName }) : Promise.resolve([]),
       ]);
       const byId = new Map([...linked, ...library].map((c) => [c.id, c]));
@@ -106,6 +107,7 @@ function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { plan
   }, [load]);
 
   const toggleLink = async (c: PerformanceCampaignSummary, link: boolean) => {
+    if (!planId) return;
     setBusy(c.id);
     setError(null);
     try {
@@ -119,15 +121,15 @@ function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { plan
     }
   };
 
-  const linked = (campaigns || []).filter((c) => c.linkedPlanIds.includes(planId));
-  const others = (campaigns || []).filter((c) => !c.linkedPlanIds.includes(planId));
+  const linked = planId ? (campaigns || []).filter((c) => c.linkedPlanIds.includes(planId)) : [];
+  const others = (campaigns || []).filter((c) => !planId || !c.linkedPlanIds.includes(planId));
 
   return (
     <div className="p-6 space-y-5">
       {error && <ErrorBox text={error} />}
       <div className="flex items-start justify-between gap-4">
         <p className="text-xs leading-relaxed text-slate-500 max-w-lg">
-          Upload the report exports from a campaign that has already run: the media type, publisher, audience, ad group, creative and daily reports, and all-touch or last-touch conversion exports. ScoutAI reads what is linked to this plan.
+          Upload the report exports from a campaign that has already run: the media type, publisher, audience, ad group, creative and daily reports, and all-touch or last-touch conversion exports. {planId ? "ScoutAI reads what is linked to this plan." : "Ticked campaigns in the brief shape the plan that is generated."}
         </p>
         <button onClick={onUpload} className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 cursor-pointer">
           <Upload className="w-3.5 h-3.5" /> Add a campaign
@@ -137,7 +139,7 @@ function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { plan
         <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</div>
       ) : (
         <>
-          <Section title="Linked to this plan" empty="No past campaigns are linked yet.">
+          {planId && <Section title="Linked to this plan" empty="No past campaigns are linked yet.">
             {linked.map((c) => (
               <CampaignRow key={c.id} campaign={c} onOpen={() => onOpen(c.id)} action={
                 <button disabled={busy === c.id} onClick={() => toggleLink(c, false)} className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 cursor-pointer disabled:opacity-50">
@@ -145,15 +147,15 @@ function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { plan
                 </button>
               } />
             ))}
-          </Section>
-          {others.length > 0 && (
-            <Section title={`Other campaigns for ${advertiserName}`} empty="">
+          </Section>}
+          {(others.length > 0 || !planId) && (
+            <Section title={planId ? `Other campaigns for ${advertiserName}` : `Campaigns for ${advertiserName || "this advertiser"}`} empty="None yet.">
               {others.map((c) => (
-                <CampaignRow key={c.id} campaign={c} onOpen={() => onOpen(c.id)} action={
+                <CampaignRow key={c.id} campaign={c} onOpen={() => onOpen(c.id)} action={planId ? (
                   <button disabled={busy === c.id} onClick={() => toggleLink(c, true)} className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold text-indigo-700 hover:bg-indigo-50 cursor-pointer disabled:opacity-50">
                     <Link2 className="w-3 h-3" /> Link to this plan
                   </button>
-                } />
+                ) : null} />
               ))}
             </Section>
           )}
@@ -189,7 +191,7 @@ function CampaignRow({ campaign: c, onOpen, action }: { campaign: PerformanceCam
 
 // --- upload ------------------------------------------------------------------
 
-function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { planId: string; advertiserName: string; campaign?: PerformanceCampaignView; onCancel: () => void; onSaved: (id: string) => void }) {
+function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { planId?: string; advertiserName: string; campaign?: PerformanceCampaignView; onCancel: () => void; onSaved: (id: string) => void }) {
   const [files, setFiles] = React.useState<PreparedFile[]>([]);
   const [progress, setProgress] = React.useState<{ fileName: string; fraction: number } | null>(null);
   const [errors, setErrors] = React.useState<string[]>([]);
@@ -318,7 +320,7 @@ function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { p
           disabled={!files.length || saving || previewing || Boolean(progress) || (!campaign && !details.advertiserName?.trim())}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} {campaign ? "Add to campaign" : "Save and link to this plan"}
+          {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} {campaign ? "Add to campaign" : planId ? "Save and link to this plan" : "Save to the library"}
         </button>
       </div>
     </div>
@@ -363,7 +365,7 @@ function DetailFields({ details, edit }: { details: CampaignDetailsInput; edit: 
 
 // --- one campaign ----------------------------------------------------------------
 
-function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }: { id: string; writeReview: boolean; planId: string; onBack: () => void; onAddFiles: (c: PerformanceCampaignView) => void; onChanged: () => void }) {
+function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }: { id: string; writeReview: boolean; planId?: string; onBack: () => void; onAddFiles: (c: PerformanceCampaignView) => void; onChanged: () => void }) {
   const [data, setData] = React.useState<api.CampaignResponse | null>(null);
   const [reviewing, setReviewing] = React.useState(false);
   const [reviewError, setReviewError] = React.useState<string | null>(null);
@@ -418,7 +420,7 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
     setDetails((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
   };
-  const isLinked = c.linkedPlanIds.includes(planId);
+  const isLinked = Boolean(planId && c.linkedPlanIds.includes(planId));
 
   return (
     <div className="p-6 space-y-5">
@@ -426,9 +428,11 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
       <div className="flex items-center justify-between gap-3">
         <button onClick={onBack} className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 cursor-pointer">← Library</button>
         <div className="flex items-center gap-1.5">
-          <button disabled={busy} onClick={() => run(() => api.updatePerformanceCampaign(c.id, c.revision, isLinked ? { unlinkPlanIds: [planId] } : { linkPlanIds: [planId] }))} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer disabled:opacity-50">
-            {isLinked ? <><Unlink className="w-3 h-3" /> Unlink from this plan</> : <><Link2 className="w-3 h-3" /> Link to this plan</>}
-          </button>
+          {planId && (
+            <button disabled={busy} onClick={() => run(() => api.updatePerformanceCampaign(c.id, c.revision, isLinked ? { unlinkPlanIds: [planId] } : { linkPlanIds: [planId] }))} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer disabled:opacity-50">
+              {isLinked ? <><Unlink className="w-3 h-3" /> Unlink from this plan</> : <><Link2 className="w-3 h-3" /> Link to this plan</>}
+            </button>
+          )}
           <button disabled={busy} onClick={() => onAddFiles(c)} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-bold text-indigo-700 hover:bg-indigo-50 cursor-pointer disabled:opacity-50">
             <Upload className="w-3 h-3" /> Add reports
           </button>

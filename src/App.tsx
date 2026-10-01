@@ -77,6 +77,8 @@ import { TaxonomyVerificationBadge } from "./components/TaxonomyVerificationBadg
 import { ALL_INTERNAL_VISIBLE, ChannelStrategySection, type InternalOnlyVisibility } from "./components/ChannelStrategySection";
 import { SectionVisibilityButton } from "./components/SectionVisibilityButton";
 import { PerformanceLearningsSection } from "./components/PerformanceLearningsSection";
+import { PastCampaignPicker } from "./components/PastCampaignPicker";
+import { PastPerformanceModal } from "./components/PastPerformanceModal";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SharePlanModal } from "./components/SharePlanModal";
@@ -578,6 +580,11 @@ export default function App() {
 
   // Input fields state
   const [advertiserName, setAdvertiserName] = useState("");
+  // Past campaigns from the advertiser's library to generate with; null means all of them.
+  const [pastCampaignSelection, setPastCampaignSelection] = useState<string[] | null>(null);
+  const [pastCampaignOptions, setPastCampaignOptions] = useState<string[]>([]);
+  const [showBriefLibrary, setShowBriefLibrary] = useState(false);
+  const [briefLibraryVersion, setBriefLibraryVersion] = useState(0);
   const [budget, setBudget] = useState("$100,000");
   const [campaignLength, setCampaignLength] = useState("30");
   const [kpis, setKpis] = useState<string[]>([""]);
@@ -2279,6 +2286,10 @@ export default function App() {
   const applyPlanToWorkspace = (saved: api.StoredPlan, isSharedViewMode = false) => {
     const body = saved.payload as any;
     setAdvertiserName(saved.advertiserName || "");
+    // A reopened plan regenerates from the campaigns it was built with. One built before past
+    // campaigns existed has no record, so it starts from the advertiser's whole library.
+    const used = body?.profile?.pastCampaignsUsed;
+    setPastCampaignSelection(Array.isArray(used) ? used.map((c: { id: string }) => c.id) : null);
     setKpis(body.kpis && body.kpis.length > 0 ? body.kpis : [""]);
     setAudienceDescription(body.audienceDescription || "");
     setUrl(body.url || "");
@@ -2919,6 +2930,7 @@ export default function App() {
           planningSettings,
           ctvPublishers,
           quickMode,
+          pastCampaignIds: pastCampaignSelection ?? pastCampaignOptions,
           // What the server needs, beyond the brief above, to save the finished run as a draft.
           draft: {
             title: advertiserName.trim()
@@ -3192,6 +3204,7 @@ export default function App() {
   const handleNewPlan = () => {
     // Reset brief input fields
     setAdvertiserName("");
+    setPastCampaignSelection(null);
     setBudget("$100,000");
     setCampaignLength("30");
     setKpis([""]);
@@ -4657,9 +4670,27 @@ export default function App() {
                   <input
                     type="text"
                     value={advertiserName}
-                    onChange={(e) => setAdvertiserName(e.target.value)}
+                    onChange={(e) => {
+                      setAdvertiserName(e.target.value);
+                      // A different advertiser has a different library: back to all of theirs.
+                      setPastCampaignSelection(null);
+                    }}
                     placeholder="e.g. Acura, Nike, Digital Remedy (Optional)"
                     className="w-full text-sm px-3 py-2 border border-slate-200 rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all placeholder:text-slate-400"
+                  />
+                  <PastCampaignPicker
+                    advertiserName={advertiserName}
+                    selection={pastCampaignSelection}
+                    onChange={setPastCampaignSelection}
+                    onOptions={setPastCampaignOptions}
+                    onManage={() => setShowBriefLibrary(true)}
+                    refreshKey={briefLibraryVersion}
+                  />
+                  <PastPerformanceModal
+                    isOpen={showBriefLibrary}
+                    onClose={() => setShowBriefLibrary(false)}
+                    advertiserName={advertiserName}
+                    onChanged={() => setBriefLibraryVersion((v) => v + 1)}
                   />
                 </div>
 
