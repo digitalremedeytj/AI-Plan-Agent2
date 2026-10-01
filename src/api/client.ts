@@ -6,6 +6,7 @@ import type { ChatTurn } from "../assistant/scoutChat";
 import type { FollowUp } from "../assistant/followUps";
 import type { CampaignAnalysis } from "../performance/campaign";
 import type { PerformanceReview, ReviewFinding } from "../performance/review";
+import type { PlanVsActual } from "../performance/planVsActual";
 import type { PreparedFile } from "../performance/browserFiles";
 import type { PerformanceCampaignSummary } from "../storage/types";
 
@@ -463,7 +464,7 @@ export async function savePublishers(
 // --- past campaign performance --------------------------------------------------
 
 export type { CampaignAnalysis, Warning as PerformanceWarning } from "../performance/campaign";
-export type { PerformanceCampaignSummary, PreparedFile, PerformanceReview, ReviewFinding };
+export type { PerformanceCampaignSummary, PreparedFile, PerformanceReview, ReviewFinding, PlanVsActual };
 
 export interface CampaignDetailsInput {
   advertiserName?: string;
@@ -495,6 +496,8 @@ export interface PerformancePreview {
   analysis: CampaignAnalysis;
   suggested: CampaignDetailsInput;
   duplicates: string[];
+  /** Earlier exports of the same reports a live campaign's new upload replaces. */
+  replaced?: string[];
   rejected: string[];
   advertiserMismatch: string | null;
 }
@@ -505,11 +508,11 @@ export async function listPerformanceCampaigns(filter: { advertiser?: string; pl
   return body.campaigns || [];
 }
 
-export function previewPerformanceFiles(input: { files: PreparedFile[]; campaignId?: string; details?: CampaignDetailsInput }): Promise<PerformancePreview> {
+export function previewPerformanceFiles(input: { files: PreparedFile[]; campaignId?: string; details?: CampaignDetailsInput; kind?: "past" | "live" }): Promise<PerformancePreview> {
   return request<PerformancePreview>("/api/performance/preview", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function createPerformanceCampaign(input: { details: CampaignDetailsInput; files: PreparedFile[]; planId?: string }): Promise<CampaignResponse> {
+export function createPerformanceCampaign(input: { details: CampaignDetailsInput; files: PreparedFile[]; planId?: string; kind?: "past" | "live" }): Promise<CampaignResponse> {
   return request<CampaignResponse>("/api/performance/campaigns", { method: "POST", body: JSON.stringify(input) });
 }
 
@@ -539,4 +542,10 @@ export function reviewPerformanceCampaign(id: string, expectedRevision: number):
     method: "POST",
     headers: { "If-Match": String(expectedRevision) },
   });
+}
+
+/** The plan's live campaign compared with the plan, or null when it has none. */
+export async function getPlanLive(planId: string): Promise<{ campaign: PerformanceCampaignView; comparison: PlanVsActual } | null> {
+  const body = await request<{ live: { campaign: PerformanceCampaignView; comparison: PlanVsActual } | null }>(`/api/plans/${encodeURIComponent(planId)}/live`);
+  return body.live;
 }

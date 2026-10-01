@@ -13,10 +13,25 @@ import { toAdvertiserKey } from "../storage/types";
 import type { CatalogPublisher } from "./operations";
 import { figureReference } from "../performance/figureCheck";
 import type { PerformanceReview } from "../performance/review";
+import type { PerformanceSnapshot } from "../storage/types";
 import { LEARNINGS_SECTION, readLearnings, type LearningCampaign } from "./learningOps";
+import { matchChannel, matchPublisher, type Channel } from "../performance/matching";
+import { comparePlanToActual, renderPlanVsActual } from "../performance/planVsActual";
+
+export { matchChannel, matchPublisher };
 
 export interface LinkedCampaign {
-  campaign: { id: string; name: string; advertiserName: string; campaignGoal: string | null; flightEnd: string | null };
+  campaign: {
+    id: string;
+    name: string;
+    advertiserName: string;
+    campaignGoal: string | null;
+    flightEnd: string | null;
+    flightStart?: string | null;
+    /** "live": the running campaign of this plan, compared with it. */
+    kind?: "past" | "live";
+    snapshots?: PerformanceSnapshot[];
+  };
   analysis: CampaignAnalysis;
   review: PerformanceReview | null;
   /** The files or details changed after the review was written. */
@@ -36,7 +51,7 @@ export function toLearningCampaign(linked: LinkedCampaign, planAdvertiser: strin
     id: linked.campaign.id,
     name: linked.campaign.name,
     own: isOwnCampaign(linked, planAdvertiser),
-    findings: linked.review && !linked.reviewStale ? linked.review.findings.map((f) => ({ id: f.id, headline: f.headline, unverified: f.unverified })) : [],
+    findings: linked.review && !linked.reviewStale ? linked.review.findings.map((f) => ({ id: f.id, headline: f.headline, unverified: f.unverified, causalClaim: f.causalClaim })) : [],
     reference: figureReference(renderDigest(linked.analysis, { maxChars: 1_000_000 })),
   };
 }
@@ -47,7 +62,7 @@ function reviewLines(linked: LinkedCampaign): string {
   return [
     `REVIEW FINDINGS (campaignId: ${linked.campaign.id}${linked.reviewStale ? "; OUT OF DATE: the reports changed after it was written, so it cannot be used for client learnings" : ""}):`,
     review.summary ? `Summary: ${review.summary}` : "",
-    ...review.findings.map((f) => `[${f.id}] (${f.kind === "didnt" ? "did not work" : f.kind === "watch" ? "caveat" : "worked"}, ${f.confidence} confidence, ${f.area}) ${f.headline}. ${f.detail}${f.unverified.length ? ` [has figures not in the data: ${f.unverified.join(", ")}; not usable for client learnings]` : ""}`),
+    ...review.findings.map((f) => `[${f.id}] (${f.kind === "didnt" ? "did not work" : f.kind === "watch" ? "caveat" : "worked"}, ${f.confidence} confidence, ${f.area}) ${f.headline}. ${f.detail}${f.unverified.length ? ` [has figures not in the data: ${f.unverified.join(", ")}; not usable for client learnings]` : ""}${f.causalClaim ? ` [states a cause ("${f.causalClaim}") the data does not show; not usable for client learnings]` : ""}`),
   ].filter(Boolean).join("\n");
 }
 
@@ -57,50 +72,6 @@ const FIRST_CAMPAIGN_CHARS = 11000;
 const OTHER_CAMPAIGN_CHARS = 4500;
 const MAX_CAMPAIGNS = 3;
 const MAPPED_PUBLISHERS = 20;
-
-// "+" is part of a streaming brand ("Discovery+" is not "Discovery"), so it survives as a word.
-const squash = (name: string) => name.toLowerCase().replace(/\+/g, "plus").replace(/[^a-z0-9]/g, "");
-
-interface Channel {
-  id: string;
-  name: string;
-  aliases: string[];
-}
-
-/**
- * The plan channel a report's media type is. An exact name or alias wins; otherwise the longest
- * alias the name contains ("Pre-Roll/Mid-Roll" holds "preroll"), so "Display Retargeting" is
- * retargeting and not display.
- */
-export function matchChannel(reportName: string, channels: Channel[]): Channel | null {
-  const name = squash(reportName);
-  if (!name) return null;
-  const exact = channels.find((c) => squash(c.name) === name || c.aliases.some((a) => squash(a) === name));
-  if (exact) return exact;
-  let best: { channel: Channel; length: number } | null = null;
-  for (const c of channels) {
-    for (const alias of [c.name, ...c.aliases]) {
-      const a = squash(alias);
-      if (a.length >= 3 && name.includes(a) && (!best || a.length > best.length)) best = { channel: c, length: a.length };
-    }
-  }
-  return best?.channel ?? null;
-}
-
-/**
- * "Pluto TV" is the catalog's "Pluto"; "DirecTV Stream" is "DirecTV". A match on a shared prefix
- * is approximate ("Paramount" may or may not be "Paramount+"), and is marked so.
- */
-export function matchPublisher(reportName: string, names: string[]): { name: string; approximate: boolean } | null {
-  const name = squash(reportName);
-  if (!name) return null;
-  const exact = names.find((n) => squash(n) === name);
-  if (exact) return { name: exact, approximate: false };
-  const prefix = names
-    .filter((n) => squash(n).length >= 4 && (name.startsWith(squash(n)) || squash(n).startsWith(name)))
-    .sort((a, b) => squash(b).length - squash(a).length);
-  return prefix[0] ? { name: prefix[0], approximate: true } : null;
-}
 
 function channelsOf(plan: MediaRecommendationPlan | undefined): Channel[] {
   if (!plan) return [];
@@ -145,10 +116,15 @@ function mappingLines(analysis: CampaignAnalysis, plan: MediaRecommendationPlan 
 
 export function buildPerformanceContext(
   linked: LinkedCampaign[],
-  { planAdvertiser, plan, planPublishers, catalog, profile }: { planAdvertiser: string; plan?: MediaRecommendationPlan; planPublishers: string[]; catalog: CatalogPublisher[]; profile?: any },
+  { planAdvertiser, plan, planPublishers, catalog, profile, kpis = [] }: { planAdvertiser: string; plan?: MediaRecommendationPlan; planPublishers: string[]; catalog: CatalogPublisher[]; profile?: any; kpis?: string[] },
 ): string {
   if (linked.length === 0) return "";
-  const ordered = [...linked].sort((a, b) => (b.campaign.flightEnd ?? "").localeCompare(a.campaign.flightEnd ?? "")).slice(0, MAX_CAMPAIGNS);
+  // The plan's own running campaign comes first and gets the room: it is what the planner is
+  // acting on. Past campaigns follow in what is left.
+  const live = linked.find((l) => l.campaign.kind === "live");
+  const liveSection = live ? liveLines(live, { plan, planPublishers, kpis }) : "";
+  const past = linked.filter((l) => l !== live);
+  const ordered = [...past].sort((a, b) => (b.campaign.flightEnd ?? "").localeCompare(a.campaign.flightEnd ?? "")).slice(0, MAX_CAMPAIGNS);
   const sections = ordered.map((entry, index) => {
     const { campaign, analysis } = entry;
     const own = isOwnCampaign(entry, planAdvertiser);
@@ -168,18 +144,44 @@ export function buildPerformanceContext(
       mapping.length ? ["HOW THE REPORT MAPS TO THIS PLAN:", ...mapping].join("\n") : "",
     ].filter(Boolean).join("\n");
   });
-  const skipped = linked.length - ordered.length;
+  const skipped = past.length - ordered.length;
   const learnings = readLearnings(profile?.performanceLearnings);
   const hidden = Array.isArray(profile?.hiddenSections) && profile.hiddenSections.includes(LEARNINGS_SECTION);
   const learningLines = learnings.length
     ? [`CLIENT LEARNINGS IN THE PLAN (section "Built on your campaign history", ${hidden ? "hidden from the client" : "shown to the client"}; change with edit_learning / remove_learning by index):`, ...learnings.map((l, i) => `[${i}] (${l.campaignName}, ${l.findingId}) ${l.learning} -> ${l.action}`)].join("\n")
     : "CLIENT LEARNINGS IN THE PLAN: none yet (add with add_learning).";
   return [
-    `PAST CAMPAIGN PERFORMANCE LINKED TO THIS PLAN (${linked.length} campaign${linked.length === 1 ? "" : "s"}${skipped ? `; the ${skipped} oldest left out for length` : ""}). Figures below are computed from the report files; quote them, do not recompute them.`,
+    liveSection,
+    ordered.length ? `PAST CAMPAIGN PERFORMANCE LINKED TO THIS PLAN (${past.length} campaign${past.length === 1 ? "" : "s"}${skipped ? `; the ${skipped} oldest left out for length` : ""}). Figures below are computed from the report files; quote them, do not recompute them.` : "",
     learningLines,
     ...sections,
-  ].join("\n\n").slice(0, PERFORMANCE_CONTEXT_CHARS);
+  ].filter(Boolean).join("\n\n").slice(0, PERFORMANCE_CONTEXT_CHARS + (liveSection ? LIVE_CONTEXT_CHARS : 0));
 }
+
+const LIVE_CONTEXT_CHARS = 9000;
+
+function liveLines(live: LinkedCampaign, { plan, planPublishers, kpis }: { plan?: MediaRecommendationPlan; planPublishers: string[]; kpis: string[] }): string {
+  const comparison = comparePlanToActual(live.analysis, { mediaPlan: plan, kpis, ctvPublishers: planPublishers }, {
+    flightStart: live.campaign.flightStart ?? null,
+    flightEnd: live.campaign.flightEnd,
+    snapshots: live.campaign.snapshots ?? [],
+  });
+  return [
+    `THIS PLAN'S LIVE CAMPAIGN: ${live.campaign.name} (re-exported during the flight; compared with the plan as it stands now, which may have changed since launch).`,
+    renderPlanVsActual(comparison),
+    renderDigest(live.analysis, { maxChars: 4500 }),
+  ].join("\n\n");
+}
+
+/** Added to the system instruction when the plan has a live campaign. */
+export const LIVE_INSTRUCTION = `How you optimise a live campaign (when the plan comes with THIS PLAN'S LIVE CAMPAIGN):
+- Start from pacing. Spend well behind or ahead of the flight is usually a trafficking matter (bids, frequency caps, inventory, approvals) before it is a reason to move budget; say which.
+- Judge a media type or publisher only once it has 30 or more conversions and about a week of delivery; before that, say it is too early. Rows marked "too early to judge" or "(thin)" are not a basis for a change.
+- Changes apply to the rest of the flight. Move budget with set_allocation from media types above the cost target on enough conversions toward ones below it, and say what the planned dollars to date and the actual spend were. Keep CTV unless the data beyond last-touch says otherwise; the reading rules on attribution still apply.
+- A plan publisher that is not delivering, or one delivering that is not in the plan, is a trafficking question first; propose remove_ctv_publisher or add_ctv_publisher only when the data supports it.
+- What cannot be a plan edit (a frequency cap, a bid change, a creative rotation, a publisher block, fixing a tag) goes in the reply as a short list of trafficking actions, each with the figure behind it.
+- When asked how the campaign is tracking, reply in three short parts: pacing, performance against the target, and what to change. Then propose the plan changes as items.
+- The projected spend is a straight line from the last week's rate; call it that, never a forecast.`;
 
 /** Rules for reading past performance; added to the system instruction only when there is some. */
 export const PERFORMANCE_INSTRUCTION = `How you use past campaign performance (when the plan comes with PAST CAMPAIGN PERFORMANCE):

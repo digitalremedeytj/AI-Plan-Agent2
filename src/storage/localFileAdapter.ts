@@ -264,7 +264,7 @@ export class LocalFileAdapter implements StorageAdapter {
     await this.init();
     const summaries: PerformanceCampaignSummary[] = [];
     for (const file of fs.readdirSync(this.performanceDir).filter((f) => f.endsWith(".json"))) {
-      const campaign = readJson<PerformanceCampaign>(path.join(this.performanceDir, file));
+      const campaign = this.campaignFromDisk(readJson<PerformanceCampaign>(path.join(this.performanceDir, file)));
       if (!campaign?.id || (campaign.archived && !options.includeArchived)) continue;
       summaries.push(toCampaignSummary(campaign));
     }
@@ -273,7 +273,7 @@ export class LocalFileAdapter implements StorageAdapter {
 
   async getPerformanceCampaign(id: string): Promise<PerformanceCampaign | null> {
     await this.init();
-    return readJson<PerformanceCampaign>(this.campaignPath(id));
+    return this.campaignFromDisk(readJson<PerformanceCampaign>(this.campaignPath(id)));
   }
 
   async createPerformanceCampaign(input: PerformanceCampaignInput): Promise<PerformanceCampaign> {
@@ -286,7 +286,7 @@ export class LocalFileAdapter implements StorageAdapter {
 
   async updatePerformanceCampaign(id: string, input: PerformanceCampaignInput, expectedRevision: number): Promise<PerformanceCampaign> {
     await this.init();
-    const existing = readJson<PerformanceCampaign>(this.campaignPath(id));
+    const existing = this.campaignFromDisk(readJson<PerformanceCampaign>(this.campaignPath(id)));
     if (!existing) throw new CampaignNotFoundError(id);
     if (existing.revision !== expectedRevision) throw new RevisionConflictError(existing.revision, "This campaign was changed by someone else.");
     const campaign = buildCampaignRecord(id, input, existing, new Date().toISOString());
@@ -297,9 +297,14 @@ export class LocalFileAdapter implements StorageAdapter {
 
   async archivePerformanceCampaign(id: string, actor: string): Promise<void> {
     await this.init();
-    const existing = readJson<PerformanceCampaign>(this.campaignPath(id));
+    const existing = this.campaignFromDisk(readJson<PerformanceCampaign>(this.campaignPath(id)));
     if (!existing) throw new CampaignNotFoundError(id);
     writeJsonAtomic(this.campaignPath(id), { ...existing, archived: true, revision: existing.revision + 1, updatedAt: new Date().toISOString(), updatedBy: actor });
+  }
+
+  // Records written before live campaigns existed have no kind or snapshots.
+  private campaignFromDisk(raw: PerformanceCampaign | null): PerformanceCampaign | null {
+    return raw ? { ...raw, kind: raw.kind ?? "past", snapshots: raw.snapshots ?? [] } : null;
   }
 
   private campaignPath(id: string): string {

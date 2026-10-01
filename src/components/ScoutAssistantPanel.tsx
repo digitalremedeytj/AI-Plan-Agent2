@@ -122,12 +122,22 @@ function toTurns(messages: Message[]): ChatTurn[] {
   });
 }
 
-function suggestedPrompts(profile: AudienceProfile, pastPerformance: "none" | "reference" | "own"): string[] {
+/** "Live · day 30 of 50 · 47% spent · CPA $23.72 vs $30 target" */
+function liveSummary(p: api.PlanVsActual): string {
+  const money = (v: number) => (v < 100 ? `$${v.toFixed(2)}` : `$${Math.round(v).toLocaleString("en-US")}`);
+  const kpi = p.target?.metric === "roas"
+    ? `ROAS ${p.actual.roas !== null ? `${p.actual.roas.toFixed(2)}x` : "n/a"} vs ${p.target.value.toFixed(2)}x target`
+    : `CPA ${p.actual.cpa !== null ? money(p.actual.cpa) : "n/a"}${p.target ? ` vs ${money(p.target.value)} target` : ""}`;
+  return [`Live`, p.daysElapsed !== null && p.flight ? `day ${p.daysElapsed} of ${p.flight.days}` : "", `${Math.round(p.spendShare * 100)}% spent`, kpi].filter(Boolean).join(" · ");
+}
+
+function suggestedPrompts(profile: AudienceProfile, pastPerformance: "none" | "reference" | "own", hasLive = false): string[] {
   const channels = profile.channelStrategy?.mediaPlan?.channels || [];
   const largest = [...channels].sort((a, b) => b.allocationPercent - a.allocationPercent)[0];
   const openFindings = (profile.auditResult?.findings || []).filter((f) => f.status !== "resolved").length;
   return [
-    pastPerformance !== "none" ? "Analyse our past campaign: what worked, what didn't, and what should this plan change?" : "",
+    hasLive ? "How is the live campaign tracking against the plan, and what should we change?" : "",
+    pastPerformance !== "none" && !hasLive ? "Analyse our past campaign: what worked, what didn't, and what should this plan change?" : "",
     pastPerformance === "own" && !(profile.performanceLearnings || []).length ? "Draft the client-facing learnings from our past campaign" : "",
     "What would you change to improve performance toward our KPIs?",
     "Does this plan deliver what the brief asked for?",
@@ -251,7 +261,7 @@ function ProposalCard({
                     {item.why && <span className="mt-0.5 block text-[11px] leading-relaxed text-slate-600">{item.why}</span>}
                     {item.evidence && (
                       <span className="mt-1 flex items-start gap-1 rounded-md bg-indigo-50/70 border border-indigo-100 px-1.5 py-1 text-[10px] leading-snug text-indigo-900">
-                        <BarChart3 className="w-3 h-3 shrink-0 mt-px text-indigo-500" /> <span><span className="font-bold">From past performance:</span> {item.evidence}</span>
+                        <BarChart3 className="w-3 h-3 shrink-0 mt-px text-indigo-500" /> <span><span className="font-bold">From the campaign data:</span> {item.evidence}</span>
                       </span>
                     )}
                     {item.unverifiedFigures && item.unverifiedFigures.length > 0 && (
@@ -391,9 +401,11 @@ export function ScoutAssistantPanel({
   const visibleRef = React.useRef(isVisible);
   visibleRef.current = isVisible;
   const [pastCampaigns, setPastCampaigns] = React.useState<api.PerformanceCampaignSummary[]>([]);
+  const [live, setLive] = React.useState<api.PlanVsActual | null>(null);
   const [showPastPerformance, setShowPastPerformance] = React.useState(false);
   const loadPastCampaigns = React.useCallback(() => {
     api.listPerformanceCampaigns({ planId }).then(setPastCampaigns).catch(() => setPastCampaigns([]));
+    api.getPlanLive(planId).then((l) => setLive(l?.comparison ?? null)).catch(() => setLive(null));
   }, [planId]);
   React.useEffect(loadPastCampaigns, [loadPastCampaigns]);
 
@@ -590,11 +602,13 @@ export function ScoutAssistantPanel({
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="shrink-0 flex items-center gap-2 border-b border-slate-100 px-4 py-2 bg-slate-50/60">
-        <BarChart3 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+        <BarChart3 className={`w-3.5 h-3.5 shrink-0 ${live ? "text-emerald-600" : "text-indigo-500"}`} />
         <span className="flex-1 min-w-0 truncate text-[11px] text-slate-600" title={pastCampaigns.map((c) => c.name).join(", ")}>
-          {pastCampaigns.length === 0
-            ? "No past campaign data linked"
-            : `Past performance: ${pastCampaigns.length === 1 ? pastCampaigns[0].name : `${pastCampaigns.length} campaigns`}`}
+          {live
+            ? liveSummary(live)
+            : pastCampaigns.length === 0
+              ? "No past campaign data linked"
+              : `Past performance: ${pastCampaigns.length === 1 ? pastCampaigns[0].name : `${pastCampaigns.length} campaigns`}`}
         </span>
         <button onClick={() => setShowPastPerformance(true)} className="shrink-0 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer">
           {pastCampaigns.length === 0 ? "Add reports" : "Manage"}
@@ -623,7 +637,7 @@ export function ScoutAssistantPanel({
               Ask why the plan looks the way it does, check it against the brief, or ask for changes and recommendations: channels, budget, personas, segments, the brief and the plan's text. Nothing is saved until you apply it.
             </p>
             <div className="mt-4 flex flex-col gap-1.5">
-              {suggestedPrompts(profile, pastCampaigns.length === 0 ? "none" : pastCampaigns.some((c) => c.advertiserKey === advertiserName.trim().toLowerCase().replace(/\s+/g, " ")) ? "own" : "reference").map((prompt) => (
+              {suggestedPrompts(profile, pastCampaigns.length === 0 ? "none" : pastCampaigns.some((c) => c.advertiserKey === advertiserName.trim().toLowerCase().replace(/\s+/g, " ")) ? "own" : "reference", Boolean(live)).map((prompt) => (
                 <button
                   key={prompt}
                   onClick={() => send(prompt)}

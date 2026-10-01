@@ -25,6 +25,10 @@ export interface ReviewFinding {
   area: string;
   /** Figures in the finding that are not in the data. A finding with any is never shown to a client. */
   unverified: string[];
+  /** Cause-and-effect wording the data cannot show ("as spend expanded to address pacing"). */
+  causalClaim: string | null;
+  /** Why code lowered the model's confidence, when it did. */
+  confidenceNote: string | null;
 }
 
 export interface PerformanceReview {
@@ -112,10 +116,51 @@ export function normalizeReview(raw: any, analysis: CampaignAnalysis, meta: { ac
         confidence: oneOf(f?.confidence, ["high", "medium", "low"] as const, "low"),
         area: text(f?.area, 40) || "campaign",
       };
-      return { ...finding, unverified: unverifiedFigures(`${finding.headline} ${finding.detail} ${finding.evidence}`, reference) };
+      const capped = capConfidence(finding, analysis);
+      return {
+        ...finding,
+        ...capped,
+        unverified: unverifiedFigures(`${finding.headline} ${finding.detail} ${finding.evidence}`, reference),
+        causalClaim: findCausalClaim(`${finding.headline} ${finding.detail}`),
+      };
     })
     .filter((f: ReviewFinding) => f.headline && f.detail);
   return { generatedAt: meta.now ?? new Date().toISOString(), generatedBy: meta.actor, fingerprint: meta.fingerprint, summary: text(raw?.summary, 800), findings };
+}
+
+// Live reviews broke the "report what happened, not why" rule ("CPA rose as spend expanded to
+// address pacing") even with it in the prompt, so the wording is caught in code. The list is
+// narrow on purpose: "driven by" and "from" describe credit, not cause.
+const CAUSAL = /\b(because( of)?|due to|as a result( of)?|led to|leading to|caused|causing|resulted in|resulting from|in order to|to address|in response to|thanks to)\b/i;
+
+export function findCausalClaim(text: string): string | null {
+  return CAUSAL.exec(text)?.[0] ?? null;
+}
+
+// The model's confidence was not consistent between runs (one marked an event buy with 44
+// conversions "high"), so code caps it from what the finding cites: a thin or one-off row can
+// only support low confidence, and with last-touch data alone a judgement about a media type,
+// publisher or retargeting can only be medium.
+const ATTRIBUTION_SENSITIVE = /media|channel|publisher|retarget|ctv|ott|video|display/i;
+const RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
+
+export function capConfidence(finding: Pick<ReviewFinding, "headline" | "detail" | "evidence" | "area" | "confidence">, analysis: CampaignAnalysis): Pick<ReviewFinding, "confidence" | "confidenceNote"> {
+  const text = `${finding.headline} ${finding.detail} ${finding.evidence}`.toLowerCase();
+  const cited = analysis.breakdowns
+    .filter((b) => b.role !== "reference")
+    .flatMap((b) => b.rows)
+    .filter((row) => row.name.length >= 4 && text.includes(row.name.toLowerCase()));
+  const thin = cited.find((row) => row.flags.includes("low-sample") || row.flags.includes("event"));
+  let cap: Confidence = "high";
+  let note: string | null = null;
+  if (thin) {
+    cap = "low";
+    note = `${thin.name} is ${thin.flags.includes("event") ? "an event or one-off buy" : "under 30 conversions"}`;
+  } else if (!analysis.touches.some((t) => t.role !== "reference" && t.summary.attribution === "all-touch") && ATTRIBUTION_SENSITIVE.test(`${finding.area} ${finding.headline}`)) {
+    cap = "medium";
+    note = "the evidence is last-touch only";
+  }
+  return RANK[finding.confidence] > RANK[cap] ? { confidence: cap, confidenceNote: note } : { confidence: finding.confidence, confidenceNote: null };
 }
 
 /** A stored review, rebuilt field by field: it round-trips through storage as plain JSON. */
@@ -135,6 +180,8 @@ export function readStoredReview(raw: any): PerformanceReview | null {
       confidence: oneOf(f?.confidence, ["high", "medium", "low"] as const, "low"),
       area: text(f?.area, 40),
       unverified: Array.isArray(f?.unverified) ? f.unverified.map((u: unknown) => text(u, 40)).filter(Boolean) : [],
+      causalClaim: text(f?.causalClaim, 80) || null,
+      confidenceNote: text(f?.confidenceNote, 200) || null,
     })),
   };
 }

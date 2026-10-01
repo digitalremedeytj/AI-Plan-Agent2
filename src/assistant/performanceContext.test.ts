@@ -99,3 +99,13 @@ test("an item's past-performance evidence is kept, and an item without it has no
   assert.equal(response.items[0].evidence, "OTT PM 0.44 last-touch; medium confidence");
   assert.equal(response.items[1].evidence, null);
 });
+
+test("a plan's live campaign comes first, compared with the plan, ahead of past campaigns", () => {
+  const p = plan();
+  const live = { ...linked()[0], campaign: { ...linked()[0].campaign, id: "live", name: "Live flight", kind: "live" as const, flightStart: "2026-02-09", flightEnd: "2026-03-30", snapshots: [] } };
+  const text = buildPerformanceContext([linked()[0], live], { planAdvertiser: "Acme Auto Accessories", plan: p, planPublishers: ["Hulu"], catalog, kpis: ["CPA under $30"] });
+  assert.ok(text.startsWith("THIS PLAN'S LIVE CAMPAIGN: Live flight"));
+  assert.match(text, /LIVE CAMPAIGN vs PLAN \(as of 2026-03-10; flight 2026-02-09 to 2026-03-30, 50 days\)/);
+  assert.match(text, /Target: CPA \$30\.00/);
+  assert.ok(text.indexOf("PAST CAMPAIGN PERFORMANCE") > text.indexOf("LIVE CAMPAIGN vs PLAN"));
+});

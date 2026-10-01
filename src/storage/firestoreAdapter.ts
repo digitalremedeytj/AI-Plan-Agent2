@@ -48,7 +48,7 @@ const CURRENT_DOC = "current";
 const PERFORMANCE = "performance_campaigns";
 
 const CAMPAIGN_SUMMARY_FIELDS = [
-  "id", "revision", "advertiserName", "advertiserKey", "name", "flightStart", "flightEnd", "conversionLabel", "campaignGoal", "notes",
+  "id", "revision", "kind", "snapshotsJson", "advertiserName", "advertiserKey", "name", "flightStart", "flightEnd", "conversionLabel", "campaignGoal", "notes",
   "linkedPlanIdsJson", "fileCount", "createdAt", "createdBy", "updatedAt", "updatedBy", "archived",
 ];
 
@@ -538,8 +538,8 @@ export class FirestoreAdapter implements StorageAdapter {
   // Lists and files are JSON strings for the same reason plan payloads are: Firestore refuses
   // nested arrays, and report rows are nothing but.
   private campaignToFields(campaign: PerformanceCampaign): Record<string, unknown> {
-    const { files, linkedPlanIds, review, ...summary } = campaign;
-    return { ...summary, linkedPlanIdsJson: JSON.stringify(linkedPlanIds), filesJson: JSON.stringify(files), reviewJson: JSON.stringify(review ?? null) };
+    const { files, linkedPlanIds, review, snapshots, ...summary } = campaign;
+    return { ...summary, linkedPlanIdsJson: JSON.stringify(linkedPlanIds), snapshotsJson: JSON.stringify(snapshots), filesJson: JSON.stringify(files), reviewJson: JSON.stringify(review ?? null) };
   }
 
   private documentToCampaign(doc: FirestoreDocument, withFiles: boolean): PerformanceCampaign | null {
@@ -557,6 +557,7 @@ export class FirestoreAdapter implements StorageAdapter {
     return {
       id: fields.id,
       revision: Number(fields.revision) || 1,
+      kind: fields.kind === "live" ? "live" : "past",
       advertiserName: fields.advertiserName || "",
       advertiserKey: fields.advertiserKey || "",
       name: fields.name || "Untitled campaign",
@@ -567,6 +568,7 @@ export class FirestoreAdapter implements StorageAdapter {
       notes: orNull(fields.notes),
       linkedPlanIds: parse(fields.linkedPlanIdsJson, []),
       fileCount: Number(fields.fileCount) || 0,
+      snapshots: parse(fields.snapshotsJson, []),
       createdAt: fields.createdAt,
       createdBy: fields.createdBy,
       updatedAt: fields.updatedAt,

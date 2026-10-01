@@ -9,8 +9,8 @@ import { toLearningCampaign, type LinkedCampaign } from "./performanceContext";
 const review = (unverified: string[] = []) => ({
   generatedAt: "t", generatedBy: "tj", fingerprint: "x", summary: "s",
   findings: [
-    { id: "f1", kind: "worked" as const, headline: "Online video beat the campaign CPA", detail: "d", evidence: "e", confidence: "high" as const, area: "media type", unverified: [] },
-    { id: "f2", kind: "didnt" as const, headline: "Paramount cost more", detail: "d", evidence: "e", confidence: "medium" as const, area: "publisher", unverified },
+    { id: "f1", kind: "worked" as const, headline: "Online video beat the campaign CPA", detail: "d", evidence: "e", confidence: "high" as const, area: "media type", unverified: [], causalClaim: null, confidenceNote: null },
+    { id: "f2", kind: "didnt" as const, headline: "Paramount cost more", detail: "d", evidence: "e", confidence: "medium" as const, area: "publisher", unverified, causalClaim: null, confidenceNote: null },
   ],
 });
 
@@ -91,4 +91,30 @@ test("the same finding is not added twice, and learnings are edited and removed 
 test("the browser cannot restore learnings directly; only a revert may", () => {
   assert.equal(parseOps([{ type: "set_learnings", items: [{ learning: "x", action: "y" }] }]).ops.length, 0);
   assert.equal(parseOps([{ type: "set_learnings", items: [] }], { allowRestore: true }).ops.length, 1);
+});
+
+const withPlan = () => ({
+  profile: {
+    ctvPublishers: [{ publisher: "Pluto", category: "FAST", why: "Reach." }],
+    channelStrategy: { mediaPlan: {
+      channels: [{ channelId: "channel.ctv", channelName: "CTV / OTT", allocationPercent: 60 }, { channelId: "channel.olv", channelName: "Online Video (OLV)", allocationPercent: 40 }],
+      evaluatedCandidates: [{ product: { id: "channel.ctv", aliases: ["connected tv", "ott"] } }, { product: { id: "channel.olv", aliases: ["online video", "pre-roll"] } }],
+    } },
+  },
+});
+
+test("a learning's action must name a media type or publisher the plan actually includes", () => {
+  const vague = applyOps(withPlan(), add({ action: "This plan builds on what worked." }), context());
+  assert.match(vague.rejected[0].reason, /must name a media type or CTV publisher this plan includes/);
+  const named = applyOps(withPlan(), add({ action: "This plan keeps online video in the mix." }), context());
+  assert.equal(named.rejected.length, 0);
+  const publisher = applyOps(withPlan(), add({ action: "This plan includes Pluto in its streaming mix." }), context());
+  assert.equal(publisher.rejected.length, 0);
+});
+
+test("a finding that states a cause the data cannot show never reaches the client", () => {
+  const causal = review();
+  causal.findings[0] = { ...causal.findings[0], causalClaim: "to address" };
+  const result = applyOps({ profile: {} }, add(), context(linked({ review: causal })));
+  assert.match(result.rejected[0].reason, /states a cause \("to address"\)/);
 });

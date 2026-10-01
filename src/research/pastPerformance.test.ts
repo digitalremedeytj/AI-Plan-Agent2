@@ -15,7 +15,7 @@ const campaign = (overrides: Partial<LinkedCampaign["campaign"]> = {}, reviewSta
   analysis: analyzeReportFiles(platformReports()),
   review: {
     generatedAt: "t", generatedBy: "tj", fingerprint: "x", summary: "Video beat display on CPA.",
-    findings: [{ id: "f1", kind: "worked", headline: "Pre-roll beat the campaign CPA", detail: "d", evidence: "e", confidence: "high", area: "media type", unverified: [] }],
+    findings: [{ id: "f1", kind: "worked", headline: "Pre-roll beat the campaign CPA", detail: "d", evidence: "e", confidence: "high", area: "media type", unverified: [], causalClaim: null, confidenceNote: null }],
   },
   reviewStale,
 });

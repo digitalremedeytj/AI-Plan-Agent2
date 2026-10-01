@@ -1,6 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
-import { AlertCircle, AlertTriangle, BarChart3, CheckCircle2, ChevronDown, FileSpreadsheet, Info, Link2, Loader2, RefreshCw, Sparkles, Trash2, Unlink, Upload, X, XCircle } from "lucide-react";
+import { Activity, AlertCircle, AlertTriangle, BarChart3, CheckCircle2, ChevronDown, FileSpreadsheet, Info, Link2, Loader2, RefreshCw, Sparkles, Trash2, Unlink, Upload, X, XCircle } from "lucide-react";
 import * as api from "../api/client";
 import type { CampaignAnalysis, CampaignDetailsInput, PerformanceCampaignSummary, PerformanceCampaignView, PreparedFile } from "../api/client";
 import { prepareFiles } from "../performance/browserFiles";
@@ -21,7 +21,7 @@ interface Props {
   onChanged: () => void;
 }
 
-type View = { mode: "list" } | { mode: "upload"; campaign?: PerformanceCampaignView } | { mode: "campaign"; id: string; writeReview?: boolean };
+type View = { mode: "list" } | { mode: "upload"; campaign?: PerformanceCampaignView; kind?: "past" | "live" } | { mode: "campaign"; id: string; writeReview?: boolean };
 
 const money = (v: number | null | undefined) => (v === null || v === undefined ? "n/a" : `$${Math.round(v).toLocaleString("en-US")}`);
 const count = (v: number | null | undefined) => (v === null || v === undefined ? "n/a" : Math.round(v).toLocaleString("en-US"));
@@ -54,12 +54,13 @@ export function PastPerformanceModal({ isOpen, onClose, planId, advertiserName, 
           </button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-          {view.mode === "list" && <Library planId={planId} advertiserName={advertiserName} onOpen={(id) => setView({ mode: "campaign", id })} onUpload={() => setView({ mode: "upload" })} onChanged={onChanged} />}
+          {view.mode === "list" && <Library planId={planId} advertiserName={advertiserName} onOpen={(id) => setView({ mode: "campaign", id })} onUpload={(kind) => setView({ mode: "upload", kind })} onChanged={onChanged} />}
           {view.mode === "upload" && (
             <UploadStep
               planId={planId}
               advertiserName={advertiserName}
               campaign={view.campaign}
+              kind={view.campaign?.kind ?? view.kind ?? "past"}
               onCancel={() => setView(view.campaign ? { mode: "campaign", id: view.campaign.id } : { mode: "list" })}
               onSaved={(id) => {
                 onChanged();
@@ -85,7 +86,7 @@ export function PastPerformanceModal({ isOpen, onClose, planId, advertiserName, 
   );
 }
 
-function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { planId?: string; advertiserName: string; onOpen: (id: string) => void; onUpload: () => void; onChanged: () => void }) {
+function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { planId?: string; advertiserName: string; onOpen: (id: string) => void; onUpload: (kind: "past" | "live") => void; onChanged: () => void }) {
   const [campaigns, setCampaigns] = React.useState<PerformanceCampaignSummary[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -121,7 +122,8 @@ function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { plan
     }
   };
 
-  const linked = planId ? (campaigns || []).filter((c) => c.linkedPlanIds.includes(planId)) : [];
+  const live = planId ? (campaigns || []).find((c) => c.kind === "live" && c.linkedPlanIds.includes(planId)) : undefined;
+  const linked = planId ? (campaigns || []).filter((c) => c.linkedPlanIds.includes(planId) && c !== live) : [];
   const others = (campaigns || []).filter((c) => !planId || !c.linkedPlanIds.includes(planId));
 
   return (
@@ -131,15 +133,32 @@ function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { plan
         <p className="text-xs leading-relaxed text-slate-500 max-w-lg">
           Upload the report exports from a campaign that has already run: the media type, publisher, audience, ad group, creative and daily reports, and all-touch or last-touch conversion exports. {planId ? "ScoutAI reads what is linked to this plan." : "Ticked campaigns in the brief shape the plan that is generated."}
         </p>
-        <button onClick={onUpload} className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 cursor-pointer">
-          <Upload className="w-3.5 h-3.5" /> Add a campaign
+        <button onClick={() => onUpload("past")} className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 cursor-pointer">
+          <Upload className="w-3.5 h-3.5" /> Add a past campaign
         </button>
       </div>
+      {planId && campaigns !== null && (
+        <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-800"><Activity className="w-3.5 h-3.5" /> This plan's live campaign</div>
+              <p className="text-[11px] text-slate-600 truncate">
+                {live ? `${live.name} · ${live.snapshots.length} upload${live.snapshots.length === 1 ? "" : "s"} · last data ${live.snapshots[live.snapshots.length - 1]?.asOf ?? "n/a"}` : "Once it is running, re-export the reports and upload them here to see it against the plan."}
+              </p>
+            </div>
+            {live ? (
+              <button onClick={() => onOpen(live.id)} className="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-[11px] font-bold hover:bg-emerald-700 cursor-pointer">Plan vs actual</button>
+            ) : (
+              <button onClick={() => onUpload("live")} className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-white text-emerald-800 text-[11px] font-bold hover:bg-emerald-50 cursor-pointer"><Upload className="w-3 h-3" /> Upload live reports</button>
+            )}
+          </div>
+        </div>
+      )}
       {campaigns === null ? (
         <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</div>
       ) : (
         <>
-          {planId && <Section title="Linked to this plan" empty="No past campaigns are linked yet.">
+          {planId && <Section title="Past campaigns linked to this plan" empty="No past campaigns are linked yet.">
             {linked.map((c) => (
               <CampaignRow key={c.id} campaign={c} onOpen={() => onOpen(c.id)} action={
                 <button disabled={busy === c.id} onClick={() => toggleLink(c, false)} className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 cursor-pointer disabled:opacity-50">
@@ -151,7 +170,7 @@ function Library({ planId, advertiserName, onOpen, onUpload, onChanged }: { plan
           {(others.length > 0 || !planId) && (
             <Section title={planId ? `Other campaigns for ${advertiserName}` : `Campaigns for ${advertiserName || "this advertiser"}`} empty="None yet.">
               {others.map((c) => (
-                <CampaignRow key={c.id} campaign={c} onOpen={() => onOpen(c.id)} action={planId ? (
+                <CampaignRow key={c.id} campaign={c} onOpen={() => onOpen(c.id)} action={planId && c.kind !== "live" ? (
                   <button disabled={busy === c.id} onClick={() => toggleLink(c, true)} className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold text-indigo-700 hover:bg-indigo-50 cursor-pointer disabled:opacity-50">
                     <Link2 className="w-3 h-3" /> Link to this plan
                   </button>
@@ -179,7 +198,7 @@ function CampaignRow({ campaign: c, onOpen, action }: { campaign: PerformanceCam
   return (
     <div className="flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2.5 hover:border-indigo-200 transition-colors">
       <button onClick={onOpen} className="flex-1 min-w-0 text-left cursor-pointer">
-        <div className="text-xs font-bold text-slate-800 truncate">{c.name}</div>
+        <div className="text-xs font-bold text-slate-800 truncate">{c.name}{c.kind === "live" && <span className="ml-1.5 text-[10px] font-bold text-emerald-700">LIVE</span>}</div>
         <div className="text-[11px] text-slate-500 truncate">
           {flightText(c.flightStart, c.flightEnd)} · {c.fileCount} file{c.fileCount === 1 ? "" : "s"}{c.conversionLabel ? ` · ${c.conversionLabel}` : ""} · added by {c.createdBy}
         </div>
@@ -191,7 +210,7 @@ function CampaignRow({ campaign: c, onOpen, action }: { campaign: PerformanceCam
 
 // --- upload ------------------------------------------------------------------
 
-function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { planId?: string; advertiserName: string; campaign?: PerformanceCampaignView; onCancel: () => void; onSaved: (id: string) => void }) {
+function UploadStep({ planId, advertiserName, campaign, kind, onCancel, onSaved }: { planId?: string; advertiserName: string; campaign?: PerformanceCampaignView; kind: "past" | "live"; onCancel: () => void; onSaved: (id: string) => void }) {
   const [files, setFiles] = React.useState<PreparedFile[]>([]);
   const [progress, setProgress] = React.useState<{ fileName: string; fraction: number } | null>(null);
   const [errors, setErrors] = React.useState<string[]>([]);
@@ -224,7 +243,7 @@ function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { p
     const timer = setTimeout(async () => {
       setPreviewing(true);
       try {
-        const result = await api.previewPerformanceFiles({ files, campaignId: campaign?.id, details });
+        const result = await api.previewPerformanceFiles({ files, campaignId: campaign?.id, details, kind });
         if (cancelled) return;
         setPreview(result);
         setDetails((prev) => {
@@ -258,7 +277,7 @@ function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { p
     try {
       const response = campaign
         ? await api.updatePerformanceCampaign(campaign.id, campaign.revision, { addFiles: files, details })
-        : await api.createPerformanceCampaign({ files, details, planId });
+        : await api.createPerformanceCampaign({ files, details, planId, kind });
       onSaved(response.campaign.id);
     } catch (err: any) {
       setError(err?.message || "Could not save the campaign.");
@@ -281,7 +300,10 @@ function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { p
       >
         <input ref={inputRef} type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls" className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
         <FileSpreadsheet className="w-6 h-6 text-indigo-400 mx-auto mb-1.5" />
-        <p className="text-xs font-bold text-slate-700">{campaign ? `Add reports to ${campaign.name}` : "Drop a campaign's report exports here"}</p>
+        <p className="text-xs font-bold text-slate-700">
+          {campaign ? (kind === "live" ? `Upload the latest exports for ${campaign.name}` : `Add reports to ${campaign.name}`) : kind === "live" ? "Drop this plan's live campaign exports here" : "Drop a campaign's report exports here"}
+        </p>
+        {kind === "live" && <p className="text-[11px] text-emerald-700 mt-0.5">Re-export the reports during the flight; each new export replaces the earlier one of the same report.</p>}
         <p className="text-[11px] text-slate-400 mt-0.5">CSV or Excel, several at once. All-touch and last-touch exports are summarised in your browser; their rows are never uploaded.</p>
         {progress && (
           <div className="mt-3 mx-auto max-w-xs">
@@ -302,9 +324,10 @@ function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { p
               <Field label="Campaign name">
                 <input value={details.name || ""} placeholder="Named after the flight if left blank" onChange={(e) => edit("name", e.target.value)} className={inputClass} />
               </Field>
-              <DetailFields details={details} edit={edit} />
+              <DetailFields details={details} edit={edit} live={kind === "live"} />
             </div>
           )}
+          {preview?.replaced?.length ? <Notice tone="info" text={`Replaces the earlier export${preview.replaced.length === 1 ? "" : "s"}: ${preview.replaced.join(", ")}.`} /> : null}
           {preview?.advertiserMismatch && (
             <Notice tone="caution" text={`These files are for ${preview.advertiserMismatch}, not ${details.advertiserName || campaign?.advertiserName}. They can inform this plan, but will not appear in anything client-facing unless the advertisers match.`} />
           )}
@@ -320,7 +343,7 @@ function UploadStep({ planId, advertiserName, campaign, onCancel, onSaved }: { p
           disabled={!files.length || saving || previewing || Boolean(progress) || (!campaign && !details.advertiserName?.trim())}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} {campaign ? "Add to campaign" : planId ? "Save and link to this plan" : "Save to the library"}
+          {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} {campaign ? (kind === "live" ? "Upload" : "Add to campaign") : kind === "live" ? "Track as this plan's live campaign" : planId ? "Save and link to this plan" : "Save to the library"}
         </button>
       </div>
     </div>
@@ -340,13 +363,13 @@ function Field({ label, hint, required, children }: { label: string; hint?: stri
 }
 
 /** The fields the exports cannot answer. They are the planner's to confirm. */
-function DetailFields({ details, edit }: { details: CampaignDetailsInput; edit: (key: keyof CampaignDetailsInput, value: string) => void }) {
+function DetailFields({ details, edit, live = false }: { details: CampaignDetailsInput; edit: (key: keyof CampaignDetailsInput, value: string) => void; live?: boolean }) {
   return (
     <>
-      <Field label="Flight start" hint="Files outside the flight are kept as reference.">
+      <Field label={live ? "Planned flight start" : "Flight start"} hint={live ? "The whole flight, not the reports' dates: pacing is measured against it." : "Files outside the flight are kept as reference."}>
         <input type="date" value={details.flightStart || ""} onChange={(e) => edit("flightStart", e.target.value)} className={inputClass} />
       </Field>
-      <Field label="Flight end">
+      <Field label={live ? "Planned flight end" : "Flight end"}>
         <input type="date" value={details.flightEnd || ""} onChange={(e) => edit("flightEnd", e.target.value)} className={inputClass} />
       </Field>
       <Field label="Conversion event" hint="The exports call every pixel conversion Visits. What was it?">
@@ -428,13 +451,13 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
       <div className="flex items-center justify-between gap-3">
         <button onClick={onBack} className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 cursor-pointer">← Library</button>
         <div className="flex items-center gap-1.5">
-          {planId && (
+          {planId && c.kind !== "live" && (
             <button disabled={busy} onClick={() => run(() => api.updatePerformanceCampaign(c.id, c.revision, isLinked ? { unlinkPlanIds: [planId] } : { linkPlanIds: [planId] }))} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer disabled:opacity-50">
               {isLinked ? <><Unlink className="w-3 h-3" /> Unlink from this plan</> : <><Link2 className="w-3 h-3" /> Link to this plan</>}
             </button>
           )}
           <button disabled={busy} onClick={() => onAddFiles(c)} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-bold text-indigo-700 hover:bg-indigo-50 cursor-pointer disabled:opacity-50">
-            <Upload className="w-3 h-3" /> Add reports
+            <Upload className="w-3 h-3" /> {c.kind === "live" ? "Upload latest reports" : "Add reports"}
           </button>
           <button
             disabled={busy}
@@ -454,7 +477,7 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
       <div className="grid grid-cols-2 gap-3">
         <Field label="Advertiser" required><input value={details.advertiserName || ""} onChange={(e) => edit("advertiserName", e.target.value)} className={inputClass} /></Field>
         <Field label="Campaign name"><input value={details.name || ""} onChange={(e) => edit("name", e.target.value)} className={inputClass} /></Field>
-        <DetailFields details={details} edit={edit} />
+        <DetailFields details={details} edit={edit} live={c.kind === "live"} />
       </div>
       {dirty && (
         <div className="flex justify-end">
@@ -464,6 +487,7 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
         </div>
       )}
       {data.advertiserMismatch && <Notice tone="caution" text={`These files are for ${data.advertiserMismatch}, not ${c.advertiserName}. They will not appear in anything client-facing unless the advertisers match.`} />}
+      {c.kind === "live" && planId && isLinked && <PlanVsActualCard planId={planId} revision={c.revision} />}
       <ReviewPanel review={data.review} stale={data.reviewStale} busy={reviewing || busy} error={reviewError} onWrite={() => review(c)} />
       <AnalysisView
         analysis={data.analysis}
@@ -473,6 +497,88 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
           if (file && window.confirm(`Remove ${fileName} from this campaign?`)) run(() => api.updatePerformanceCampaign(c.id, c.revision, { removeFileIds: [file.id] }));
         }}
       />
+    </div>
+  );
+}
+
+// --- plan vs actual -------------------------------------------------------------------
+
+const STATUS: Record<string, { label: string; style: string }> = {
+  "on-pace": { label: "On pace", style: "bg-emerald-50 text-emerald-700 border-emerald-100" },
+  under: { label: "Under", style: "bg-amber-50 text-amber-800 border-amber-100" },
+  over: { label: "Over", style: "bg-sky-50 text-sky-700 border-sky-100" },
+  "not-delivering": { label: "Not delivering", style: "bg-rose-50 text-rose-700 border-rose-100" },
+  "not-started": { label: "Not started", style: "bg-slate-100 text-slate-600 border-slate-200" },
+  "off-plan": { label: "Not in plan", style: "bg-violet-50 text-violet-700 border-violet-100" },
+};
+
+function PlanVsActualCard({ planId, revision }: { planId: string; revision: number }) {
+  const [p, setP] = React.useState<api.PlanVsActual | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    api.getPlanLive(planId).then((live) => setP(live?.comparison ?? null)).catch((err) => setError(err?.message || "Could not compare with the plan."));
+  }, [planId, revision]);
+  if (error) return <ErrorBox text={error} />;
+  if (!p) return <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Comparing with the plan…</div>;
+  const usd = (v: number | null) => (v === null ? "n/a" : v < 100 ? `$${v.toFixed(2)}` : money(v));
+  const pctText = (v: number | null) => (v === null ? "n/a" : `${Math.round(v * 100)}%`);
+  const targetText = p.target ? (p.target.metric === "cpa" ? `CPA target ${usd(p.target.value)}` : `ROAS target ${p.target.value.toFixed(2)}x`) : "No CPA or ROAS target in the KPIs";
+  const actualKpi = p.target?.metric === "roas" ? (p.actual.roas !== null ? `${p.actual.roas.toFixed(2)}x` : "n/a") : usd(p.actual.cpa);
+  const kpiGood = p.target ? (p.target.metric === "cpa" ? (p.actual.cpa ?? Infinity) <= p.target.value : (p.actual.roas ?? 0) >= p.target.value) : null;
+  return (
+    <div className="rounded-xl border border-emerald-100">
+      <div className="px-4 py-3 border-b border-emerald-50 flex items-center justify-between">
+        <div className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Plan vs actual{p.asOf ? ` · data to ${p.asOf}` : ""}</div>
+        {p.sinceLast && <div className="text-[10px] text-slate-500">Since last upload: {money(p.sinceLast.spend)}, {Math.round(p.sinceLast.conversions).toLocaleString()} {p.conversionLabel}, CPA {usd(p.sinceLast.cpa)}</div>}
+      </div>
+      <div className="p-4 space-y-4">
+        <div className="grid grid-cols-4 gap-2">
+          <Stat label="Flight" value={p.daysElapsed !== null && p.flight ? `Day ${p.daysElapsed} of ${p.flight.days}` : "n/a"} />
+          <Stat label={`Spent of ${money(p.budget)}`} value={`${money(p.spent)} (${pctText(p.spendShare)})`} />
+          <Stat label="Pacing (100% = on plan)" value={pctText(p.pacing)} />
+          <Stat label={targetText} value={actualKpi} />
+        </div>
+        <div>
+          <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden relative">
+            <div className="absolute inset-y-0 left-0 bg-emerald-500" style={{ width: `${Math.min(100, p.spendShare * 100)}%` }} />
+            {p.elapsedShare !== null && <div className="absolute inset-y-0 w-0.5 bg-slate-700" style={{ left: `${Math.min(100, p.elapsedShare * 100)}%` }} title="Where spend should be by now" />}
+          </div>
+          <p className="mt-1 text-[10px] text-slate-500">
+            Bar: share of budget spent; the line marks the share of the flight elapsed.{p.projectedSpend !== null ? ` At the last week's rate it ends near ${money(p.projectedSpend)} (a straight line, not a forecast).` : ""}
+            {kpiGood !== null && <span className={kpiGood ? "text-emerald-700" : "text-rose-700"}> {kpiGood ? "Inside" : "Outside"} the target so far.</span>}
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400">
+                <th className="py-1 pr-2 font-bold">Media type</th><th className="py-1 px-2 font-bold text-right">Planned</th><th className="py-1 px-2 font-bold text-right">Expected to date</th><th className="py-1 px-2 font-bold text-right">Spent</th><th className="py-1 px-2 font-bold text-right">{p.conversionLabel}</th><th className="py-1 px-2 font-bold text-right">CPA</th><th className="py-1 pl-2 font-bold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {p.channels.map((c) => (
+                <tr key={c.name}>
+                  <td className="py-1.5 pr-2 font-semibold text-slate-700">{c.name}</td>
+                  <td className="py-1.5 px-2 text-right text-slate-600">{c.plannedPercent !== null ? `${c.plannedPercent}%` : "–"}</td>
+                  <td className="py-1.5 px-2 text-right text-slate-600">{c.expectedToDate !== null ? money(c.expectedToDate) : "–"}</td>
+                  <td className="py-1.5 px-2 text-right text-slate-800">{money(c.spend)}{c.delivery !== null ? <span className="text-slate-400"> ({pctText(c.delivery)})</span> : null}</td>
+                  <td className="py-1.5 px-2 text-right text-slate-600">{Math.round(c.conversions).toLocaleString()}</td>
+                  <td className={`py-1.5 px-2 text-right ${c.aboveTarget ? "text-rose-700 font-bold" : "text-slate-800"}`}>{usd(c.cpa)}{c.thinSample && c.spend > 0 ? <span className="text-slate-400" title="Under 30 conversions"> *</span> : null}</td>
+                  <td className="py-1.5 pl-2"><span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${STATUS[c.status].style}`}>{STATUS[c.status].label}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-1 text-[10px] text-slate-400">* Under 30 conversions: too early to judge its CPA. CPA in red is over the target on enough conversions.</p>
+        </div>
+        {p.publishers && (p.publishers.notDelivering.length > 0 || p.publishers.offPlan.length > 0) && (
+          <div className="space-y-1.5">
+            {p.publishers.notDelivering.length > 0 && <Notice tone="caution" text={`Plan publishers not delivering: ${p.publishers.notDelivering.join(", ")}.`} />}
+            {p.publishers.offPlan.length > 0 && <Notice tone="info" text={`Delivering but not in the plan: ${p.publishers.offPlan.slice(0, 6).map((x) => `${x.name} (${money(x.spend)})`).join(", ")}${p.publishers.offPlan.length > 6 ? ` and ${p.publishers.offPlan.length - 6} more` : ""}.`} />}
+          </div>
+        )}
+        {p.notes.map((n, i) => <Notice key={i} tone="info" text={n} />)}
+      </div>
     </div>
   );
 }
@@ -541,6 +647,8 @@ function ReviewPanel({ review, stale, busy, error, onWrite }: { review: api.Perf
                     </button>
                     {open === f.id && <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500"><span className="font-bold">Evidence:</span> {f.evidence}</p>}
                     {f.unverified.length > 0 && <p className="mt-1.5 text-[10px] text-amber-800">Figures not found in the data: {f.unverified.join(", ")}. This finding is kept out of anything client-facing.</p>}
+                    {f.causalClaim && <p className="mt-1.5 text-[10px] text-amber-800">States a cause ("{f.causalClaim}") the data does not show. This finding is kept out of anything client-facing.</p>}
+                    {f.confidenceNote && <p className="mt-1.5 text-[10px] text-slate-500">Confidence lowered: {f.confidenceNote}.</p>}
                   </li>
                 ))}
               </ul>

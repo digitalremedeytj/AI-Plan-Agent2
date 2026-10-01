@@ -30,9 +30,28 @@ export interface LearningCampaign {
   name: string;
   /** The client's own campaign; nothing from any other can be added. */
   own: boolean;
-  findings: Array<{ id: string; headline: string; unverified: string[] }>;
+  findings: Array<{ id: string; headline: string; unverified: string[]; causalClaim?: string | null }>;
   /** Every figure in the campaign's data, for checking what a learning quotes. */
   reference: FigureReference;
+}
+
+/**
+ * What an action may name: the plan's media types (with their catalog aliases) and its CTV
+ * publishers. Null when the plan has no channel plan to hold an action to.
+ */
+function planTerms(profile: any): string[] | null {
+  const plan = profile?.channelStrategy?.mediaPlan;
+  if (!plan?.channels?.length) return null;
+  const terms: string[] = [];
+  for (const channel of plan.channels) {
+    terms.push(String(channel.channelName || ""));
+    const product = (plan.evaluatedCandidates || []).find((c: any) => c?.product?.id === channel.channelId)?.product;
+    terms.push(...((product?.aliases as string[]) || []));
+    // "CTV / OTT" is written "CTV" or "connected TV"; "Online Video (OLV)" as "online video".
+    terms.push(...String(channel.channelName || "").split(/\s*[/()]\s*/));
+  }
+  for (const p of profile.ctvPublishers || []) terms.push(String(p?.publisher || ""));
+  return [...new Set(terms.map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 3))];
 }
 
 const plain = (value: unknown) => (typeof value === "string" ? value.replace(/\*\*|__|`/g, "").replace(/\s+/g, " ").trim() : "");
@@ -61,6 +80,10 @@ export function applyLearningOps(profile: any, ops: AssistantOp[], campaigns: Le
     if (missing.length) return reject(op, `the learning quotes figures that are not in the campaign's data (${missing.join(", ")})`), false;
     if (extractPerformanceFigures(action).length) return reject(op, "the action says what the plan does without figures; the plan shows its own numbers"), false;
     if (INTERNAL_TERMS.test(`${learning} ${action}`)) return reject(op, "client text says it in the client's terms (CPA, checkouts, cost), not internal ones like PM or ad group"), false;
+    const terms = planTerms(profile);
+    if (terms && !terms.some((term) => action.toLowerCase().includes(term))) {
+      return reject(op, "the action must name a media type or CTV publisher this plan includes, so the client is told what the plan actually does"), false;
+    }
     return true;
   };
 
@@ -99,6 +122,7 @@ export function applyLearningOps(profile: any, ops: AssistantOp[], campaigns: Le
     const finding = campaign.findings.find((f) => f.id === op.findingId);
     if (!finding) { reject(op, `${campaign.name}'s review has no finding ${op.findingId}; write the review first`); continue; }
     if (finding.unverified.length) { reject(op, `the finding "${finding.headline}" quotes figures that are not in the data (${finding.unverified.join(", ")})`); continue; }
+    if (finding.causalClaim) { reject(op, `the finding "${finding.headline}" states a cause ("${finding.causalClaim}") the data does not show`); continue; }
     if (items.some((e) => e.item.campaignId === campaign.id && e.item.findingId === finding.id)) { reject(op, `"${finding.headline}" is already a learning`); continue; }
     if (items.length >= MAX_LEARNINGS) { reject(op, `the section holds at most ${MAX_LEARNINGS} learnings`); continue; }
     const learning = plain(op.learning);

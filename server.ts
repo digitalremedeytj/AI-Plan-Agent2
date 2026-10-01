@@ -62,12 +62,13 @@ import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { applyOps, parseOps } from "./src/assistant/operations";
 import { detectFollowUps } from "./src/assistant/followUps";
-import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, reviewFingerprint, suggestedDetails } from "./src/performance/library";
+import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, reviewFingerprint, snapshotOf, suggestedDetails } from "./src/performance/library";
+import { comparePlanToActual } from "./src/performance/planVsActual";
 import { CAMPAIGN_GOALS } from "./src/performance/constants";
 import { figureReference, unverifiedFigures } from "./src/performance/figureCheck";
 import { renderDigest } from "./src/performance/digest";
 import { buildReviewInput, normalizeReview, readStoredReview, REVIEW_SYSTEM_INSTRUCTION, reviewSchema } from "./src/performance/review";
-import { buildPerformanceContext, PERFORMANCE_INSTRUCTION, toLearningCampaign, type LinkedCampaign } from "./src/assistant/performanceContext";
+import { buildPerformanceContext, LIVE_INSTRUCTION, PERFORMANCE_INSTRUCTION, toLearningCampaign, type LinkedCampaign } from "./src/assistant/performanceContext";
 import { buildGenerationHistory, type GenerationHistory } from "./src/research/pastPerformance";
 import { SCOUT_SYSTEM_INSTRUCTION, buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./src/assistant/scoutChat";
 import { throttledProgress } from "./src/server/thoughtProgress";
@@ -236,7 +237,7 @@ const SCOUT_ANALYSIS_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeout
   { thinkingLevel: "high", timeoutMs: 100000 },
   { thinkingLevel: "medium", timeoutMs: 60000 },
 ];
-const PERFORMANCE_QUESTION = /\b(perform|past|previous|last|prior|historic|campaign|report|results?|data|worked|analy[sz]|learn|cpa|roas|pm|conversions?|checkouts?)/i;
+const PERFORMANCE_QUESTION = /\b(perform|past|previous|last|prior|historic|campaign|report|results?|data|worked|analy[sz]|learn|cpa|roas|pm|conversions?|checkouts?|pac(e|ing)|track|live|optimi[sz]|deliver)/i;
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
 const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
 const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
@@ -2084,7 +2085,9 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       planPublishers: ((plan.payload as any)?.profile?.ctvPublishers || []).map((p: any) => String(p?.publisher ?? "")).filter(Boolean),
       catalog: context.publisherCatalog,
       profile: (plan.payload as any)?.profile,
+      kpis: Array.isArray((plan.payload as any)?.kpis) ? (plan.payload as any).kpis : [],
     });
+    const hasLive = linked.some((l) => l.campaign.kind === "live");
     const analysisTurn = Boolean(performance) && PERFORMANCE_QUESTION.test(turns[turns.length - 1].text);
     const planContext = buildPlanContext(plan, context);
     // Figures about past performance must come from its data or the plan; anything else is flagged.
@@ -2103,7 +2106,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
       getAiClient(),
       {
-        systemInstruction: performance ? `${SCOUT_SYSTEM_INSTRUCTION}\n\n${PERFORMANCE_INSTRUCTION}` : SCOUT_SYSTEM_INSTRUCTION,
+        systemInstruction: performance ? `${SCOUT_SYSTEM_INSTRUCTION}\n\n${PERFORMANCE_INSTRUCTION}${hasLive ? `\n\n${LIVE_INSTRUCTION}` : ""}` : SCOUT_SYSTEM_INSTRUCTION,
         input: buildScoutInput(planContext, turns, performance),
         schema: scoutResponseSchema,
         onThought: (text) => send({ type: "thought", text }),
@@ -2136,7 +2139,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     if (figures) for (const item of items) item.unverifiedFigures = unverifiedFigures([item.title, item.why, item.evidence ?? "", ...opTexts(item.ops)].join(" \n "), figures);
     const replyUnverified = figures ? unverifiedFigures(response.reply, figures) : [];
     if (replyUnverified.length > 0) reply += `\n\n_Not found in the campaign data or the plan, so check before using: ${replyUnverified.join(", ")}._`;
-    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${linked.length ? `${linked.length} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
+    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${linked.length ? `${hasLive ? "live campaign + " : ""}${linked.length - (hasLive ? 1 : 0)} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
     send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision });
     res.end();
   } catch (err: any) {
@@ -2162,6 +2165,16 @@ function opTexts(ops: unknown[]): string[] {
   };
   walk(ops);
   return out;
+}
+
+/** A live campaign against the plan as it stands now. */
+function liveComparison(live: LinkedCampaign, payload: any) {
+  const profile = payload?.profile ?? {};
+  return comparePlanToActual(live.analysis, {
+    mediaPlan: profile.channelStrategy?.mediaPlan,
+    kpis: Array.isArray(payload?.kpis) ? payload.kpis : [],
+    ctvPublishers: (profile.ctvPublishers || []).map((p: any) => String(p?.publisher ?? "")).filter(Boolean),
+  }, { flightStart: live.campaign.flightStart ?? null, flightEnd: live.campaign.flightEnd, snapshots: live.campaign.snapshots ?? [] });
 }
 
 const enabledPublishersForHistory = (publishers: any[]) => publishers.filter((p) => p && p.enabled !== false && p.name).map((p) => String(p.name));
@@ -2332,14 +2345,15 @@ app.post("/api/performance/preview", async (req, res) => {
       existing = await (await getStorage()).getPerformanceCampaign(req.body.campaignId);
       if (!existing || existing.archived) throw new CampaignNotFoundError(req.body.campaignId);
     }
-    const { files, duplicates } = mergeFiles(existing?.files ?? [], added);
-    const suggested = suggestedDetails(analyzeFiles(files, { flightStart: null, flightEnd: null, conversionLabel: null }));
+    const kind: "past" | "live" = existing?.kind ?? (req.body?.kind === "live" ? "live" : "past");
+    const { files, duplicates, replaced } = mergeFiles(existing?.files ?? [], added, { replaceSameReport: kind === "live" });
+    const suggested = suggestedDetails(analyzeFiles(files, { flightStart: null, flightEnd: null, conversionLabel: null, kind }));
     // What the planner has set wins over what was saved, which wins over what the files suggest.
     const saved = Object.fromEntries(Object.entries(existing ?? {}).filter(([, v]) => v !== null && v !== ""));
     const merged = { ...suggested, ...saved, ...(req.body?.details ?? {}) };
     const details = readCampaignDetails({ ...merged, advertiserName: merged.advertiserName || "Unnamed advertiser" }).details;
-    const analysis = analyzeFiles(files, details ?? { flightStart: null, flightEnd: null, conversionLabel: null });
-    res.json({ analysis, suggested, duplicates, rejected, advertiserMismatch: merged.advertiserName ? advertiserMismatch({ advertiserName: merged.advertiserName }, analysis) : null });
+    const analysis = analyzeFiles(files, { ...(details ?? { flightStart: null, flightEnd: null, conversionLabel: null }), kind });
+    res.json({ analysis, suggested, duplicates, replaced, rejected, advertiserMismatch: merged.advertiserName ? advertiserMismatch({ advertiserName: merged.advertiserName }, analysis) : null });
   } catch (err: any) {
     respondToCampaignError(res, err, "read the reports");
   }
@@ -2360,7 +2374,21 @@ app.post("/api/performance/campaigns", async (req, res) => {
       return;
     }
     const linkedPlanIds = await linkablePlanIds(storage, [req.body?.planId]);
-    const campaign = await storage.createPerformanceCampaign({ ...details, linkedPlanIds, files, actor: actorName(req) });
+    // A live campaign is the running campaign of one plan, so it needs that plan, and a plan has one.
+    const kind: "past" | "live" = req.body?.kind === "live" ? "live" : "past";
+    if (kind === "live") {
+      if (linkedPlanIds.length !== 1) {
+        res.status(400).json({ error: "A live campaign is uploaded from the plan it is running." });
+        return;
+      }
+      const current = (await storage.listPerformanceCampaigns()).find((c) => c.kind === "live" && c.linkedPlanIds.includes(linkedPlanIds[0]));
+      if (current) {
+        res.status(409).json({ error: `This plan already has a live campaign (${current.name}). Add the new reports to it.`, code: "LIVE_EXISTS", campaignId: current.id });
+        return;
+      }
+    }
+    const snapshots = kind === "live" ? [snapshotOf(analyzeFiles(files, { ...details, kind }), actorName(req))] : [];
+    const campaign = await storage.createPerformanceCampaign({ ...details, kind, snapshots, linkedPlanIds, files, actor: actorName(req) });
     console.log(`[PERFORMANCE] Campaign ${campaign.id} for ${campaign.advertiserName}: ${files.length} file(s) by ${actorName(req)}.`);
     res.json({ ...campaignResponse(campaign), rejected, duplicates });
   } catch (err: any) {
@@ -2397,7 +2425,7 @@ app.put("/api/performance/campaigns/:id", async (req, res) => {
     }
     const remove = new Set(Array.isArray(req.body?.removeFileIds) ? req.body.removeFileIds : []);
     const { files: added, rejected } = readUploadedFiles(req.body?.addFiles, actorName(req));
-    const { files, duplicates } = mergeFiles(existing.files.filter((f) => !remove.has(f.id)), added);
+    const { files, duplicates, replaced } = mergeFiles(existing.files.filter((f) => !remove.has(f.id)), added, { replaceSameReport: existing.kind === "live" });
     if (files.length === 0) {
       res.status(400).json({ error: "A campaign needs at least one report. Archive it instead." });
       return;
@@ -2407,8 +2435,13 @@ app.put("/api/performance/campaigns/:id", async (req, res) => {
       ...existing.linkedPlanIds.filter((id) => !unlink.has(id)),
       ...(await linkablePlanIds(storage, Array.isArray(req.body?.linkPlanIds) ? req.body.linkPlanIds : [])),
     ];
-    const campaign = await storage.updatePerformanceCampaign(existing.id, { ...details, linkedPlanIds, files, actor: actorName(req) }, expectedRevision);
-    res.json({ ...campaignResponse(campaign), rejected, duplicates });
+    // Each upload to a live campaign is recorded, so the next comparison can say what changed since.
+    const filesChanged = added.length > 0 || remove.size > 0;
+    const snapshots = existing.kind === "live" && filesChanged
+      ? [...existing.snapshots, snapshotOf(analyzeFiles(files, { ...details, kind: "live" }), actorName(req))]
+      : undefined;
+    const campaign = await storage.updatePerformanceCampaign(existing.id, { ...details, linkedPlanIds, files, ...(snapshots ? { snapshots } : {}), actor: actorName(req) }, expectedRevision);
+    res.json({ ...campaignResponse(campaign), rejected, duplicates, replaced });
   } catch (err: any) {
     respondToCampaignError(res, err, "update the campaign");
   }
@@ -2443,6 +2476,26 @@ app.post("/api/performance/campaigns/:id/review", async (req, res) => {
     res.json(campaignResponse(updated));
   } catch (err: any) {
     respondToCampaignError(res, err, "write the review");
+  }
+});
+
+// The plan's live campaign against the plan: pacing, delivery by media type, publishers.
+app.get("/api/plans/:id/live", async (req, res) => {
+  try {
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    const live = (await linkedCampaigns(storage, plan.id)).find((l) => l.campaign.kind === "live");
+    if (!live) {
+      res.json({ live: null });
+      return;
+    }
+    res.json({ live: { campaign: publicCampaign(live.campaign as PerformanceCampaign), comparison: liveComparison(live, plan.payload) } });
+  } catch (err: any) {
+    respondToCampaignError(res, err, "compare the live campaign with the plan");
   }
 });
 

@@ -8,7 +8,8 @@
 // It is never mixed into the research dossiers: chart points are labelled "from research" when
 // the research text holds their value, and report figures would match by accident.
 
-import { matchChannel, matchPublisher, isOwnCampaign, type LinkedCampaign } from "../assistant/performanceContext";
+import { isOwnCampaign, type LinkedCampaign } from "../assistant/performanceContext";
+import { matchChannel, matchPublisher } from "../performance/matching";
 import { isMediaTypeDimension, money, pct } from "../performance/campaign";
 import { CAMPAIGN_GOALS } from "../performance/constants";
 import { renderDigest } from "../performance/digest";

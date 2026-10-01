@@ -122,9 +122,25 @@ export interface PerformanceFileRecord {
  * revision (which would invalidate pending ScoutAI proposals) and the next plan for the same
  * advertiser can draw on it too.
  */
+/** What the campaign's totals were at one upload of a live campaign, for "since last upload". */
+export interface PerformanceSnapshot {
+  uploadedAt: string;
+  uploadedBy: string;
+  /** The last day the reports covered, YYYY-MM-DD. */
+  asOf: string | null;
+  spend: number;
+  conversions: number;
+  revenue: number;
+}
+
 export interface PerformanceCampaignSummary {
   id: string;
   revision: number;
+  /**
+   * "past": a finished campaign to learn from. "live": the running campaign of a linked plan,
+   * re-exported during the flight and compared with the plan.
+   */
+  kind: "past" | "live";
   advertiserName: string;
   /** Lowercased and trimmed, so "Acme " and "acme" are one advertiser's library. */
   advertiserKey: string;
@@ -139,6 +155,8 @@ export interface PerformanceCampaignSummary {
   notes: string | null;
   linkedPlanIds: string[];
   fileCount: number;
+  /** Live campaigns only: one entry per upload, newest last. */
+  snapshots: PerformanceSnapshot[];
   createdAt: string;
   createdBy: string;
   updatedAt: string;
@@ -153,6 +171,9 @@ export interface PerformanceCampaign extends PerformanceCampaignSummary {
 }
 
 export interface PerformanceCampaignInput {
+  /** Set when the campaign is created; left out of an update to keep it. */
+  kind?: "past" | "live";
+  snapshots?: PerformanceSnapshot[];
   advertiserName: string;
   name: string;
   flightStart: string | null;
@@ -166,6 +187,8 @@ export interface PerformanceCampaignInput {
   review?: unknown | null;
   actor: string;
 }
+
+const MAX_SNAPSHOTS = 40;
 
 /** A campaign is one Firestore document; its files must leave room under the 1MB limit. */
 export const MAX_PERFORMANCE_FILES_BYTES = 900_000;
@@ -195,12 +218,13 @@ export function assertCampaignFits(files: PerformanceFileRecord[], review: unkno
 export function buildCampaignRecord(
   id: string,
   input: PerformanceCampaignInput,
-  existing: Pick<PerformanceCampaign, "revision" | "createdAt" | "createdBy" | "archived" | "review"> | null,
+  existing: Pick<PerformanceCampaign, "revision" | "createdAt" | "createdBy" | "archived" | "review" | "kind" | "snapshots"> | null,
   now: string,
 ): PerformanceCampaign {
   return {
     id,
     revision: existing ? existing.revision + 1 : 1,
+    kind: existing?.kind ?? input.kind ?? "past",
     advertiserName: input.advertiserName,
     advertiserKey: toAdvertiserKey(input.advertiserName),
     name: input.name,
@@ -211,6 +235,7 @@ export function buildCampaignRecord(
     notes: input.notes,
     linkedPlanIds: [...new Set(input.linkedPlanIds)],
     fileCount: input.files.length,
+    snapshots: (input.snapshots ?? existing?.snapshots ?? []).slice(-MAX_SNAPSHOTS),
     createdAt: existing?.createdAt ?? now,
     createdBy: existing?.createdBy ?? input.actor,
     updatedAt: now,

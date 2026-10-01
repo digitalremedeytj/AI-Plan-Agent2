@@ -4,7 +4,7 @@
 // and a saved analysis can never disagree with the files it came from.
 
 import { createHash } from "node:crypto";
-import type { PerformanceCampaign, PerformanceFileRecord } from "../storage/types";
+import type { PerformanceCampaign, PerformanceFileRecord, PerformanceSnapshot } from "../storage/types";
 import { toAdvertiserKey } from "../storage/types";
 import { analyzeCampaign, type CampaignAnalysis } from "./campaign";
 import { parseReportFileName } from "./columns";
@@ -103,20 +103,55 @@ export function readUploadedFiles(raw: unknown, actor: string, now = new Date().
   return { files, rejected };
 }
 
-/** Existing files plus new ones, skipping any file already in the campaign. */
-export function mergeFiles(existing: PerformanceFileRecord[], added: PerformanceFileRecord[]): { files: PerformanceFileRecord[]; duplicates: string[] } {
+/**
+ * Which report a file is, whatever day it was exported: "AP Mediatype (2026-02-09 - 2026-03-10)
+ * - Acme_20260312_120237.csv" and the same report exported a week later are one report.
+ */
+export function reportKey(fileName: string): string {
+  const parsed = parseReportFileName(fileName);
+  if (parsed.reportType) return parsed.reportType.toLowerCase();
+  return fileName.toLowerCase().replace(/\.\w+$/, "").replace(/_\d{8}_\d{6}$/, "").replace(/\(?\d{4}-\d{2}-\d{2}[\s_]*(?:-|to|_)[\s_]*\d{4}-\d{2}-\d{2}\)?/g, "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Existing files plus new ones, skipping any file already in the campaign. A live campaign is
+ * re-exported during the flight, so there a new export replaces the earlier one of the same report.
+ */
+export function mergeFiles(existing: PerformanceFileRecord[], added: PerformanceFileRecord[], { replaceSameReport = false } = {}): { files: PerformanceFileRecord[]; duplicates: string[]; replaced: string[] } {
   const seen = new Set(existing.map((f) => f.fingerprint));
-  const files = [...existing];
+  let files = [...existing];
   const duplicates: string[] = [];
+  const replaced: string[] = [];
   for (const f of added) {
     if (seen.has(f.fingerprint)) {
       duplicates.push(f.fileName);
       continue;
     }
+    if (replaceSameReport) {
+      const key = reportKey(f.fileName);
+      const old = files.filter((e) => reportKey(e.fileName) === key);
+      if (old.length) {
+        replaced.push(...old.map((e) => e.fileName));
+        files = files.filter((e) => !old.includes(e));
+      }
+    }
     seen.add(f.fingerprint);
     files.push(f);
   }
-  return { files, duplicates };
+  return { files, duplicates, replaced };
+}
+
+/** A live campaign's totals at this upload, for "since the last upload". */
+export function snapshotOf(analysis: CampaignAnalysis, actor: string, now = new Date().toISOString()): PerformanceSnapshot {
+  const ends = analysis.files.filter((f) => f.role !== "reference" && f.window && f.kind !== "summary").map((f) => f.window!.end);
+  return {
+    uploadedAt: now,
+    uploadedBy: actor,
+    asOf: ends.length ? formatDay(Math.max(...ends)) : null,
+    spend: analysis.totals?.spend ?? 0,
+    conversions: analysis.totals?.conversions ?? 0,
+    revenue: analysis.totals?.revenue ?? 0,
+  };
 }
 
 export function reportsOf(files: PerformanceFileRecord[]): Report[] {
@@ -131,12 +166,13 @@ export function reportsOf(files: PerformanceFileRecord[]): Report[] {
   });
 }
 
-export function analyzeFiles(files: PerformanceFileRecord[], details: Pick<CampaignDetails, "flightStart" | "flightEnd" | "conversionLabel">): CampaignAnalysis {
+export function analyzeFiles(files: PerformanceFileRecord[], details: Pick<CampaignDetails, "flightStart" | "flightEnd" | "conversionLabel"> & { kind?: "past" | "live" }): CampaignAnalysis {
   const start = details.flightStart ? parseDate(details.flightStart) : null;
   const end = details.flightEnd ? parseDate(details.flightEnd) : null;
   return analyzeCampaign(reportsOf(files), {
     ...(start !== null && end !== null ? { flight: { start, end } } : {}),
     ...(details.conversionLabel ? { conversionLabel: details.conversionLabel } : {}),
+    ...(details.kind === "live" ? { inFlight: true } : {}),
   });
 }
 

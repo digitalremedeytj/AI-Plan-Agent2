@@ -83,7 +83,43 @@ test("the flight the planner confirmed decides which files are reference", () =>
 
 test("the browser never receives report contents", () => {
   const files = readUploadedFiles([{ fileName: "a.csv", text: "name,Spend\nOTT,1\n" }], "tj").files;
-  const view = publicCampaign({ id: "c", revision: 1, advertiserName: "A", advertiserKey: "a", name: "n", flightStart: null, flightEnd: null, conversionLabel: null, campaignGoal: null, notes: null, linkedPlanIds: [], fileCount: 1, createdAt: "", createdBy: "", updatedAt: "", updatedBy: "", archived: false, files, review: null });
+  const view = publicCampaign({ id: "c", revision: 1, kind: "past", snapshots: [], advertiserName: "A", advertiserKey: "a", name: "n", flightStart: null, flightEnd: null, conversionLabel: null, campaignGoal: null, notes: null, linkedPlanIds: [], fileCount: 1, createdAt: "", createdBy: "", updatedAt: "", updatedBy: "", archived: false, files, review: null });
   assert.equal(JSON.stringify(view).includes("OTT,1"), false);
   assert.equal(view.files[0].source, "export");
+});
+
+test("review confidence is capped by what the finding cites, whatever the model said", async () => {
+  const { capConfidence, findCausalClaim } = await import("./review");
+  const analysis = analyzeFiles(readUploadedFiles(platformReports().map((f) => ({ fileName: f.name, text: f.text })), "tj").files, { flightStart: null, flightEnd: null, conversionLabel: null });
+  const base = { headline: "x", detail: "", evidence: "", area: "audience", confidence: "high" as const };
+  assert.deepEqual(capConfidence({ ...base, evidence: "OTT - March Madness PMP: $17,552, CPA $418" }, analysis), { confidence: "low", confidenceNote: "OTT - March Madness PMP is an event or one-off buy" });
+  assert.equal(capConfidence({ ...base, evidence: "Gym Bros: CPA $214.93" }, analysis).confidence, "low", "under 30 conversions");
+  assert.deepEqual(capConfidence({ ...base, area: "media type", headline: "Pre-roll beat the average" }, analysis), { confidence: "medium", confidenceNote: "the evidence is last-touch only" });
+  assert.deepEqual(capConfidence({ ...base, confidence: "medium" }, analysis), { confidence: "medium", confidenceNote: null }, "a cap never raises confidence");
+  assert.equal(findCausalClaim("Weekly CPA rose as spend expanded to address pacing."), "to address");
+  assert.equal(findCausalClaim("Retargeting drove 42% of conversions from CTV-built audiences."), null);
+});
+
+test("a later export of the same report is the same report, whatever day it was exported", async () => {
+  const { reportKey } = await import("./library");
+  assert.equal(reportKey("AP Mediatype (2026-02-09 - 2026-03-10) - Acme_20260312_120237.csv"), reportKey("AP Mediatype (2026-02-09 - 2026-03-24) - Acme_20260325_093000.csv"));
+  assert.notEqual(reportKey("AP Mediatype (2026-02-09 - 2026-03-10) - Acme_20260312_120237.csv"), reportKey("AP Publisher (2026-02-09 - 2026-03-10) - Acme_20260312_120224.csv"));
+  assert.equal(reportKey("publisher_report_2026-02-09_to_2026-03-10.csv"), reportKey("publisher_report_2026-02-09_to_2026-03-24.csv"));
+});
+
+test("a live campaign's new export replaces the earlier one; a past campaign keeps both", () => {
+  const first = readUploadedFiles([{ fileName: "AP Mediatype (2026-02-09 - 2026-03-10) - Acme_20260312_120237.csv", text: "name,Spend\nOTT,1\n" }], "tj").files;
+  const later = readUploadedFiles([{ fileName: "AP Mediatype (2026-02-09 - 2026-03-24) - Acme_20260325_093000.csv", text: "name,Spend\nOTT,2\n" }], "tj").files;
+  const live = mergeFiles(first, later, { replaceSameReport: true });
+  assert.deepEqual(live.files.map((f) => f.fileName), [later[0].fileName]);
+  assert.deepEqual(live.replaced, [first[0].fileName]);
+  assert.equal(mergeFiles(first, later).files.length, 2);
+});
+
+test("each live upload records the totals and the last day the data covers", async () => {
+  const { snapshotOf } = await import("./library");
+  const files = readUploadedFiles(platformReports().map((f) => ({ fileName: f.name, text: f.text })), "tj").files;
+  const snap = snapshotOf(analyzeFiles(files, { flightStart: "2026-02-09", flightEnd: "2026-03-30", conversionLabel: null, kind: "live" }), "tj", "now");
+  assert.deepEqual(snap, { uploadedAt: "now", uploadedBy: "tj", asOf: "2026-03-10", spend: snap.spend, conversions: 9840, revenue: snap.revenue });
+  assert.ok(snap.spend > 233000 && snap.spend < 234000);
 });

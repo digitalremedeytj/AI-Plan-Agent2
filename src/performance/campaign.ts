@@ -8,7 +8,7 @@
 import { normalizeHeader, ratio, type Metrics } from "./columns";
 import type { BreakdownReport, RatioCheck, Report, SeriesReport, SummaryReport, TouchReport } from "./reports";
 import type { TouchSummary } from "./touches";
-import { DAY_MS, formatWindow, sameWindow, withinWindow, type DateWindow } from "./values";
+import { DAY_MS, formatDay, formatWindow, sameWindow, withinWindow, type DateWindow } from "./values";
 
 /** Below this many conversions a row's CPA and PM swing on a handful of events. */
 export const MIN_CONVERSIONS = 30;
@@ -140,6 +140,11 @@ export interface AnalyzeOptions {
   flight?: DateWindow;
   /** What the pixel conversion is (the exports never say); otherwise inferred or "conversions". */
   conversionLabel?: string;
+  /**
+   * A campaign still running: its reports cover the flight so far, not the whole flight, so a
+   * file is in the campaign when its window falls inside the flight.
+   */
+  inFlight?: boolean;
 }
 
 export function derive(m: Metrics): Derived {
@@ -169,7 +174,7 @@ export function analyzeCampaign(reports: Report[], options: AnalyzeOptions = {})
   const roleOf = (report: Report): FileRole => {
     if (!report.window) return "undated";
     if (!flight) return "campaign";
-    if (report.kind === "touches") return withinWindow(report.window, flight) ? "campaign" : "reference";
+    if (report.kind === "touches" || options.inFlight) return withinWindow(report.window, flight) ? "campaign" : "reference";
     return sameWindow(report.window, flight) ? "campaign" : "reference";
   };
   const inCampaign = (report: Report) => roleOf(report) !== "reference";
@@ -192,6 +197,18 @@ export function analyzeCampaign(reports: Report[], options: AnalyzeOptions = {})
       warnings.push({ code: "reference-window", severity: "info", fileName: f.fileName, message: `${label(f)} covers ${formatWindow(f.window)}, not the flight (${formatWindow(flight)}). It is reference only; its numbers are never combined with the campaign's.` });
     }
     if (f.role === "undated") warnings.push({ code: "undated", severity: "info", fileName: f.fileName, message: `${label(f)} has no dates; it is assumed to cover the flight.` });
+  }
+
+  // A live campaign is re-exported piecemeal; a report left from an earlier export disagrees with
+  // the rest for no reason in the data, so it is named as out of date rather than left to look
+  // like a reconciliation problem.
+  if (options.inFlight) {
+    const dated = files.filter((f) => f.role !== "reference" && f.window && f.kind !== "unread");
+    const latest = dated.length ? Math.max(...dated.map((f) => f.window!.end)) : null;
+    const stale = latest === null ? [] : dated.filter((f) => f.window!.end < latest - DAY_MS && !(f.kind === "summary" && reports.find((r) => r.fileName === f.fileName && r.kind === "summary" && r.pacing)));
+    if (stale.length && latest !== null) {
+      warnings.push({ code: "stale-export", severity: "caution", message: `${stale.map((f) => `${label(f)} (data to ${formatDay(f.window!.end)})`).join(", ")} ${stale.length === 1 ? "is" : "are"} from an earlier export than the rest (data to ${formatDay(latest)}). Re-export ${stale.length === 1 ? "it" : "them"} so every report covers the same days; until then, where ${stale.length === 1 ? "it disagrees" : "they disagree"} with the rest, the newer reports are right.` });
+    }
   }
 
   const advertisers = [...new Set(reports.map((r) => r.file.advertiser).filter((a): a is string => !!a))];

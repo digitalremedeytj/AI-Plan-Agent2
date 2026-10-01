@@ -477,11 +477,10 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
   }
 
   const lists = applyListOps(profile, byType(["add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_list"]), listsBefore);
-  const learnings = applyLearningOps(profile, byType(["add_learning", "edit_learning", "remove_learning", "set_learnings"]), context.learningCampaigns);
   const sections = applySectionOps(profile, byType(["set_section_visibility"]));
   const brief = applyBriefOps(next, byType(["edit_brief", "set_kpis", "set_geography"]));
   const audience = applyAudienceOps(next, byType(["update_persona", "add_persona", "remove_persona", "restore_persona", "add_segment", "edit_segment", "remove_segment", "restore_segment"]));
-  for (const outcome of [lists, learnings, sections, brief, audience]) {
+  for (const outcome of [lists, sections, brief, audience]) {
     applied.push(...outcome.applied);
     rejected.push(...outcome.rejected);
   }
@@ -652,6 +651,12 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
   );
   applied.push(...details.applied);
   rejected.push(...details.rejected);
+
+  // Last of the content changes: a learning's action must name what the plan holds once the rest
+  // of the proposal has run, so "this plan adds online video" can ride with the add_channel.
+  const learnings = applyLearningOps(profile, byType(["add_learning", "edit_learning", "remove_learning", "set_learnings"]), context.learningCampaigns);
+  applied.push(...learnings.applied);
+  rejected.push(...learnings.rejected);
 
   if (textTargets.some((t) => t.publisher)) syncStrategyPublishers();
   if (publisherChanges.length > 0 || textTargets.some((t) => t.publisher)) {
