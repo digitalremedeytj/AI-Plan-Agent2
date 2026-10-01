@@ -88,6 +88,21 @@ export function exportProfileToMarkdown(
     });
   }
 
+  // Learnings from the client's past campaigns. Hidden until the planner has reviewed them, and
+  // an export goes to the client, so a hidden section stays out of it like any other.
+  const learnings = profile.performanceLearnings || [];
+  if (learnings.length > 0 && !hidden.has("performanceLearnings")) {
+    const from = [...new Set(learnings.map((l) => l.campaignName).filter(Boolean))];
+    markdown += `## Built on Your Campaign History\n\n`;
+    markdown += `### What your last campaign taught us\n`;
+    if (from.length) markdown += `*From ${from.join(" and ")}*\n\n`;
+    learnings.forEach((l, idx) => {
+      markdown += `${idx + 1}. ${l.learning}\n`;
+      markdown += `   - **What this plan does**: ${l.action}\n`;
+    });
+    markdown += `\n`;
+  }
+
   // Browser and reach
   if (!hidden.has("domainAffinity")) {
     markdown += `## Domain Affinity Index\n\n`;

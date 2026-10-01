@@ -13,14 +13,14 @@ import { BRIEF_SECTION_LABELS, parseEditText, type BriefBullet, type BriefSectio
 export type BriefSlideVariant = "highlights" | "full";
 
 export const BRIEF_SLIDE_VARIANTS: Record<BriefSlideVariant, { label: string; description: string }> = {
-  highlights: { label: "Highlights", description: "1 concise slide: every section's headline, every channel and the measurement." },
-  full: { label: "Full summary", description: "3 slides: strategy (understanding, POV), audience (every persona), then media and measurement." },
+  highlights: { label: "Highlights", description: "1 concise slide: every section's headline, every channel and the measurement. Plus a campaign history slide when the plan shows one." },
+  full: { label: "Full summary", description: "3 slides: strategy (understanding, POV), audience (every persona), then media and measurement. Plus a campaign history slide when the plan shows one." },
 };
 
 /** Past these the renderer starts dropping and misspelling words. */
 export const SLIDE_WORD_BUDGET: Record<BriefSlideVariant, number> = { highlights: 150, full: 240 };
 
-export type BriefSlideLayout = "highlights" | "strategy" | "audience" | "execution";
+export type BriefSlideLayout = "highlights" | "strategy" | "audience" | "execution" | "history";
 
 export interface BriefSlideSpec {
   id: string;
@@ -35,6 +35,13 @@ export interface BriefSlideContext {
   geography?: string;
   livePercents?: Record<string, number>;
   glance?: Array<{ label: string; value: string }>;
+  /**
+   * The plan's "Built on your campaign history" learnings, passed only while that section is shown
+   * to the client: a slide goes to a client, so a section still hidden from them stays off it.
+   */
+  learnings?: Array<{ learning: string; action: string }>;
+  /** The past campaigns they come from, for the slide's source line. */
+  learningsFrom?: string[];
 }
 
 export const countWords = (text: string) => text.split(/\s+/).filter((w) => /[A-Za-z0-9$%]/.test(w)).length;
@@ -198,6 +205,20 @@ function executionSlide(sections: EffectiveSection[], context: BriefSlideContext
   return lines.join("\n");
 }
 
+// Learnings are dropped whole from the end, never shortened: each was checked against the data as written.
+const HISTORY_LEVELS = [6, 4, 3, 2];
+
+function historySlide(context: BriefSlideContext, level: number): string {
+  const all = context.learnings || [];
+  const shown = all.slice(0, HISTORY_LEVELS[level]);
+  const lines = header("Built on Your Campaign History", context, false);
+  const from = (context.learningsFrom || []).filter(Boolean);
+  lines.push("", `SECTION: What your last campaign taught us${from.length ? ` (From ${from.join(" and ")})` : ""}`);
+  for (const l of shown) lines.push("", `LEARNING: ${l.learning}`, `→ ${l.action}`);
+  if (all.length > shown.length) lines.push("", `+ ${all.length - shown.length} more in the plan`);
+  return lines.join("\n");
+}
+
 /** Builds each slide at the most detailed level that fits the word budget. */
 function fit(build: (level: number) => string, budget: number, levels: number): string {
   // The least detailed level is used even if it is still over budget; the editor shows the count.
@@ -209,8 +230,11 @@ function fit(build: (level: number) => string, budget: number, levels: number): 
 export function buildBriefSlides(brief: ExecutiveBrief, variant: BriefSlideVariant, context: BriefSlideContext = {}): BriefSlideSpec[] {
   const sections = effectiveBriefSections(brief);
   const budget = SLIDE_WORD_BUDGET[variant];
+  const history = (): BriefSlideSpec[] => (context.learnings?.length
+    ? [{ id: "history", label: "Campaign history", layout: "history", text: fit((l) => historySlide(context, l), budget, HISTORY_LEVELS.length) }]
+    : []);
   if (variant === "highlights") {
-    return [{ id: "highlights", label: "Highlights", layout: "highlights", text: fit((l) => highlightsSlide(sections, context, l), budget, HIGHLIGHT_LEVELS.length) }];
+    return [{ id: "highlights", label: "Highlights", layout: "highlights", text: fit((l) => highlightsSlide(sections, context, l), budget, HIGHLIGHT_LEVELS.length) }, ...history()];
   }
   const strategy = sections.filter((s) => s.key === "understanding" || s.key === "strategicPov");
   const audience = sections.find((s) => s.key === "audience");
@@ -234,6 +258,7 @@ export function buildBriefSlides(brief: ExecutiveBrief, variant: BriefSlideVaria
       text: fit((l) => executionSlide(execution, context, glance, l), budget, EXECUTION_LEVELS.length),
     });
   }
+  for (const slide of history()) slides.push({ ...slide, label: `${slides.length + 1}. Campaign history` });
   return slides;
 }
 
@@ -253,6 +278,7 @@ const LAYOUTS: Record<BriefSlideLayout, string> = {
   highlights: "Title and subtitle top-left. Beneath them, a slim row of 'AT A GLANCE' metric tiles. Then one card per section in a balanced grid (for five sections: three cards on the first row, two wider cards on the second). Each card: the section name as an eyebrow label, then its headline. The Media Strategy card lists every channel line given as compact rows, each with a funnel-role pill, plus the allocation % and a thin proportional bar when a % is given; a '+ N more' line is a quieter final row. The Measurement Strategy card shows its capabilities as chips, with a capability ending in (Business impact) shown as a lime-highlighted chip that carries that tag.",
   strategy: "Title and subtitle top-left, then (when the content has an AT A GLANCE line) a slim row of metric tiles. Below, two equal columns, one per section: eyebrow label, headline, then the bullets.",
   audience: "Title and subtitle top-left, then (when the content has an AT A GLANCE line) a slim row of metric tiles. Below, the section eyebrow label, headline and bullets across the full width. Then one card per 'who → how we reach them' line in an even grid (for four: a 2×2 grid, or four across on a wide canvas): the audience name as the card title, the data it is reached with as small chips, and the indented line beneath it (if any) as the card's body text.",
+  history: "Title and subtitle top-left. The section name as a teal eyebrow label, with its bracketed source as quieter text beside it. Then one card per LEARNING in an even grid (two columns; three across for three): the learning as the card's body text, and the line beneath it starting with → as the card's emphasized final line in teal, arrow included. A '+ N more' line is a quieter final row.",
   execution: "Title and subtitle top-left, then (when the content has an AT A GLANCE line) a slim row of metric tiles. Below, the media section on the left (about 60% width): its headline and bullets, then the channel rows as a clean table with a proportional allocation bar and a funnel-role pill per channel. On the right (about 40%): the measurement section as stacked cards, a capability ending in (Business impact) highlighted in lime with that tag. With no measurement section, the channel table spans the full width.",
 };
 
@@ -284,7 +310,7 @@ PRESENTATION DIRECTIVES:
 TEXT FIDELITY (MOST IMPORTANT):
 - Render every piece of text in the SLIDE CONTENT exactly as written, character for character. Do not paraphrase, abbreviate, reorder within a line, add or omit any words.
 - Every number, percentage and dollar amount must match exactly.
-- The labels "SLIDE TITLE:", "SUBTITLE:", "SECTION:" and "HEADLINE:" are structure markers: use them to lay out the slide, do not print them. "AT A GLANCE" may be printed as the label of the metric strip. Render table rows ("A | B | C") as table cells without the "|" characters.
+- The labels "SLIDE TITLE:", "SUBTITLE:", "SECTION:", "HEADLINE:" and "LEARNING:" are structure markers: use them to lay out the slide, do not print them. "AT A GLANCE" may be printed as the label of the metric strip. Render table rows ("A | B | C") as table cells without the "|" characters.
 - "${IMPACT_TAG}" is printed as a tag ONLY on the items whose line contains it. No other item gets that tag, a lime highlight, or any other badge that the content does not state.
 - Add no other text of any kind.
 
@@ -316,7 +342,7 @@ export function buildGoogleSlidesPrompt(
     "CONTENT RULES",
     "- Use the text below exactly as written. Do not rewrite, shorten, summarize, reorder or add content, and keep every number and percentage exactly as given.",
     "- Put everything on this single slide.",
-    "- The labels SLIDE TITLE, SUBTITLE, SECTION and HEADLINE describe the structure; don't print the labels themselves. Show rows written as \"A | B | C\" as a table.",
+    "- The labels SLIDE TITLE, SUBTITLE, SECTION, HEADLINE and LEARNING describe the structure; don't print the labels themselves. Show rows written as \"A | B | C\" as a table.",
     `- Show \"${IMPACT_TAG}\" as a highlighted tag only on the items that carry it; don't add badges or tags the content doesn't state.`,
     "- Do not add a logo, footer, page number, confidentiality notice or images of people.",
     "",
@@ -361,7 +387,7 @@ Report only differences a client would notice:
 
 Tags and badges count as text: a tag such as "(Business impact)" on an item whose source line does not carry it is extra_text, and one missing from an item that carries it is missing_text.
 
-Ignore: the structure markers (SLIDE TITLE, SUBTITLE, SECTION, HEADLINE, the "AT A GLANCE" label, "|"), capitalization, punctuation (including brackets and colons around a label), bullet symbols, line breaks, and layout choices. If the slide matches, return no issues.`;
+Ignore: the structure markers (SLIDE TITLE, SUBTITLE, SECTION, HEADLINE, LEARNING, the "AT A GLANCE" label, "|"), capitalization, punctuation (including brackets and colons around a label), bullet symbols, line breaks, and layout choices. If the slide matches, return no issues.`;
 
 export const proofreadSchema = {
   type: "object",

@@ -58,6 +58,8 @@ export interface ExecutiveBriefSectionProps {
   /** For slide subtitles and file names. */
   advertiserName?: string;
   geography?: string;
+  /** Campaign-history learnings for their slide; passed only while that section is shown to the client. */
+  learnings?: Array<{ learning: string; action: string; campaignName: string }>;
 }
 
 const SECTION_ICONS: Record<BriefSectionKey, React.ComponentType<{ className?: string }>> = {
@@ -381,12 +383,20 @@ export const ExecutiveBriefSection: React.FC<ExecutiveBriefSectionProps> = ({
   livePercents,
   advertiserName,
   geography,
+  learnings,
 }) => {
   const [showRegenerate, setShowRegenerate] = useState(false);
   const [slideModalOpen, setSlideModalOpen] = useState(false);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
   const [promptCopied, setPromptCopied] = useState<string | null>(null);
-  const slideContext = { advertiserName, geography, livePercents, glance };
+  const slideContext = {
+    advertiserName,
+    geography,
+    livePercents,
+    glance,
+    learnings,
+    learningsFrom: [...new Set((learnings || []).map((l) => l.campaignName))],
+  };
   const promptMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

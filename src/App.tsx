@@ -7165,6 +7165,7 @@ export default function App() {
                     livePercents={briefLivePercents}
                     advertiserName={advertiserName}
                     geography={geography}
+                    learnings={hiddenSections.has("performanceLearnings") ? undefined : profileData.performanceLearnings}
                   />
                 )}
 

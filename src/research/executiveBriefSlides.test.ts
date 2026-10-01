@@ -173,3 +173,40 @@ test("the proofread keeps real differences and drops ones that only differ in ca
   assert.deepEqual(result.issues.map((i) => i.type), ["wrong_number", "misspelling", "logo_or_footer"]);
   assert.equal(normalizeProofread(null).status, "unavailable");
 });
+
+const learning = (n: number) => ({
+  learning: `Online video brought in checkouts at a $20.04 CPA in test ${n}, below the campaign's $23.72 average.`,
+  action: `This plan keeps online video in the mix for test ${n}.`,
+});
+
+test("a plan showing campaign-history learnings gets its own slide in both decks, and a plan without them gets none", () => {
+  const withLearnings = { ...context, learnings: [learning(1), learning(2)], learningsFrom: ["Feb 9, 2026 to Mar 10, 2026"] };
+  const highlights = buildBriefSlides(brief(), "highlights", withLearnings);
+  assert.deepEqual(highlights.map((s) => s.layout), ["highlights", "history"]);
+  const full = buildBriefSlides(brief(), "full", withLearnings);
+  assert.deepEqual(full.map((s) => s.label), ["1. Strategy", "2. Audience", "3. Media & Measurement", "4. Campaign history"]);
+  const slide = full[3].text;
+  assert.match(slide, /SECTION: What your last campaign taught us \(From Feb 9, 2026 to Mar 10, 2026\)/);
+  assert.match(slide, /LEARNING: Online video brought in checkouts at a \$20\.04 CPA in test 1/);
+  assert.match(slide, /→ This plan keeps online video in the mix for test 2\./);
+  assert.doesNotMatch(slide, /AT A GLANCE/, "the glance strip stays on the first slide");
+  assert.equal(buildBriefSlides(brief(), "full", context).some((s) => s.layout === "history"), false);
+});
+
+test("learnings that do not fit are dropped whole and counted, never shortened", () => {
+  // Real learnings run to about 40 words each; six of them are well over a slide's budget.
+  const long = (n: number) => ({ ...learning(n), learning: `${learning(n).learning.replace(/ average\.$/, "")} across mobile and desktop screens during the full flight, ahead of every other prospecting format we ran for the brand that quarter, on average.` });
+  const six = { ...context, learnings: [1, 2, 3, 4, 5, 6].map(long) };
+  const slide = buildBriefSlides(brief(), "full", six).find((s) => s.layout === "history")!;
+  assert.ok(countWords(slide.text) <= SLIDE_WORD_BUDGET.full);
+  const kept = slide.text.match(/LEARNING:/g)!.length;
+  assert.ok(kept < 6);
+  assert.match(slide.text, new RegExp(`\\+ ${6 - kept} more in the plan`));
+  for (const line of slide.text.split("\n").filter((l) => l.startsWith("LEARNING:"))) assert.match(line, /average\.$/, "each learning is kept as written");
+});
+
+test("the renderer and the proofread both treat LEARNING as a structure marker", () => {
+  const prompt = buildSlideImagePrompt({ text: "LEARNING: x", layout: "history", style: "corporate_light", aspectRatio: "16:9", size: "1536x864" });
+  assert.match(prompt, /"LEARNING:" are structure markers/);
+  assert.match(prompt, /one card per LEARNING/);
+});
