@@ -520,6 +520,12 @@ export function getPerformanceCampaign(id: string): Promise<CampaignResponse> {
   return request<CampaignResponse>(`/api/performance/campaigns/${encodeURIComponent(id)}`);
 }
 
+/** One saved export's text. Touch-level exports have none (only their summary was uploaded). */
+export async function getPerformanceFileText(campaignId: string, fileId: string): Promise<string> {
+  const body = await request<{ text: string }>(`/api/performance/campaigns/${encodeURIComponent(campaignId)}/files/${encodeURIComponent(fileId)}`);
+  return body.text;
+}
+
 export function updatePerformanceCampaign(
   id: string,
   expectedRevision: number,

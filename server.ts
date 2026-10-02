@@ -2406,6 +2406,28 @@ app.get("/api/performance/campaigns/:id", async (req, res) => {
   }
 });
 
+// One export's text, for the planner to look through. The campaign response never carries file
+// contents; this is fetched only when a file is opened. Touch-level exports have no rows to send:
+// only the browser's summary of them was ever uploaded.
+app.get("/api/performance/campaigns/:id/files/:fileId", async (req, res) => {
+  try {
+    const campaign = await (await getStorage()).getPerformanceCampaign(req.params.id);
+    if (!campaign || campaign.archived) throw new CampaignNotFoundError(req.params.id);
+    const file = campaign.files.find((f) => f.id === req.params.fileId);
+    if (!file) {
+      res.status(404).json({ error: "That report is no longer in this campaign." });
+      return;
+    }
+    if (typeof file.text !== "string") {
+      res.status(404).json({ error: `${file.fileName} was summarised in the browser; its rows were never uploaded.`, code: "SUMMARY_ONLY" });
+      return;
+    }
+    res.json({ fileName: file.fileName, text: file.text });
+  } catch (err: any) {
+    respondToCampaignError(res, err, "load the report");
+  }
+});
+
 // Details, files and plan links in one revision-checked write. Every field is optional; what is
 // left out stays as it is.
 app.put("/api/performance/campaigns/:id", async (req, res) => {

@@ -122,9 +122,15 @@ export function readReport(fileName: string, text: string): Report {
   const metricCount = Object.keys(columns.metrics).length;
   if (metricCount === 0) return { ...base, kind: "unread", reason: "No spend, impression or conversion columns were recognised." };
 
-  const dateColumn = columns.other.find((i) => keys[i] === "date" || keys[i] === "day" || share(rows, (r) => parseDate(r[i]) !== null) >= 0.9);
+  const dateColumn = findDateColumn(headers, rows, columns.other);
   if (dateColumn !== undefined) return readSeries(base, headers, rows, dateColumn, columns.metrics);
   return readBreakdown(base, headers, rows, columns);
+}
+
+/** The column a daily report is keyed on: named as a date, or nearly all dates. */
+export function findDateColumn(headers: string[], rows: string[][], candidates: number[]): number | undefined {
+  const keys = headers.map(normalizeHeader);
+  return candidates.find((i) => keys[i] === "date" || keys[i] === "day" || share(rows, (r) => parseDate(r[i]) !== null) >= 0.9);
 }
 
 /**

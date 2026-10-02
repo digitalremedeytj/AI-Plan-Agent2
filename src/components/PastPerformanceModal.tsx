@@ -4,6 +4,7 @@ import { Activity, AlertCircle, AlertTriangle, BarChart3, CheckCircle2, ChevronD
 import * as api from "../api/client";
 import type { CampaignAnalysis, CampaignDetailsInput, PerformanceCampaignSummary, PerformanceCampaignView, PreparedFile } from "../api/client";
 import { prepareFiles } from "../performance/browserFiles";
+import { DatasetViewer } from "./DatasetViewer";
 import { CAMPAIGN_GOALS, CONVERSION_EVENTS } from "../performance/constants";
 
 // The advertiser's library of past campaigns, opened from the plan. A planner uploads a
@@ -35,10 +36,14 @@ export function PastPerformanceModal({ isOpen, onClose, planId, advertiserName, 
   }, [isOpen]);
   if (!isOpen) return null;
 
+  // The library is a short list; a campaign or an upload opens wide, with its reports down the
+  // left and the overview or an opened report on the right, at a fixed height so switching
+  // between reports does not resize the window.
+  const wide = view.mode !== "list";
   // Opened from inside the left column, whose stacking context would put the plan above it.
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs font-sans" onClick={onClose}>
-      <div className="w-full max-w-3xl max-h-[90vh] flex flex-col bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden text-left" onClick={(e) => e.stopPropagation()}>
+      <div className={`w-full flex flex-col bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden text-left ${wide ? "max-w-[1600px] h-[90vh]" : "max-w-3xl max-h-[90vh]"}`} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50 shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shrink-0">
@@ -53,7 +58,7 @@ export function PastPerformanceModal({ isOpen, onClose, planId, advertiserName, 
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+        <div className={`flex-1 min-h-0 ${wide ? "flex flex-col" : "overflow-y-auto custom-scrollbar"}`}>
           {view.mode === "list" && <Library planId={planId} advertiserName={advertiserName} onOpen={(id) => setView({ mode: "campaign", id })} onUpload={(kind) => setView({ mode: "upload", kind })} onChanged={onChanged} />}
           {view.mode === "upload" && (
             <UploadStep
@@ -286,57 +291,82 @@ function UploadStep({ planId, advertiserName, campaign, kind, onCancel, onSaved 
     }
   };
 
-  return (
-    <div className="p-6 space-y-5">
-      {error && <ErrorBox text={error} />}
-      <div
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
-          e.preventDefault();
-          addFiles(e.dataTransfer.files);
-        }}
-        onClick={() => inputRef.current?.click()}
-        className="rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-300 bg-slate-50/50 px-4 py-6 text-center cursor-pointer transition-colors"
-      >
-        <input ref={inputRef} type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls" className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
-        <FileSpreadsheet className="w-6 h-6 text-indigo-400 mx-auto mb-1.5" />
-        <p className="text-xs font-bold text-slate-700">
-          {campaign ? (kind === "live" ? `Upload the latest exports for ${campaign.name}` : `Add reports to ${campaign.name}`) : kind === "live" ? "Drop this plan's live campaign exports here" : "Drop a campaign's report exports here"}
-        </p>
-        {kind === "live" && <p className="text-[11px] text-emerald-700 mt-0.5">Re-export the reports during the flight; each new export replaces the earlier one of the same report.</p>}
-        <p className="text-[11px] text-slate-400 mt-0.5">CSV or Excel, several at once. All-touch and last-touch exports are summarised in your browser; their rows are never uploaded.</p>
-        {progress && (
-          <div className="mt-3 mx-auto max-w-xs">
-            <div className="text-[10px] text-slate-500 truncate mb-1">Summarising {progress.fileName}…</div>
-            <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden"><div className="h-full bg-indigo-500 transition-all" style={{ width: `${Math.round(progress.fraction * 100)}%` }} /></div>
-          </div>
-        )}
-      </div>
-      {errors.map((e, i) => <ErrorBox key={i} text={e} />)}
+  const dropTitle = campaign ? (kind === "live" ? `Upload the latest exports for ${campaign.name}` : `Add reports to ${campaign.name}`) : kind === "live" ? "Drop this plan's live campaign exports here" : "Drop a campaign's report exports here";
+  const progressBar = progress && (
+    <div className="mt-3 mx-auto max-w-xs">
+      <div className="text-[10px] text-slate-500 truncate mb-1">Summarising {progress.fileName}…</div>
+      <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden"><div className="h-full bg-indigo-500 transition-all" style={{ width: `${Math.round(progress.fraction * 100)}%` }} /></div>
+    </div>
+  );
 
-      {files.length > 0 && (
-        <>
-          {!campaign && (
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Advertiser" required>
-                <input value={details.advertiserName || ""} onChange={(e) => edit("advertiserName", e.target.value)} className={inputClass} />
-              </Field>
-              <Field label="Campaign name">
-                <input value={details.name || ""} placeholder="Named after the flight if left blank" onChange={(e) => edit("name", e.target.value)} className={inputClass} />
-              </Field>
-              <DetailFields details={details} edit={edit} live={kind === "live"} />
+  return (
+    <div
+      className="flex-1 min-h-0 flex flex-col"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        addFiles(e.dataTransfer.files);
+      }}
+    >
+      <input ref={inputRef} type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls" className="hidden" onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
+      {files.length === 0 ? (
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-6">
+          <div className="max-w-2xl mx-auto space-y-5">
+            {error && <ErrorBox text={error} />}
+            <div onClick={() => inputRef.current?.click()} className="rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-300 bg-slate-50/50 px-4 py-10 text-center cursor-pointer transition-colors">
+              <FileSpreadsheet className="w-6 h-6 text-indigo-400 mx-auto mb-1.5" />
+              <p className="text-xs font-bold text-slate-700">{dropTitle}</p>
+              {kind === "live" && <p className="text-[11px] text-emerald-700 mt-0.5">Re-export the reports during the flight; each new export replaces the earlier one of the same report.</p>}
+              <p className="text-[11px] text-slate-400 mt-0.5">CSV or Excel, several at once. All-touch and last-touch exports are summarised in your browser; their rows are never uploaded.</p>
+              {progressBar}
             </div>
-          )}
-          {preview?.replaced?.length ? <Notice tone="info" text={`Replaces the earlier export${preview.replaced.length === 1 ? "" : "s"}: ${preview.replaced.join(", ")}.`} /> : null}
-          {preview?.advertiserMismatch && (
-            <Notice tone="caution" text={`These files are for ${preview.advertiserMismatch}, not ${details.advertiserName || campaign?.advertiserName}. They can inform this plan, but will not appear in anything client-facing unless the advertisers match.`} />
-          )}
-          {preview?.duplicates.length ? <Notice tone="info" text={`Already in this campaign, skipped: ${preview.duplicates.join(", ")}.`} /> : null}
-          {preview ? <AnalysisView analysis={preview.analysis} removable={files.map((f) => f.fileName)} onRemove={(name) => setFiles((prev) => prev.filter((f) => f.fileName !== name))} /> : <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Reading the reports…</div>}
-        </>
+            {errors.map((e, i) => <ErrorBox key={i} text={e} />)}
+          </div>
+        </div>
+      ) : (
+        <SplitView
+          analysis={preview?.analysis ?? null}
+          removable={files.map((f) => f.fileName)}
+          onRemove={(name) => setFiles((prev) => prev.filter((f) => f.fileName !== name))}
+          top={
+            <div onClick={() => inputRef.current?.click()} className="mb-2 rounded-lg border border-dashed border-slate-300 hover:border-indigo-300 bg-white px-3 py-2.5 text-center cursor-pointer transition-colors">
+              <p className="flex items-center justify-center gap-1 text-[11px] font-bold text-slate-700"><Upload className="w-3 h-3" /> Add more files</p>
+              <p className="text-[10px] text-slate-400">or drop them anywhere here</p>
+              {progressBar}
+            </div>
+          }
+          viewer={(entry) => {
+            const file = files.find((f) => f.fileName === entry.fileName);
+            const text = file && "text" in file ? file.text : null;
+            return <DatasetViewer key={entry.fileName} entry={entry} loadText={text !== null ? () => Promise.resolve(text) : null} touch={file && "touchSummary" in file ? file.touchSummary : undefined} />;
+          }}
+          overview={
+            <>
+              {error && <ErrorBox text={error} />}
+              {errors.map((e, i) => <ErrorBox key={i} text={e} />)}
+              {!campaign && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Advertiser" required>
+                    <input value={details.advertiserName || ""} onChange={(e) => edit("advertiserName", e.target.value)} className={inputClass} />
+                  </Field>
+                  <Field label="Campaign name">
+                    <input value={details.name || ""} placeholder="Named after the flight if left blank" onChange={(e) => edit("name", e.target.value)} className={inputClass} />
+                  </Field>
+                  <DetailFields details={details} edit={edit} live={kind === "live"} />
+                </div>
+              )}
+              {preview?.replaced?.length ? <Notice tone="info" text={`Replaces the earlier export${preview.replaced.length === 1 ? "" : "s"}: ${preview.replaced.join(", ")}.`} /> : null}
+              {preview?.advertiserMismatch && (
+                <Notice tone="caution" text={`These files are for ${preview.advertiserMismatch}, not ${details.advertiserName || campaign?.advertiserName}. They can inform this plan, but will not appear in anything client-facing unless the advertisers match.`} />
+              )}
+              {preview?.duplicates.length ? <Notice tone="info" text={`Already in this campaign, skipped: ${preview.duplicates.join(", ")}.`} /> : null}
+              {preview ? <AnalysisSummary analysis={preview.analysis} /> : <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Reading the reports…</div>}
+            </>
+          }
+        />
       )}
 
-      <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+      <div className="shrink-0 flex items-center justify-end gap-2 px-6 py-3 border-t border-slate-100">
         <button onClick={onCancel} className="px-3 py-2 rounded-lg text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-50 cursor-pointer">Cancel</button>
         <button
           onClick={save}
@@ -396,6 +426,17 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
   const [dirty, setDirty] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Reports are fetched when first opened and kept, so switching back to one is instant.
+  const texts = React.useRef(new Map<string, Promise<string>>());
+  const loadText = (fileId: string) => () => {
+    let pending = texts.current.get(fileId);
+    if (!pending) {
+      pending = api.getPerformanceFileText(id, fileId);
+      pending.catch(() => texts.current.delete(fileId));
+      texts.current.set(fileId, pending);
+    }
+    return pending;
+  };
 
   const apply = (response: api.CampaignResponse) => {
     setData(response);
@@ -437,7 +478,7 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
     }
   };
 
-  if (!data) return <div className="p-6">{error ? <ErrorBox text={error} /> : <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</div>}</div>;
+  if (!data) return <div className="p-6 overflow-y-auto">{error ? <ErrorBox text={error} /> : <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</div>}</div>;
   const c = data.campaign;
   const edit = (key: keyof CampaignDetailsInput, value: string) => {
     setDetails((prev) => ({ ...prev, [key]: value }));
@@ -446,10 +487,12 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
   const isLinked = Boolean(planId && c.linkedPlanIds.includes(planId));
 
   return (
-    <div className="p-6 space-y-5">
-      {error && <ErrorBox text={error} />}
-      <div className="flex items-center justify-between gap-3">
-        <button onClick={onBack} className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 cursor-pointer">← Library</button>
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-6 py-2.5 border-b border-slate-100 [&_button]:whitespace-nowrap">
+        <div className="flex items-center gap-3 min-w-0">
+          <button onClick={onBack} className="shrink-0 text-[11px] font-semibold text-slate-500 hover:text-slate-800 cursor-pointer">← Library</button>
+          <span className="text-xs font-bold text-slate-800 truncate">{c.name}{c.kind === "live" && <span className="ml-1.5 text-[10px] font-bold text-emerald-700">LIVE</span>}</span>
+        </div>
         <div className="flex items-center gap-1.5">
           {planId && c.kind !== "live" && (
             <button disabled={busy} onClick={() => run(() => api.updatePerformanceCampaign(c.id, c.revision, isLinked ? { unlinkPlanIds: [planId] } : { linkPlanIds: [planId] }))} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer disabled:opacity-50">
@@ -474,28 +517,45 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
           </button>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Advertiser" required><input value={details.advertiserName || ""} onChange={(e) => edit("advertiserName", e.target.value)} className={inputClass} /></Field>
-        <Field label="Campaign name"><input value={details.name || ""} onChange={(e) => edit("name", e.target.value)} className={inputClass} /></Field>
-        <DetailFields details={details} edit={edit} live={c.kind === "live"} />
-      </div>
-      {dirty && (
-        <div className="flex justify-end">
-          <button disabled={busy} onClick={() => run(() => api.updatePerformanceCampaign(c.id, c.revision, { details }))} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 cursor-pointer disabled:opacity-50">
-            {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />} Save details
-          </button>
-        </div>
-      )}
-      {data.advertiserMismatch && <Notice tone="caution" text={`These files are for ${data.advertiserMismatch}, not ${c.advertiserName}. They will not appear in anything client-facing unless the advertisers match.`} />}
-      {c.kind === "live" && planId && isLinked && <PlanVsActualCard planId={planId} revision={c.revision} />}
-      <ReviewPanel review={data.review} stale={data.reviewStale} busy={reviewing || busy} error={reviewError} onWrite={() => review(c)} />
-      <AnalysisView
+      <SplitView
         analysis={data.analysis}
         removable={c.files.length > 1 ? c.files.map((f) => f.fileName) : []}
         onRemove={(fileName) => {
           const file = c.files.find((f) => f.fileName === fileName);
           if (file && window.confirm(`Remove ${fileName} from this campaign?`)) run(() => api.updatePerformanceCampaign(c.id, c.revision, { removeFileIds: [file.id] }));
         }}
+        viewer={(entry) => {
+          const file = c.files.find((f) => f.fileName === entry.fileName);
+          return (
+            <DatasetViewer
+              key={entry.fileName}
+              entry={entry}
+              loadText={file && file.source === "export" ? loadText(file.id) : null}
+              touch={data.analysis.touches.find((t) => t.fileName === entry.fileName)?.summary}
+            />
+          );
+        }}
+        overview={
+          <>
+            {error && <ErrorBox text={error} />}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Advertiser" required><input value={details.advertiserName || ""} onChange={(e) => edit("advertiserName", e.target.value)} className={inputClass} /></Field>
+              <Field label="Campaign name"><input value={details.name || ""} onChange={(e) => edit("name", e.target.value)} className={inputClass} /></Field>
+              <DetailFields details={details} edit={edit} live={c.kind === "live"} />
+            </div>
+            {dirty && (
+              <div className="flex justify-end">
+                <button disabled={busy} onClick={() => run(() => api.updatePerformanceCampaign(c.id, c.revision, { details }))} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 cursor-pointer disabled:opacity-50">
+                  {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />} Save details
+                </button>
+              </div>
+            )}
+            {data.advertiserMismatch && <Notice tone="caution" text={`These files are for ${data.advertiserMismatch}, not ${c.advertiserName}. They will not appear in anything client-facing unless the advertisers match.`} />}
+            {c.kind === "live" && planId && isLinked && <PlanVsActualCard planId={planId} revision={c.revision} />}
+            <ReviewPanel review={data.review} stale={data.reviewStale} busy={reviewing || busy} error={reviewError} onWrite={() => review(c)} />
+            <AnalysisSummary analysis={data.analysis} />
+          </>
+        }
       />
     </div>
   );
@@ -681,7 +741,8 @@ function describeFile(analysis: CampaignAnalysis, fileName: string, kind: string
   return reportType || KIND_LABEL[kind] || kind;
 }
 
-function AnalysisView({ analysis, removable, onRemove }: { analysis: CampaignAnalysis; removable: string[]; onRemove: (fileName: string) => void }) {
+/** The totals the reports add up to and the data notes: the overview's "what was read". */
+function AnalysisSummary({ analysis }: { analysis: CampaignAnalysis }) {
   const t = analysis.totals;
   const label = analysis.conversionLabel.label;
   const notes = [...analysis.warnings].sort((a, b) => ["problem", "caution", "info"].indexOf(a.severity) - ["problem", "caution", "info"].indexOf(b.severity));
@@ -702,24 +763,8 @@ function AnalysisView({ analysis, removable, onRemove }: { analysis: CampaignAna
         <p className="mt-2 text-[11px] text-slate-500">
           {analysis.flight ? `Flight ${day(analysis.flight.start)} to ${day(analysis.flight.end)}.` : "No flight dates found."} Conversion event: {label}
           {analysis.conversionLabel.source === "default" ? " (the exports don't say; set it above)" : analysis.conversionLabel.source === "summary" ? " (from the conversions summary)" : ""}.
+          {" "}Open a report on the left to see its rows.
         </p>
-      </div>
-
-      <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
-        {analysis.files.map((f) => (
-          <div key={f.fileName} className="flex items-center gap-3 px-3 py-2">
-            <div className="flex-1 min-w-0">
-              <div className="text-[11px] font-semibold text-slate-800 truncate" title={f.fileName}>{f.reportType || f.fileName}</div>
-              <div className="text-[10px] text-slate-500 truncate">{describeFile(analysis, f.fileName, f.kind, f.reportType)}{f.window ? ` · ${day(f.window.start)} to ${day(f.window.end)}` : ""}</div>
-            </div>
-            <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded border ${f.kind === "unread" ? "bg-rose-50 text-rose-700 border-rose-100" : ROLE_STYLE[f.role]}`}>
-              {f.kind === "unread" ? "Not read" : ROLE_LABEL[f.role]}
-            </span>
-            {removable.includes(f.fileName) && (
-              <button onClick={() => onRemove(f.fileName)} title="Remove" className="shrink-0 text-slate-300 hover:text-rose-600 cursor-pointer"><X className="w-3.5 h-3.5" /></button>
-            )}
-          </div>
-        ))}
       </div>
 
       {notes.length > 0 && (
@@ -730,6 +775,73 @@ function AnalysisView({ analysis, removable, onRemove }: { analysis: CampaignAna
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+type FileEntry = CampaignAnalysis["files"][number];
+
+/**
+ * The campaign's reports down a narrow left column, and the overview or the opened report in the
+ * wide right panel. The overview is the default. On a narrow screen the two stack.
+ */
+function SplitView({ analysis, removable, onRemove, top, overview, viewer }: {
+  /** Null while the reports are still being read. */
+  analysis: CampaignAnalysis | null;
+  removable: string[];
+  onRemove: (fileName: string) => void;
+  top?: React.ReactNode;
+  overview: React.ReactNode;
+  viewer: (entry: FileEntry) => React.ReactNode;
+}) {
+  const [selected, setSelected] = React.useState<string | null>(null);
+  const entry = selected !== null ? analysis?.files.find((f) => f.fileName === selected) : undefined;
+  // A removed report closes back to the overview.
+  React.useEffect(() => {
+    if (selected !== null && analysis && !entry) setSelected(null);
+  }, [selected, analysis, entry]);
+
+  const item = (active: boolean) => `w-full flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left cursor-pointer transition-colors ${active ? "bg-white border-indigo-200 shadow-xs ring-1 ring-indigo-100" : "border-transparent hover:bg-white hover:border-slate-200"}`;
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,3fr)] md:grid-rows-[minmax(0,1fr)]">
+      <aside className="max-h-72 md:max-h-none overflow-y-auto custom-scrollbar border-b md:border-b-0 md:border-r border-slate-100 bg-slate-50/60 p-3 space-y-1">
+        {top}
+        <button onClick={() => setSelected(null)} className={item(!entry)}>
+          <BarChart3 className={`w-3.5 h-3.5 shrink-0 ${!entry ? "text-indigo-600" : "text-slate-400"}`} />
+          <span className="text-[11px] font-bold text-slate-800">Overview</span>
+        </button>
+        <div className="pt-2 pb-1 px-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Reports{analysis ? ` (${analysis.files.length})` : ""}</div>
+        {!analysis ? (
+          <div className="flex items-center gap-2 px-1 text-[11px] text-slate-500"><Loader2 className="w-3 h-3 animate-spin" /> Reading…</div>
+        ) : (
+          analysis.files.map((f) => (
+            <div key={f.fileName} className="group relative">
+              <button onClick={() => setSelected(f.fileName)} className={`${item(entry?.fileName === f.fileName)} ${removable.includes(f.fileName) ? "pr-7" : ""}`}>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-[11px] font-semibold text-slate-800 truncate" title={f.fileName}>{f.reportType || f.fileName}</span>
+                  <span className="block text-[10px] text-slate-500 truncate">{describeFile(analysis, f.fileName, f.kind, f.reportType)}{f.window ? ` · ${day(f.window.start)} to ${day(f.window.end)}` : ""}</span>
+                </span>
+                <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded border ${f.kind === "unread" ? "bg-rose-50 text-rose-700 border-rose-100" : ROLE_STYLE[f.role]}`}>
+                  {f.kind === "unread" ? "Not read" : ROLE_LABEL[f.role]}
+                </span>
+              </button>
+              {removable.includes(f.fileName) && (
+                <button onClick={() => onRemove(f.fileName)} title="Remove" className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-300 hover:text-rose-600 cursor-pointer"><X className="w-3.5 h-3.5" /></button>
+              )}
+            </div>
+          ))
+        )}
+      </aside>
+      <section className="min-h-0 md:overflow-hidden">
+        {entry ? (
+          <div className="h-[70vh] md:h-full">{viewer(entry)}</div>
+        ) : (
+          <div className="h-full md:overflow-y-auto custom-scrollbar">
+            <div className="p-6 space-y-5 max-w-4xl">{overview}</div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
