@@ -179,7 +179,10 @@ const upload = multer({ dest: os.tmpdir() });
 
 // --- CONFIGURABLE TIMEOUTS FOR LLM & GROUNDING CALLS (in milliseconds) ---
 // Adjust these values to increase/decrease the allowed time for each step:
-const TIMEOUT_PARALLEL_RESEARCH_MS = 90000; // 90 seconds per parallel research thread (Option A)
+// 150 seconds per parallel research thread. At 90s, slow grounding days timed out three of four
+// dossiers (2026-10-06). 180s was weighed and rejected: with slow research and a slow synthesis
+// fallback, the run would reach the narrative pass with less than its reserve left and skip it.
+const TIMEOUT_PARALLEL_RESEARCH_MS = 150000;
 // Synthesis gets 120s at high thinking plus one 60s medium-thinking fallback (see SYNTHESIS_ATTEMPTS).
 const TIMEOUT_SYNTHESIS_HIGH_MS = 120000;
 const TIMEOUT_SYNTHESIS_FALLBACK_MS = 60000;
