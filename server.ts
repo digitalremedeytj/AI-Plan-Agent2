@@ -62,6 +62,7 @@ import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBri
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { addableChannels, applyOps, parseOps } from "./src/assistant/operations";
+import { classifyScoutError, scoutFailureMessage } from "./src/assistant/scoutErrors";
 import { detectFollowUps } from "./src/assistant/followUps";
 import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, reviewFingerprint, snapshotOf, suggestedDetails } from "./src/performance/library";
 import { comparePlanToActual } from "./src/performance/planVsActual";
@@ -231,17 +232,19 @@ const BRIEF_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: numbe
   { thinkingLevel: "high", timeoutMs: 90000 },
   { thinkingLevel: "medium", timeoutMs: 60000 },
 ];
-// ScoutAI chat turns. The planner is waiting in a chat, so medium thinking with a quick low
-// fallback: a slow answer is worse than a slightly less considered one.
+// ScoutAI chat turns: medium thinking with a low fallback. Limits favour an answer over a quick
+// failure (the planner sees thinking stream in the meantime), and stay far inside Cloud Run's 900s.
 const SCOUT_ATTEMPTS: Array<{ thinkingLevel: "medium" | "low"; timeoutMs: number }> = [
-  { thinkingLevel: "medium", timeoutMs: 60000 },
-  { thinkingLevel: "low", timeoutMs: 40000 },
+  { thinkingLevel: "medium", timeoutMs: 90000 },
+  { thinkingLevel: "low", timeoutMs: 60000 },
 ];
 // Reading past performance against the plan is the one chat task that is real analysis
 // (attribution, sample size, what maps to what), so it gets high thinking and a longer wait.
+// At 100s + 60s, a slow day timed out the high attempt and cut off a medium retry that needed
+// ~70s (2026-10-06). The medium retry gets the longer limit: it is the one that has to land.
 const SCOUT_ANALYSIS_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
-  { thinkingLevel: "high", timeoutMs: 100000 },
-  { thinkingLevel: "medium", timeoutMs: 60000 },
+  { thinkingLevel: "high", timeoutMs: 120000 },
+  { thinkingLevel: "medium", timeoutMs: 150000 },
 ];
 const PERFORMANCE_QUESTION = /\b(perform|past|previous|last|prior|historic|campaign|report|results?|data|worked|analy[sz]|learn|cpa|roas|pm|conversions?|checkouts?|pac(e|ing)|track|live|optimi[sz]|deliver)/i;
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
@@ -2075,6 +2078,7 @@ app.post("/api/plans/:id/audit/apply", async (req, res) => {
 app.post("/api/plans/:id/assistant/chat", async (req, res) => {
   req.socket.setTimeout(0);
   let streaming = false;
+  let analysisTurn = false;
   try {
     const turns = sanitizeTurns(req.body?.messages);
     if (turns.length === 0 || turns[turns.length - 1].role !== "user") {
@@ -2098,7 +2102,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       kpis: Array.isArray((plan.payload as any)?.kpis) ? (plan.payload as any).kpis : [],
     });
     const hasLive = linked.some((l) => l.campaign.kind === "live");
-    const analysisTurn = Boolean(performance) && PERFORMANCE_QUESTION.test(turns[turns.length - 1].text);
+    analysisTurn = Boolean(performance) && PERFORMANCE_QUESTION.test(turns[turns.length - 1].text);
     const planContext = buildPlanContext(plan, context);
     // Figures about past performance must come from its data or the plan; anything else is flagged.
     // Checked against each campaign's whole digest, not the part that fit in the prompt: a row
@@ -2153,13 +2157,16 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision });
     res.end();
   } catch (err: any) {
-    console.error("[SCOUTAI] Chat failed:", err);
-    const error = "ScoutAI couldn't answer just now. Please try again.";
+    const code = classifyScoutError(err);
+    const attempts = Array.isArray(err?.attempts) ? err.attempts.map((a: any) => `${a.thinkingLevel} ${a.error.includes("timed out") ? "timed out" : "failed"} after ${a.seconds}s`).join(", ") : "";
+    console.error(`[SCOUTAI] Chat failed (${code}${analysisTurn ? ", analysis" : ""}${attempts ? `; ${attempts}` : ""}):`, err);
+    const limitMs = (analysisTurn ? SCOUT_ANALYSIS_ATTEMPTS : SCOUT_ATTEMPTS).reduce((sum, a) => sum + a.timeoutMs, 0);
+    const error = scoutFailureMessage(code, analysisTurn, limitMs);
     if (streaming) {
-      res.write(`${JSON.stringify({ type: "error", error, details: err?.message || String(err) })}\n`);
+      res.write(`${JSON.stringify({ type: "error", error, code, details: err?.message || String(err) })}\n`);
       res.end();
     } else {
-      res.status(502).json({ error, details: err?.message || String(err) });
+      res.status(502).json({ error, code, details: err?.message || String(err) });
     }
   }
 });

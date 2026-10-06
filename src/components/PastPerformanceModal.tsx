@@ -448,7 +448,17 @@ function CampaignStep({ id, writeReview, planId, onBack, onAddFiles, onChanged }
     setReviewing(true);
     setReviewError(null);
     try {
-      apply(await api.reviewPerformanceCampaign(campaign.id, campaign.revision));
+      try {
+        apply(await api.reviewPerformanceCampaign(campaign.id, campaign.revision));
+      } catch (err) {
+        if (!(err instanceof api.ApiError && err.isConflict)) throw err;
+        // The campaign moved on after this window opened (building a recap writes a review).
+        // Reload it and review the latest revision once. A first review that someone else has
+        // since written is the answer as it stands; a Rewrite the planner asked for still runs.
+        const rewriting = Boolean(data?.review);
+        const latest = await api.getPerformanceCampaign(campaign.id);
+        apply(!rewriting && latest.review && !latest.reviewStale ? latest : await api.reviewPerformanceCampaign(latest.campaign.id, latest.campaign.revision));
+      }
       onChanged();
     } catch (err: any) {
       setReviewError(err?.message || "The review could not be written. Try again.");

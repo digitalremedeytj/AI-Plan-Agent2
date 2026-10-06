@@ -139,17 +139,24 @@ export async function generateStructuredJsonWithFallback(
   onFallback?: (failed: GeminiThinkingLevel, next: GeminiThinkingLevel) => void,
 ): Promise<{ data: unknown; thinkingLevel: GeminiThinkingLevel }> {
   let lastError: unknown = new Error("No attempts configured.");
+  // Every attempt's outcome rides on the final error, so a caller can log the whole story
+  // ("high timed out at 90s, medium failed at 41s") rather than only the last failure.
+  const tried: Array<{ thinkingLevel: GeminiThinkingLevel; seconds: number; error: string }> = [];
   for (const [index, attempt] of attempts.entries()) {
+    const startedAt = Date.now();
     try {
       const data = await generateStructuredJson(client, { ...request, ...attempt });
       return { data, thinkingLevel: attempt.thinkingLevel };
     } catch (err) {
       lastError = err;
-      console.warn(`[GEMINI 3.8] ${attempt.thinkingLevel}-thinking attempt failed: ${(err as Error)?.message || err}`);
+      const seconds = Math.round((Date.now() - startedAt) / 1000);
+      tried.push({ thinkingLevel: attempt.thinkingLevel, seconds, error: (err as Error)?.message || String(err) });
+      console.warn(`[GEMINI 3.8] ${attempt.thinkingLevel}-thinking attempt failed after ${seconds}s: ${(err as Error)?.message || err}`);
       const next = attempts[index + 1];
       if (next) onFallback?.(attempt.thinkingLevel, next.thinkingLevel);
     }
   }
+  if (lastError && typeof lastError === "object") (lastError as { attempts?: typeof tried }).attempts = tried;
   throw lastError;
 }
 

@@ -181,3 +181,19 @@ test("a failed high-thinking attempt falls back once and reports the switch", as
   assert.deepEqual(switches, ["high->medium"]);
   assert.deepEqual(calls.map((c) => [c.params.generation_config.thinking_level, c.options.timeout]), [["high", 120000], ["medium", 60000]]);
 });
+
+test("when every attempt fails, the error carries each attempt's level and outcome", async () => {
+  const calls: Array<{ params: any; options: any }> = [];
+  const client = stubClient([new Error("high timed out after 90s."), new Error("medium timed out after 90s.")], calls);
+  await assert.rejects(
+    generateStructuredJsonWithFallback(client, { systemInstruction: "sys", input: "in", schema: { type: "object" } }, [
+      { thinkingLevel: "high", timeoutMs: 90000 },
+      { thinkingLevel: "medium", timeoutMs: 90000 },
+    ]),
+    (err: any) => {
+      assert.deepEqual(err.attempts.map((a: any) => [a.thinkingLevel, a.error]), [["high", "high timed out after 90s."], ["medium", "medium timed out after 90s."]]);
+      assert.ok(err.attempts.every((a: any) => Number.isInteger(a.seconds)));
+      return true;
+    },
+  );
+});

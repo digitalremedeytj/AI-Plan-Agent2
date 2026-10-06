@@ -41,6 +41,8 @@ interface Message {
   isError?: boolean;
   /** The Campaign Recap recommendation this answer carries out; applying it marks it "In this plan". */
   recapRecommendationId?: string;
+  /** A failed answer the planner can ask for again; `failures` counts tries at the same question. */
+  retry?: { recapRecommendationId?: string; failures: number };
 }
 
 /** A request the plan view sends on the planner's behalf (applying a recap recommendation). */
@@ -485,6 +487,18 @@ export function ScoutAssistantPanel({
     const history = [...messages, userMessage];
     setMessages(history);
     setDraft("");
+    await ask(history, tag, 0);
+  };
+
+  // Asks again from the failed answer's question, without repeating the planner's message.
+  const retry = (failed: Message) => {
+    if (isThinking || !failed.retry) return;
+    const history = messages.filter((m) => m.id !== failed.id);
+    setMessages(history);
+    void ask(history, { recapRecommendationId: failed.retry.recapRecommendationId }, failed.retry.failures);
+  };
+
+  const ask = async (history: Message[], tag: { recapRecommendationId?: string }, failures: number) => {
     setIsThinking(true);
     setThought(null);
     const controller = new AbortController();
@@ -502,7 +516,16 @@ export function ScoutAssistantPanel({
       if (!visibleRef.current) onUnread(true);
     } catch (err: any) {
       if (controller.signal.aborted) return;
-      setMessages((prev) => [...prev, { id: newId(), role: "assistant", text: err?.message || "ScoutAI couldn't answer just now. Please try again.", isError: true }]);
+      const tries = failures + 1;
+      // A second failure on the same question is a sign it is too broad for one turn.
+      const hint = tries >= 2 ? " If it keeps failing, ask about one area at a time, such as \"What worked in CTV?\"" : "";
+      setMessages((prev) => [...prev, {
+        id: newId(),
+        role: "assistant",
+        text: `${err?.message || "ScoutAI couldn't answer just now. Please try again."}${hint}`,
+        isError: true,
+        retry: { recapRecommendationId: tag.recapRecommendationId, failures: tries },
+      }]);
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setIsThinking(false);
@@ -683,7 +706,20 @@ export function ScoutAssistantPanel({
             <div key={message.id} className="max-w-full">
               {message.isError ? (
                 <div className="flex items-start gap-1.5 text-[11px] leading-relaxed text-rose-700 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> <span>{message.text}</span>
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <span>{message.text}</span>
+                    {message.retry && message.id === messages[messages.length - 1]?.id && (
+                      <button
+                        type="button"
+                        onClick={() => retry(message)}
+                        disabled={isThinking}
+                        className="mt-1.5 flex items-center gap-1 font-bold text-rose-800 hover:text-rose-950 cursor-pointer disabled:opacity-50"
+                      >
+                        <RotateCcw className="w-3 h-3" /> Try again
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="scout-markdown text-xs leading-relaxed text-slate-700">
