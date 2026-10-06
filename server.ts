@@ -70,7 +70,7 @@ import { CAMPAIGN_GOALS } from "./src/performance/constants";
 import { figureReference, unverifiedFigures } from "./src/performance/figureCheck";
 import { renderDigest } from "./src/performance/digest";
 import { buildReviewInput, normalizeReview, readStoredReview, REVIEW_SYSTEM_INSTRUCTION, reviewSchema } from "./src/performance/review";
-import { buildPerformanceContext, isOwnCampaign, LIVE_INSTRUCTION, PERFORMANCE_INSTRUCTION, toLearningCampaign, type LinkedCampaign } from "./src/assistant/performanceContext";
+import { buildPerformanceContext, canSummarize, isOwnCampaign, LIVE_INSTRUCTION, PERFORMANCE_INSTRUCTION, toLearningCampaign, wantsFullData, type LinkedCampaign, type PerformanceDepth } from "./src/assistant/performanceContext";
 import { assembleRecap, buildRecapInput, channelBenchmarks, hasCampaignRecap, normalizeRecapCopy, RECAP_SECTION, RECAP_SYSTEM_INSTRUCTION, recapSchema, refreshRecapProposals } from "./src/performance/recap";
 import { LEARNINGS_SECTION } from "./src/assistant/learningOps";
 import { buildGenerationHistory, type GenerationHistory } from "./src/research/pastPerformance";
@@ -2093,16 +2093,24 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     }
     const context = await scoutApplyContext(storage, plan);
     const linked = context.linked;
-    const performance = buildPerformanceContext(linked, {
+    const performanceAt = (depth: PerformanceDepth) => buildPerformanceContext(linked, {
       planAdvertiser: plan.advertiserName || "",
       plan: (plan.payload as any)?.profile?.channelStrategy?.mediaPlan,
       planPublishers: ((plan.payload as any)?.profile?.ctvPublishers || []).map((p: any) => String(p?.publisher ?? "")).filter(Boolean),
       catalog: context.publisherCatalog,
       profile: (plan.payload as any)?.profile,
       kpis: Array.isArray((plan.payload as any)?.kpis) ? (plan.payload as any).kpis : [],
+      depth,
     });
+    const question = turns[turns.length - 1].text;
     const hasLive = linked.some((l) => l.campaign.kind === "live");
-    analysisTurn = Boolean(performance) && PERFORMANCE_QUESTION.test(turns[turns.length - 1].text);
+    // buildPerformanceContext is empty exactly when no campaign is linked.
+    analysisTurn = linked.length > 0 && PERFORMANCE_QUESTION.test(question);
+    // Analysis starts from the reviews and the recap when every past campaign has a current
+    // review, unless the question needs rows the summary leaves out (see wantsFullData). Any
+    // other turn reads the full context, as it always has.
+    let depth: PerformanceDepth = analysisTurn && canSummarize(linked) && !wantsFullData(question, linked) ? "summary" : "full";
+    let performance = performanceAt(depth);
     const planContext = buildPlanContext(plan, context);
     // Figures about past performance must come from its data or the plan; anything else is flagged.
     // Checked against each campaign's whole digest, not the part that fit in the prompt: a row
@@ -2117,17 +2125,27 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     streaming = true;
     const send = (event: Record<string, unknown>) => res.write(`${JSON.stringify(event)}\n`);
 
-    const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+    const askModel = (performanceText: string) => generateStructuredJsonWithFallback(
       getAiClient(),
       {
-        systemInstruction: performance ? `${SCOUT_SYSTEM_INSTRUCTION}\n\n${PERFORMANCE_INSTRUCTION}${hasLive ? `\n\n${LIVE_INSTRUCTION}` : ""}` : SCOUT_SYSTEM_INSTRUCTION,
-        input: buildScoutInput(planContext, turns, performance),
+        systemInstruction: performanceText ? `${SCOUT_SYSTEM_INSTRUCTION}\n\n${PERFORMANCE_INSTRUCTION}${hasLive ? `\n\n${LIVE_INSTRUCTION}` : ""}` : SCOUT_SYSTEM_INSTRUCTION,
+        input: buildScoutInput(planContext, turns, performanceText),
         schema: scoutResponseSchema,
         onThought: (text) => send({ type: "thought", text }),
       },
       analysisTurn ? SCOUT_ANALYSIS_ATTEMPTS : SCOUT_ATTEMPTS,
     );
-    const response = normalizeScoutResponse(data);
+    let { data, thinkingLevel } = await askModel(performance);
+    let response = normalizeScoutResponse(data);
+    // The summary was not enough: answer again from the full rows. The first reply is discarded.
+    if (depth === "summary" && response.needsFullData) {
+      console.log(`[SCOUTAI] Plan ${plan.id}: summary not enough (${response.needsFullData}); reading the full campaign data.`);
+      send({ type: "thought", text: "Reading the full campaign data" });
+      depth = "full";
+      performance = performanceAt("full");
+      ({ data, thinkingLevel } = await askModel(performance));
+      response = normalizeScoutResponse(data);
+    }
     let reply = response.reply;
     let proposal: Record<string, unknown> | null = null;
     // Each item is dry-run on its own, so the planner sees what each recommendation does, and
@@ -2153,8 +2171,8 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     if (figures) for (const item of items) item.unverifiedFigures = unverifiedFigures([item.title, item.why, item.evidence ?? "", ...opTexts(item.ops)].join(" \n "), figures);
     const replyUnverified = figures ? unverifiedFigures(response.reply, figures) : [];
     if (replyUnverified.length > 0) reply += `\n\n_Not found in the campaign data or the plan, so check before using: ${replyUnverified.join(", ")}._`;
-    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${linked.length ? `${hasLive ? "live campaign + " : ""}${linked.length - (hasLive ? 1 : 0)} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
-    send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision });
+    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${linked.length ? `${hasLive ? "live campaign + " : ""}${linked.length - (hasLive ? 1 : 0)} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking${analysisTurn ? `, ${depth} data` : ""}).`);
+    send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision, depth: analysisTurn ? depth : null });
     res.end();
   } catch (err: any) {
     const code = classifyScoutError(err);

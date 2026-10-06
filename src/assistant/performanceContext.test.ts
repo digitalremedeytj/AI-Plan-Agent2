@@ -4,7 +4,7 @@ import { buildCampaignFacts, buildMediaRecommendationPlan } from "../planning/en
 import { clonePlanningSettings, DEFAULT_PLANNING_SETTINGS } from "../planning/settings";
 import { platformReports } from "../performance/__fixtures__/load";
 import { analyzeReportFiles } from "../performance/index";
-import { buildPerformanceContext, matchChannel, matchPublisher, PERFORMANCE_CONTEXT_CHARS } from "./performanceContext";
+import { buildPerformanceContext, canSummarize, matchChannel, matchPublisher, PERFORMANCE_CONTEXT_CHARS, wantsFullData } from "./performanceContext";
 import { normalizeScoutResponse } from "./scoutChat";
 
 const plan = () => buildMediaRecommendationPlan(buildCampaignFacts({
@@ -108,4 +108,40 @@ test("a plan's live campaign comes first, compared with the plan, ahead of past 
   assert.match(text, /LIVE CAMPAIGN vs PLAN \(as of 2026-03-10; flight 2026-02-09 to 2026-03-30, 50 days\)/);
   assert.match(text, /Target: CPA \$30\.00/);
   assert.ok(text.indexOf("PAST CAMPAIGN PERFORMANCE") > text.indexOf("LIVE CAMPAIGN vs PLAN"));
+});
+
+const reviewed = (stale = false) => linked().map((l) => ({
+  ...l,
+  review: { generatedAt: "", generatedBy: "", fingerprint: "fp", summary: "Strong quarter on cost per checkout.", findings: [] },
+  reviewStale: stale,
+}));
+
+test("analysis reads the summary only when every past campaign has a current review", () => {
+  assert.equal(canSummarize(reviewed()), true);
+  assert.equal(canSummarize(reviewed(true)), false, "an out-of-date review is not a basis for the summary");
+  assert.equal(canSummarize(linked() as any), false, "no review: the full rows are the only analysis");
+});
+
+test("questions about cuts the summary trims, or that ask for everything, go straight to the full rows", () => {
+  const l = reviewed();
+  assert.equal(wantsFullData("Analyse our past campaign: what worked, what didn't, and what should this plan change?", l), false);
+  assert.equal(wantsFullData("Which publishers did best?", l), true);
+  assert.equal(wantsFullData("How did checkouts trend week by week?", l), true);
+  assert.equal(wantsFullData("Dig deeper using the full campaign data.", l), true);
+  assert.equal(wantsFullData("How did Pluto TV do?", l), true, "a row named in the question");
+});
+
+test("the summary is much shorter than the full section and says the full rows exist", () => {
+  const args = { planAdvertiser: "Acme Auto Accessories", plan: plan(), planPublishers: ["Hulu"], catalog };
+  const summary = buildPerformanceContext(reviewed(), { ...args, depth: "summary" });
+  const full = buildPerformanceContext(reviewed(), { ...args, depth: "full" });
+  assert.match(summary, /SUMMARY: totals, data notes and the largest rows/);
+  assert.doesNotMatch(full, /SUMMARY:/);
+  assert.ok(summary.length < full.length * 0.7, `${summary.length} vs ${full.length}`);
+  assert.match(summary, /HOW THE REPORT MAPS TO THIS PLAN/, "the mapping that turns findings into plan changes stays");
+});
+
+test("the model can ask for the full rows instead of guessing", () => {
+  assert.equal(normalizeScoutResponse({ reply: "x", needsFullData: "publisher rows for ESPN" }).needsFullData, "publisher rows for ESPN");
+  assert.equal(normalizeScoutResponse({ reply: "x" }).needsFullData, null);
 });

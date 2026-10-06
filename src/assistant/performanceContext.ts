@@ -74,6 +74,37 @@ const OTHER_CAMPAIGN_CHARS = 4500;
 const MAX_CAMPAIGNS = 3;
 const MAPPED_PUBLISHERS = 20;
 
+// Summary depth: a campaign with a current review is read from its review, the recap and a short
+// digest (totals, data notes, the largest rows, best and weakest). Re-deriving the analysis from
+// ~11K of rows is what made analysis turns slow; the review already did that work. The model can
+// ask for the full rows (needsFullData), and questions that name rows the summary leaves out go
+// straight to full depth. Figures are always checked against the full digest either way.
+export type PerformanceDepth = "summary" | "full";
+const SUMMARY_FIRST_CAMPAIGN_CHARS = 4500;
+const SUMMARY_OTHER_CAMPAIGN_CHARS = 2000;
+const hasCurrentReview = (l: LinkedCampaign) => Boolean(l.review && !l.reviewStale);
+
+/** Summary depth only helps when every past campaign has a current review to read instead. */
+export function canSummarize(linked: LinkedCampaign[]): boolean {
+  const past = linked.filter((l) => l.campaign.kind !== "live");
+  return past.length > 0 && past.every(hasCurrentReview);
+}
+
+const ASKS_FOR_FULL = /\b(full|all the|all of the|raw|complete|every)\s+(campaign\s+)?(data|rows?|reports?|numbers)\b|\bdig deeper\b/i;
+// What the summary digest cuts first: the long breakdowns, time series, touch paths and geography.
+const DETAIL_TOPICS = /\b(publishers?|creatives?|audiences?|segments?|ad ?groups?|weeks?|weekly|daily|day[- ]by[- ]day|dmas?|markets?|regions?|geo(graphy)?|devices?|paths?|touch(es|points)?|attribution|daypart|hours?)\b/i;
+
+/**
+ * Whether a question needs the full campaign rows: the planner asked for them, it is about a cut
+ * the summary trims (publishers, creatives, weeks...), or it names a row by name.
+ */
+export function wantsFullData(question: string, linked: LinkedCampaign[]): boolean {
+  if (ASKS_FOR_FULL.test(question) || DETAIL_TOPICS.test(question)) return true;
+  const text = question.toLowerCase();
+  return linked.some((l) => l.analysis.breakdowns.some((b) => !isMediaTypeDimension(b.dimension)
+    && b.rows.some((r) => r.name.length >= 5 && text.includes(r.name.toLowerCase()))));
+}
+
 function channelsOf(plan: MediaRecommendationPlan | undefined): Channel[] {
   if (!plan) return [];
   return plan.evaluatedCandidates.map((c: any) => ({ id: c.product.id, name: c.product.displayName, aliases: Array.isArray(c.product.aliases) ? c.product.aliases : [] }));
@@ -117,7 +148,7 @@ function mappingLines(analysis: CampaignAnalysis, plan: MediaRecommendationPlan 
 
 export function buildPerformanceContext(
   linked: LinkedCampaign[],
-  { planAdvertiser, plan, planPublishers, catalog, profile, kpis = [] }: { planAdvertiser: string; plan?: MediaRecommendationPlan; planPublishers: string[]; catalog: CatalogPublisher[]; profile?: any; kpis?: string[] },
+  { planAdvertiser, plan, planPublishers, catalog, profile, kpis = [], depth = "full" }: { planAdvertiser: string; plan?: MediaRecommendationPlan; planPublishers: string[]; catalog: CatalogPublisher[]; profile?: any; kpis?: string[]; depth?: PerformanceDepth },
 ): string {
   if (linked.length === 0) return "";
   // The plan's own running campaign comes first and gets the room: it is what the planner is
@@ -133,7 +164,10 @@ export function buildPerformanceContext(
     const mapping = mappingLines(analysis, plan, planPublishers, catalog);
     const review = reviewLines(entry);
     // The review is the considered read; the digest behind it gives up room first.
-    const digestChars = (index === 0 ? FIRST_CAMPAIGN_CHARS : OTHER_CAMPAIGN_CHARS) - (index === 0 ? Math.min(review.length, 3500) : 0);
+    const summarized = depth === "summary" && hasCurrentReview(entry);
+    const digestChars = summarized
+      ? (index === 0 ? SUMMARY_FIRST_CAMPAIGN_CHARS : SUMMARY_OTHER_CAMPAIGN_CHARS)
+      : (index === 0 ? FIRST_CAMPAIGN_CHARS : OTHER_CAMPAIGN_CHARS) - (index === 0 ? Math.min(review.length, 3500) : 0);
     return [
       `=== ${campaign.name} (${campaign.advertiserName}) ===`,
       own
@@ -141,6 +175,7 @@ export function buildPerformanceContext(
         : `This is NOT this client's campaign (${analysis.advertiser ?? campaign.advertiserName}). Use it for patterns only; never present its figures as this client's results.`,
       `It optimised for: ${goal ?? "not stated. Say which measure you are judging it by"}.`,
       review,
+      summarized ? "CAMPAIGN DATA (SUMMARY: totals, data notes and the largest rows; the full rows exist. If answering properly needs rows not shown here, set needsFullData instead of guessing):" : "",
       renderDigest(analysis, { maxChars: digestChars }),
       mapping.length ? ["HOW THE REPORT MAPS TO THIS PLAN:", ...mapping].join("\n") : "",
     ].filter(Boolean).join("\n");

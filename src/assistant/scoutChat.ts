@@ -380,6 +380,7 @@ export const scoutResponseSchema = {
       properties: { instructions: { type: "string" } },
       required: ["instructions"],
     },
+    needsFullData: { type: "string", description: "Leave empty. Only when the campaign data is marked SUMMARY and a proper answer needs rows it does not show, say which (e.g. 'publisher rows for ESPN and Hulu'); the question is then answered again with the full data, and this reply is discarded." },
   },
   required: ["reply"],
 };
@@ -414,6 +415,8 @@ export interface ScoutResponse {
   items: ScoutItem[];
   /** Instructions for the executive summary generator, which the planner runs with one click. */
   executiveSummaryInstructions: string | null;
+  /** Set when the model read summary campaign data and needs the full rows to answer. */
+  needsFullData: string | null;
 }
 
 const MAX_ITEMS = 6;
@@ -427,5 +430,5 @@ export function normalizeScoutResponse(raw: any): ScoutResponse {
   const usable = items.filter((item) => item.ops.length > 0);
   const summary = typeof raw?.proposal?.summary === "string" ? clip(raw.proposal.summary, 200) : "";
   const instructions = clip(raw?.rewriteExecutiveSummary?.instructions, MAX_BRIEF_INSTRUCTIONS);
-  return { reply, summary: usable.length ? summary || usable[0].title : null, items, executiveSummaryInstructions: instructions || null };
+  return { reply, summary: usable.length ? summary || usable[0].title : null, items, executiveSummaryInstructions: instructions || null, needsFullData: clip(raw?.needsFullData, 300) || null };
 }

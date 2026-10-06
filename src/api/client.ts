@@ -327,6 +327,8 @@ export interface ScoutReply {
   /** Instructions for the executive summary generator, when ScoutAI suggests rewriting it. */
   executiveSummaryInstructions: string | null;
   revision: number;
+  /** For past-performance analysis: whether it read the review summary or the full campaign rows. */
+  depth: "summary" | "full" | null;
 }
 
 /**
@@ -364,6 +366,7 @@ export async function askScout(
         proposal: event.proposal ?? null,
         executiveSummaryInstructions: typeof event.executiveSummaryInstructions === "string" ? event.executiveSummaryInstructions : null,
         revision: Number(event.revision),
+        depth: event.depth === "summary" || event.depth === "full" ? event.depth : null,
       };
     }
     else if (event.type === "error") throw new ApiError(502, event.error || "ScoutAI couldn't answer just now.", event);
