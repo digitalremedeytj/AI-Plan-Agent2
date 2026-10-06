@@ -13,6 +13,8 @@ import { EVIDENCE_RULES } from "./evidenceRules";
 
 const ALLOWED_PATHS: Array<[FindingOwner, RegExp]> = [
   ["narrative", /^(intro|publisherInsights|audienceAnalysis)$/],
+  // The Publisher Insights panel's words. Its icons and publisher lists are decisions.
+  ["narrative", /^publisherHighlights\.(headline|pillars\[\d+\]\.(title|detail))$/],
   ["narrative", /^takeaways\[\d+\]$/],
   // What a citation is said to support is prose; its name, URL and tier are not.
   ["narrative", /^sources\[\d+\]\.supportedClaims$/],

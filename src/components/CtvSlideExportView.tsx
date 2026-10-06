@@ -3,10 +3,14 @@ import { Tv, TrendingUp, Sparkles } from 'lucide-react';
 import { type CtvPublisherRecommendation } from '../types';
 import { PlanText } from './PlanText';
 import { type CtvPublisherSetting, getPublisherLogo } from '../planning/knowledge/ctvPublishers';
+import { pillarPublishersInPlan, publisherMixStats, type PublisherHighlights } from '../planning/publisherHighlights';
+import { PILLAR_ICON_COMPONENTS, mixStatTiles } from './PublisherInsightsPanel';
 
 export interface CtvSlideExportViewProps {
   publishers: CtvPublisherRecommendation[];
   publisherInsights?: string;
+  /** When present, the slide shows the headline, stat row and pillars instead of the paragraph. */
+  publisherHighlights?: PublisherHighlights;
   customPublishers?: CtvPublisherSetting[];
   maxCharacters?: number;
   maxWords?: number;
@@ -18,6 +22,7 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
     {
       publishers,
       publisherInsights,
+      publisherHighlights,
       customPublishers,
       maxCharacters = 450,
       maxWords = 65,
@@ -32,7 +37,8 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
     const displayedPublishers = publishers.slice(0, maxCards);
     const overflowCount = totalCount > maxCards ? totalCount - maxCards : 0;
 
-    const rawText = (publisherInsights || '').trim();
+    // Structured highlights are written to fit the slide, so only the legacy paragraph is summarized.
+    const rawText = publisherHighlights ? '' : (publisherInsights || '').trim();
     const [aiSummarizedText, setAiSummarizedText] = useState<string | null>(null);
 
     // Basic export has a more spacious right column; allow up to 110 words and 780 characters so it fills comfortably
@@ -83,6 +89,61 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
       () => aiSummarizedText || rawText || 'Publisher insights were not generated for this plan.',
       [rawText, aiSummarizedText],
     );
+
+    // The stat row and pillars, in inline styles so the canvas capture matches the panel.
+    const renderHighlights = (large: boolean) => {
+      if (!publisherHighlights) return null;
+      const tiles = publishers.length > 0 ? mixStatTiles(publisherMixStats(publishers)) : [];
+      return (
+        <div>
+          {tiles.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${tiles.length}, minmax(0, 1fr))`, gap: '12px', marginBottom: '16px' }}>
+              {tiles.map((tile) => (
+                <div key={tile.label} style={{ backgroundColor: '#f1f5f9', borderRadius: '14px', padding: '10px 16px' }}>
+                  <div style={{ fontSize: '28px', fontWeight: 800, color: '#0f172a', lineHeight: 1.1 }}>{tile.value}</div>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: '#64748b', marginTop: '4px' }}>{tile.label}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {publisherHighlights.pillars.map((pillar, i) => {
+            const Icon = PILLAR_ICON_COMPONENTS[pillar.icon] ?? PILLAR_ICON_COMPONENTS.premium;
+            const names = pillarPublishersInPlan(pillar, publishers);
+            return (
+              <div key={i} style={{ display: 'flex', gap: '18px', padding: '14px 0', borderTop: i === 0 ? 'none' : '1.5px solid #f1f5f9' }}>
+                <div style={{ width: '48px', height: '48px', borderRadius: '12px', backgroundColor: '#eef2ff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Icon style={{ width: '24px', height: '24px', color: '#4f46e5' }} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: large ? '23px' : '21px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3 }}>{pillar.title}</div>
+                  <div style={{ fontSize: large ? '18px' : '16.5px', color: '#475569', lineHeight: 1.45, marginTop: '4px' }}>{pillar.detail}</div>
+                  {names.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '10px' }}>
+                      {names.map((name) => {
+                        const customPub = customPublishers?.find((p) => p.name.toLowerCase() === name.toLowerCase());
+                        return (
+                          <span key={name} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', border: '1.5px solid #e2e8f0', borderRadius: '9999px', padding: '3px 12px 3px 3px', backgroundColor: '#ffffff' }}>
+                            <img
+                              src={getPublisherLogo(name, customPub?.logoUrl)}
+                              alt=""
+                              crossOrigin="anonymous"
+                              referrerPolicy="no-referrer"
+                              style={{ width: '28px', height: '28px', borderRadius: '9999px', objectFit: 'contain', display: 'block' }}
+                              onError={(e) => { (e.target as HTMLImageElement).src = '/assets/pub-logos/placeholder_80x80.png'; }}
+                            />
+                            <span style={{ fontSize: '15px', fontWeight: 600, color: '#475569' }}>{name}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
 
     return (
       <div
@@ -440,19 +501,21 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                     marginTop: 0,
                   }}
                 >
-                  Publisher Alignment
+                  {publisherHighlights ? publisherHighlights.headline : 'Publisher Alignment'}
                 </h3>
 
-                <PlanText
-                  text={displayText}
-                  style={{
-                    fontSize: '21px',
-                    lineHeight: '1.8',
-                    color: '#334155',
-                    fontWeight: '400',
-                    margin: 0,
-                  }}
-                />
+                {publisherHighlights ? renderHighlights(true) : (
+                  <PlanText
+                    text={displayText}
+                    style={{
+                      fontSize: '21px',
+                      lineHeight: '1.8',
+                      color: '#334155',
+                      fontWeight: '400',
+                      margin: 0,
+                    }}
+                  />
+                )}
               </div>
 
             </div>
@@ -505,22 +568,24 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                     color: '#0f172a',
                     letterSpacing: '-0.02em',
                     marginTop: '6px',
-                    marginBottom: '26px',
+                    marginBottom: publisherHighlights ? '18px' : '26px',
                   }}
                 >
-                  Publisher Alignment
+                  {publisherHighlights ? publisherHighlights.headline : 'Publisher Alignment'}
                 </h3>
 
-                <PlanText
-                  text={displayText}
-                  style={{
-                    fontSize: '18px',
-                    lineHeight: '1.75',
-                    color: '#334155',
-                    fontWeight: '400',
-                    margin: 0,
-                  }}
-                />
+                {publisherHighlights ? renderHighlights(false) : (
+                  <PlanText
+                    text={displayText}
+                    style={{
+                      fontSize: '18px',
+                      lineHeight: '1.75',
+                      color: '#334155',
+                      fontWeight: '400',
+                      margin: 0,
+                    }}
+                  />
+                )}
               </div>
 
             </div>

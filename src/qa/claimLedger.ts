@@ -13,6 +13,7 @@
 // up in any long research text, a "36%" much more rarely.
 
 import { PROFILE_CHARTS } from "./generationIntegrity";
+import { hasPublisherHighlights, publisherHighlightFields } from "../planning/publisherHighlights";
 
 export type ClaimOwner = "narrative" | "personas" | "publisherRationale" | "channelStrategy";
 export type ClaimUnit = "percent" | "money" | "count" | "multiplier" | "plain";
@@ -56,7 +57,10 @@ export function collectProse(profile: any): ProseField[] {
     const text = str(value).trim();
     if (text) fields.push({ path, owner, text });
   };
-  for (const key of ["intro", "executiveSummary", "publisherInsights", "audienceAnalysis"]) add(key, "narrative", profile?.[key]);
+  for (const key of ["intro", "executiveSummary", "audienceAnalysis"]) add(key, "narrative", profile?.[key]);
+  // The panel shows the highlights when a plan has them; the paragraph only for older plans.
+  if (hasPublisherHighlights(profile)) publisherHighlightFields(profile).forEach((f) => add(f.path, "narrative", f.text));
+  else add("publisherInsights", "narrative", profile?.publisherInsights);
   (profile?.takeaways || []).forEach((t: unknown, i: number) => add(`takeaways[${i}]`, "narrative", t));
   (profile?.recommendations || []).forEach((r: any, i: number) => {
     for (const key of ["title", "action", "why"]) add(`recommendations[${i}].${key}`, "narrative", r?.[key]);

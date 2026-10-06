@@ -41,3 +41,13 @@ test("the narrative no longer writes the executive summary; the executive brief 
   applyNarrative(profile, { executiveSummary: "Should be ignored." });
   assert.equal(profile.executiveSummary, "Synthesis draft.");
 });
+
+test("the narrative's publisher highlights are held to the plan's publishers", () => {
+  const profile: any = { ctvPublishers: [{ publisher: "ESPN", category: "Network", why: "w" }], publisherHighlights: { headline: "Old", pillars: [] } };
+  const pillars = ["A", "B", "C"].map((title) => ({ icon: "sports", title, detail: "d", publishers: ["ESPN", "Netflix"] }));
+  assert.ok(applyNarrative(profile, { publisherHighlights: { headline: "New", pillars } }).includes("publisherHighlights"));
+  assert.deepEqual(profile.publisherHighlights.pillars[0].publishers, ["ESPN"]);
+
+  applyNarrative(profile, { publisherHighlights: { headline: "Thin", pillars: pillars.slice(0, 1) } });
+  assert.equal(profile.publisherHighlights.headline, "New");
+});

@@ -15,6 +15,7 @@ import { figureReference } from "../performance/figureCheck";
 import type { PerformanceReview } from "../performance/review";
 import type { PerformanceSnapshot } from "../storage/types";
 import { LEARNINGS_SECTION, readLearnings, type LearningCampaign } from "./learningOps";
+import { hasCampaignRecap } from "../performance/recap";
 import { matchChannel, matchPublisher, type Channel } from "../performance/matching";
 import { comparePlanToActual, renderPlanVsActual } from "../performance/planVsActual";
 
@@ -150,10 +151,17 @@ export function buildPerformanceContext(
   const learningLines = learnings.length
     ? [`CLIENT LEARNINGS IN THE PLAN (section "Built on your campaign history", ${hidden ? "hidden from the client" : "shown to the client"}; change with edit_learning / remove_learning by index):`, ...learnings.map((l, i) => `[${i}] (${l.campaignName}, ${l.findingId}) ${l.learning} -> ${l.action}`)].join("\n")
     : "CLIENT LEARNINGS IN THE PLAN: none yet (add with add_learning).";
+  const recap = hasCampaignRecap(profile) ? profile.campaignRecap : null;
+  const recapLines = recap
+    ? [`CAMPAIGN RECAP IN THE PLAN (client-facing; its figures are fixed from the data, rebuilt by the planner):`,
+      ...recap.campaigns.flatMap((c) => c.cards.map((card) => `card [${card.id}] (${c.name}, ${card.kind}) ${card.headline}: ${card.stat}`)),
+      ...recap.recommendations.map((r) => `recommendation [${r.id}] ${r.title}: ${r.detail}${r.appliedAt ? " (already in this plan)" : ""}`)].join("\n")
+    : "";
   return [
     liveSection,
     ordered.length ? `PAST CAMPAIGN PERFORMANCE LINKED TO THIS PLAN (${past.length} campaign${past.length === 1 ? "" : "s"}${skipped ? `; the ${skipped} oldest left out for length` : ""}). Figures below are computed from the report files; quote them, do not recompute them.` : "",
     learningLines,
+    recapLines,
     ...sections,
   ].filter(Boolean).join("\n\n").slice(0, PERFORMANCE_CONTEXT_CHARS + (liveSection ? LIVE_CONTEXT_CHARS : 0));
 }
@@ -194,4 +202,5 @@ ${READING_RULES}
 - An item that rests on past performance puts that evidence in "evidence": the specific rows and figures, quoted as given, and how confident the data allows you to be (for example "OTT PM 0.44 last-touch; no all-touch data, so its assist is unmeasured; medium confidence"). Frame such changes as adjustments to test, not certainties.
 - Every figure you write is checked against the data and the plan; one that is not there is flagged to the planner.
 - Refer to campaigns and findings by name in the reply, never by their ids.
-- The plan's client-facing section "Built on your campaign history" shows learnings from the client's own past campaigns, each with what this plan does about it. Propose them (add_learning {campaignId, findingId, learning, action, position} / edit_learning {index, learning, action} / remove_learning {index}) when the planner asks for client-facing learnings, and offer to after an analysis of the client's own campaign. Rules the server enforces: only from a campaign marked as the client's own, only from a review finding that is not out of date and has no figures missing from the data. "learning": one sentence the client reads about what their campaign showed, in the plan's voice and the client's terms (CPA, checkouts, cost, reach; never PM or ad group, which are internal), quoting only figures from that finding's data, exactly. "action": one sentence on what this plan does about it, with no figures, and true of the plan as it stands or as the same item changes it (put the channel change and the learning in one item). No caveats about attribution in client text; keep those in the reply. The section starts hidden from the client until the planner shows it.`;
+- The plan's client-facing section "Built on your campaign history" shows learnings from the client's own past campaigns, each with what this plan does about it. Propose them (add_learning {campaignId, findingId, learning, action, position} / edit_learning {index, learning, action} / remove_learning {index}) when the planner asks for client-facing learnings, and offer to after an analysis of the client's own campaign. Rules the server enforces: only from a campaign marked as the client's own, only from a review finding that is not out of date and has no figures missing from the data. "learning": one sentence the client reads about what their campaign showed, in the plan's voice and the client's terms (CPA, checkouts, cost, reach; never PM or ad group, which are internal), quoting only figures from that finding's data, exactly. "action": one sentence on what this plan does about it, with no figures, and true of the plan as it stands or as the same item changes it (put the channel change and the learning in one item). No caveats about attribution in client text; keep those in the reply. The section starts hidden from the client until the planner shows it.
+- The plan may have a CAMPAIGN RECAP with recommendations. When the planner asks you to apply one, propose the plan changes that carry it out (allocations, channels, publishers, segments, text) as one item, and add mark_recap_recommendation {id} to that item's ops so the client sees it as part of this plan. Only the planner removes recap items (remove_recap_item {kind: "card" | "recommendation", id}), and only when asked.`;

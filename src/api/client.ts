@@ -399,6 +399,11 @@ export async function applyScoutChange(
   return request(`/api/plans/${encodeURIComponent(id)}/assistant/apply`, { method: "POST", body: JSON.stringify(body) });
 }
 
+/** Builds (or rebuilds) the plan's Campaign Recap from its linked past campaigns and saves it. */
+export async function buildCampaignRecap(id: string, baseRevision: number): Promise<{ plan: StoredPlan; dropped: string[] }> {
+  return request(`/api/plans/${encodeURIComponent(id)}/campaign-recap`, { method: "POST", body: JSON.stringify({ baseRevision }) });
+}
+
 export async function archivePlan(id: string): Promise<void> {
   await request(`/api/plans/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

@@ -136,8 +136,12 @@ import { briefFingerprint, buildBriefSnapshot, withoutHistory, type ExecutiveBri
 import { QaFindings } from "./components/QaFindings";
 import { GenerationLog } from "./components/GenerationLog";
 import { PlanAuditModal } from "./components/PlanAuditModal";
-import { ScoutAssistantPanel, type ScoutFollowUpAction, type ScoutPreview } from "./components/ScoutAssistantPanel";
+import { ScoutAssistantPanel, type ScoutFollowUpAction, type ScoutPreview, type ScoutRequest } from "./components/ScoutAssistantPanel";
+import { CampaignRecapSection } from "./components/CampaignRecapSection";
+import { CampaignRecapSlides, recapSlides } from "./components/CampaignRecapSlides";
+import type { RecapRecommendation } from "./performance/recap";
 import { PlanText } from "./components/PlanText";
+import { PublisherInsightsPanel } from "./components/PublisherInsightsPanel";
 import { syncCtvChannelPublishers } from "./planning/ctvChannel";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
@@ -1472,6 +1476,17 @@ export default function App() {
   }, [profileData]);
   const [scoutUnread, setScoutUnread] = useState(false);
   const [scoutPreview, setScoutPreview] = useState<ScoutPreview | null>(null);
+  const [scoutRequest, setScoutRequest] = useState<ScoutRequest | null>(null);
+  // Campaign Recap: building, exporting and whether the plan has past campaigns to build from.
+  const [recapBuilding, setRecapBuilding] = useState(false);
+  const [recapError, setRecapError] = useState<string | null>(null);
+  const [recapDropped, setRecapDropped] = useState<string[]>([]);
+  // A recommendation's change, dry-run and waiting for the planner's Apply; then what undoes it.
+  const [recapPending, setRecapPending] = useState<{ recId: string; ops: api.AssistantOp[]; changes: api.ProposalChange[]; rejected: string[]; loading: boolean; applying: boolean } | null>(null);
+  const [recapUndo, setRecapUndo] = useState<{ recId: string; revertOps: api.AssistantOp[]; revision: number } | null>(null);
+  const [recapExporting, setRecapExporting] = useState(false);
+  const [linkedPastCampaignCount, setLinkedPastCampaignCount] = useState(0);
+  const recapSlideRefs = React.useRef<Array<HTMLDivElement | null>>([]);
   const [scoutRevisionBump, setScoutRevisionBump] = useState<{ from: number; to: number } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveTitle, setSaveTitle] = useState("");
@@ -1743,6 +1758,10 @@ export default function App() {
   const isSourcesHidden = hiddenSections.has("sources");
 
   const markPlanPersisted = (plan: api.StoredPlan) => {
+    // The server re-checks the Campaign Recap's proposed changes on every save, so the saved recap
+    // can differ from the one sent. It is never edited in the browser, so the saved one wins.
+    const savedRecap = (plan.payload?.profile as AudienceProfile | undefined)?.campaignRecap;
+    setProfileData((prev) => (prev && savedRecap && JSON.stringify(prev.campaignRecap) !== JSON.stringify(savedRecap) ? { ...prev, campaignRecap: savedRecap } : prev));
     lastPersistedPlanRef.current = plan;
     activePlanRevisionRef.current = plan.revision;
     setActivePlanRevision(plan.revision);
@@ -3079,6 +3098,139 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileData, activePlanRevision, activeSavedId]);
 
+  // ---- Campaign Recap ----
+  // Whether the plan has past campaigns to build a recap from; the plan's own pastCampaignsUsed
+  // covers campaigns used at generation, this covers ones linked afterwards.
+  React.useEffect(() => {
+    if (isShareView || !activeSavedId) { setLinkedPastCampaignCount(0); return; }
+    let active = true;
+    api.listPerformanceCampaigns({ planId: activeSavedId })
+      .then((list) => { if (active) setLinkedPastCampaignCount(list.filter((c) => c.kind !== "live" && c.linkedPlanIds.includes(activeSavedId)).length); })
+      .catch(() => { if (active) setLinkedPastCampaignCount(0); });
+    return () => { active = false; };
+  }, [activeSavedId, isShareView, activePlanRevision]);
+
+  React.useEffect(() => { setRecapError(null); setRecapDropped([]); setRecapPending(null); setRecapUndo(null); }, [activeSavedId]);
+
+  const recapPlanChannels = React.useMemo(
+    () => (profileData?.channelStrategy?.mediaPlan?.channels || []).map((c) => ({ channelId: c.channelId, channelName: c.channelName, allocationPercent: c.allocationPercent, allocationDollars: c.allocationDollars })),
+    [profileData?.channelStrategy?.mediaPlan?.channels],
+  );
+
+  const handleBuildRecap = async () => {
+    if (!activeSavedId || activePlanRevision === null || recapBuilding) return;
+    if (scoutHasUnsavedChanges) { setRecapError("Save your changes first: the recap is built onto the saved plan."); return; }
+    setRecapBuilding(true);
+    setRecapError(null);
+    setRecapDropped([]);
+    setRecapPending(null);
+    setRecapUndo(null);
+    try {
+      const { plan, dropped } = await api.buildCampaignRecap(activeSavedId, activePlanRevision);
+      handleScoutApplied(plan);
+      setRecapDropped(dropped);
+    } catch (err: any) {
+      setRecapError(err?.message || "The recap could not be built.");
+    } finally {
+      setRecapBuilding(false);
+    }
+  };
+
+  // One click: the recommendation's own change (or, for keep and execution, just the mark) is
+  // dry-run on the saved plan, shown, and saved only when the planner confirms.
+  const handlePreviewRecapRecommendation = async (rec: RecapRecommendation) => {
+    if (!activeSavedId || activePlanRevision === null) return;
+    if (scoutHasUnsavedChanges) { setRecapError("Save your changes first: recommendations are applied to the saved plan."); return; }
+    const ops: api.AssistantOp[] = [...(rec.ops ?? []), { type: "mark_recap_recommendation", id: rec.id, applied: true }];
+    setRecapError(null);
+    setRecapPending({ recId: rec.id, ops, changes: [], rejected: [], loading: true, applying: false });
+    try {
+      const preview = await api.previewScoutChange(activeSavedId, { ops, baseRevision: activePlanRevision });
+      setRecapPending((p) => (p?.recId === rec.id ? { ...p, changes: preview.changes, rejected: preview.rejected, loading: false } : p));
+    } catch (err: any) {
+      setRecapPending(null);
+      setRecapError(err?.message || "The change could not be checked against the plan.");
+    }
+  };
+
+  const handleConfirmRecapRecommendation = async () => {
+    if (!recapPending || !activeSavedId || activePlanRevision === null) return;
+    setRecapPending({ ...recapPending, applying: true });
+    try {
+      const result = await api.applyScoutChange(activeSavedId, { ops: recapPending.ops, baseRevision: activePlanRevision });
+      handleScoutApplied(result.plan);
+      setRecapUndo({ recId: recapPending.recId, revertOps: result.revertOps, revision: result.plan.revision });
+      setRecapPending(null);
+    } catch (err: any) {
+      setRecapPending(null);
+      setRecapError(err?.message || "The change could not be applied.");
+    }
+  };
+
+  const handleUndoRecapRecommendation = async () => {
+    if (!recapUndo || !activeSavedId) return;
+    try {
+      const result = await api.applyScoutChange(activeSavedId, { ops: recapUndo.revertOps, baseRevision: recapUndo.revision, revert: true });
+      handleScoutApplied(result.plan);
+      setRecapUndo(null);
+    } catch (err: any) {
+      setRecapUndo(null);
+      setRecapError(err?.message || "The change could not be undone; the plan has changed since. Adjust it with ScoutAI instead.");
+    }
+  };
+
+  // ScoutAI turns a recommendation into plan changes; the planner previews and applies them there.
+  const handleApplyRecapRecommendation = (rec: RecapRecommendation) => {
+    setLeftTab("scout");
+    setScoutRequest({ id: `${rec.id}-${Date.now()}`, text: `Apply the campaign recap recommendation "${rec.title}": ${rec.detail}.`, recapRecommendationId: rec.id });
+  };
+
+  const handleRemoveRecapItem = async (kind: "card" | "recommendation", id: string) => {
+    if (!activeSavedId || activePlanRevision === null) return;
+    if (scoutHasUnsavedChanges) { setRecapError("Save your changes first: the recap is edited on the saved plan."); return; }
+    setRecapError(null);
+    try {
+      const result = await api.applyScoutChange(activeSavedId, { ops: [{ type: "remove_recap_item", kind, id }], baseRevision: activePlanRevision });
+      handleScoutApplied(result.plan);
+    } catch (err: any) {
+      setRecapError(err?.message || "That item could not be removed.");
+    }
+  };
+
+  const handleExportRecap = async (target: number | "pdf") => {
+    if (!profileData?.campaignRecap || recapExporting) return;
+    setRecapExporting(true);
+    setRecapError(null);
+    try {
+      const slides = recapSlides(profileData.campaignRecap, recapPlanChannels);
+      const indexes = target === "pdf" ? slides.map((_, i) => i) : [target];
+      const canvases: HTMLCanvasElement[] = [];
+      for (const i of indexes) {
+        const el = recapSlideRefs.current[i];
+        if (!el) throw new Error("A slide was not ready to export.");
+        canvases.push(await captureElementToCanvas(el, { scale: 2, width: 1920, height: 1080, backgroundColor: "#ffffff" }));
+      }
+      const base = `${(advertiserName || "campaign").toLowerCase().replace(/[^a-z0-9]+/g, "_")}_campaign_recap`;
+      if (target === "pdf") {
+        const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: [1920, 1080] });
+        canvases.forEach((canvas, i) => {
+          if (i > 0) pdf.addPage([1920, 1080], "landscape");
+          pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, 1920, 1080);
+        });
+        pdf.save(`${base}.pdf`);
+      } else {
+        const link = document.createElement("a");
+        link.download = `${base}_slide_${target + 1}.png`;
+        link.href = canvases[0].toDataURL("image/png");
+        link.click();
+      }
+    } catch (err: any) {
+      setRecapError(`The recap slides could not be exported (${err?.message || err}).`);
+    } finally {
+      setRecapExporting(false);
+    }
+  };
+
   const handleScoutApplied = (plan: api.StoredPlan) => {
     const saved = plan.payload.profile as AudienceProfile | undefined;
     // Read before markPlanPersisted replaces it below.
@@ -3764,7 +3916,8 @@ export default function App() {
 
     try {
       // Ensure AI summarizes publisher insights if over limits (basic has a larger column than detailed)
-      const rawInsights = (profileData?.publisherInsights || "").trim();
+      // Structured highlights are written to fit the slide; only the legacy paragraph is summarized.
+      const rawInsights = profileData?.publisherHighlights ? "" : (profileData?.publisherInsights || "").trim();
       const maxWords = variant === 'basic' ? 110 : 65;
       const maxCharacters = variant === 'basic' ? 780 : 450;
       const wordCount = rawInsights.split(/\s+/).length;
@@ -4252,9 +4405,9 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-[1500px] w-full mx-auto p-4 md:p-6 flex flex-col lg:flex-row gap-6 items-start">
-        {/* Left Column: Media Planner Inputs (350px fixed on lg) */}
+        {/* Left Column: Media Planner Inputs (400px fixed on lg) */}
         <section
-          className="w-full lg:w-[350px] shrink-0 bg-white border border-slate-100 rounded-2xl shadow-xs sticky lg:top-24 flex flex-col overflow-hidden"
+          className="w-full lg:w-[400px] shrink-0 bg-white border border-slate-100 rounded-2xl shadow-xs sticky lg:top-24 flex flex-col overflow-hidden"
           // The chat needs the full height so its input sits at the bottom of the column.
           style={{ maxHeight: "calc(100vh - 120px)", ...(!isShareView && leftTab === "scout" ? { height: "calc(100vh - 120px)" } : {}) }}
         >
@@ -5604,6 +5757,8 @@ export default function App() {
                   onUnread={setScoutUnread}
                   preview={scoutPreview}
                   onPreview={setScoutPreview}
+                  request={scoutRequest}
+                  onRequestHandled={() => setScoutRequest(null)}
                 />
               ) : (
                 <div className="p-6 text-center text-xs text-slate-500">
@@ -6432,6 +6587,33 @@ export default function App() {
                 </div>
               )}
 
+                <CampaignRecapSection
+                  recap={profileData.campaignRecap}
+                  planChannels={recapPlanChannels}
+                  isHidden={hiddenSections.has("campaignRecap")}
+                  isShareView={isShareView}
+                  onToggle={handleToggleSectionActive}
+                  planner={activeSavedId ? {
+                    canBuild: linkedPastCampaignCount > 0 || (profileData.pastCampaignsUsed || []).some((c) => c.own),
+                    blockedReason: scoutHasUnsavedChanges ? "Save your changes first: the recap is built onto the saved plan." : null,
+                    building: recapBuilding,
+                    error: recapError,
+                    dropped: recapDropped,
+                    onBuild: handleBuildRecap,
+                    onPreview: handlePreviewRecapRecommendation,
+                    onConfirm: handleConfirmRecapRecommendation,
+                    onCancel: () => setRecapPending(null),
+                    onUndo: handleUndoRecapRecommendation,
+                    pending: recapPending,
+                    undoableId: recapUndo?.recId ?? null,
+                    onAskScout: handleApplyRecapRecommendation,
+                    onRemove: handleRemoveRecapItem,
+                    onExport: handleExportRecap,
+                    exporting: recapExporting,
+                    slideTitles: profileData.campaignRecap ? recapSlides(profileData.campaignRecap, recapPlanChannels).map((slide) => slide.title) : [],
+                  } : undefined}
+                />
+
                 <PerformanceLearningsSection
                   learnings={profileData.performanceLearnings || []}
                   isHidden={hiddenSections.has("performanceLearnings")}
@@ -6518,16 +6700,7 @@ export default function App() {
 
                     {/* CTV Publisher Insights (40% width) */}
                     <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
-                      <div>
-                        <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                          <TrendingUp className="w-4 h-4" />
-                          <span>Publisher Insights</span>
-                        </div>
-                        <h3 className="text-base font-display font-bold text-slate-800 mb-3">Publisher Alignment</h3>
-                        {profileData.publisherInsights
-                          ? <PlanText text={profileData.publisherInsights} className="text-xs text-slate-600 leading-relaxed mb-4" />
-                          : <p className="text-xs italic text-slate-400 leading-relaxed mb-4">Publisher insights were not generated for this plan.</p>}
-                      </div>
+                      <PublisherInsightsPanel profile={profileData} customPublishers={ctvPublishers} />
                     </div>
                   </div>
                 )}
@@ -6702,16 +6875,7 @@ export default function App() {
 
                       {/* CTV Publisher Insights (40% width) */}
                       <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 p-5 md:p-6 shadow-xs flex flex-col justify-between">
-                        <div>
-                          <div className="flex items-center gap-2 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                            <TrendingUp className="w-4 h-4" />
-                            <span>Publisher Insights</span>
-                          </div>
-                          <h3 className="text-base font-display font-bold text-slate-800 mb-3">Publisher Alignment</h3>
-                          {profileData.publisherInsights
-                            ? <PlanText text={profileData.publisherInsights} className="text-xs text-slate-600 leading-relaxed mb-4" />
-                            : <p className="text-xs italic text-slate-400 leading-relaxed mb-4">Publisher insights were not generated for this plan.</p>}
-                        </div>
+                        <PublisherInsightsPanel profile={profileData} customPublishers={ctvPublishers} />
                       </div>
                     </div>
                   </div>
@@ -8602,6 +8766,10 @@ export default function App() {
           isGenerating={generatingAvatarIndices.includes(editingAvatarPersonaIndex)}
         />
       )}
+      {/* Off-screen 16:9 Campaign Recap slides, captured by the recap's export menu */}
+      {!isShareView && profileData?.campaignRecap && (
+        <CampaignRecapSlides recap={profileData.campaignRecap} planChannels={recapPlanChannels} slideRefs={recapSlideRefs} />
+      )}
       {/* Off-screen 16:9 Canvases for CTV Publishers & Insights Slide Export */}
       {profileData && (
         <div
@@ -8635,6 +8803,7 @@ export default function App() {
               layoutVariant="detailed"
               publishers={profileData.ctvPublishers ?? []}
               publisherInsights={summarizedPublisherInsights || profileData.publisherInsights}
+              publisherHighlights={profileData.publisherHighlights}
               customPublishers={ctvPublishers}
             />
           </div>
@@ -8658,6 +8827,7 @@ export default function App() {
               layoutVariant="basic"
               publishers={profileData.ctvPublishers ?? []}
               publisherInsights={summarizedPublisherInsights || profileData.publisherInsights}
+              publisherHighlights={profileData.publisherHighlights}
               customPublishers={ctvPublishers}
             />
           </div>

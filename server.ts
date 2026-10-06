@@ -57,10 +57,11 @@ import {
   type AuditInputs,
 } from "./src/qa/auditRunner";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeSchema } from "./src/research/planNarrative";
+import { normalizePublisherHighlights, publisherHighlightsSchema } from "./src/planning/publisherHighlights";
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
-import { applyOps, parseOps } from "./src/assistant/operations";
+import { addableChannels, applyOps, parseOps } from "./src/assistant/operations";
 import { detectFollowUps } from "./src/assistant/followUps";
 import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, reviewFingerprint, snapshotOf, suggestedDetails } from "./src/performance/library";
 import { comparePlanToActual } from "./src/performance/planVsActual";
@@ -68,7 +69,9 @@ import { CAMPAIGN_GOALS } from "./src/performance/constants";
 import { figureReference, unverifiedFigures } from "./src/performance/figureCheck";
 import { renderDigest } from "./src/performance/digest";
 import { buildReviewInput, normalizeReview, readStoredReview, REVIEW_SYSTEM_INSTRUCTION, reviewSchema } from "./src/performance/review";
-import { buildPerformanceContext, LIVE_INSTRUCTION, PERFORMANCE_INSTRUCTION, toLearningCampaign, type LinkedCampaign } from "./src/assistant/performanceContext";
+import { buildPerformanceContext, isOwnCampaign, LIVE_INSTRUCTION, PERFORMANCE_INSTRUCTION, toLearningCampaign, type LinkedCampaign } from "./src/assistant/performanceContext";
+import { assembleRecap, buildRecapInput, channelBenchmarks, hasCampaignRecap, normalizeRecapCopy, RECAP_SECTION, RECAP_SYSTEM_INSTRUCTION, recapSchema, refreshRecapProposals } from "./src/performance/recap";
+import { LEARNINGS_SECTION } from "./src/assistant/learningOps";
 import { buildGenerationHistory, type GenerationHistory } from "./src/research/pastPerformance";
 import { SCOUT_SYSTEM_INSTRUCTION, buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./src/assistant/scoutChat";
 import { throttledProgress } from "./src/server/thoughtProgress";
@@ -634,6 +637,7 @@ const audienceProfileSchema = {
       type: Type.STRING,
       description: "A highly polished paragraph explaining why the recommended publishers align with the audience, their media consumption behavior, and how this fits the overall campaign."
     },
+    publisherHighlights: publisherHighlightsSchema,
     additionalRfpRequirements: {
       type: Type.OBJECT,
       description: "Optional RFP requirements, operational specifications, questions/asks, and Digital Remedy solution responses when an RFP document is uploaded.",
@@ -687,7 +691,8 @@ const audienceProfileSchema = {
     "executiveSummary",
     "sources",
     "ctvPublishers",
-    "publisherInsights"
+    "publisherInsights",
+    "publisherHighlights"
   ]
 };
 
@@ -1902,7 +1907,9 @@ app.put("/api/plans/:id", async (req, res) => {
     }
 
     const input = planPayloadFromBody(req.body);
-    const plan = await (await getStorage()).updatePlan(req.params.id, { ...input, actor: actorName(req) }, expectedRevision);
+    const storage = await getStorage();
+    await refreshCampaignRecap(storage, { id: req.params.id, settingsRevision: input.settingsRevision }, input.payload);
+    const plan = await storage.updatePlan(req.params.id, { ...input, actor: actorName(req) }, expectedRevision);
     res.json({ success: true, plan });
   } catch (err: any) {
     respondToStorageError(res, err, "update plan");
@@ -2220,6 +2227,29 @@ async function scoutApplyContext(storage: StorageAdapter, plan: { id: string; ad
   };
 }
 
+// The Campaign Recap's proposed changes are re-checked against the plan on every save, so they
+// always show their real result (see refreshRecapProposals). Only what the dry run needs is
+// loaded: the publisher catalog and the plan's settings, not the campaign files.
+async function refreshCampaignRecap(storage: StorageAdapter, plan: { id: string; settingsRevision?: number | null }, payload: any): Promise<void> {
+  const recs: any[] = hasCampaignRecap(payload?.profile) ? payload.profile.campaignRecap.recommendations || [] : [];
+  if (!recs.some((r) => !r.appliedAt && (r.baseOps ?? r.ops ?? []).length)) return;
+  try {
+    const [{ publishers }, settingsRecord] = await Promise.all([
+      storage.getCurrentPublishers(),
+      Number.isInteger(plan.settingsRevision) ? storage.getSettingsRevision(plan.settingsRevision as number) : storage.getCurrentSettings(),
+    ]);
+    const validated = validatePlanningSettings(settingsRecord?.settings);
+    const context = {
+      publisherCatalog: publishers.map((p) => ({ name: p.name, category: p.category, enabled: p.enabled })),
+      planningSettings: validated.valid && validated.settings ? validated.settings : DEFAULT_PLANNING_SETTINGS,
+    };
+    refreshRecapProposals(payload, (ops) => applyOps(payload, ops, context));
+  } catch (err) {
+    // A save never fails over the recap; its proposals are re-checked on the next one.
+    console.error(`[RECAP] Could not re-check the recap's proposals on plan ${plan.id}:`, err);
+  }
+}
+
 // Dry run of the items a planner has kept, so the card shows the combined result before Apply.
 app.post("/api/plans/:id/assistant/preview", async (req, res) => {
   try {
@@ -2273,6 +2303,7 @@ app.post("/api/plans/:id/assistant/apply", async (req, res) => {
       });
       return;
     }
+    await refreshCampaignRecap(storage, plan, result.payload);
     const updated = await storage.updatePlan(plan.id, {
       ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload: result.payload }),
       actor: actorName(req),
@@ -2471,6 +2502,24 @@ app.put("/api/performance/campaigns/:id", async (req, res) => {
 
 // The saved review: one high-thinking read of the campaign, figures checked against its data.
 // The planner waits for it once, after upload, and can rewrite it when the files change.
+// Writes and saves a campaign's review. Shared by the review route and the Campaign Recap, which
+// writes one first when the campaign has none or its files changed after it was written.
+async function writeCampaignReview(storage: StorageAdapter, campaign: PerformanceCampaign, actor: string): Promise<PerformanceCampaign> {
+  const analysis = analyzeFiles(campaign.files, campaign);
+  const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+    getAiClient(),
+    { systemInstruction: REVIEW_SYSTEM_INSTRUCTION, input: buildReviewInput(campaign, analysis), schema: reviewSchema },
+    BRIEF_ATTEMPTS,
+  );
+  const review = normalizeReview(data, analysis, { actor, fingerprint: reviewFingerprint(campaign) });
+  if (review.findings.length === 0) throw new Error("The review came back with no findings.");
+  const { files, review: _old, ...details } = campaign;
+  const updated = await storage.updatePerformanceCampaign(campaign.id, { ...details, files, review, actor }, campaign.revision);
+  const unverified = review.findings.filter((f) => f.unverified.length).length;
+  console.log(`[PERFORMANCE] Review of ${campaign.id}: ${review.findings.length} finding(s)${unverified ? `, ${unverified} with unverified figures` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
+  return updated;
+}
+
 app.post("/api/performance/campaigns/:id/review", async (req, res) => {
   req.socket.setTimeout(0);
   try {
@@ -2483,21 +2532,91 @@ app.post("/api/performance/campaigns/:id/review", async (req, res) => {
     const campaign = await storage.getPerformanceCampaign(req.params.id);
     if (!campaign || campaign.archived) throw new CampaignNotFoundError(req.params.id);
     if (campaign.revision !== expectedRevision) throw new RevisionConflictError(campaign.revision);
-    const analysis = analyzeFiles(campaign.files, campaign);
-    const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
-      getAiClient(),
-      { systemInstruction: REVIEW_SYSTEM_INSTRUCTION, input: buildReviewInput(campaign, analysis), schema: reviewSchema },
-      BRIEF_ATTEMPTS,
-    );
-    const review = normalizeReview(data, analysis, { actor: actorName(req), fingerprint: reviewFingerprint(campaign) });
-    if (review.findings.length === 0) throw new Error("The review came back with no findings.");
-    const { files, review: _old, ...details } = campaign;
-    const updated = await storage.updatePerformanceCampaign(campaign.id, { ...details, files, review, actor: actorName(req) }, expectedRevision);
-    const unverified = review.findings.filter((f) => f.unverified.length).length;
-    console.log(`[PERFORMANCE] Review of ${campaign.id}: ${review.findings.length} finding(s)${unverified ? `, ${unverified} with unverified figures` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking).`);
-    res.json(campaignResponse(updated));
+    res.json(campaignResponse(await writeCampaignReview(storage, campaign, actorName(req))));
   } catch (err: any) {
     respondToCampaignError(res, err, "write the review");
+  }
+});
+
+// The Campaign Recap: the client's own past campaigns linked to this plan (or used to generate
+// it), summarised for the client. Figures are fixed from the data in code; the model writes the
+// words, which are checked (see src/performance/recap). A campaign with no current review gets
+// one first. Written onto the saved plan with the usual revision check.
+app.post("/api/plans/:id/campaign-recap", async (req, res) => {
+  req.socket.setTimeout(0);
+  try {
+    const expectedRevision = Number(req.body?.baseRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "The plan revision is required to build the recap.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    if (plan.revision !== expectedRevision) {
+      res.status(409).json({ error: "This plan changed since you opened it. Reload it and try again.", code: "REVISION_CONFLICT", currentRevision: plan.revision });
+      return;
+    }
+    const profile: any = (plan.payload as any)?.profile ?? {};
+    const usedIds = (Array.isArray(profile.pastCampaignsUsed) ? profile.pastCampaignsUsed : []).map((c: any) => String(c?.id ?? "")).filter(Boolean);
+    const linkedIds = (await storage.listPerformanceCampaigns()).filter((c) => c.linkedPlanIds.includes(plan.id)).map((c) => c.id);
+    let linked = (await campaignsById(storage, [...new Set([...linkedIds, ...usedIds])]))
+      .filter((l) => l.campaign.kind !== "live" && isOwnCampaign(l, plan.advertiserName || ""));
+    if (linked.length === 0) {
+      res.status(422).json({ error: `No past campaigns of ${plan.advertiserName || "this advertiser"}'s are linked to this plan. Link one in Past performance first.`, code: "NO_CAMPAIGNS" });
+      return;
+    }
+    // A missing or out-of-date review is written now: the recap's cards come from its findings.
+    for (const l of linked.filter((x) => !x.review || x.reviewStale)) {
+      await writeCampaignReview(storage, l.campaign as PerformanceCampaign, actorName(req));
+    }
+    linked = await campaignsById(storage, linked.map((l) => l.campaign.id));
+    const previous = hasCampaignRecap(profile) ? profile.campaignRecap : null;
+    const keep = (previous?.recommendations || []).filter((r) => r.appliedAt);
+    const mediaPlan = profile.channelStrategy?.mediaPlan;
+    const applyContext = await scoutApplyContext(storage, plan);
+    const planPublishers = (profile.ctvPublishers || []).map((p: any) => String(p?.publisher || "")).filter(Boolean);
+    const { data } = await generateStructuredJsonWithFallback(
+      getAiClient(),
+      {
+        systemInstruction: RECAP_SYSTEM_INSTRUCTION,
+        input: buildRecapInput(linked, {
+          channels: (mediaPlan?.channels || []).map((c: any) => ({
+            channelId: c.channelId,
+            channelName: c.channelName,
+            allocationPercent: c.allocationPercent,
+            minPercent: c.manuallyForced ? 1 : c.minimumAllocationPercent,
+            maxPercent: c.maximumAllocationPercent,
+            locked: (profile.channelStrategy?.lockedAllocationChannelIds || []).includes(c.channelId),
+          })),
+          addable: addableChannels(mediaPlan).map((c) => ({ channelId: c.product.id, channelName: c.product.displayName })),
+          publishers: planPublishers,
+          addablePublishers: applyContext.publisherCatalog.filter((p) => p.enabled && !planPublishers.some((n: string) => n.toLowerCase() === p.name.toLowerCase())).map((p) => p.name),
+        }, keep),
+        schema: recapSchema,
+      },
+      BRIEF_ATTEMPTS,
+    );
+    const copy = normalizeRecapCopy(data, linked, () => crypto.randomBytes(5).toString("hex"));
+    const channels = (mediaPlan?.evaluatedCandidates || []).map((c: any) => ({ id: c.product.id, name: c.product.displayName, aliases: Array.isArray(c.product.aliases) ? c.product.aliases : [] }));
+    const recap = assembleRecap(linked, copy, previous, { actor: actorName(req), benchmarks: channelBenchmarks(linked[0], channels) });
+    const hidden = new Set<string>(Array.isArray(profile.hiddenSections) ? profile.hiddenSections : []);
+    const payload = { ...(plan.payload as any), profile: { ...profile, campaignRecap: recap } };
+    // Each change is dry-run on the plan as it stands, so the client sees its exact result. One
+    // that does not apply keeps its words and evidence, and the planner works out a new change.
+    refreshRecapProposals(payload, (ops) => applyOps(payload, ops, applyContext));
+    for (const rec of recap.recommendations) if (rec.needsReview) copy.dropped.push(`the plan change for "${rec.title}" (it does not fit the plan; work one out with ScoutAI)`);
+    const updated = await storage.updatePlan(plan.id, {
+      ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload }),
+      actor: actorName(req),
+    }, expectedRevision);
+    console.log(`[RECAP] Plan ${plan.id}: built from ${linked.length} campaign(s), ${recap.campaigns.reduce((n, c) => n + c.cards.length, 0)} card(s), ${recap.recommendations.length} recommendation(s)${copy.dropped.length ? `; left out ${copy.dropped.join("; ")}` : ""}.`);
+    res.json({ success: true, plan: updated, dropped: copy.dropped, hidden: hidden.has(RECAP_SECTION) });
+  } catch (err: any) {
+    respondToCampaignError(res, err, "build the campaign recap");
   }
 });
 
@@ -2552,6 +2671,19 @@ app.post("/api/plans/:id/restore", async (req, res) => {
 // --- plan sharing -----------------------------------------------------------
 
 // Public, unauthenticated view of an actively shared plan
+// Sections built from the client's campaign data are left out of a share link while the planner
+// has them switched off. Hiding is otherwise display-only, which is not enough for these: the
+// share response would still carry them.
+function withoutHiddenClientSections<T extends { payload: any }>(plan: T): T {
+  const profile = plan.payload?.profile;
+  const hidden: string[] = Array.isArray(profile?.hiddenSections) ? profile.hiddenSections : [];
+  const drop = [[RECAP_SECTION, "campaignRecap"], [LEARNINGS_SECTION, "performanceLearnings"]].filter(([section, key]) => hidden.includes(section) && profile?.[key] !== undefined);
+  if (drop.length === 0) return plan;
+  const nextProfile = { ...profile };
+  for (const [, key] of drop) delete nextProfile[key];
+  return { ...plan, payload: { ...plan.payload, profile: nextProfile } };
+}
+
 app.get("/api/share/plan", async (req, res) => {
   res.set("X-Robots-Tag", "noindex, nofollow");
   try {
@@ -2569,7 +2701,7 @@ app.get("/api/share/plan", async (req, res) => {
       });
       return;
     }
-    res.json({ success: true, plan });
+    res.json({ success: true, plan: withoutHiddenClientSections(plan) });
   } catch (err: any) {
     respondToStorageError(res, err, "load shared plan");
   }
@@ -4380,7 +4512,8 @@ ${pubTier3.map(formatPublisherLine).join('\n') || '      - None currently enable
    * 'publisher': The exact publisher name as listed in the approved pool.
    * 'category': The publisher category ('App' | 'Network' | 'OS').
    * 'why': A highly specific, evidence-grounded justification explaining why this publisher's programming, viewer demographics, or platform environment fits the persona and fulfills its targeting rule. (Remember: NEVER mention tiers here!)
-   Also, write a professional, cohesive, and concise paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign. Keep it strictly between 50 to 65 words (under 450 characters) so it fits slide presentation layouts without overflowing. (Remember: NEVER mention tiers here!)${history?.publisherBrief ? `\n\n${history.publisherBrief}` : ""}`;
+   Also, write a professional, cohesive, and concise paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign. Keep it strictly between 50 to 65 words (under 450 characters) so it fits slide presentation layouts without overflowing. (Remember: NEVER mention tiers here!)
+   Then fill 'publisherHighlights', the client-facing Publisher Insights panel: a headline of at most 8 words naming who the mix is built for, and 3 to 4 pillars. Each pillar is one distinct reason the mix fits (for example live sports attention, lifestyle fit, household co-viewing, scale and frequency), with an icon from the allowed list, a title of at most 5 words, one sentence of at most 16 words, and the 1 to 4 selected publishers that deliver it, named exactly as in your list. Cover most of the selected publishers, each in at most one pillar. No statistics or figures. (NEVER mention tiers here either!)${history?.publisherBrief ? `\n\n${history.publisherBrief}` : ""}`;
 
     // Synthesis & Strategy 2 (Authority Filtering)
     const synthesisSystemInstruction = `You are a senior digital media director, veteran audience research partner, and master data synthesizer.
@@ -4793,6 +4926,12 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       alerts: generationAlerts,
     };
     const remainingMs = () => RUN_BUDGET_MS - (Date.now() - runStartedAt);
+
+    // Synthesis's draft highlights, held to the plan's publishers and the icon list, so they are
+    // safe to show if the narrative pass below is skipped or fails.
+    const draftHighlights = normalizePublisherHighlights(originalData.publisherHighlights, originalData.ctvPublishers);
+    if (draftHighlights) originalData.publisherHighlights = draftHighlights;
+    else delete originalData.publisherHighlights;
 
     // The narrative is written last, by one writer, with the settled plan in front of it. Skipped
     // (keeping synthesis's draft) only when the run is short of time, so the audit always runs.

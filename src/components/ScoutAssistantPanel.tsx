@@ -39,6 +39,15 @@ interface Message {
   /** A suggested executive summary rewrite, which runs the summary's own generator. */
   summaryRewrite?: { instructions: string; status: "pending" | "started" | "dismissed" };
   isError?: boolean;
+  /** The Campaign Recap recommendation this answer carries out; applying it marks it "In this plan". */
+  recapRecommendationId?: string;
+}
+
+/** A request the plan view sends on the planner's behalf (applying a recap recommendation). */
+export interface ScoutRequest {
+  id: string;
+  text: string;
+  recapRecommendationId?: string;
 }
 
 export interface ScoutPreview {
@@ -71,6 +80,8 @@ interface Props {
   onUnread: (unread: boolean) => void;
   preview: ScoutPreview | null;
   onPreview: (preview: ScoutPreview | null) => void;
+  request?: ScoutRequest | null;
+  onRequestHandled?: () => void;
 }
 
 const storageKey = (planId: string) => `scoutai_chat_${planId}`;
@@ -389,7 +400,7 @@ function ProposalCard({
 
 export function ScoutAssistantPanel({
   planId, advertiserName, profile, revision, revisionBump, hasUnsavedChanges, isVisible, isBriefStale, hasAudit,
-  onApplied, onFollowUp, onUnread, preview, onPreview,
+  onApplied, onFollowUp, onUnread, preview, onPreview, request, onRequestHandled,
 }: Props) {
   const [messages, setMessages] = React.useState<Message[]>(() => loadMessages(planId));
   const [draft, setDraft] = React.useState("");
@@ -467,7 +478,7 @@ export function ScoutAssistantPanel({
 
   const selectedOps = (p: ProposalState) => p.items.filter((item) => p.selected.includes(item.id)).flatMap((item) => item.ops);
 
-  const send = async (text: string) => {
+  const send = async (text: string, tag: { recapRecommendationId?: string } = {}) => {
     const content = text.trim();
     if (!content || isThinking) return;
     const userMessage: Message = { id: newId(), role: "user", text: content };
@@ -486,6 +497,7 @@ export function ScoutAssistantPanel({
         text: result.reply,
         ...(result.proposal ? { proposal: { ...result.proposal, status: "pending" as const, selected: result.proposal.items.map((item) => item.id) } } : {}),
         ...(result.executiveSummaryInstructions ? { summaryRewrite: { instructions: result.executiveSummaryInstructions, status: "pending" as const } } : {}),
+        ...(tag.recapRecommendationId && result.proposal ? { recapRecommendationId: tag.recapRecommendationId } : {}),
       }]);
       if (!visibleRef.current) onUnread(true);
     } catch (err: any) {
@@ -516,12 +528,24 @@ export function ScoutAssistantPanel({
     }
   };
 
+  // A request from the plan view runs once, as if the planner had typed it, when ScoutAI is free.
+  React.useEffect(() => {
+    if (!request || isThinking) return;
+    onRequestHandled?.();
+    void send(request.text, { recapRecommendationId: request.recapRecommendationId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request?.id, isThinking]);
+
   const apply = async (message: Message) => {
     const proposal = message.proposal;
     if (!proposal) return;
     updateProposal(message.id, { status: "applying", error: undefined, errorReasons: undefined });
     try {
-      const result = await api.applyScoutChange(planId, { ops: selectedOps(proposal), baseRevision: proposal.baseRevision });
+      const ops = selectedOps(proposal);
+      // Applying a recap recommendation marks it "In this plan", whether or not ScoutAI said so.
+      const recId = message.recapRecommendationId;
+      if (recId && !ops.some((op) => op.type === "mark_recap_recommendation" && op.id === recId)) ops.push({ type: "mark_recap_recommendation", id: recId, applied: true });
+      const result = await api.applyScoutChange(planId, { ops, baseRevision: proposal.baseRevision });
       if (preview?.proposalId === message.id) onPreview(null);
       // The saved result is authoritative; show what the server applied.
       updateProposal(message.id, {

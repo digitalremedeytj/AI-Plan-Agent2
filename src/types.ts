@@ -2,6 +2,9 @@ import type { ExecutiveBrief } from "./research/executiveBrief";
 import type { PlanningSettings } from "./planning/settings";
 import type { MediaRecommendationPlan, RecommendationStatus, ConfidenceLevel } from "./planning/types";
 export type { CtvPublisherSetting } from "./planning/knowledge/ctvPublishers";
+import type { PublisherHighlights } from "./planning/publisherHighlights";
+import type { CampaignRecap } from "./performance/recap";
+export type { PublisherHighlights, PublisherPillar } from "./planning/publisherHighlights";
 
 export interface PersonaAvatarVersion {
   id: string;
@@ -371,7 +374,10 @@ export interface AudienceProfile {
   executiveBrief?: ExecutiveBrief;
   sources: Source[];
   ctvPublishers: CtvPublisherRecommendation[];
+  /** Legacy one-paragraph insight. Shown only when the plan has no publisherHighlights. */
   publisherInsights: string;
+  /** The Publisher Insights panel: headline and pillars. See src/planning/publisherHighlights.ts. */
+  publisherHighlights?: PublisherHighlights;
   auditResult?: AuditResult;
   channelStrategy?: ChannelStrategyData;
   additionalRfpRequirements?: RfpAnalysis;
@@ -383,6 +389,8 @@ export interface AudienceProfile {
   /** "Built on your campaign history": learnings from the client's past campaigns, added through ScoutAI. */
   performanceLearnings?: Array<{ campaignId: string; campaignName: string; findingId: string; learning: string; action: string }>;
   /** Past campaigns from the advertiser's library that the plan was generated with. */
+  /** The client-facing Campaign Recap. See src/performance/recap.ts. */
+  campaignRecap?: CampaignRecap;
   pastCampaignsUsed?: Array<{ id: string; name: string; own: boolean }>;
   slideExports?: SlideExportVersion[];
   /** Set when a planner edits the Brief of Record after the plan was built from it; a regenerate then keeps their brief. */

@@ -27,6 +27,8 @@ export function describePath(path: string): string {
     const part = { gapAddressed: "why", allocationRationale: "allocation rationale", tradeoffs: "trade-off", evidence: "evidence" }[field];
     return `Channel ${Number(index) + 1} - ${part}${item !== undefined ? ` ${Number(item) + 1}` : ""}`;
   }
+  const pillar = path.match(/^publisherHighlights\.(?:headline|pillars\[(\d+)\]\.(title|detail))$/);
+  if (pillar) return pillar[1] === undefined ? "Publisher insights - headline" : `Publisher insights - pillar ${Number(pillar[1]) + 1} ${pillar[2]}`;
   const labels: Record<string, string> = {
     intro: "Introduction", executiveSummary: "Executive summary", publisherInsights: "Publisher insights",
     audienceAnalysis: "Audience analysis", takeaways: "Takeaway", recommendations: "Recommendation",

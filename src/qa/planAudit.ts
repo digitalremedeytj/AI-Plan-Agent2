@@ -83,7 +83,7 @@ Do NOT mark down, or raise findings, for:
 ${EVIDENCE_RULES}`;
 
 const OWNERSHIP = `Each finding names its 'owner' - who can fix it:
-- "narrative": intro, takeaways, recommendations, section overviews, activation notes, publisherInsights, and a source's supportedClaims (what the citation is said to support).
+- "narrative": intro, takeaways, recommendations, section overviews, activation notes, publisherInsights, the publisher insights panel (publisherHighlights headline, pillar titles and details), and a source's supportedClaims (what the citation is said to support).
 - "personas": a persona's watch/browse/buy/narrative/gender text. Not its name, age or income, and never which groups the personas cover.
 - "publisherRationale": a CTV publisher's 'why'. Not which publishers are selected.
 - "chart": chart values (code settles these; a finding here is reported to the planner).

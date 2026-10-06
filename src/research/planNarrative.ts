@@ -12,6 +12,7 @@
 // executiveSummary stays on the profile for the channel engine and for older plans.
 
 import { EVIDENCE_RULES } from "../qa/evidenceRules";
+import { normalizePublisherHighlights, publisherHighlightsSchema } from "../planning/publisherHighlights";
 
 export const NARRATIVE_SYSTEM_INSTRUCTION = `You are the senior media planner who owns this plan, writing its final narrative for the client. The audience research, brief of record, personas, charts, CTV publishers and channel plan are settled. Your job is to write the story that ties them together, as one expert planner would.
 
@@ -52,10 +53,11 @@ export const narrativeSchema = {
     temporalOverview: { type: "string", description: "At most 90 words, consistent with the day and hour charts and what they measure." },
     activationNotes: { type: "string", description: "At most 70 words of practical timing guidance, consistent with the charts." },
     publisherInsights: { type: "string", description: "50 to 65 words (under 450 characters) on why the CTV publisher mix fits this audience. Never mention tiers." },
+    publisherHighlights: publisherHighlightsSchema,
   },
   required: [
     "intro", "takeaways", "recommendations", "demographicsOverview", "geographyNotes",
-    "browserOverview", "deviceOverview", "temporalOverview", "activationNotes", "publisherInsights",
+    "browserOverview", "deviceOverview", "temporalOverview", "activationNotes", "publisherInsights", "publisherHighlights",
   ],
 };
 
@@ -100,6 +102,7 @@ export function currentNarrative(profile: any) {
     temporalOverview: profile?.temporalPatterns?.overview,
     activationNotes: profile?.temporalPatterns?.activationNotes,
     publisherInsights: profile?.publisherInsights,
+    publisherHighlights: profile?.publisherHighlights,
   };
 }
 
@@ -122,6 +125,11 @@ export function applyNarrative(profile: any, raw: unknown): string[] {
   };
   set("intro", n.intro, (v) => (profile.intro = v));
   set("publisherInsights", n.publisherInsights, (v) => (profile.publisherInsights = v));
+  const highlights = normalizePublisherHighlights(n.publisherHighlights, profile.ctvPublishers);
+  if (highlights) {
+    profile.publisherHighlights = highlights;
+    replaced.push("publisherHighlights");
+  }
   const section = (key: string) => (profile[key] && typeof profile[key] === "object" ? profile[key] : (profile[key] = {}));
   set("demographics.overview", n.demographicsOverview, (v) => (section("demographics").overview = v));
   set("demographics.geographyNotes", n.geographyNotes, (v) => (section("demographics").geographyNotes = v));

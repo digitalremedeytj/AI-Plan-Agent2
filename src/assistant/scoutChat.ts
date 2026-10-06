@@ -14,6 +14,7 @@ import { channelRecordOptions } from "../planning/engine";
 import type { PlanningSettings } from "../planning/settings";
 import { MAX_BRIEF_INSTRUCTIONS } from "../research/executiveBrief";
 import type { MediaRecommendationPlan } from "../planning/types";
+import { hasPublisherHighlights, publisherHighlightFields } from "../planning/publisherHighlights";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -146,7 +147,10 @@ export function buildPlanContext(
   if (catalog.length) {
     out.push(`CTV PUBLISHERS THAT CAN BE ADDED (add_ctv_publisher with the exact name): ${catalog.map((p) => `${p.name} (${p.category})`).join("; ")}`);
   }
-  if (profile.publisherInsights) out.push(`[publisherInsights] ${clip(profile.publisherInsights)}`);
+  if (hasPublisherHighlights(profile)) {
+    out.push(["PUBLISHER INSIGHTS PANEL (a headline and pillars; each pillar's icon and publishers are fixed):",
+      ...publisherHighlightFields(profile).map((f) => `[${f.path}] ${clip(f.text, 300)}`)].join("\n"));
+  } else if (profile.publisherInsights) out.push(`[publisherInsights] ${clip(profile.publisherInsights)}`);
 
   const personas: any[] = Array.isArray(profile.personas) ? profile.personas : [];
   if (personas.length) {
@@ -281,6 +285,7 @@ How you edit:
   * Bullets, when the planner asks for them or a list clearly reads better: an optional one-sentence lead-in, then one bullet per line, each line starting with "- ", separated by real line breaks. A bullet may open with a short label and a colon ("- Family co-viewing (Hulu, Peacock): one sentence."). Keep each bullet to one sentence of about 20 words.
   * Only paragraph fields take bullets: intro, audienceAnalysis, publisherInsights and a media type's panel text. Takeaways, recommendation fields, a publisher's "why", trade-offs and evidence stay a single sentence.
   * Keep a field near its current length unless the planner asks otherwise. publisherInsights is at most about 65 words, bullets included, because it has to fit its slide.
+  * The publisher insights panel's headline (at most 8 words), pillar titles (at most 5 words) and pillar details (one sentence, at most 16 words) are single lines: no bullets.
 - Numbers: never compute or state the resulting dollars, percentages or totals; the card shows the computed result. You may state the targets you asked for.
 - New personas and segments must fit the Brief of Record and rest on the research excerpts. When you change the Brief of Record, KPIs or geography, say that the research, personas and channels were built from the earlier version and that regenerating the plan rebuilds them.
 - The executive summary is written from the plan by its own generator. To change it, return "rewriteExecutiveSummary" with instructions for that generator (for example "lead with CTV reach; keep it to four sections") instead of a proposal item; the planner runs it with one click and can undo it in the summary.
@@ -341,6 +346,8 @@ const opSchema = {
     opShape("add_learning", { campaignId: S, findingId: S, learning: S, action: S }, { position: INT }),
     opShape("edit_learning", { index: INT }, { learning: S, action: S }),
     opShape("remove_learning", { index: INT }),
+    opShape("mark_recap_recommendation", { id: S }),
+    opShape("remove_recap_item", { kind: oneOf(["card", "recommendation"]), id: S }),
   ],
 };
 

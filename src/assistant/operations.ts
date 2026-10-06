@@ -24,6 +24,7 @@ import { applyListOps, applySectionOps, NARRATIVE_LISTS, type NarrativeList } fr
 import { syncCtvChannelPublishers } from "../planning/ctvChannel";
 import { applyChannelDetailOps } from "./channelDetailOps";
 import { applyLearningOps, type LearningCampaign } from "./learningOps";
+import { applyRecapOps } from "./recapOps";
 import type { PlanningSettings } from "../planning/settings";
 
 export type AssistantOp =
@@ -71,7 +72,12 @@ export type AssistantOp =
   | { type: "set_list"; list: NarrativeList; items: any[] }
   | { type: "set_channel_records"; channelId: string; recordType: string; records: any[] }
   | { type: "set_channel_override"; channelId: string; override: any | null }
-  | { type: "set_learnings"; items: any[] };
+  | { type: "set_learnings"; items: any[] }
+  // The Campaign Recap (see recapOps): marking a recommendation applied, removing a card or
+  // recommendation, and the restore an undo uses.
+  | { type: "mark_recap_recommendation"; id: string; applied: boolean }
+  | { type: "remove_recap_item"; kind: "card" | "recommendation"; id: string }
+  | { type: "set_campaign_recap"; recap: any | null };
 
 export type AssistantOpType = AssistantOp["type"];
 
@@ -80,9 +86,9 @@ export const MODEL_OP_TYPES: ReadonlySet<AssistantOpType> = new Set([
   "update_persona", "add_persona", "remove_persona", "add_segment", "edit_segment", "remove_segment", "edit_brief", "set_kpis", "set_geography",
   "add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_section_visibility", "hide_section", "show_section", "add_ctv_publisher",
   "add_channel_record", "remove_channel_record", "edit_channel_panel", "hide_channel_panel", "show_channel_panel",
-  "add_learning", "edit_learning", "remove_learning",
+  "add_learning", "edit_learning", "remove_learning", "mark_recap_recommendation", "remove_recap_item",
 ]);
-const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment", "set_list", "set_channel_records", "set_channel_override", "set_learnings"]);
+const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment", "set_list", "set_channel_records", "set_channel_override", "set_learnings", "set_campaign_recap"]);
 
 /** A CTV publisher the plan may add: the shared publisher catalog, as settings store it. */
 export interface CatalogPublisher {
@@ -275,6 +281,22 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
         ops.push({ type, items: Array.isArray(it.items) ? it.items : [] });
         break;
       }
+      case "mark_recap_recommendation": {
+        const id = str(it.id);
+        if (!id) { reject("needs the recommendation's id"); break; }
+        ops.push({ type, id, applied: it.applied !== false });
+        break;
+      }
+      case "remove_recap_item": {
+        const id = str(it.id);
+        if (!id || (it.kind !== "card" && it.kind !== "recommendation")) { reject("needs kind (card or recommendation) and the item's id"); break; }
+        ops.push({ type, kind: it.kind, id });
+        break;
+      }
+      case "set_campaign_recap": {
+        ops.push({ type, recap: it.recap && typeof it.recap === "object" ? it.recap : null });
+        break;
+      }
       case "add_takeaway": {
         const value = str(it.value);
         if (!value) { reject("needs the takeaway's text"); break; }
@@ -394,6 +416,8 @@ function textLabel(profile: any, path: string): string {
   }
   const publisher = path.match(/^ctvPublishers\[(\d+)\]\.why$/);
   if (publisher) return `${profile?.ctvPublishers?.[Number(publisher[1])]?.publisher || "CTV publisher"} – why`;
+  const pillar = path.match(/^publisherHighlights\.(?:headline|pillars\[(\d+)\]\.(title|detail))$/);
+  if (pillar) return pillar[1] === undefined ? "Publisher insights – headline" : `Publisher insights – ${profile?.publisherHighlights?.pillars?.[Number(pillar[1])]?.title || `pillar ${Number(pillar[1]) + 1}`} ${pillar[2]}`;
   const persona = path.match(/^personas\[(\d+)\]\.(\w+)$/);
   if (persona) return `${profile?.personas?.[Number(persona[1])]?.name || `Persona ${Number(persona[1]) + 1}`} – ${persona[2]}`;
   const labels: Record<string, string> = {
@@ -655,8 +679,9 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
   // Last of the content changes: a learning's action must name what the plan holds once the rest
   // of the proposal has run, so "this plan adds online video" can ride with the add_channel.
   const learnings = applyLearningOps(profile, byType(["add_learning", "edit_learning", "remove_learning", "set_learnings"]), context.learningCampaigns);
-  applied.push(...learnings.applied);
-  rejected.push(...learnings.rejected);
+  const recap = applyRecapOps(profile, byType(["mark_recap_recommendation", "remove_recap_item", "set_campaign_recap"]));
+  applied.push(...learnings.applied, ...recap.applied);
+  rejected.push(...learnings.rejected, ...recap.rejected);
 
   if (textTargets.some((t) => t.publisher)) syncStrategyPublishers();
   if (publisherChanges.length > 0 || textTargets.some((t) => t.publisher)) {
@@ -682,9 +707,9 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
   return {
     payload: next,
     ops: applied,
-    changes: [...brief.changes, ...audience.changes, ...channel.changes, ...details.changes, ...publisherChanges, ...lists.changes, ...learnings.changes, ...sections.changes, ...textChanges],
+    changes: [...brief.changes, ...audience.changes, ...channel.changes, ...details.changes, ...publisherChanges, ...lists.changes, ...learnings.changes, ...recap.changes, ...sections.changes, ...textChanges],
     rejected,
-    revertOps: [...brief.revertOps, ...audience.revertOps, ...channel.revertOps, ...details.revertOps, ...revertPublishers, ...lists.revertOps, ...learnings.revertOps, ...sections.revertOps, ...revertText],
+    revertOps: [...brief.revertOps, ...audience.revertOps, ...channel.revertOps, ...details.revertOps, ...revertPublishers, ...lists.revertOps, ...learnings.revertOps, ...recap.revertOps, ...sections.revertOps, ...revertText],
   };
 }
 
