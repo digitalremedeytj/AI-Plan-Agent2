@@ -2639,6 +2639,7 @@ app.post("/api/performance/campaigns/:id/review", async (req, res) => {
 // one first. Written onto the saved plan with the usual revision check.
 app.post("/api/plans/:id/campaign-recap", async (req, res) => {
   req.socket.setTimeout(0);
+  let writingPlan = false;
   try {
     const expectedRevision = Number(req.body?.baseRevision);
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
@@ -2666,9 +2667,15 @@ app.post("/api/plans/:id/campaign-recap", async (req, res) => {
     }
     // A missing or out-of-date review is written now: the recap's cards come from its findings.
     for (const l of linked.filter((x) => !x.review || x.reviewStale)) {
-      await writeCampaignReview(storage, l.campaign as PerformanceCampaign, actorName(req));
+      try {
+        await writeCampaignReview(storage, l.campaign as PerformanceCampaign, actorName(req));
+      } catch (err) {
+        // Another request may have written the same review meanwhile; the re-read below decides.
+        if (!(err instanceof RevisionConflictError)) throw err;
+      }
     }
     linked = await campaignsById(storage, linked.map((l) => l.campaign.id));
+    if (linked.some((l) => !l.review || l.reviewStale)) throw new RevisionConflictError(0, "This campaign was changed by someone else.");
     const previous = hasCampaignRecap(profile) ? profile.campaignRecap : null;
     const keep = (previous?.recommendations || []).filter((r) => r.appliedAt);
     const mediaPlan = profile.channelStrategy?.mediaPlan;
@@ -2702,18 +2709,47 @@ app.post("/api/plans/:id/campaign-recap", async (req, res) => {
     const channels = (mediaPlan?.evaluatedCandidates || []).map((c: any) => ({ id: c.product.id, name: c.product.displayName, aliases: Array.isArray(c.product.aliases) ? c.product.aliases : [] }));
     const recap = assembleRecap(linked, copy, previous, { actor: actorName(req), benchmarks: channelBenchmarks(linked[0], channels), briefKpis });
     const hidden = new Set<string>(Array.isArray(profile.hiddenSections) ? profile.hiddenSections : []);
-    const payload = { ...(plan.payload as any), profile: { ...profile, campaignRecap: recap } };
-    // Each change is dry-run on the plan as it stands, so the client sees its exact result. One
-    // that does not apply keeps its words and evidence, and the planner works out a new change.
-    refreshRecapProposals(payload, (ops) => applyOps(payload, ops, applyContext));
-    for (const rec of recap.recommendations) if (rec.needsReview) copy.dropped.push(`the plan change for "${rec.title}" (it does not fit the plan; work one out with ScoutAI)`);
-    const updated = await storage.updatePlan(plan.id, {
-      ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload }),
-      actor: actorName(req),
-    }, expectedRevision);
+    // The model takes minutes, and the app's own background saves (segment recommendations, the
+    // executive brief, persona headshots) can land on the plan meanwhile. The recap is a field of
+    // its own, so it is written onto the plan as it now stands, still compare-and-swap. Only a
+    // recap that itself changed during the build (another build, a removal) is a real conflict.
+    writingPlan = true;
+    let base = plan;
+    let written: { updated: Awaited<ReturnType<typeof storage.updatePlan>>; recap: typeof recap } | null = null;
+    for (let attempt = 0; !written; attempt++) {
+      const baseProfile: any = (base.payload as any)?.profile ?? {};
+      if (base !== plan && JSON.stringify(baseProfile.campaignRecap ?? null) !== JSON.stringify(profile.campaignRecap ?? null)) {
+        throw new RevisionConflictError(base.revision, "The recap changed while this one was building.");
+      }
+      // Each change is dry-run on the plan as it stands, so the client sees its exact result. One
+      // that does not apply keeps its words and evidence, and the planner works out a new change.
+      const attemptRecap = structuredClone(recap);
+      const payload = { ...(base.payload as any), profile: { ...baseProfile, campaignRecap: attemptRecap } };
+      refreshRecapProposals(payload, (ops) => applyOps(payload, ops, applyContext));
+      try {
+        const updated = await storage.updatePlan(base.id, {
+          ...planPayloadFromBody({ title: base.title, advertiserName: base.advertiserName, settingsRevision: base.settingsRevision, payload }),
+          actor: actorName(req),
+        }, base.revision);
+        written = { updated, recap: attemptRecap };
+      } catch (err) {
+        if (!(err instanceof RevisionConflictError) || attempt >= 2) throw err;
+        const latest = await storage.getPlan(plan.id);
+        if (!latest || latest.archived) throw err;
+        console.log(`[RECAP] Plan ${plan.id} moved to r${latest.revision} while the recap was building; writing it onto the latest revision.`);
+        base = latest;
+      }
+    }
+    const updated = written.updated;
+    for (const rec of written.recap.recommendations) if (rec.needsReview) copy.dropped.push(`the plan change for "${rec.title}" (it does not fit the plan; work one out with ScoutAI)`);
     console.log(`[RECAP] Plan ${plan.id}: built from ${linked.length} campaign(s), ${recap.campaigns.reduce((n, c) => n + c.cards.length, 0)} card(s), ${recap.recommendations.length} recommendation(s)${copy.dropped.length ? `; left out ${copy.dropped.join("; ")}` : ""}.`);
     res.json({ success: true, plan: updated, dropped: copy.dropped, hidden: hidden.has(RECAP_SECTION) });
   } catch (err: any) {
+    // A conflict on the plan's own write is the plan's, not a campaign's.
+    if (writingPlan && err instanceof RevisionConflictError) {
+      res.status(409).json({ error: "The plan changed while the recap was building. Reload the plan and try again.", code: "REVISION_CONFLICT", currentRevision: err.currentRevision });
+      return;
+    }
     respondToCampaignError(res, err, "build the campaign recap");
   }
 });
