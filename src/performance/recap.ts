@@ -7,7 +7,8 @@
 // - a recommendation's own text carries no figures; its evidence bars, its exact plan change and
 //   any projection are computed in code, from the campaign data and a dry run of the change.
 // Which blocks appear depends on what was uploaded: a campaign with only a media type report gets
-// a scoreboard and the mix chart; one with a full export set gets everything.
+// a scoreboard and the mix chart; one with a full export set gets everything. Everything is read
+// against the campaign KPI (src/performance/recapKpi), and shortfalls are worded as opportunities.
 
 import type { LinkedCampaign } from "../assistant/performanceContext";
 import type { AssistantOp } from "../assistant/operations";
@@ -17,10 +18,11 @@ import { renderDigest } from "./digest";
 import { extractPerformanceFigures, figureReference, unverifiedFigures, type FigureReference } from "./figureCheck";
 import { findCausalClaim, type Confidence, type FindingKind } from "./review";
 import { formatDay } from "./values";
+import { ctvAssist, recapRankings, recapTrend, resolveRecapKpi, videoCompletionRate, withKpiMetric, type KpiValues, type RecapKpi, type RecapRanking, type RecapTrend } from "./recapKpi";
 
 export const RECAP_SECTION = "campaignRecap";
 
-export type RecapMetric = "spend" | "impressions" | "reach" | "conversions" | "cpa" | "roas";
+export type RecapMetric = "spend" | "impressions" | "reach" | "conversions" | "cpa" | "roas" | "vcr";
 
 export interface RecapTile {
   metric: RecapMetric;
@@ -34,6 +36,8 @@ export interface RecapMixRow {
   conversions: number;
   conversionShare: number;
   cpa: number | null;
+  revenue?: number;
+  roas?: number | null;
   /** Under 30 conversions: shown, but marked as a small sample. */
   lowSample: boolean;
   isCtv: boolean;
@@ -52,7 +56,13 @@ export interface RecapCard {
   headline: string;
   /** One short, checked figure that backs the headline ("42% of checkouts from 9% of spend"). */
   stat: string;
+  /** The finding's area ("media type", "audience"), for its icon. */
+  area?: string;
 }
+
+/** The detail blocks a planner can leave out of the client's view. */
+export const RECAP_BLOCKS = ["mix", "trend", "publisher", "audience", "creative"] as const;
+export type RecapBlock = (typeof RECAP_BLOCKS)[number];
 
 export interface RecapCampaign {
   campaignId: string;
@@ -67,6 +77,19 @@ export interface RecapCampaign {
   tiles: RecapTile[];
   /** Average frequency, shown with the reach tile. */
   frequency: number | null;
+  /** The KPI the recap is read against; absent on recaps built before it existed. */
+  kpi?: RecapKpi | null;
+  /** Every measure the KPI could be, so the planner can switch it without a rebuild. */
+  kpiValues?: KpiValues;
+  revenue?: number | null;
+  /** The completion rate tile is CTV's own, not every video placement's. */
+  vcrIsCtv?: boolean;
+  trend?: RecapTrend | null;
+  rankings?: RecapRanking[];
+  /** Conversions from audiences retargeted after a CTV exposure. */
+  ctvAssist?: { conversions: number; share: number } | null;
+  /** Detail blocks the planner took out of the client's view. */
+  hiddenBlocks?: RecapBlock[];
   mix: RecapMix | null;
   /** Set when the mix includes CTV and only last-touch data exists. */
   mixNote: string | null;
@@ -83,6 +106,7 @@ export type EvidenceStrength = "strong" | "directional" | "test";
 
 export interface RecapEvidenceBar {
   name: string;
+  /** Cost per conversion; the ROAS multiple when the evidence's metric is "roas". */
   cpa: number;
   isAverage: boolean;
   /** Under 30 conversions or a one-off event. */
@@ -91,6 +115,8 @@ export interface RecapEvidenceBar {
 
 export interface RecapEvidence {
   campaignId: string;
+  /** What the bars measure; cost per conversion when absent. */
+  metric?: "cpa" | "roas";
   /** "Cost per checkout". */
   metricLabel: string;
   /** The cited rows' cost per conversion against the campaign's average. Empty when no row was cited. */
@@ -169,10 +195,12 @@ export interface CampaignRecap {
 }
 
 const MAX_MIX_ROWS = 6;
-const MAX_CARDS = 6;
+const MAX_CARDS = 4;
 const MAX_RECOMMENDATIONS = 5;
 const MAX_OPS = 6;
 /** Digital Remedy's own measures and trafficking terms, which mean nothing to a client. */
+/** Words that read as a verdict on the campaign rather than a way forward. */
+const BLUNT = /\b(miss(ed|es)?|fail(ed|s|ure)?|underperform\w*|poor(ly)?|disappoint\w*|wasted?|bad|worst)\b/i;
 const INTERNAL_TERMS = /\bPMs?\b|performance multiplier|\bad ?groups?\b|\bIreach\b|\bfingerprint\b|\bchannelId\b/i;
 const CTV = /\b(ott|ctv|connected\s*tv|streaming\s*tv)\b/i;
 /** What a recommendation may change. Text, personas and sections stay the planner's. */
@@ -191,6 +219,7 @@ function mixBreakdown(analysis: CampaignAnalysis): BreakdownDigest | null {
 const mixRow = (name: string, rows: DigestRow[], b: BreakdownDigest): RecapMixRow => {
   const spend = rows.reduce((s, r) => s + (r.metrics.spend ?? 0), 0);
   const conversions = rows.reduce((s, r) => s + (r.metrics.conversions ?? 0), 0);
+  const revenue = rows.reduce((s, r) => s + (r.metrics.revenue ?? 0), 0);
   return {
     name,
     spend,
@@ -198,6 +227,8 @@ const mixRow = (name: string, rows: DigestRow[], b: BreakdownDigest): RecapMixRo
     conversions,
     conversionShare: b.totals.conversions ? conversions / b.totals.conversions : 0,
     cpa: spend > 0 && conversions > 0 ? spend / conversions : null,
+    revenue,
+    roas: spend > 0 && revenue > 0 ? revenue / spend : null,
     lowSample: rows.length === 1 && rows[0].flags.includes("low-sample"),
     isCtv: rows.length === 1 && CTV.test(name),
   };
@@ -226,6 +257,7 @@ export function recapTiles(analysis: CampaignAnalysis): { tiles: RecapTile[]; fr
   add("conversions", t?.conversions);
   add("cpa", t?.cpa);
   if ((t?.revenue ?? 0) > 0) add("roas", t?.roas);
+  add("vcr", videoCompletionRate(analysis)?.value);
   return { tiles, frequency: analysis.reach?.frequency ?? null };
 }
 
@@ -235,10 +267,19 @@ function mixNote(analysis: CampaignAnalysis, mix: RecapMix | null): string | nul
   return allTouch ? null : `CTV builds the audience that other media later convert, so last-touch reporting understates its share of ${analysis.conversionLabel.label}.`;
 }
 
-export function recapFigures(linked: LinkedCampaign): Omit<RecapCampaign, "summary" | "cards"> {
+/** What the plan's brief says the campaign is judged on, for the recap's KPI. */
+export interface RecapBriefContext {
+  briefKpis?: string[];
+}
+
+export const recapKpiFor = (linked: LinkedCampaign, context: RecapBriefContext = {}) =>
+  resolveRecapKpi(linked.analysis, { briefKpis: context.briefKpis, campaignGoal: linked.campaign.campaignGoal });
+
+export function recapFigures(linked: LinkedCampaign, context: RecapBriefContext = {}): Omit<RecapCampaign, "summary" | "cards"> {
   const { analysis, campaign } = linked;
   const mix = recapMix(analysis);
   const flight = analysis.flight ?? null;
+  const { kpi, values } = recapKpiFor(linked, context);
   return {
     campaignId: campaign.id,
     name: campaign.name,
@@ -248,6 +289,14 @@ export function recapFigures(linked: LinkedCampaign): Omit<RecapCampaign, "summa
     ...recapTiles(analysis),
     mix,
     mixNote: mixNote(analysis, mix),
+    kpi,
+    kpiValues: values,
+    revenue: (analysis.totals?.revenue ?? 0) > 0 ? analysis.totals!.revenue! : null,
+    vcrIsCtv: videoCompletionRate(analysis)?.ctv ?? false,
+    trend: recapTrend(analysis),
+    rankings: recapRankings(analysis, kpi),
+    ctvAssist: mix?.rows.some((r) => r.isCtv) ? ctvAssist(analysis) : null,
+    hiddenBlocks: [],
   };
 }
 
@@ -431,6 +480,8 @@ Rules:
 - Figures: a headline, stat, summary or measure may quote a figure only if it appears in that campaign's review or data, written as it appears there (rounding to fewer decimals is fine). A recommendation's title and detail contain no figures: its evidence and change are shown beside it.
 - Evidence rows: name the report rows the recommendation rests on exactly as they appear in the data (for example "Pre-Roll/Mid-Roll"), at most two.
 - Plan changes: for a "change" recommendation, give the operations that carry it out on THE NEW PLAN, using its channelIds and publishers exactly as listed: set_allocation {channelId, percent (whole number)}, add_channel {channelId}, remove_channel {channelId}, add_ctv_publisher {publisher, why}, remove_ctv_publisher {publisher}. Keep changes proportionate to the evidence. When you raise a media type, also lower the ones that should fund it (set_allocation), chosen from what the evidence says worked least well; whatever you do not set rebalances evenly. Never move a media type a "keep" recommendation protects. Every media type must stay inside its allowed range, and a locked one cannot move. A change that breaks a range is not shown. A "keep" recommendation changes nothing on purpose; an "execution" recommendation is about how the campaign is run (pacing, frequency, creative rotation), not what is bought. Neither has operations.
+- The campaign KPI is given for each campaign. Write the summary against it, put the findings that moved it first, and frame every recommendation as how the next campaign does better on it.
+- Tone: this is presented to the client. Lead with what worked. Write what did not work as an opportunity ("Focus CTV on its strongest publishers", "To drive stronger ROAS, ..."), never as a failure: no "missed", "failed", "underperformed", "poor", "disappointing" or "wasted".
 - The client's language: CPA or "cost per <conversion>", share of spend, reach. Never "PM", "performance multiplier" or "ad group".
 - Report what happened, not why: no "because", "due to", "led to", "as a result".
 - Confident and plain. No hedging stacks, no markdown.`;
@@ -459,13 +510,13 @@ export const recapSchema = {
           summary: { type: "string", description: "At most 35 words: how the campaign did against what it optimised for." },
           cards: {
             type: "array",
-            description: "3 to 6 cards, the most important findings first, mixing what worked, what didn't and caveats the client should know.",
+            description: "3 or 4 key takeaways, the findings that moved the KPI most first: mostly what worked, with at least one opportunity when the review has one.",
             items: {
               type: "object",
               properties: {
                 findingId: { type: "string" },
-                headline: { type: "string", description: "At most 7 words, sentence case, no figures (e.g. 'Retargeting CTV viewers drove checkouts')." },
-                stat: { type: "string", description: "At most 10 words with the one figure that backs it (e.g. '42% of checkouts from 9% of spend')." },
+                headline: { type: "string", description: "At most 7 words, sentence case, no figures (e.g. 'Retargeting CTV viewers drove checkouts'). For an opportunity, the action ('Focus CTV on its strongest publishers')." },
+                stat: { type: "string", description: "At most 10 words, starting with the one figure that backs it, then what it counts (e.g. '42% of checkouts from 9% of spend')." },
               },
               required: ["findingId", "headline", "stat"],
             },
@@ -476,7 +527,7 @@ export const recapSchema = {
     },
     recommendations: {
       type: "array",
-      description: "3 to 5 recommendations for the next campaign, most valuable first.",
+      description: "3 to 5 recommendations for the next campaign, the biggest lift to the KPI first.",
       items: {
         type: "object",
         properties: {
@@ -507,7 +558,7 @@ export function usableFindings(linked: LinkedCampaign) {
   return linked.review.findings.filter((f) => f.unverified.length === 0 && !f.causalClaim);
 }
 
-export interface RecapPlanContext {
+export interface RecapPlanContext extends RecapBriefContext {
   channels: Array<{ channelId: string; channelName: string; allocationPercent: number; minPercent: number; maxPercent: number; locked: boolean }>;
   /** Media types the plan could add (channelId and name). */
   addable: Array<{ channelId: string; channelName: string }>;
@@ -516,11 +567,21 @@ export interface RecapPlanContext {
   addablePublishers: string[];
 }
 
+/** The KPI as the model reads it: "ROAS (3.73x; the brief's target: ROAS > 120%)". */
+function kpiLine(kpi: RecapKpi | null, label: string): string {
+  if (!kpi) return "Campaign KPI: not stated; judge it on cost per conversion.";
+  const names: Record<RecapKpi["metric"], string> = { roas: "ROAS", cpa: `cost per ${label.toLowerCase().replace(/s$/, "")}`, conversions: label.toLowerCase(), reach: "reach", vcr: "video completion rate", ctr: "click-through rate" };
+  const value = kpi.metric === "roas" ? (kpi.roasStyle === "percent" ? `${Math.round(kpi.value * 100)}%; write ROAS as a percentage, as the brief does: ${kpi.value.toFixed(2)}x is ${Math.round(kpi.value * 100)}%` : `${kpi.value.toFixed(2)}x`) : kpi.metric === "cpa" ? `$${kpi.value.toFixed(2)}` : kpi.metric === "vcr" || kpi.metric === "ctr" ? `${(kpi.value * 100).toFixed(2)}%` : Math.round(kpi.value).toLocaleString("en-US");
+  const target = kpi.target && kpi.target.metric === kpi.metric ? `; the brief's target: ${kpi.target.text}` : "";
+  return `Campaign KPI: ${names[kpi.metric]} (${value}${target}).`;
+}
+
 export function buildRecapInput(linked: LinkedCampaign[], plan: RecapPlanContext, keep: RecapRecommendation[]): string {
   const sections = linked.map((l) => {
     const findings = usableFindings(l);
     return [
       `CAMPAIGN ${l.campaign.id}: ${l.campaign.name} (${l.analysis.conversionLabel.label} is the conversion).`,
+      kpiLine(recapKpiFor(l, plan).kpi, l.analysis.conversionLabel.label),
       l.review?.summary ? `Review summary: ${l.review.summary}` : "",
       "Findings you may use:",
       ...findings.map((f) => `[${f.id}] (${f.kind === "didnt" ? "did not work" : f.kind === "watch" ? "caveat" : "worked"}, ${f.confidence} confidence) ${f.headline}. ${f.detail} Evidence: ${f.evidence}`),
@@ -546,6 +607,7 @@ function problem(text: string, reference: FigureReference | null, maxWords: numb
   if (!text) return "empty";
   if (words(text) > maxWords + 3) return "too long";
   if (INTERNAL_TERMS.test(text)) return "internal term";
+  if (BLUNT.test(text)) return "blunt wording";
   if (findCausalClaim(text)) return "states a cause";
   if (reference ? unverifiedFigures(text, reference).length > 0 : extractPerformanceFigures(text).length > 0) return "figure not in the data";
   return null;
@@ -569,20 +631,23 @@ function findRows(analysis: CampaignAnalysis, names: string[]): DigestRow[] {
   return found.slice(0, 2);
 }
 
-export function recommendationEvidence(linked: LinkedCampaign, rowNames: string[], fallback: string): RecapEvidence | null {
+/** The cited rows on the KPI's measure: ROAS when the KPI is ROAS, otherwise cost per conversion. */
+export function recommendationEvidence(linked: LinkedCampaign, rowNames: string[], fallback: string, kpiMetric: RecapKpi["metric"] | null = null): RecapEvidence | null {
   const { analysis } = linked;
   const label = analysis.conversionLabel.label;
-  const rows = findRows(analysis, rowNames);
-  const average = analysis.totals?.cpa ?? null;
+  const useRoas = kpiMetric === "roas" && (analysis.totals?.roas ?? 0) > 0;
+  const rows = findRows(analysis, rowNames).filter((r) => !useRoas || r.roas !== null);
+  const average = useRoas ? analysis.totals?.roas ?? null : analysis.totals?.cpa ?? null;
   const unit = label.toLowerCase();
   const singularLabel = unit.endsWith("s") ? unit.slice(0, -1) : unit;
   if (rows.length && average) {
     const first = rows[0];
     return {
       campaignId: linked.campaign.id,
-      metricLabel: `Cost per ${singularLabel}`,
+      ...(useRoas ? { metric: "roas" as const } : {}),
+      metricLabel: useRoas ? "Return on ad spend" : `Cost per ${singularLabel}`,
       bars: [
-        ...rows.map((r) => ({ name: r.name, cpa: r.cpa as number, isAverage: false, thin: r.flags.includes("low-sample") || r.flags.includes("event") })),
+        ...rows.map((r) => ({ name: r.name, cpa: (useRoas ? r.roas : r.cpa) as number, isAverage: false, thin: r.flags.includes("low-sample") || r.flags.includes("event") })),
         { name: "Campaign average", cpa: average, isAverage: true, thin: false },
       ],
       note: `${count(first.metrics.conversions ?? 0)} ${unit} · ${pct(first.conversionShare)} of ${unit} from ${pct(first.spendShare)} of spend`,
@@ -612,7 +677,7 @@ export interface RecapCopyResult {
   dropped: string[];
 }
 
-export function normalizeRecapCopy(raw: any, linked: LinkedCampaign[], newId: () => string): RecapCopyResult {
+export function normalizeRecapCopy(raw: any, linked: LinkedCampaign[], newId: () => string, context: RecapBriefContext = {}): RecapCopyResult {
   const dropped: string[] = [];
   const campaigns = new Map<string, { summary: string; cards: RecapCard[] }>();
   const references = new Map(linked.map((l) => [l.campaign.id, figureReference(renderDigest(l.analysis, { maxChars: 1_000_000 }), l.review?.summary ?? "")]));
@@ -633,7 +698,7 @@ export function normalizeRecapCopy(raw: any, linked: LinkedCampaign[], newId: ()
       const why = problem(headline, reference, 7) || problem(stat, reference, 10);
       if (why) { dropped.push(`card "${headline}" (${why})`); continue; }
       // The kind is the review's, not the model's: a caveat cannot be relabelled a win.
-      cards.push({ id: newId(), findingId: finding.id, kind: finding.kind, headline, stat });
+      cards.push({ id: newId(), findingId: finding.id, kind: finding.kind, headline, stat, area: finding.area });
       if (cards.length === MAX_CARDS) break;
     }
     campaigns.set(l.campaign.id, { summary: summaryProblem ? "" : summary, cards });
@@ -656,7 +721,7 @@ export function normalizeRecapCopy(raw: any, linked: LinkedCampaign[], newId: ()
     if (!cited.length) { dropped.push(`recommendation "${title}" (no finding behind it)`); continue; }
     const primary = cited[0];
     const card = campaigns.get(primary.linked.campaign.id)?.cards.find((c) => c.findingId === primary.finding.id);
-    const evidence = recommendationEvidence(primary.linked, Array.isArray(r?.evidenceRows) ? r.evidenceRows.map(String) : [], card?.stat ?? "");
+    const evidence = recommendationEvidence(primary.linked, Array.isArray(r?.evidenceRows) ? r.evidenceRows.map(String) : [], card?.stat ?? "", recapKpiFor(primary.linked, context).kpi?.metric ?? null);
     let strength = cited.map((c) => STRENGTH[c.finding.confidence]).reduce((a, z) => (RANK[z] < RANK[a] ? z : a), "strong" as EvidenceStrength);
     if (evidence?.bars.some((b) => b.thin)) strength = "test";
     const measure = clean(r?.measure, 140);
@@ -689,15 +754,50 @@ export function normalizeRecapCopy(raw: any, linked: LinkedCampaign[], newId: ()
  * The recap as it is saved: figures from code, words from the checked copy. Recommendations the
  * planner already applied are carried over unchanged, so rebuilding never loses "In this plan".
  */
-export function assembleRecap(linked: LinkedCampaign[], copy: RecapCopyResult, previous: CampaignRecap | null | undefined, meta: { actor: string; now?: string; benchmarks?: RecapBenchmarks | null }): CampaignRecap {
+export function assembleRecap(linked: LinkedCampaign[], copy: RecapCopyResult, previous: CampaignRecap | null | undefined, meta: { actor: string; now?: string; benchmarks?: RecapBenchmarks | null; briefKpis?: string[] }): CampaignRecap {
   const kept = (previous?.recommendations || []).filter((r) => r.appliedAt);
   const fresh = copy.recommendations.filter((r) => !kept.some((k) => k.title.toLowerCase() === r.title.toLowerCase()));
+  const campaign = (l: LinkedCampaign): RecapCampaign => {
+    const figures = recapFigures(l, { briefKpis: meta.briefKpis });
+    // The planner's KPI choice and hidden blocks survive a rebuild, while the data still supports them.
+    const before = previous?.campaigns?.find((c) => c.campaignId === l.campaign.id);
+    const chosen = before?.kpi?.source === "planner" ? withKpiMetric(figures.kpi, figures.kpiValues, before.kpi.metric) : null;
+    return {
+      ...figures,
+      kpi: chosen ?? figures.kpi,
+      hiddenBlocks: before?.hiddenBlocks ?? [],
+      summary: copy.campaigns.get(l.campaign.id)?.summary ?? "",
+      cards: copy.campaigns.get(l.campaign.id)?.cards ?? [],
+    };
+  };
   return {
     builtAt: meta.now ?? new Date().toISOString(),
     builtBy: meta.actor,
-    campaigns: linked.map((l) => ({ ...recapFigures(l), summary: copy.campaigns.get(l.campaign.id)?.summary ?? "", cards: copy.campaigns.get(l.campaign.id)?.cards ?? [] })),
+    campaigns: linked.map(campaign),
     recommendations: [...kept, ...fresh].slice(0, MAX_RECOMMENDATIONS + kept.length),
     benchmarks: meta.benchmarks ?? null,
+  };
+}
+
+/**
+ * The recap as a share link carries it: a detail block the planner hid is removed, not just not
+ * drawn, so its figures never reach the client. The mix stays for the projections' sake only when
+ * shown.
+ */
+export function clientRecap(recap: CampaignRecap): CampaignRecap {
+  if (!recap.campaigns.some((c) => c.hiddenBlocks?.length)) return recap;
+  return {
+    ...recap,
+    campaigns: recap.campaigns.map((c) => {
+      const hidden = new Set(c.hiddenBlocks ?? []);
+      if (!hidden.size) return c;
+      return {
+        ...c,
+        ...(hidden.has("mix") ? { mix: null, mixNote: null, ctvAssist: null } : {}),
+        ...(hidden.has("trend") ? { trend: null } : {}),
+        rankings: (c.rankings ?? []).filter((r) => !hidden.has(r.key)),
+      };
+    }),
   };
 }
 

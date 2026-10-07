@@ -72,7 +72,7 @@ import { figureReference, unverifiedFigures } from "./src/performance/figureChec
 import { renderDigest } from "./src/performance/digest";
 import { buildReviewInput, normalizeReview, readStoredReview, REVIEW_SYSTEM_INSTRUCTION, reviewSchema } from "./src/performance/review";
 import { buildPerformanceContext, canSummarize, isOwnCampaign, LIVE_INSTRUCTION, PERFORMANCE_INSTRUCTION, toLearningCampaign, wantsFullData, type LinkedCampaign, type PerformanceDepth } from "./src/assistant/performanceContext";
-import { assembleRecap, buildRecapInput, channelBenchmarks, hasCampaignRecap, normalizeRecapCopy, RECAP_SECTION, RECAP_SYSTEM_INSTRUCTION, recapSchema, refreshRecapProposals } from "./src/performance/recap";
+import { assembleRecap, buildRecapInput, channelBenchmarks, clientRecap, hasCampaignRecap, normalizeRecapCopy, RECAP_SECTION, RECAP_SYSTEM_INSTRUCTION, recapSchema, refreshRecapProposals } from "./src/performance/recap";
 import { LEARNINGS_SECTION } from "./src/assistant/learningOps";
 import { buildGenerationHistory, type GenerationHistory } from "./src/research/pastPerformance";
 import { SCOUT_SYSTEM_INSTRUCTION, buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./src/assistant/scoutChat";
@@ -2674,6 +2674,8 @@ app.post("/api/plans/:id/campaign-recap", async (req, res) => {
     const mediaPlan = profile.channelStrategy?.mediaPlan;
     const applyContext = await scoutApplyContext(storage, plan);
     const planPublishers = (profile.ctvPublishers || []).map((p: any) => String(p?.publisher || "")).filter(Boolean);
+    // The brief's KPIs decide what the recap is read against.
+    const briefKpis: string[] = (Array.isArray((plan.payload as any)?.kpis) ? (plan.payload as any).kpis : []).map(String);
     const { data } = await generateStructuredJsonWithFallback(
       getAiClient(),
       {
@@ -2690,14 +2692,15 @@ app.post("/api/plans/:id/campaign-recap", async (req, res) => {
           addable: addableChannels(mediaPlan).map((c) => ({ channelId: c.product.id, channelName: c.product.displayName })),
           publishers: planPublishers,
           addablePublishers: applyContext.publisherCatalog.filter((p) => p.enabled && !planPublishers.some((n: string) => n.toLowerCase() === p.name.toLowerCase())).map((p) => p.name),
+          briefKpis,
         }, keep),
         schema: recapSchema,
       },
       BRIEF_ATTEMPTS,
     );
-    const copy = normalizeRecapCopy(data, linked, () => crypto.randomBytes(5).toString("hex"));
+    const copy = normalizeRecapCopy(data, linked, () => crypto.randomBytes(5).toString("hex"), { briefKpis });
     const channels = (mediaPlan?.evaluatedCandidates || []).map((c: any) => ({ id: c.product.id, name: c.product.displayName, aliases: Array.isArray(c.product.aliases) ? c.product.aliases : [] }));
-    const recap = assembleRecap(linked, copy, previous, { actor: actorName(req), benchmarks: channelBenchmarks(linked[0], channels) });
+    const recap = assembleRecap(linked, copy, previous, { actor: actorName(req), benchmarks: channelBenchmarks(linked[0], channels), briefKpis });
     const hidden = new Set<string>(Array.isArray(profile.hiddenSections) ? profile.hiddenSections : []);
     const payload = { ...(plan.payload as any), profile: { ...profile, campaignRecap: recap } };
     // Each change is dry-run on the plan as it stands, so the client sees its exact result. One
@@ -2773,8 +2776,10 @@ function withoutHiddenClientSections<T extends { payload: any }>(plan: T): T {
   const profile = plan.payload?.profile;
   const hidden: string[] = Array.isArray(profile?.hiddenSections) ? profile.hiddenSections : [];
   const drop = [[RECAP_SECTION, "campaignRecap"], [LEARNINGS_SECTION, "performanceLearnings"]].filter(([section, key]) => hidden.includes(section) && profile?.[key] !== undefined);
-  if (drop.length === 0) return plan;
-  const nextProfile = { ...profile };
+  // Detail blocks hidden inside a shown recap go the same way.
+  const recap = hasCampaignRecap(profile) && !drop.some(([, key]) => key === "campaignRecap") ? clientRecap(profile.campaignRecap) : null;
+  if (drop.length === 0 && (!recap || recap === profile.campaignRecap)) return plan;
+  const nextProfile = { ...profile, ...(recap ? { campaignRecap: recap } : {}) };
   for (const [, key] of drop) delete nextProfile[key];
   return { ...plan, payload: { ...plan.payload, profile: nextProfile } };
 }

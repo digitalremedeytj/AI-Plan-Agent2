@@ -1,19 +1,22 @@
 import React from "react";
 import {
   AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Brush, CalendarClock, Check, CircleDollarSign, ClipboardCheck,
-  Download, Equal, FileText, Gauge, History, Lightbulb, Loader2, Minus, Plus, Ruler, Sparkles, Target, ThumbsDown,
-  ThumbsUp, Tv, Undo2, Users, Wand2, X, type LucideIcon,
+  Download, Equal, FileText, FlaskConical, Gauge, History, Lightbulb, Loader2, Minus, Plus, Rocket, Ruler, Shield, Sparkles, Target, ThumbsDown,
+  ThumbsUp, TrendingDown, TrendingUp, Tv, Undo2, Users, Wand2, X, type LucideIcon,
 } from "lucide-react";
 import type { ProposalChange } from "../assistant/operations";
 import {
   fundingSummary, projectChannel, projectPlan,
   type CampaignRecap, type EvidenceStrength, type RecapBenchmarks, type RecapCampaign, type RecapChangeLine, type RecapRecommendation, type RecommendationArea,
 } from "../performance/recap";
+import type { RecapBlock } from "../performance/recap";
+import type { KpiMetric } from "../performance/recapKpi";
 import type { FindingKind } from "../performance/review";
+import { DetailBlocks, KpiHero, Takeaways, type InsightControls } from "./CampaignRecapInsights";
 import { SectionVisibilityButton } from "./SectionVisibilityButton";
 import {
   KIND_LABELS, PROJECTION_FOOTNOTE, STRENGTH_HINTS, projectsCtv, STRENGTH_LABELS, approxRange, campaignSubtitle, compactMoney, fundingText,
-  cpaText, flightText, percentText, shareText, singular, tileText,
+  cpaText, flightText, kpiEffect, percentText, recommendationsIntro, roasText, shareText, singular, tileText,
 } from "./recapFormat";
 
 // The client-facing Campaign Recap: their past campaign at a glance, what worked and what didn't,
@@ -71,6 +74,9 @@ export interface RecapPlannerControls {
   undoableId: string | null;
   onAskScout: (rec: RecapRecommendation) => void;
   onRemove: (kind: "card" | "recommendation", id: string) => void;
+  /** Sets the measure the campaign is read against; the same measure confirms an assumed KPI. */
+  onSetKpi: (campaignId: string, metric: KpiMetric) => void;
+  onSetBlock: (campaignId: string, block: RecapBlock, hidden: boolean) => void;
   /** Index into the slide list, or "pdf" for every slide. */
   onExport: (target: number | "pdf") => void;
   exporting: boolean;
@@ -148,6 +154,7 @@ export function CampaignRecapSection({ recap, planChannels, isHidden, isShareVie
             onHover={setLinked}
             recommendations={recap.recommendations}
             onRemove={controls ? (id) => controls.onRemove("card", id) : undefined}
+            insightControls={controls ? { onSetKpi: controls.onSetKpi, onSetBlock: controls.onSetBlock, onRemoveCard: (id) => controls.onRemove("card", id) } : undefined}
           />
         ))}
         {recap.recommendations.length > 0 && (
@@ -238,7 +245,34 @@ function ExportMenu({ controls }: { controls: RecapPlannerControls }) {
   );
 }
 
-function CampaignBlock({ campaign, showName, linked, onHover, recommendations, onRemove }: {
+function CampaignBlock(props: {
+  campaign: RecapCampaign;
+  showName: boolean;
+  linked: string[];
+  onHover: (keys: string[]) => void;
+  recommendations: RecapRecommendation[];
+  onRemove?: (id: string) => void;
+  insightControls?: InsightControls;
+}) {
+  // Recaps built before the KPI existed keep their original scoreboard layout until rebuilt.
+  if (!props.campaign.kpiValues) return <LegacyCampaignBlock {...props} />;
+  const { campaign, showName, linked, onHover, recommendations, insightControls } = props;
+  return (
+    <div className="space-y-6">
+      {showName && (
+        <div className="flex items-baseline gap-2 border-b border-slate-100 pb-2">
+          <h4 className="text-sm font-bold text-slate-800">{campaign.name}</h4>
+          <span className="text-[11px] text-slate-500">{flightText(campaign.flight)}</span>
+        </div>
+      )}
+      <KpiHero campaign={campaign} controls={insightControls} />
+      <Takeaways campaign={campaign} linked={linked} onHover={onHover} recommendations={recommendations} controls={insightControls} />
+      <DetailBlocks campaign={campaign} controls={insightControls} />
+    </div>
+  );
+}
+
+function LegacyCampaignBlock({ campaign, showName, linked, onHover, recommendations, onRemove }: {
   campaign: RecapCampaign;
   showName: boolean;
   linked: string[];
@@ -396,17 +430,23 @@ function Recommendations({ recap, planChannels, controls, linked, onHover }: {
 }) {
   const label = recap.benchmarks?.conversionLabel ?? recap.campaigns[0]?.conversionLabel ?? "conversions";
   const projected = recap.recommendations.map((r) => recommendationProjection(r, recap.benchmarks, planChannels)).filter(Boolean) as Array<{ channelName: string }>;
+  const kpi = recap.campaigns[0]?.kpi;
+  const kpiLed = Boolean(recap.campaigns[0]?.kpiValues);
   return (
-    <div>
-      <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider mb-2">
-        <Target className="w-3.5 h-3.5" /> Our recommendations
+    <div className={kpiLed ? "rounded-2xl bg-slate-50 p-4 md:p-5" : ""}>
+      <div className="flex items-center gap-1.5 text-indigo-600 text-[11px] font-bold uppercase tracking-wider mb-1">
+        {kpiLed ? <Rocket className="w-3.5 h-3.5" /> : <Target className="w-3.5 h-3.5" />} Our recommendations
       </div>
-      <div className="grid gap-3">
-        {recap.recommendations.map((rec) => {
+      {kpiLed && <p className="font-display text-base md:text-lg font-bold text-slate-800 mb-3">{recommendationsIntro(kpi, label)}</p>}
+      <div className={`grid gap-3 ${kpiLed ? "" : "mt-1"}`}>
+        {recap.recommendations.map((rec, index) => {
           const keys = (rec.findings ?? []).map((f) => findingKey(f.campaignId, f.findingId));
           return (
             <RecommendationCard
               key={rec.id}
+              index={kpiLed ? index + 1 : null}
+              effect={kpiLed ? kpiEffect(rec, kpi, label) : null}
+              roasStyle={kpi?.roasStyle}
               rec={rec}
               label={label}
               recap={recap}
@@ -418,13 +458,39 @@ function Recommendations({ recap, planChannels, controls, linked, onHover }: {
           );
         })}
       </div>
+      {kpiLed && <OutlookStrip recap={recap} planChannels={planChannels} label={label} />}
       {projected.length > 0 && <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">{PROJECTION_FOOTNOTE(label, projectsCtv(projected.map((p) => p.channelName)))}</p>}
     </div>
   );
 }
 
-function RecommendationCard({ rec, label, recap, planChannels, controls, highlighted, onHover }: {
+/** The next campaign at last campaign's costs, when the plan-change strip is not already showing it. */
+function OutlookStrip({ recap, planChannels, label }: { recap: CampaignRecap; planChannels: PlanChannel[]; label: string }) {
+  const showsStrip = recap.recommendations.some((r) => r.appliedAt && (r.changes?.length ?? 0) > 0);
+  const plan = showsStrip ? null : projectPlan(recap.benchmarks, planChannels);
+  if (!plan) return null;
+  return (
+    <div className="mt-3 rounded-xl bg-white border border-slate-200 p-4 flex flex-wrap items-center gap-x-6 gap-y-2">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center"><Gauge className="w-5 h-5" /></div>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Next campaign outlook</div>
+          <div className="font-display text-xl font-bold text-slate-800 tabular-nums">{approxRange(plan.low, plan.high)} {label.toLowerCase()}</div>
+        </div>
+      </div>
+      <p className="text-xs text-slate-500 flex-1 min-w-[220px]">This plan's budget at last campaign's costs, across the media types with enough data ({shareText(plan.coveredShare)} of the budget). A projection, not a guarantee.</p>
+    </div>
+  );
+}
+
+const EFFECT_ICONS: Array<[RegExp, LucideIcon]> = [[/^Lowers/, TrendingDown], [/^Finds/, FlaskConical], [/^Protects/, Shield], [/^Sharpens/, ClipboardCheck]];
+
+function RecommendationCard({ rec, index, effect, roasStyle, label, recap, planChannels, controls, highlighted, onHover }: {
   rec: RecapRecommendation;
+  /** Numbered in the KPI-led layout; the area icon otherwise. */
+  index: number | null;
+  effect: string | null;
+  roasStyle?: "percent" | "multiple";
   label: string;
   recap: CampaignRecap;
   planChannels: PlanChannel[];
@@ -444,26 +510,36 @@ function RecommendationCard({ rec, label, recap, planChannels, controls, highlig
       className={`group/rec relative rounded-xl border bg-white p-4 transition-shadow ${applied ? "border-emerald-200" : "border-slate-200"} ${highlighted ? "ring-2 ring-indigo-400 shadow-sm" : ""}`}
     >
       <div className="flex items-start gap-3 pr-5">
-        <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
-          <Icon className="w-4 h-4" />
-        </div>
+        {index !== null ? (
+          <div className="font-display w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 font-bold">{index}</div>
+        ) : (
+          <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+            <Icon className="w-4 h-4" />
+          </div>
+        )}
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-bold text-slate-800 leading-snug">{rec.title}</p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <p className="text-sm font-bold text-slate-800 leading-snug">{rec.title}</p>
+            {index !== null && rec.strength && <StrengthPill strength={rec.strength} />}
+            {effect && <EffectPill effect={effect} />}
+          </div>
           <p className="text-xs text-slate-600 leading-relaxed mt-0.5">{rec.detail}.</p>
         </div>
-        {rec.strength && (
-          <span title={STRENGTH_HINTS[rec.strength]} className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${STRENGTH_STYLES[rec.strength]}`}>
-            {STRENGTH_LABELS[rec.strength]}
-          </span>
+        {index === null && rec.strength && <StrengthPill strength={rec.strength} />}
+      </div>
+
+      <div className={`grid gap-2.5 mt-3 md:pl-11 ${index !== null && rec.measure ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+        {rec.evidence && <EvidenceBox rec={rec} roasStyle={roasStyle} />}
+        {!(rec.needsReview && !controls) && <ChangeBox rec={rec} kind={kind} applied={applied} planChannels={planChannels} />}
+        {index !== null && rec.measure && (
+          <div className="rounded-lg bg-slate-50 px-3 py-2.5">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">We'll measure</div>
+            <p className="flex items-start gap-1.5 text-xs text-slate-700"><Target className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" /> {rec.measure}</p>
+          </div>
         )}
       </div>
 
-      <div className="grid gap-2.5 md:grid-cols-2 mt-3 md:pl-11">
-        {rec.evidence && <EvidenceBox rec={rec} />}
-        {!(rec.needsReview && !controls) && <ChangeBox rec={rec} kind={kind} applied={applied} planChannels={planChannels} />}
-      </div>
-
-      {(rec.measure || projection) && (
+      {(projection || (index === null && rec.measure)) && (
         <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-1 md:ml-11">
           {projection && (
             <p className="flex items-start gap-1.5 text-xs text-slate-700">
@@ -471,7 +547,7 @@ function RecommendationCard({ rec, label, recap, planChannels, controls, highlig
               <span><span className="font-bold">{approxRange(projection.low, projection.high)} {label.toLowerCase()}</span> from {projection.channelName} at last campaign's costs ({compactMoney(Math.min(projection.cpa, projection.averageCpa))}–{compactMoney(Math.max(projection.cpa, projection.averageCpa))} per {singular(label)})</span>
             </p>
           )}
-          {rec.measure && (
+          {index === null && rec.measure && (
             <p className="flex items-start gap-1.5 text-xs text-slate-500">
               <Target className="w-3.5 h-3.5 shrink-0 mt-0.5" /> <span>We'll measure: {rec.measure}</span>
             </p>
@@ -497,7 +573,28 @@ function RecommendationCard({ rec, label, recap, planChannels, controls, highlig
   );
 }
 
-function EvidenceBox({ rec }: { rec: RecapRecommendation }) {
+function StrengthPill({ strength }: { strength: EvidenceStrength }) {
+  return (
+    <span title={STRENGTH_HINTS[strength]} className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${STRENGTH_STYLES[strength]}`}>
+      {STRENGTH_LABELS[strength]}
+    </span>
+  );
+}
+
+function EffectPill({ effect }: { effect: string }) {
+  const Icon = EFFECT_ICONS.find(([re]) => re.test(effect))?.[1] ?? TrendingUp;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
+      <Icon className="w-3 h-3" /> {effect}
+    </span>
+  );
+}
+
+/** A bar's value as its evidence measures it: ROAS in the brief's style, or a cost. */
+export const evidenceValue = (evidence: NonNullable<RecapRecommendation["evidence"]>, value: number, roasStyle?: "percent" | "multiple") =>
+  evidence.metric === "roas" ? roasText(value, roasStyle) : compactMoney(value);
+
+function EvidenceBox({ rec, roasStyle }: { rec: RecapRecommendation; roasStyle?: "percent" | "multiple" }) {
   const evidence = rec.evidence!;
   const max = Math.max(...evidence.bars.map((b) => b.cpa), 0.01);
   return (
@@ -506,12 +603,12 @@ function EvidenceBox({ rec }: { rec: RecapRecommendation }) {
       {evidence.bars.length > 0 && (
         <div className="space-y-1.5 mb-1.5">
           {evidence.bars.map((bar) => (
-            <div key={bar.name} className="grid grid-cols-[minmax(0,6.5rem)_1fr_3.75rem] gap-2 items-center">
+            <div key={bar.name} className="grid grid-cols-[minmax(0,6.5rem)_1fr_3.25rem] gap-2 items-center">
               <span className={`text-[11px] truncate ${bar.isAverage ? "text-slate-500" : "font-semibold text-slate-700"}`} title={bar.name}>{bar.name}</span>
               <div className="h-1.5 rounded-full bg-slate-200/70 overflow-hidden">
                 <div className={`h-full rounded-full ${bar.isAverage ? "bg-slate-400" : "bg-indigo-600"}`} style={{ width: `${Math.max(2, (bar.cpa / max) * 100)}%` }} />
               </div>
-              <span className="text-[11px] font-bold text-slate-800 text-right tabular-nums">{compactMoney(bar.cpa)}</span>
+              <span className="text-[11px] font-bold text-slate-800 text-right tabular-nums">{evidenceValue(evidence, bar.cpa, roasStyle)}</span>
             </div>
           ))}
         </div>

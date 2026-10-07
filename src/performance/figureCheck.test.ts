@@ -36,3 +36,9 @@ test("a PM of 1 is the definition of average, not a claim to check", () => {
 test("the digest's 30-conversion threshold may be quoted in words", () => {
   assert.deepEqual(unverifiedFigures("CBS was best among CTV publishers with at least 30 conversions.", reference()), []);
 });
+
+test("ROAS quoted as the brief's percentage matches the multiple the data states", () => {
+  const reference = figureReference("Display Retargeting: ROAS 17.63x, CPA $4.99");
+  assert.deepEqual(unverifiedFigures("Retargeting returned 1,763% ROAS", reference), []);
+  assert.deepEqual(unverifiedFigures("Retargeting returned 1,900% ROAS", reference), ["1,900%"]);
+});

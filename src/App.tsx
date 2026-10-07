@@ -140,6 +140,7 @@ import { ScoutAssistantPanel, type ScoutFollowUpAction, type ScoutPreview, type 
 import { CampaignRecapSection } from "./components/CampaignRecapSection";
 import { CampaignRecapSlides, recapSlides } from "./components/CampaignRecapSlides";
 import type { RecapRecommendation } from "./performance/recap";
+import type { AssistantOp } from "./assistant/operations";
 import { PlanText } from "./components/PlanText";
 import { PublisherInsightsPanel } from "./components/PublisherInsightsPanel";
 import { syncCtvChannelPublishers } from "./planning/ctvChannel";
@@ -3194,6 +3195,19 @@ export default function App() {
       handleScoutApplied(result.plan);
     } catch (err: any) {
       setRecapError(err?.message || "That item could not be removed.");
+    }
+  };
+
+  /** Recap edits that are not removals (the KPI, a block's visibility), through the same revision-checked path. */
+  const applyRecapOp = async (op: AssistantOp, failure: string) => {
+    if (!activeSavedId || activePlanRevision === null) return;
+    if (scoutHasUnsavedChanges) { setRecapError("Save your changes first: the recap is edited on the saved plan."); return; }
+    setRecapError(null);
+    try {
+      const result = await api.applyScoutChange(activeSavedId, { ops: [op], baseRevision: activePlanRevision });
+      handleScoutApplied(result.plan);
+    } catch (err: any) {
+      setRecapError(err?.message || failure);
     }
   };
 
@@ -6609,6 +6623,8 @@ export default function App() {
                     undoableId: recapUndo?.recId ?? null,
                     onAskScout: handleApplyRecapRecommendation,
                     onRemove: handleRemoveRecapItem,
+                    onSetKpi: (campaignId, metric) => applyRecapOp({ type: "set_recap_kpi", campaignId, metric }, "The KPI could not be changed."),
+                    onSetBlock: (campaignId, block, hidden) => applyRecapOp({ type: "set_recap_block", campaignId, block, hidden }, "That block could not be changed."),
                     onExport: handleExportRecap,
                     exporting: recapExporting,
                     slideTitles: profileData.campaignRecap ? recapSlides(profileData.campaignRecap, recapPlanChannels).map((slide) => slide.title) : [],

@@ -1,9 +1,11 @@
 // Changes to the Campaign Recap through the plan's operations, so they share its revision check
 // and undo. The recap's figures are never edited here: they come from the campaign data when it
-// is built. The planner can remove a card or recommendation, and a recommendation is marked
-// "In this plan" when the change that carries it out is applied.
+// is built. The planner can remove a card, recommendation or detail block, choose which of the
+// campaign's measures is its KPI (the value comes from the figures frozen with the recap), and a
+// recommendation is marked "In this plan" when the change that carries it out is applied.
 
-import type { CampaignRecap } from "../performance/recap";
+import { RECAP_BLOCKS, type CampaignRecap, type RecapBlock } from "../performance/recap";
+import { KPI_METRICS, withKpiMetric, type KpiMetric } from "../performance/recapKpi";
 import type { AssistantOp, ProposalChange, RejectedOp } from "./operations";
 
 export function applyRecapOps(profile: any, ops: AssistantOp[]) {
@@ -27,6 +29,24 @@ export function applyRecapOps(profile: any, ops: AssistantOp[]) {
       if (!rec || Boolean(rec.appliedAt) === op.applied) continue;
       rec.appliedAt = op.applied ? new Date().toISOString() : null;
       out.changes.push({ kind: "section", label: `Campaign recap – ${rec.title}`, before: op.applied ? "Recommended" : "In this plan", after: op.applied ? "In this plan" : "Recommended" });
+      out.applied.push(op);
+    } else if (op.type === "set_recap_kpi") {
+      const campaign = recap?.campaigns.find((c) => c.campaignId === op.campaignId);
+      const kpi = campaign && KPI_METRICS.includes(op.metric as KpiMetric) ? withKpiMetric(campaign.kpi, campaign.kpiValues, op.metric as KpiMetric) : null;
+      if (!campaign || !kpi) { out.rejected.push({ op, reason: "that campaign has no such figure to judge it on" }); continue; }
+      const before = campaign.kpi?.metric;
+      campaign.kpi = kpi;
+      out.changes.push({ kind: "section", label: `Campaign recap – KPI for ${campaign.name}`, before: before ?? "None", after: kpi.metric });
+      out.applied.push(op);
+    } else if (op.type === "set_recap_block") {
+      const campaign = recap?.campaigns.find((c) => c.campaignId === op.campaignId);
+      if (!campaign || !RECAP_BLOCKS.includes(op.block as RecapBlock)) { out.rejected.push({ op, reason: "that block is not in the recap" }); continue; }
+      const block = op.block as RecapBlock;
+      const hidden = new Set(campaign.hiddenBlocks ?? []);
+      if (hidden.has(block) === op.hidden) continue;
+      if (op.hidden) hidden.add(block); else hidden.delete(block);
+      campaign.hiddenBlocks = RECAP_BLOCKS.filter((b) => hidden.has(b));
+      out.changes.push({ kind: "section", label: `Campaign recap – ${block}`, before: op.hidden ? "Shown" : "Hidden", after: op.hidden ? "Hidden" : "Shown" });
       out.applied.push(op);
     } else if (op.type === "remove_recap_item") {
       if (!recap) { out.rejected.push({ op, reason: "this plan has no campaign recap" }); continue; }

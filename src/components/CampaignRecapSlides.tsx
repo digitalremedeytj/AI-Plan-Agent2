@@ -2,15 +2,21 @@ import React from "react";
 import { ArrowDownRight, ArrowUpRight, BarChart3, Check, ClipboardCheck, Equal, History, Lightbulb, Minus, Plus, Target, ThumbsDown, ThumbsUp, type LucideIcon } from "lucide-react";
 import { fundingSummary, projectChannel, projectPlan, type CampaignRecap, type RecapCampaign, type RecapChangeLine, type RecapRecommendation } from "../performance/recap";
 import type { FindingKind } from "../performance/review";
-import { AREA_ICONS, decisionLines, lineValue, recommendationProjection, type PlanChannel } from "./CampaignRecapSection";
+import { AREA_ICONS, decisionLines, evidenceValue, lineValue, recommendationProjection, type PlanChannel } from "./CampaignRecapSection";
+import { QuadrantChart, quadrantPoints, RANKING_TITLES, rankingGeometry, rankingSubtitle, rankingValue, TrendChart, trendCaption } from "./CampaignRecapCharts";
+import { ctvNote, supportingTiles, TAKEAWAY_STYLES, takeawayIcon, targetBarGeometry, tileDisplay } from "./CampaignRecapInsights";
+import type { RecapRanking } from "../performance/recapKpi";
 import {
-  KIND_LABELS, PROJECTION_FOOTNOTE, STRENGTH_LABELS, projectsCtv, approxRange, fundingText, campaignSubtitle, compactMoney, cpaText, percentText, shareText, singular, tileText,
+  KIND_LABELS, PROJECTION_FOOTNOTE, STRENGTH_LABELS, projectsCtv, approxRange, fundingText, campaignSubtitle, compactMoney, cpaText, kpiBeatText, kpiCaption, kpiEffect, kpiName,
+  kpiSentence, kpiTargetText, kpiValueText, percentText, recommendationsIntro, roasText, shareText, singular, splitStat, tileText,
 } from "./recapFormat";
 
 // The Campaign Recap as 16:9 slides (1920x1080), drawn off-screen and captured to PNG or PDF.
 // Inline styles throughout: the capture reads computed styles, and these must not depend on the
-// page's Tailwind build. Per campaign: results at a glance, then what worked and what didn't;
-// then the recommendations, four to a slide, and the plan they changed.
+// page's Tailwind build. Per campaign: the KPI hero, the key takeaways, where results came from
+// and the detail blocks two to a slide (recaps built before the KPI keep the earlier glance and
+// findings slides); then the recommendations, four to a slide, and the plan they changed. A block
+// the planner hid from the client is not exported.
 
 type Slide = { title: string; render: () => React.ReactNode };
 
@@ -31,8 +37,23 @@ export function recapSlides(recap: CampaignRecap, planChannels: PlanChannel[]): 
   const slides: Slide[] = [];
   for (const c of recap.campaigns) {
     const suffix = several ? ` – ${c.name}` : "";
-    slides.push({ title: `Results at a glance${suffix}`, render: () => <GlanceSlide campaign={c} /> });
-    if (c.cards.length > 0) slides.push({ title: `What worked and what didn't${suffix}`, render: () => <FindingsSlide campaign={c} /> });
+    if (c.kpiValues) {
+      const hidden = new Set(c.hiddenBlocks ?? []);
+      slides.push({ title: `How the campaign performed${suffix}`, render: () => <KpiSlide campaign={c} /> });
+      if (c.cards.length > 0) slides.push({ title: `Key takeaways${suffix}`, render: () => <TakeawaysSlide campaign={c} /> });
+      if (!hidden.has("mix") && quadrantPoints(c)) slides.push({ title: `Where results came from${suffix}`, render: () => <QuadrantSlide campaign={c} /> });
+      const panels: Panel[] = [
+        ...(c.trend && !hidden.has("trend") ? [{ key: "trend", title: "Performance over the flight" }] : []),
+        ...(c.rankings ?? []).filter((r) => !hidden.has(r.key)).map((r) => ({ key: r.key, title: RANKING_TITLES[r.key], ranking: r })),
+      ];
+      for (let i = 0; i < panels.length; i += 2) {
+        const pair = panels.slice(i, i + 2);
+        slides.push({ title: `${pair.map((p) => p.title).join(" and ")}${suffix}`, render: () => <DetailSlide campaign={c} panels={pair} /> });
+      }
+    } else {
+      slides.push({ title: `Results at a glance${suffix}`, render: () => <GlanceSlide campaign={c} /> });
+      if (c.cards.length > 0) slides.push({ title: `What worked and what didn't${suffix}`, render: () => <FindingsSlide campaign={c} /> });
+    }
   }
   const recs = recap.recommendations;
   const pages = Math.ceil(recs.length / PER_SLIDE);
@@ -183,8 +204,10 @@ function SlideChangeLine({ line, applied, planChannels }: { line: RecapChangeLin
 function RecommendationsSlide({ recap, recs, planChannels }: { recap: CampaignRecap; recs: RecapRecommendation[]; planChannels: PlanChannel[] }) {
   const label = recap.benchmarks?.conversionLabel ?? recap.campaigns[0]?.conversionLabel ?? "conversions";
   const projected = recs.map((r) => recommendationProjection(r, recap.benchmarks, planChannels)).filter(Boolean) as Array<{ channelName: string }>;
+  const kpi = recap.campaigns[0]?.kpi;
+  const kpiLed = Boolean(recap.campaigns[0]?.kpiValues);
   return (
-    <Frame kicker="Campaign Recap" title="Our recommendations" subtitle="What the next campaign should do, and the evidence behind each">
+    <Frame kicker="Campaign Recap" title="Our recommendations" subtitle={kpiLed ? recommendationsIntro(kpi, label) : "What the next campaign should do, and the evidence behind each"}>
       <div style={{ display: "grid", gridTemplateColumns: recs.length > 1 ? "repeat(2, minmax(0, 1fr))" : "1fr", gap: "18px" }}>
         {recs.map((rec) => {
           const Icon = AREA_ICONS[rec.area] ?? Target;
@@ -194,11 +217,13 @@ function RecommendationsSlide({ recap, recs, planChannels }: { recap: CampaignRe
           const strength = rec.strength ? STRENGTH_COLORS[rec.strength] : null;
           const bars = rec.evidence?.bars ?? [];
           const max = Math.max(...bars.map((b) => b.cpa), 0.01);
+          const effect = kpiLed ? kpiEffect(rec, kpi, label) : null;
+          const number = kpiLed ? recap.recommendations.indexOf(rec) + 1 : null;
           return (
             <div key={rec.id} style={{ background: "#f8fafc", border: `2px solid ${applied ? "#a7f3d0" : "#eef2f7"}`, borderRadius: "20px", padding: "18px 24px", display: "flex", flexDirection: "column", gap: "10px" }}>
               <div style={{ display: "flex", gap: "16px", alignItems: "flex-start" }}>
-                <div style={{ width: "48px", height: "48px", borderRadius: "14px", background: "#eef2ff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <Icon style={{ width: "24px", height: "24px", color: ACCENT }} />
+                <div style={{ width: "48px", height: "48px", borderRadius: "14px", background: number ? ACCENT : "#eef2ff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, color: "#ffffff", fontSize: "24px", fontWeight: 800 }}>
+                  {number ?? <Icon style={{ width: "24px", height: "24px", color: ACCENT }} />}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: "23px", fontWeight: 700, color: INK, lineHeight: 1.25 }}>{rec.title}</div>
@@ -206,11 +231,12 @@ function RecommendationsSlide({ recap, recs, planChannels }: { recap: CampaignRe
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-end" }}>
                   {strength && rec.strength && <Pill text={STRENGTH_LABELS[rec.strength]} {...strength} />}
+                  {effect && <Pill text={effect} color="#4338ca" bg="#eef2ff" border="#e0e7ff" />}
                   {applied && <Pill text="In this plan" color="#047857" bg="#ecfdf5" border="#d1fae5" />}
                 </div>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-                <div style={{ background: "#ffffff", borderRadius: "14px", padding: "14px 16px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: bars.length || rec.evidence?.note ? "1fr 1fr" : "1fr", gap: "16px" }}>
+                {(bars.length > 0 || rec.evidence?.note) && <div style={{ background: "#ffffff", borderRadius: "14px", padding: "14px 16px" }}>
                   <div style={{ fontSize: "13px", fontWeight: 700, letterSpacing: "0.08em", color: MUTED, textTransform: "uppercase", marginBottom: "8px" }}>The evidence</div>
                   {bars.map((bar) => (
                     <div key={bar.name} style={{ display: "grid", gridTemplateColumns: "150px 1fr 76px", gap: "10px", alignItems: "center", marginBottom: "6px" }}>
@@ -218,11 +244,11 @@ function RecommendationsSlide({ recap, recs, planChannels }: { recap: CampaignRe
                       <div style={{ height: "10px", borderRadius: "9999px", background: "#e2e8f0", overflow: "hidden" }}>
                         <div style={{ height: "100%", width: `${Math.max(2, (bar.cpa / max) * 100)}%`, background: bar.isAverage ? "#94a3b8" : ACCENT, borderRadius: "9999px" }} />
                       </div>
-                      <span style={{ fontSize: "15px", fontWeight: 700, color: INK, textAlign: "right" }}>{compactMoney(bar.cpa)}</span>
+                      <span style={{ fontSize: "15px", fontWeight: 700, color: INK, textAlign: "right" }}>{rec.evidence ? evidenceValue(rec.evidence, bar.cpa, kpi?.roasStyle) : compactMoney(bar.cpa)}</span>
                     </div>
                   ))}
                   {rec.evidence?.note && <div style={{ fontSize: "14px", color: MUTED, lineHeight: 1.35 }}>{rec.evidence.note}</div>}
-                </div>
+                </div>}
                 <div style={{ background: "#ffffff", borderRadius: "14px", padding: "14px 16px" }}>
                   <div style={{ fontSize: "13px", fontWeight: 700, letterSpacing: "0.08em", color: MUTED, textTransform: "uppercase", marginBottom: "8px" }}>
                     {applied || kind === "keep" ? "In this plan" : kind === "execution" ? "How we'll run it" : "The change"}
@@ -304,6 +330,179 @@ function PlanChangeSlide({ recap, planChannels }: { recap: CampaignRecap; planCh
             <div style={{ fontSize: "15px", color: MUTED, marginTop: "18px", lineHeight: 1.45 }}>Covers {shareText(plan.coveredShare)} of the budget. {PROJECTION_FOOTNOTE(label, projectsCtv(planChannels.filter((c) => plan.channels.some((p) => p.channelId === c.channelId)).map((c) => c.channelName)))}</div>
           </div>
         )}
+      </div>
+    </Frame>
+  );
+}
+
+// ---- KPI-led slides ----
+
+type Panel = { key: string; title: string; ranking?: RecapRanking };
+
+function KpiSlide({ campaign }: { campaign: RecapCampaign }) {
+  const kpi = campaign.kpi;
+  const label = campaign.conversionLabel;
+  const tiles = supportingTiles(campaign);
+  const bar = targetBarGeometry(campaign);
+  const beat = kpi ? kpiBeatText(kpi) : null;
+  const sentence = kpiSentence(campaign);
+  return (
+    <Frame kicker="Campaign Recap" title="How the campaign performed" subtitle={campaignSubtitle(campaign)}>
+      <div style={{ background: "linear-gradient(135deg, #4338ca, #312e81)", borderRadius: "32px", padding: "56px 64px", color: "#ffffff", display: "flex", gap: "56px", alignItems: "center", height: "100%", boxSizing: "border-box" }}>
+        <div style={{ flex: 1.3, minWidth: 0 }}>
+          {kpi && (
+            <>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", background: "rgba(255,255,255,0.15)", borderRadius: "9999px", padding: "8px 18px", fontSize: "18px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                <Target style={{ width: "22px", height: "22px" }} /> {kpi.source === "data" ? "Headline result" : `Campaign KPI · ${kpiName(kpi.metric, label)}`}
+              </div>
+              {kpi.target && kpi.target.metric === kpi.metric && <div style={{ fontSize: "20px", color: "#c7d2fe", marginTop: "14px" }}>Target from your brief: {kpi.target.text}</div>}
+              <div style={{ display: "flex", alignItems: "flex-end", gap: "28px", marginTop: "18px" }}>
+                <div style={{ fontSize: "150px", fontWeight: 800, lineHeight: 0.95, letterSpacing: "-0.03em" }}>{kpiValueText(kpi.metric, kpi.value, kpi.roasStyle)}</div>
+                <div style={{ paddingBottom: "14px" }}>
+                  {beat && <div style={{ display: "inline-block", background: "rgba(52,211,153,0.2)", color: "#a7f3d0", borderRadius: "9999px", padding: "6px 16px", fontSize: "22px", fontWeight: 700 }}>{beat}</div>}
+                  <div style={{ fontSize: "24px", color: "#e0e7ff", marginTop: "8px" }}>{kpiCaption(kpi.metric, label)}</div>
+                </div>
+              </div>
+              {bar && (
+                <div style={{ marginTop: "34px", maxWidth: "720px" }}>
+                  <div style={{ position: "relative", height: "22px", borderRadius: "9999px", background: "rgba(255,255,255,0.15)" }}>
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${bar.fill * 100}%`, borderRadius: "9999px", background: bar.good ? "#6ee7b7" : "#a5b4fc" }} />
+                    <div style={{ position: "absolute", top: "-10px", bottom: "-10px", width: "4px", background: "#ffffff", left: `${bar.mark * 100}%` }} />
+                  </div>
+                  <div style={{ position: "relative", height: "30px", fontSize: "17px", color: "#ffffff", fontWeight: 700 }}>
+                    <span style={{ position: "absolute", top: "12px", left: `${bar.mark * 100}%`, transform: "translateX(-50%)", whiteSpace: "nowrap" }}>Target {kpiTargetText(kpi)}</span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          {sentence && <div style={{ fontSize: "26px", fontWeight: 600, marginTop: "34px", lineHeight: 1.4 }}>{sentence}</div>}
+          {campaign.summary && <div style={{ fontSize: "22px", color: "#e0e7ff", marginTop: "12px", lineHeight: 1.45 }}>{campaign.summary}.</div>}
+        </div>
+        {tiles.length > 0 && (
+          <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "22px" }}>
+            {tiles.map((tile) => {
+              const { value, label: caption } = tileDisplay(tile, campaign);
+              return (
+                <div key={tile.metric} style={{ background: "rgba(255,255,255,0.1)", borderRadius: "24px", padding: "30px 30px" }}>
+                  <div style={{ fontSize: "54px", fontWeight: 800, lineHeight: 1.05 }}>{value}</div>
+                  <div style={{ fontSize: "19px", color: "#c7d2fe", marginTop: "8px" }}>{caption}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </Frame>
+  );
+}
+
+const TAKEAWAY_COLORS = {
+  worked: { color: "#047857", bg: "#ecfdf5", border: "#d1fae5", box: "#d1fae5" },
+  didnt: { color: "#4338ca", bg: "#eef2ff", border: "#e0e7ff", box: "#e0e7ff" },
+  watch: { color: "#b45309", bg: "#fffbeb", border: "#fef3c7", box: "#fef3c7" },
+} as const;
+
+function TakeawaysSlide({ campaign }: { campaign: RecapCampaign }) {
+  const order: Record<FindingKind, number> = { worked: 0, didnt: 1, watch: 2 };
+  const cards = [...campaign.cards].sort((a, z) => order[a.kind] - order[z.kind]);
+  return (
+    <Frame kicker="Campaign Recap" title="Key takeaways" subtitle={campaignSubtitle(campaign)}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cards.length >= 4 ? 2 : cards.length}, minmax(0, 1fr))`, gap: "28px", height: "100%" }}>
+        {cards.map((card) => {
+          const c = TAKEAWAY_COLORS[card.kind];
+          const Icon = takeawayIcon(card.kind, card.area);
+          const split = splitStat(card.stat);
+          return (
+            <div key={card.id} style={{ background: c.bg, border: `2px solid ${c.border}`, borderRadius: "28px", padding: cards.length >= 4 ? "32px 36px" : "56px 44px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+                <div style={{ width: "64px", height: "64px", borderRadius: "18px", background: c.box, color: c.color, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon style={{ width: "32px", height: "32px" }} /></div>
+                {card.kind !== "worked" && <span style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: c.color }}>{TAKEAWAY_STYLES[card.kind].label}</span>}
+              </div>
+              <div style={{ fontSize: "32px", fontWeight: 700, color: INK, marginTop: "24px", lineHeight: 1.25 }}>{card.headline}</div>
+              {split ? (
+                <>
+                  <div style={{ fontSize: "64px", fontWeight: 800, color: c.color, marginTop: "14px", lineHeight: 1.1 }}>
+                    {split.figure}{split.label && <span style={{ fontSize: "26px", fontWeight: 600, color: BODY }}> {split.label}</span>}
+                  </div>
+                  {split.rest && <div style={{ fontSize: "22px", color: BODY, marginTop: "6px" }}>{split.rest}</div>}
+                </>
+              ) : (
+                <div style={{ fontSize: "24px", color: BODY, marginTop: "12px" }}>{card.stat}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Frame>
+  );
+}
+
+function QuadrantSlide({ campaign }: { campaign: RecapCampaign }) {
+  const data = quadrantPoints(campaign)!;
+  const note = ctvNote(campaign);
+  return (
+    <Frame kicker="Campaign Recap" title="Where results came from" subtitle={`Each ${campaign.mix?.dimension ?? "media type"}'s result against its share of the budget`}>
+      <div style={{ display: "flex", gap: "56px", height: "100%" }}>
+        <div style={{ flex: 1.5, minWidth: 0 }}><QuadrantChart campaign={campaign} conversionLabel={campaign.conversionLabel} /></div>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "24px" }}>
+          <div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 140px 130px", gap: "12px", fontSize: "15px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: MUTED, paddingBottom: "10px" }}>
+              <span>{campaign.mix?.dimension}</span><span style={{ textAlign: "right" }}>Spend</span><span style={{ textAlign: "right" }}>{campaign.conversionLabel}</span><span style={{ textAlign: "right" }}>{data.metric === "roas" ? "ROAS" : "CPA"}</span>
+            </div>
+            {data.points.map((p) => (
+              <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 110px 140px 130px", gap: "12px", fontSize: "20px", borderTop: "1px solid #f1f5f9", padding: "12px 0", alignItems: "center" }}>
+                <span style={{ fontWeight: 600, color: INK, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
+                <span style={{ textAlign: "right", color: BODY }}>{shareText(p.spendShare)}</span>
+                <span style={{ textAlign: "right", color: BODY }}>{shareText(p.conversionShare)}</span>
+                <span style={{ textAlign: "right", fontWeight: 800, color: INK }}>{p.value === null ? "–" : data.metric === "roas" ? roasText(p.value, campaign.kpi?.roasStyle) : cpaText(p.value)}</span>
+              </div>
+            ))}
+          </div>
+          {note && <div style={{ fontSize: "19px", color: BODY, lineHeight: 1.45, background: "#f8fafc", borderLeft: "5px solid #c7d2fe", borderRadius: "0 14px 14px 0", padding: "16px 20px" }}><b style={{ color: INK }}>How to read CTV:</b> {note}</div>}
+        </div>
+      </div>
+    </Frame>
+  );
+}
+
+function SlideRanking({ ranking, campaign }: { ranking: RecapRanking; campaign: RecapCampaign }) {
+  const g = rankingGeometry(ranking);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {g.rows.map((r) => (
+        <div key={r.name} style={{ display: "grid", gridTemplateColumns: "300px 1fr 120px", gap: "18px", alignItems: "center" }}>
+          <span style={{ fontSize: "19px", fontWeight: r.better ? 700 : 500, color: r.better ? INK : BODY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</span>
+          <div style={{ position: "relative", height: "16px", borderRadius: "9999px", background: "#f1f5f9" }}>
+            <div style={{ height: "100%", width: `${r.width * 100}%`, borderRadius: "9999px", background: r.thin ? "#fffbeb" : r.better ? "#10b981" : "#a5b4fc", border: r.thin ? "2px dashed #d97706" : undefined, boxSizing: "border-box" }} />
+            <div style={{ position: "absolute", top: "-6px", bottom: "-6px", width: "3px", background: "#94a3b8", left: `${g.averageAt * 100}%` }} />
+          </div>
+          <span style={{ fontSize: "19px", fontWeight: 800, textAlign: "right", color: r.better ? "#047857" : INK }}>{rankingValue(ranking, r.value, campaign.kpi)}{r.capped ? "+" : ""}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetailSlide({ campaign, panels }: { campaign: RecapCampaign; panels: Panel[] }) {
+  const label = campaign.conversionLabel;
+  return (
+    <Frame kicker="Campaign Recap" title={panels.map((p) => p.title).join(" and ")} subtitle={campaignSubtitle(campaign)}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${panels.length}, minmax(0, 1fr))`, gap: "40px", height: "100%" }}>
+        {panels.map((panel) => (
+          <div key={panel.key} style={{ border: "2px solid #f1f5f9", borderRadius: "28px", padding: "32px 36px", minWidth: 0 }}>
+            <div style={{ fontSize: "16px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: ACCENT }}>{panel.title}</div>
+            <div style={{ fontSize: "26px", fontWeight: 700, color: INK, marginTop: "6px", marginBottom: "24px" }}>
+              {panel.ranking ? rankingSubtitle(panel.ranking, label, campaign.kpi) : `Cost per ${singular(label)} by week`}
+            </div>
+            {panel.ranking ? <SlideRanking ranking={panel.ranking} campaign={campaign} /> : campaign.trend && (
+              <>
+                <TrendChart trend={campaign.trend} conversionLabel={label} />
+                {trendCaption(campaign.trend, label) && <div style={{ fontSize: "20px", color: BODY, marginTop: "18px", lineHeight: 1.45 }}>{trendCaption(campaign.trend, label)}</div>}
+              </>
+            )}
+          </div>
+        ))}
       </div>
     </Frame>
   );

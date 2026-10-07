@@ -74,9 +74,12 @@ export type AssistantOp =
   | { type: "set_channel_override"; channelId: string; override: any | null }
   | { type: "set_learnings"; items: any[] }
   // The Campaign Recap (see recapOps): marking a recommendation applied, removing a card or
-  // recommendation, and the restore an undo uses.
+  // recommendation, hiding a detail block from the client, choosing the KPI it is read against,
+  // and the restore an undo uses.
   | { type: "mark_recap_recommendation"; id: string; applied: boolean }
   | { type: "remove_recap_item"; kind: "card" | "recommendation"; id: string }
+  | { type: "set_recap_block"; campaignId: string; block: string; hidden: boolean }
+  | { type: "set_recap_kpi"; campaignId: string; metric: string }
   | { type: "set_campaign_recap"; recap: any | null };
 
 export type AssistantOpType = AssistantOp["type"];
@@ -86,7 +89,7 @@ export const MODEL_OP_TYPES: ReadonlySet<AssistantOpType> = new Set([
   "update_persona", "add_persona", "remove_persona", "add_segment", "edit_segment", "remove_segment", "edit_brief", "set_kpis", "set_geography",
   "add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_section_visibility", "hide_section", "show_section", "add_ctv_publisher",
   "add_channel_record", "remove_channel_record", "edit_channel_panel", "hide_channel_panel", "show_channel_panel",
-  "add_learning", "edit_learning", "remove_learning", "mark_recap_recommendation", "remove_recap_item",
+  "add_learning", "edit_learning", "remove_learning", "mark_recap_recommendation", "remove_recap_item", "set_recap_block", "set_recap_kpi",
 ]);
 const RESTORE_OP_TYPES: ReadonlySet<AssistantOpType> = new Set(["restore_ctv_publisher", "restore_persona", "restore_segment", "set_list", "set_channel_records", "set_channel_override", "set_learnings", "set_campaign_recap"]);
 
@@ -291,6 +294,20 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
         const id = str(it.id);
         if (!id || (it.kind !== "card" && it.kind !== "recommendation")) { reject("needs kind (card or recommendation) and the item's id"); break; }
         ops.push({ type, kind: it.kind, id });
+        break;
+      }
+      case "set_recap_block": {
+        const campaignId = str(it.campaignId);
+        const block = str(it.block);
+        if (!campaignId || !block) { reject("needs the campaignId and the block"); break; }
+        ops.push({ type, campaignId, block, hidden: it.hidden !== false });
+        break;
+      }
+      case "set_recap_kpi": {
+        const campaignId = str(it.campaignId);
+        const metric = str(it.metric);
+        if (!campaignId || !metric) { reject("needs the campaignId and the KPI metric"); break; }
+        ops.push({ type, campaignId, metric });
         break;
       }
       case "set_campaign_recap": {
@@ -679,7 +696,7 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
   // Last of the content changes: a learning's action must name what the plan holds once the rest
   // of the proposal has run, so "this plan adds online video" can ride with the add_channel.
   const learnings = applyLearningOps(profile, byType(["add_learning", "edit_learning", "remove_learning", "set_learnings"]), context.learningCampaigns);
-  const recap = applyRecapOps(profile, byType(["mark_recap_recommendation", "remove_recap_item", "set_campaign_recap"]));
+  const recap = applyRecapOps(profile, byType(["mark_recap_recommendation", "remove_recap_item", "set_recap_block", "set_recap_kpi", "set_campaign_recap"]));
   applied.push(...learnings.applied, ...recap.applied);
   rejected.push(...learnings.rejected, ...recap.rejected);
 

@@ -15,6 +15,8 @@ import type { PlanningSettings } from "../planning/settings";
 import { MAX_BRIEF_INSTRUCTIONS } from "../research/executiveBrief";
 import type { MediaRecommendationPlan } from "../planning/types";
 import { hasPublisherHighlights, publisherHighlightFields } from "../planning/publisherHighlights";
+import { RECAP_BLOCKS } from "../performance/recap";
+import { KPI_METRICS } from "../performance/recapKpi";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -348,6 +350,8 @@ const opSchema = {
     opShape("remove_learning", { index: INT }),
     opShape("mark_recap_recommendation", { id: S }),
     opShape("remove_recap_item", { kind: oneOf(["card", "recommendation"]), id: S }),
+    opShape("set_recap_block", { campaignId: S, block: oneOf([...RECAP_BLOCKS]), hidden: { type: "boolean" } }),
+    opShape("set_recap_kpi", { campaignId: S, metric: oneOf([...KPI_METRICS]) }),
   ],
 };
 

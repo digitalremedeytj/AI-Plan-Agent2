@@ -53,6 +53,10 @@ const decimals = (raw: string) => raw.replace(/[^\d.]/g, "").split(".")[1]?.leng
 // A figure matches to the precision it is written at: "$53.85" needs 53.845-53.855, "$54" allows
 // anything that rounds to it, and "$174K" allows the rounding its suffix implies.
 function matches(figure: Figure, reference: Figure): boolean {
+  // ROAS is stated as a multiple ("17.63x") and may be quoted as the percentage the brief uses ("1,763%").
+  if (figure.unit === "percent" && reference.unit === "multiplier" && !/[KMB]\s*$/i.test(figure.raw)) {
+    return Math.abs(figure.value - reference.value * 100) <= 0.5 * 10 ** -decimals(figure.raw) + 1e-9;
+  }
   const compatible = figure.unit === reference.unit
     || (figure.unit === "pm" && reference.unit === "count")
     || (figure.unit === "count" && reference.unit === "money");

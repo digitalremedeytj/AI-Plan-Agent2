@@ -1,7 +1,8 @@
 // Display helpers shared by the Campaign Recap section and its slides, so the plan and the deck
 // always word and round the same figure the same way.
 
-import type { RecapCampaign, RecapMetric, RecapTile } from "../performance/recap";
+import type { RecapCampaign, RecapMetric, RecapRecommendation, RecapTile } from "../performance/recap";
+import { activeTarget, kpiVsTarget, type KpiMetric, type RecapKpi } from "../performance/recapKpi";
 
 /** "Checkouts" -> "checkout": the export's own name for a conversion, made singular for "cost per". */
 export function singular(label: string): string {
@@ -30,7 +31,7 @@ export function compactMoney(value: number): string {
 export const cpaText = (value: number | null) => (value === null ? "–" : compactMoney(value));
 export const shareText = (value: number) => `${Math.round(value * 100)}%`;
 
-export function tileText(tile: RecapTile, campaign: Pick<RecapCampaign, "conversionLabel" | "frequency">): { value: string; label: string } {
+export function tileText(tile: RecapTile, campaign: Pick<RecapCampaign, "conversionLabel" | "frequency" | "vcrIsCtv">): { value: string; label: string } {
   const label = campaign.conversionLabel || "conversions";
   const labels: Record<RecapMetric, string> = {
     spend: "Spend",
@@ -39,10 +40,11 @@ export function tileText(tile: RecapTile, campaign: Pick<RecapCampaign, "convers
     conversions: capitalise(label),
     cpa: `Cost per ${singular(label)}`,
     roas: "Return on ad spend",
+    vcr: campaign.vcrIsCtv ? "CTV video completion rate" : "Video completion rate",
   };
   const value = tile.metric === "spend" || tile.metric === "cpa"
     ? compactMoney(tile.value)
-    : tile.metric === "roas" ? `${tile.value.toFixed(2)}x` : compactNumber(tile.value);
+    : tile.metric === "roas" ? `${tile.value.toFixed(2)}x` : tile.metric === "vcr" ? `${Math.round(tile.value * 100)}%` : compactNumber(tile.value);
   return { value, label: labels[tile.metric] };
 }
 
@@ -106,4 +108,119 @@ export function fundingText(summary: { count: number; each: number | null; total
   return summary.each !== null && summary.count > 1
     ? `About ${roughMoney(summary.each)} moved to each of ${others}`
     : `About ${roughMoney(summary.total)} moved to ${others}`;
+}
+
+// ---- The KPI ----
+
+/** "373%" or "3.73x", as the brief writes ROAS. */
+export function roasText(value: number, style: RecapKpi["roasStyle"] = "percent"): string {
+  return style === "multiple" ? `${value.toFixed(2)}x` : `${Math.round(value * 100).toLocaleString("en-US")}%`;
+}
+
+/** The KPI's name in the client's words: "ROAS", "Cost per checkout", "Checkouts". */
+export function kpiName(metric: KpiMetric, conversionLabel: string): string {
+  const names: Record<KpiMetric, string> = {
+    roas: "ROAS",
+    cpa: `Cost per ${singular(conversionLabel || "conversions")}`,
+    conversions: capitalise((conversionLabel || "conversions").toLowerCase()),
+    reach: "Reach",
+    vcr: "Video completion rate",
+    ctr: "Click-through rate",
+  };
+  return names[metric];
+}
+
+/** What the big number is: "return on ad spend", "per checkout". */
+export function kpiCaption(metric: KpiMetric, conversionLabel: string): string {
+  const captions: Record<KpiMetric, string> = {
+    roas: "return on ad spend",
+    cpa: `cost per ${singular(conversionLabel || "conversions")}`,
+    conversions: (conversionLabel || "conversions").toLowerCase(),
+    reach: "households reached",
+    vcr: "of video ads watched to the end",
+    ctr: "click-through rate",
+  };
+  return captions[metric];
+}
+
+export function kpiValueText(metric: KpiMetric, value: number, style: RecapKpi["roasStyle"] = "percent"): string {
+  if (metric === "roas") return roasText(value, style);
+  if (metric === "cpa") return compactMoney(value);
+  if (metric === "vcr") return `${Math.round(value * 100)}%`;
+  if (metric === "ctr") return `${(value * 100).toFixed(2)}%`;
+  return compactNumber(value);
+}
+
+/** "24% above target" when the KPI beat its target; nothing otherwise, the target line says enough. */
+export function kpiBeatText(kpi: RecapKpi): string | null {
+  const gap = kpiVsTarget(kpi);
+  if (gap === null || gap < 0.005) return null;
+  const pct = Math.round(gap * 100);
+  if (pct < 1) return "On target";
+  return kpi.metric === "cpa" ? `${pct}% below target cost` : `${pct}% above target`;
+}
+
+/** The target as the client reads it: "ROAS > 300%" becomes "300%". */
+export function kpiTargetText(kpi: RecapKpi): string | null {
+  const target = activeTarget(kpi);
+  return target ? kpiValueText(kpi.metric, target.value, kpi.roasStyle) : null;
+}
+
+/** One plain sentence on what the KPI means in money or people, all figures from the recap. */
+export function kpiSentence(campaign: Pick<RecapCampaign, "kpi" | "tiles" | "revenue" | "conversionLabel" | "frequency">): string | null {
+  const kpi = campaign.kpi;
+  const tile = (m: RecapMetric) => campaign.tiles.find((t) => t.metric === m)?.value ?? null;
+  const spend = tile("spend");
+  const conversions = tile("conversions");
+  const cpa = tile("cpa");
+  const label = (campaign.conversionLabel || "conversions").toLowerCase();
+  if (!kpi) return null;
+  if (kpi.metric === "roas" && campaign.revenue && spend) {
+    return `Every $1 invested returned $${kpi.value.toFixed(2)} in tracked revenue: ${compactMoney(campaign.revenue)} from ${compactMoney(spend)}.`;
+  }
+  if ((kpi.metric === "cpa" || kpi.metric === "conversions") && conversions && cpa && spend) {
+    return `${compactNumber(conversions)} ${label} at ${compactMoney(cpa)} each, from ${compactMoney(spend)} invested.`;
+  }
+  if (kpi.metric === "reach" && campaign.frequency) return `${compactNumber(kpi.value)} households reached, each about ${campaign.frequency.toFixed(1)} times on average.`;
+  return null;
+}
+
+/** The recommendations' lead-in, worded toward the KPI and never as a verdict. */
+export function recommendationsIntro(kpi: RecapKpi | null | undefined, conversionLabel: string): string {
+  if (!kpi) return "To drive even stronger results in the next campaign, we recommend:";
+  const name = kpi.metric === "roas" ? "ROAS" : kpiName(kpi.metric, conversionLabel).toLowerCase();
+  const gap = kpiVsTarget(kpi);
+  return gap !== null && gap < 0
+    ? `To drive better performance towards the campaign's ${name} goal, we recommend:`
+    : `To drive even stronger ${name} in the next campaign, we recommend:`;
+}
+
+/** What a recommendation does for the KPI, from its kind and evidence; never the model's words. */
+export function kpiEffect(rec: RecapRecommendation, kpi: RecapKpi | null | undefined, conversionLabel: string): string | null {
+  const kind = rec.kind ?? "change";
+  if (rec.strength === "test") return "Finds the next lift";
+  if (kind === "keep") return "Protects what works";
+  if (kind === "execution") return "Sharpens delivery";
+  if (!kpi) return null;
+  if (kpi.metric === "roas") return "Lifts ROAS";
+  if (kpi.metric === "cpa") return `Lowers cost per ${singular(conversionLabel || "conversions")}`;
+  if (kpi.metric === "conversions") return `More ${(conversionLabel || "conversions").toLowerCase()}`;
+  if (kpi.metric === "reach") return "Grows reach";
+  return "Lifts results";
+}
+
+/**
+ * A takeaway's stat split into a headline figure and the words around it:
+ * "42% of checkouts from 9% of spend" -> "42%", "of checkouts", "from 9% of spend".
+ * A stat that does not open with its figure is left whole.
+ */
+export function splitStat(stat: string): { figure: string; label: string; rest: string } | null {
+  const m = /^(\$?\d[\d,]*(?:\.\d+)?\s?(?:%|x|×|[KMB]\b)?)\s*(.*)$/.exec(stat.trim());
+  if (!m || !m[2]) return m ? { figure: m[1].trim(), label: "", rest: "" } : null;
+  const tail = m[2];
+  const cut = /\s(?=(?:from|at|vs\.?|versus|on|with|across|in|for|over|against)\s)|\s*[·,;(]\s*/i.exec(tail);
+  const label = (cut ? tail.slice(0, cut.index) : tail).trim();
+  const rest = (cut ? tail.slice(cut.index) : "").replace(/^\s*[·,;]\s*/, "").trim();
+  // A long label reads better under the figure than beside it.
+  return label.split(/\s+/).length > 4 ? { figure: m[1].trim(), label: "", rest: tail.trim() } : { figure: m[1].trim(), label, rest };
 }
