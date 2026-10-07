@@ -33,6 +33,8 @@ interface InteractionRequest {
   model?: string;
   /** When set, the call streams and reports each thought-summary headline as it arrives. */
   onThought?: (line: string) => void;
+  /** Cancels the request, e.g. when a backup request for the same work answered first. */
+  signal?: AbortSignal;
 }
 
 function interactionParams(request: InteractionRequest, extra: Record<string, unknown>): Record<string, unknown> {
@@ -56,8 +58,13 @@ async function createInteraction(
 ): Promise<InteractionLike> {
   const interaction = await client.interactions.create(
     interactionParams(request, extra) as any,
-    // Retries are the caller's decision: a silent SDK retry would double a timeout budget.
-    { timeout: request.timeoutMs, maxRetries: 0 },
+    // Retries are the caller's decision: a silent SDK retry would double a timeout budget. A
+    // fetch signal takes precedence over the SDK's own timeout, so the timeout rides on it too.
+    {
+      timeout: request.timeoutMs,
+      maxRetries: 0,
+      ...(request.signal ? { fetchOptions: { signal: AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs)]) } } : {}),
+    },
   );
   return interaction as InteractionLike;
 }

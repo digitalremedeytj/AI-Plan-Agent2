@@ -57,12 +57,12 @@ import {
   type AuditInputs,
 } from "./src/qa/auditRunner";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeSchema } from "./src/research/planNarrative";
-import { normalizePublisherHighlights, publisherHighlightsSchema } from "./src/planning/publisherHighlights";
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { addableChannels, applyOps, parseOps } from "./src/assistant/operations";
 import { classifyScoutError, scoutFailureMessage } from "./src/assistant/scoutErrors";
+import { hedge } from "./src/research/hedgedCall";
 import { detectFollowUps } from "./src/assistant/followUps";
 import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, reviewFingerprint, snapshotOf, suggestedDetails } from "./src/performance/library";
 import { comparePlanToActual } from "./src/performance/planVsActual";
@@ -184,10 +184,18 @@ const upload = multer({ dest: os.tmpdir() });
 // dossiers (2026-10-06). 180s was weighed and rejected: with slow research and a slow synthesis
 // fallback, the run would reach the narrative pass with less than its reserve left and skip it.
 const TIMEOUT_PARALLEL_RESEARCH_MS = 150000;
-// Synthesis gets 120s at high thinking plus one 60s medium-thinking fallback (see SYNTHESIS_ATTEMPTS).
+// A dossier still running at 75s gets a medium-thinking backup request beside it, and whichever
+// answers first is used (src/research/hedgedCall). Still at 150s overall: slow days timed out
+// one dossier even at 150s, and a longer limit would come out of the narrative and QA stages.
+const RESEARCH_BACKUP_AFTER_MS = 75000;
+const RESEARCH_BACKUP_THINKING_LEVEL: GeminiThinkingLevel = "medium";
+// Synthesis gets 120s at high thinking plus one 120s medium-thinking fallback (see SYNTHESIS_ATTEMPTS).
 const TIMEOUT_SYNTHESIS_HIGH_MS = 120000;
-const TIMEOUT_SYNTHESIS_FALLBACK_MS = 60000;
+const TIMEOUT_SYNTHESIS_FALLBACK_MS = 120000;
 const TIMEOUT_SYNTHESIS_MS = TIMEOUT_SYNTHESIS_HIGH_MS + TIMEOUT_SYNTHESIS_FALLBACK_MS;
+// The outer guard waits a little past the two attempts, so it cannot cut off a fallback that is
+// finishing at its own limit (2026-10-06: the guard fired at 180s as the 60s fallback ended).
+const SYNTHESIS_GUARD_GRACE_MS = 5000;
 const TIMEOUT_SCORING_MS = 60000;            // candidate-signal reasoning
 // QA runs on a different provider from the writer so the two do not share blind spots. Chosen
 // from a side-by-side run on a saved PetSmart plan (2026-09-23): Sol at high found real issues
@@ -280,8 +288,11 @@ const RESEARCH_THINKING_LEVEL: GeminiThinkingLevel = "high";
 // for this call in every spike run, and with raw grounding links it mis-copied most of the
 // citation URLs it chose; high thought for 8-14K tokens and copied them exactly. High took
 // 55-78s, so 120s leaves headroom, and a medium retry means a slow run still ships a profile
-// instead of an error. Cloud Run allows 900s per request; the binding limits are the client's
-// 600s cap and the 240s SSE watchdog, and 180s here stays inside both.
+// instead of an error. On slow days high ran past 120s and a 60s medium retry was cut off, failing
+// the whole generation, so the retry now gets 120s too: a narrative pass skipped for time is
+// better than no plan. Limits that bind: Cloud Run's 900s per request (RUN_BUDGET_MS) and the
+// 240s SSE watchdog, which only fires on silence; synthesis streams its thoughts and announces
+// the retry, so neither half goes quiet for that long.
 const SYNTHESIS_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: number }> = [
   { thinkingLevel: "high", timeoutMs: TIMEOUT_SYNTHESIS_HIGH_MS },
   { thinkingLevel: "medium", timeoutMs: TIMEOUT_SYNTHESIS_FALLBACK_MS },
@@ -643,7 +654,6 @@ const audienceProfileSchema = {
       type: Type.STRING,
       description: "A highly polished paragraph explaining why the recommended publishers align with the audience, their media consumption behavior, and how this fits the overall campaign."
     },
-    publisherHighlights: publisherHighlightsSchema,
     additionalRfpRequirements: {
       type: Type.OBJECT,
       description: "Optional RFP requirements, operational specifications, questions/asks, and Digital Remedy solution responses when an RFP document is uploaded.",
@@ -697,8 +707,7 @@ const audienceProfileSchema = {
     "executiveSummary",
     "sources",
     "ctvPublishers",
-    "publisherInsights",
-    "publisherHighlights"
+    "publisherInsights"
   ]
 };
 
@@ -4353,21 +4362,33 @@ INSTRUCTIONS:
       `[RESEARCH UNAVAILABLE: the ${label} research did not complete. Provide no figures, chart values or claims for this topic; leave its charts empty.]`;
 
     // Helper to run research sub-calls in parallel with search grounding enabled
-    const runResearchCall = async (prompt: string, label: string): Promise<{ label: string; text: string; sources: any[]; failed?: boolean; reason?: string }> => {
+    const runResearchCall = async (prompt: string, label: string): Promise<{ label: string; text: string; sources: any[]; failed?: boolean; reason?: string; usedBackup?: boolean }> => {
       try {
         console.log(`Starting parallel research query for: ${label}...`);
-        const research = await generateGroundedText(ai, {
-          systemInstruction: `You are an expert audience research analyst. Provide a highly detailed, fact-packed research brief. Always find and cite real stats, percentages, and sources. ${RESEARCH_SOURCE_GUIDANCE}`,
-          input: prompt,
-          thinkingLevel: RESEARCH_THINKING_LEVEL,
-          timeoutMs: TIMEOUT_PARALLEL_RESEARCH_MS,
-        });
+        const startedAt = Date.now();
+        const { value: research, winner } = await hedge(
+          (attempt, signal, timeoutMs) => generateGroundedText(ai, {
+            systemInstruction: `You are an expert audience research analyst. Provide a highly detailed, fact-packed research brief. Always find and cite real stats, percentages, and sources. ${RESEARCH_SOURCE_GUIDANCE}`,
+            input: prompt,
+            thinkingLevel: attempt === "primary" ? RESEARCH_THINKING_LEVEL : RESEARCH_BACKUP_THINKING_LEVEL,
+            timeoutMs,
+            signal,
+          }),
+          { backupAfterMs: RESEARCH_BACKUP_AFTER_MS, totalMs: TIMEOUT_PARALLEL_RESEARCH_MS },
+          (why) => {
+            console.log(`[RESEARCH] ${label}: ${why === "slow" ? `no answer after ${RESEARCH_BACKUP_AFTER_MS / 1000}s` : "first request failed"}; starting a ${RESEARCH_BACKUP_THINKING_LEVEL}-thinking backup.`);
+            sendEvent("status", { message: `${label} research is ${why === "slow" ? "running slow" : "having trouble"}; starting a faster backup search alongside it...` });
+          },
+        );
 
         const text = research.text || `[Failed to retrieve detailed ${label} research text]`;
         const sources = research.sources;
 
-        console.log(`Completed parallel research query for: ${label}. Found ${sources.length} sources.`);
-        return { label, text, sources };
+        console.log(`Completed parallel research query for: ${label} via the ${winner} request in ${Math.round((Date.now() - startedAt) / 1000)}s. Found ${sources.length} sources.`);
+        if (winner === "backup") {
+          pushAlert(generationAlerts, { section: "research", severity: "flagged", message: `The ${label} research was slow, so it came from the faster backup search (${RESEARCH_BACKUP_THINKING_LEVEL} thinking), which usually finds fewer sources. Check that topic's figures before presenting.` });
+        }
+        return { label, text, sources, usedBackup: winner === "backup" };
       } catch (err: any) {
         console.error(`Research sub-call for ${label} failed:`, err);
         return { label, text: researchUnavailable(label), sources: [] as any[], failed: true, reason: err?.message || String(err) };
@@ -4540,8 +4561,7 @@ ${pubTier3.map(formatPublisherLine).join('\n') || '      - None currently enable
    * 'publisher': The exact publisher name as listed in the approved pool.
    * 'category': The publisher category ('App' | 'Network' | 'OS').
    * 'why': A highly specific, evidence-grounded justification explaining why this publisher's programming, viewer demographics, or platform environment fits the persona and fulfills its targeting rule. (Remember: NEVER mention tiers here!)
-   Also, write a professional, cohesive, and concise paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign. Keep it strictly between 50 to 65 words (under 450 characters) so it fits slide presentation layouts without overflowing. (Remember: NEVER mention tiers here!)
-   Then fill 'publisherHighlights', the client-facing Publisher Insights panel: a headline of at most 8 words naming who the mix is built for, and 3 to 4 pillars. Each pillar is one distinct reason the mix fits (for example live sports attention, lifestyle fit, household co-viewing, scale and frequency), with an icon from the allowed list, a title of at most 5 words, one sentence of at most 16 words, and the 1 to 4 selected publishers that deliver it, named exactly as in your list. Cover most of the selected publishers, each in at most one pillar. No statistics or figures. (NEVER mention tiers here either!)${history?.publisherBrief ? `\n\n${history.publisherBrief}` : ""}`;
+   Also, write a professional, cohesive, and concise paragraph for 'publisherInsights' explaining why this curated CTV publisher mix maximizes addressable reach, view-through rates, and audience affinity for the campaign. Keep it strictly between 50 to 65 words (under 450 characters) so it fits slide presentation layouts without overflowing. (Remember: NEVER mention tiers here!)${history?.publisherBrief ? `\n\n${history.publisherBrief}` : ""}`;
 
     // Synthesis & Strategy 2 (Authority Filtering)
     const synthesisSystemInstruction = `You are a senior digital media director, veteran audience research partner, and master data synthesizer.
@@ -4717,7 +4737,7 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
 
     const synthesisResult = await withTimeout(
       synthesisPromise,
-      TIMEOUT_SYNTHESIS_MS,
+      TIMEOUT_SYNTHESIS_MS + SYNTHESIS_GUARD_GRACE_MS,
       null
     ).finally(synthesisThoughts.done);
 
@@ -4955,11 +4975,10 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     };
     const remainingMs = () => RUN_BUDGET_MS - (Date.now() - runStartedAt);
 
-    // Synthesis's draft highlights, held to the plan's publishers and the icon list, so they are
-    // safe to show if the narrative pass below is skipped or fails.
-    const draftHighlights = normalizePublisherHighlights(originalData.publisherHighlights, originalData.ctvPublishers);
-    if (draftHighlights) originalData.publisherHighlights = draftHighlights;
-    else delete originalData.publisherHighlights;
+    // Publisher Insights' headline and pillars are written by the narrative pass below, not by
+    // synthesis: synthesis is the one stage a run cannot survive losing, so it carries as little
+    // as it can. A plan whose narrative pass is skipped shows the publisherInsights paragraph.
+    delete originalData.publisherHighlights;
 
     // The narrative is written last, by one writer, with the settled plan in front of it. Skipped
     // (keeping synthesis's draft) only when the run is short of time, so the audit always runs.
