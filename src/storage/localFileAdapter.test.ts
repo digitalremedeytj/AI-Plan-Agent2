@@ -237,3 +237,15 @@ test("an archived campaign drops out of the library but is kept", async () => {
   assert.equal((await adapter.listPerformanceCampaigns({ includeArchived: true })).length, 1);
   assert.equal((await adapter.getPerformanceCampaign(created.id))?.files.length, 1);
 });
+
+test("the prompt library starts empty, and a stale save is refused instead of overwriting another admin", async () => {
+  const adapter = freshAdapter();
+  assert.equal(await adapter.getScoutPrompts(), null);
+  const prompt = { id: "x", title: "X", category: "Plan review", text: "Ask", needs: [], mode: "plan" as const, featured: false, enabled: true, builtIn: false };
+  const first = await adapter.saveScoutPrompts([prompt], "admin-a", 0);
+  assert.equal(first.revision, 1);
+  await assert.rejects(adapter.saveScoutPrompts([prompt], "admin-b", 0), RevisionConflictError);
+  const second = await adapter.saveScoutPrompts([{ ...prompt, title: "Y" }], "admin-b", 1);
+  assert.equal(second.revision, 2);
+  assert.equal((await adapter.getScoutPrompts())?.prompts[0].title, "Y");
+});

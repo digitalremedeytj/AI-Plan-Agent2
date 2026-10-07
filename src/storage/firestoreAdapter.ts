@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings, PlanningSettings } from "../planning/settings";
 import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, enrichPublishersWithKnownLogos, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
+import type { ScoutPrompt } from "../assistant/promptLibrary";
 import { getAccessToken } from "./googleAuth";
 import { decodeFields, encodeFields } from "./firestoreValue";
 import { sortByUpdatedDesc, toSummary } from "./localFileAdapter";
@@ -14,6 +15,7 @@ import {
   PlanSummary,
   PublishersRecord,
   RevisionConflictError,
+  ScoutPromptsRecord,
   SettingsRecord,
   StorageAdapter,
   StoredPlan,
@@ -44,6 +46,7 @@ const SHARES = "shares";
 const SETTINGS = "settings";
 const SETTINGS_REVISIONS = "settings_revisions";
 const PUBLISHERS = "publishers";
+const SCOUT_PROMPTS = "scout_prompts";
 const CURRENT_DOC = "current";
 const PERFORMANCE = "performance_campaigns";
 
@@ -479,6 +482,33 @@ export class FirestoreAdapter implements StorageAdapter {
     throw new Error("Could not save CTV publishers after repeated write conflicts. Please retry.");
   }
 
+  // --- ScoutAI prompt library -------------------------------------------------
+
+  async getScoutPrompts(): Promise<ScoutPromptsRecord | null> {
+    const doc = await this.getDocument(SCOUT_PROMPTS, CURRENT_DOC);
+    return doc ? this.documentToScoutPrompts(doc) : null;
+  }
+
+  async saveScoutPrompts(prompts: ScoutPrompt[], actor: string, expectedRevision: number): Promise<ScoutPromptsRecord> {
+    const currentDoc = await this.getDocument(SCOUT_PROMPTS, CURRENT_DOC);
+    const currentRevision = currentDoc ? this.documentToScoutPrompts(currentDoc)?.revision ?? 0 : 0;
+    if (currentRevision !== expectedRevision) throw new RevisionConflictError(currentRevision, "The prompt library was changed by someone else.");
+    const record: ScoutPromptsRecord = { revision: currentRevision + 1, prompts, updatedAt: new Date().toISOString(), updatedBy: actor };
+    try {
+      await this.putDocument(
+        SCOUT_PROMPTS,
+        CURRENT_DOC,
+        { revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy, promptsJson: JSON.stringify(prompts) },
+        { expectedUpdateTime: currentDoc?.updateTime },
+      );
+    } catch (err) {
+      // Someone saved between the read and the write: the revision check would have caught it.
+      if (this.isPreconditionFailure(err)) throw new RevisionConflictError(currentRevision + 1, "The prompt library was changed by someone else.");
+      throw err;
+    }
+    return record;
+  }
+
   // --- past campaign performance ---------------------------------------------
 
   async listPerformanceCampaigns(options: ListPlansOptions = {}): Promise<PerformanceCampaignSummary[]> {
@@ -577,6 +607,16 @@ export class FirestoreAdapter implements StorageAdapter {
       files: withFiles ? parse(fields.filesJson, []) : [],
       review: withFiles ? parse(fields.reviewJson, null) : null,
     };
+  }
+
+  private documentToScoutPrompts(doc: FirestoreDocument): ScoutPromptsRecord | null {
+    const fields = decodeFields(doc.fields || {}) as Record<string, any>;
+    try {
+      return { revision: Number(fields.revision) || 1, prompts: JSON.parse(fields.promptsJson), updatedAt: fields.updatedAt, updatedBy: fields.updatedBy };
+    } catch (err) {
+      console.error("[STORAGE:firestore] Could not parse promptsJson:", err);
+      return null;
+    }
   }
 
   private documentToPublishers(doc: FirestoreDocument): PublishersRecord | null {

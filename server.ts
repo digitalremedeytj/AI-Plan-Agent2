@@ -62,6 +62,7 @@ import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
 import { addableChannels, applyOps, parseOps } from "./src/assistant/operations";
 import { classifyScoutError, scoutFailureMessage } from "./src/assistant/scoutErrors";
+import { DEFAULT_SCOUT_PROMPTS, mergeWithDefaults, validatePromptLibrary } from "./src/assistant/promptLibrary";
 import { hedge } from "./src/research/hedgedCall";
 import { detectFollowUps } from "./src/assistant/followUps";
 import { advertiserMismatch, analyzeFiles, mergeFiles, publicCampaign, readCampaignDetails, readUploadedFiles, reviewFingerprint, snapshotOf, suggestedDetails } from "./src/performance/library";
@@ -1684,6 +1685,47 @@ app.put("/api/ctv-publishers", requireAdmin, async (req, res) => {
   }
 });
 
+// ---- ScoutAI prompt library ----
+// Ready-made ScoutAI prompts, shared by every planner. Anyone signed in reads them; only an admin
+// edits them (requireAdmin), with a revision check so two admins cannot overwrite each other.
+
+app.get("/api/scout-prompts", async (_req, res) => {
+  try {
+    const record = await (await getStorage()).getScoutPrompts();
+    res.json({ success: true, prompts: mergeWithDefaults(record?.prompts), revision: record?.revision ?? 0, updatedAt: record?.updatedAt ?? null, updatedBy: record?.updatedBy ?? null });
+  } catch (err: any) {
+    console.error("Error loading ScoutAI prompts:", err);
+    res.status(500).json({ error: "Failed to load the ScoutAI prompts", details: err.message });
+  }
+});
+
+const saveScoutPromptLibrary = async (req: any, res: any, prompts: unknown) => {
+  const baseRevision = Number(req.body?.baseRevision);
+  if (!Number.isInteger(baseRevision) || baseRevision < 0) {
+    res.status(428).json({ error: "The library revision you edited is required.", code: "REVISION_REQUIRED" });
+    return;
+  }
+  const validation = validatePromptLibrary(prompts);
+  if (!validation.valid) {
+    res.status(400).json({ error: "The prompt library has problems to fix before it can be saved.", reasons: validation.errors });
+    return;
+  }
+  try {
+    const record = await (await getStorage()).saveScoutPrompts(validation.prompts, actorName(req), baseRevision);
+    res.json({ success: true, prompts: record.prompts, revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy });
+  } catch (err: any) {
+    if (err instanceof RevisionConflictError) {
+      res.status(409).json({ error: "Someone else changed the prompt library while you were editing. Reload it and make your change again.", code: "REVISION_CONFLICT", currentRevision: err.currentRevision });
+      return;
+    }
+    console.error("Error saving ScoutAI prompts:", err);
+    res.status(500).json({ error: "Failed to save the ScoutAI prompts", details: err.message });
+  }
+};
+
+app.put("/api/scout-prompts", requireAdmin, (req, res) => saveScoutPromptLibrary(req, res, req.body?.prompts));
+app.post("/api/scout-prompts/reset", requireAdmin, (req, res) => saveScoutPromptLibrary(req, res, DEFAULT_SCOUT_PROMPTS));
+
 // API: Reset CTV Publishers to CSV defaults.
 app.post("/api/ctv-publishers/reset", requireAdmin, async (req, res) => {
   try {
@@ -2113,12 +2155,15 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     });
     const question = turns[turns.length - 1].text;
     const hasLive = linked.some((l) => l.campaign.kind === "live");
-    // buildPerformanceContext is empty exactly when no campaign is linked.
-    analysisTurn = linked.length > 0 && PERFORMANCE_QUESTION.test(question);
+    // A prompt from the library says what kind of turn it is; a typed message is judged by its
+    // words. buildPerformanceContext is empty exactly when no campaign is linked.
+    const promptId = typeof req.body?.promptId === "string" ? req.body.promptId : null;
+    const libraryPrompt = promptId ? mergeWithDefaults((await storage.getScoutPrompts())?.prompts).find((p) => p.id === promptId && p.enabled) : undefined;
+    analysisTurn = linked.length > 0 && (libraryPrompt ? libraryPrompt.mode !== "plan" : PERFORMANCE_QUESTION.test(question));
     // Analysis starts from the reviews and the recap when every past campaign has a current
     // review, unless the question needs rows the summary leaves out (see wantsFullData). Any
     // other turn reads the full context, as it always has.
-    let depth: PerformanceDepth = analysisTurn && canSummarize(linked) && !wantsFullData(question, linked) ? "summary" : "full";
+    let depth: PerformanceDepth = analysisTurn && libraryPrompt?.mode !== "analysisFull" && canSummarize(linked) && !wantsFullData(question, linked) ? "summary" : "full";
     let performance = performanceAt(depth);
     const planContext = buildPlanContext(plan, context);
     // Figures about past performance must come from its data or the plan; anything else is flagged.
@@ -2180,7 +2225,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     if (figures) for (const item of items) item.unverifiedFigures = unverifiedFigures([item.title, item.why, item.evidence ?? "", ...opTexts(item.ops)].join(" \n "), figures);
     const replyUnverified = figures ? unverifiedFigures(response.reply, figures) : [];
     if (replyUnverified.length > 0) reply += `\n\n_Not found in the campaign data or the plan, so check before using: ${replyUnverified.join(", ")}._`;
-    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s), ${linked.length ? `${hasLive ? "live campaign + " : ""}${linked.length - (hasLive ? 1 : 0)} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking${analysisTurn ? `, ${depth} data` : ""}).`);
+    console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s)${libraryPrompt ? `, library prompt "${libraryPrompt.id}"` : ""}, ${linked.length ? `${hasLive ? "live campaign + " : ""}${linked.length - (hasLive ? 1 : 0)} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking${analysisTurn ? `, ${depth} data` : ""}).`);
     send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision, depth: analysisTurn ? depth : null });
     res.end();
   } catch (err: any) {

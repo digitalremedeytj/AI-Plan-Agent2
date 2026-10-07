@@ -5757,6 +5757,7 @@ export default function App() {
                   onUnread={setScoutUnread}
                   preview={scoutPreview}
                   onPreview={setScoutPreview}
+                  kpis={kpis.filter((k) => k.trim().length > 0)}
                   request={scoutRequest}
                   onRequestHandled={() => setScoutRequest(null)}
                 />

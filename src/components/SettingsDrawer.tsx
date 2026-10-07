@@ -50,6 +50,7 @@ import {
   validateCtvPublishers,
 } from "../planning/knowledge/ctvPublishers";
 import { authFetch } from "../api/client";
+import { ScoutPromptsSettings } from "./ScoutPromptsSettings";
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -67,7 +68,7 @@ interface SettingsDrawerProps {
   saveError?: string | null;
 }
 
-type SettingsTab = "visibility" | "budgets" | "products" | "publishers" | "enhancements";
+type SettingsTab = "visibility" | "budgets" | "products" | "publishers" | "enhancements" | "prompts";
 
 function numericValue(value: string): number {
   if (value.trim() === "") return Number.NaN;
@@ -616,6 +617,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     { id: "products", label: "Product Rules", count: safeProducts.length },
     { id: "enhancements", label: "Enhancements", count: safeEnhancements.length },
     { id: "visibility", label: "Visibility", count: safeOverviewMetrics.length + safeInternalOnly.length },
+    { id: "prompts", label: "ScoutAI Prompts" },
   ];
 
   const currentEditingPub = editingLogoPubId
@@ -693,6 +695,9 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
           )}
           <fieldset disabled={readOnly} className={readOnly ? "opacity-90" : undefined}>
           
+          {/* ScoutAI prompt library: its own record, saved from inside the tab */}
+          {activeTab === "prompts" && <ScoutPromptsSettings readOnly={readOnly} />}
+
           {/* TAB 1: RECOMMENDED CTV PUBLISHERS */}
           {activeTab === "publishers" && (
             <section className="space-y-5">
@@ -2031,9 +2036,11 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
             </div>
           )}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+            {/* The prompts tab saves itself; these act on the planning settings only. */}
             <button
               type="button"
               disabled={readOnly}
+              hidden={activeTab === "prompts"}
               onClick={() => {
                 if (confirm("Reset planning settings to defaults?")) {
                   setDraftSettings(clonePlanningSettings(DEFAULT_PLANNING_SETTINGS));
@@ -2057,6 +2064,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                 type="button"
                 onClick={handleSave}
                 disabled={readOnly}
+                hidden={activeTab === "prompts"}
                 title={readOnly ? "Only administrators can change global settings." : undefined}
                 className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-bold text-white hover:bg-indigo-700 shadow-sm sm:flex-none disabled:cursor-not-allowed disabled:bg-slate-300"
               >

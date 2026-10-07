@@ -1,5 +1,6 @@
 import type { PlanningSettings } from "../planning/settings";
 import type { CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
+import type { ScoutPrompt } from "../assistant/promptLibrary";
 
 /**
  * Shared, server-authoritative storage contract.
@@ -89,6 +90,14 @@ export interface SettingsRecord {
 export interface PublishersRecord {
   revision: number;
   publishers: CtvPublisherSetting[];
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** The ScoutAI prompt library as the admin last saved it. See src/assistant/promptLibrary.ts. */
+export interface ScoutPromptsRecord {
+  revision: number;
+  prompts: ScoutPrompt[];
   updatedAt: string;
   updatedBy: string;
 }
@@ -296,6 +305,11 @@ export interface StorageAdapter {
 
   getCurrentPublishers(): Promise<PublishersRecord>;
   savePublishers(publishers: CtvPublisherSetting[], actor: string): Promise<PublishersRecord>;
+
+  /** Null until an admin first saves the library; callers fall back to the built-in prompts. */
+  getScoutPrompts(): Promise<ScoutPromptsRecord | null>;
+  /** Throws RevisionConflictError if expectedRevision (0 for a first save) is stale. */
+  saveScoutPrompts(prompts: ScoutPrompt[], actor: string, expectedRevision: number): Promise<ScoutPromptsRecord>;
 
   /** Summaries only: listing never downloads report files. */
   listPerformanceCampaigns(options?: ListPlansOptions): Promise<PerformanceCampaignSummary[]>;

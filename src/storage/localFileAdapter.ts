@@ -3,6 +3,7 @@ import path from "path";
 import crypto from "crypto";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings, PlanningSettings } from "../planning/settings";
 import { DEFAULT_CTV_PUBLISHERS, validateCtvPublishers, enrichPublishersWithKnownLogos, CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
+import type { ScoutPrompt } from "../assistant/promptLibrary";
 import {
   assertCampaignFits,
   buildCampaignRecord,
@@ -13,6 +14,7 @@ import {
   PlanSummary,
   PublishersRecord,
   RevisionConflictError,
+  ScoutPromptsRecord,
   SettingsRecord,
   StorageAdapter,
   StoredPlan,
@@ -37,6 +39,7 @@ export class LocalFileAdapter implements StorageAdapter {
   private readonly settingsDir: string;
   private readonly publishersDir: string;
   private readonly performanceDir: string;
+  private readonly promptsDir: string;
 
   constructor(rootDir: string = path.join(process.cwd(), "data", "store")) {
     this.rootDir = rootDir;
@@ -44,10 +47,11 @@ export class LocalFileAdapter implements StorageAdapter {
     this.settingsDir = path.join(rootDir, "settings");
     this.publishersDir = path.join(rootDir, "publishers");
     this.performanceDir = path.join(rootDir, "performance");
+    this.promptsDir = path.join(rootDir, "scout-prompts");
   }
 
   async init(): Promise<void> {
-    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir]) {
+    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
@@ -255,6 +259,24 @@ export class LocalFileAdapter implements StorageAdapter {
       updatedBy: actor,
     };
     writeJsonAtomic(path.join(this.publishersDir, "current.json"), record);
+    return record;
+  }
+
+  // --- ScoutAI prompt library -------------------------------------------------
+
+  async getScoutPrompts(): Promise<ScoutPromptsRecord | null> {
+    await this.init();
+    return readJson<ScoutPromptsRecord>(path.join(this.promptsDir, "current.json"));
+  }
+
+  async saveScoutPrompts(prompts: ScoutPrompt[], actor: string, expectedRevision: number): Promise<ScoutPromptsRecord> {
+    await this.init();
+    const file = path.join(this.promptsDir, "current.json");
+    const current = readJson<ScoutPromptsRecord>(file);
+    const currentRevision = current?.revision ?? 0;
+    if (currentRevision !== expectedRevision) throw new RevisionConflictError(currentRevision, "The prompt library was changed by someone else.");
+    const record: ScoutPromptsRecord = { revision: currentRevision + 1, prompts, updatedAt: new Date().toISOString(), updatedBy: actor };
+    writeJsonAtomic(file, record);
     return record;
   }
 

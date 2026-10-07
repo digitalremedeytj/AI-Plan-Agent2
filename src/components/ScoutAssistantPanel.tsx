@@ -1,11 +1,12 @@
 import React from "react";
 import Markdown from "react-markdown";
-import { AlertTriangle, ArrowRight, BarChart3, Check, ChevronDown, Eye, EyeOff, FileText, Loader2, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, BarChart3, BookOpen, Check, ChevronDown, Eye, EyeOff, FileText, Loader2, Lock, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
 import * as api from "../api/client";
 import { ApiError, type AssistantOp, type ChatTurn, type FollowUp, type ProposalChange, type ScoutProposal } from "../api/client";
 import type { AudienceProfile } from "../types";
 import { PlanText } from "./PlanText";
 import { PastPerformanceModal } from "./PastPerformanceModal";
+import { DEFAULT_SCOUT_PROMPTS, featuredPrompts, promptAvailability, type PromptContext, type ScoutPrompt } from "../assistant/promptLibrary";
 
 // The ScoutAI chat in the plan's left column. The conversation lives for the browser session
 // only (sessionStorage, per plan): it is a working aid, not part of the plan. Everything that
@@ -44,7 +45,7 @@ interface Message {
   /** An analysis answered from the review summary rather than every campaign row. */
   fromSummary?: boolean;
   /** A failed answer the planner can ask for again; `failures` counts tries at the same question. */
-  retry?: { recapRecommendationId?: string; failures: number };
+  retry?: { recapRecommendationId?: string; promptId?: string; failures: number };
 }
 
 /** A request the plan view sends on the planner's behalf (applying a recap recommendation). */
@@ -84,6 +85,8 @@ interface Props {
   onUnread: (unread: boolean) => void;
   preview: ScoutPreview | null;
   onPreview: (preview: ScoutPreview | null) => void;
+  /** The plan's KPIs, for prompts that use {kpis}. */
+  kpis?: string[];
   request?: ScoutRequest | null;
   onRequestHandled?: () => void;
 }
@@ -144,21 +147,6 @@ function liveSummary(p: api.PlanVsActual): string {
     ? `ROAS ${p.actual.roas !== null ? `${p.actual.roas.toFixed(2)}x` : "n/a"} vs ${p.target.value.toFixed(2)}x target`
     : `CPA ${p.actual.cpa !== null ? money(p.actual.cpa) : "n/a"}${p.target ? ` vs ${money(p.target.value)} target` : ""}`;
   return [`Live`, p.daysElapsed !== null && p.flight ? `day ${p.daysElapsed} of ${p.flight.days}` : "", `${Math.round(p.spendShare * 100)}% spent`, kpi].filter(Boolean).join(" · ");
-}
-
-function suggestedPrompts(profile: AudienceProfile, pastPerformance: "none" | "reference" | "own", hasLive = false): string[] {
-  const channels = profile.channelStrategy?.mediaPlan?.channels || [];
-  const largest = [...channels].sort((a, b) => b.allocationPercent - a.allocationPercent)[0];
-  const openFindings = (profile.auditResult?.findings || []).filter((f) => f.status !== "resolved").length;
-  return [
-    hasLive ? "How is the live campaign tracking against the plan, and what should we change?" : "",
-    pastPerformance !== "none" && !hasLive ? "Analyse our past campaign: what worked, what didn't, and what should this plan change?" : "",
-    pastPerformance === "own" && !(profile.performanceLearnings || []).length ? "Draft the client-facing learnings from our past campaign" : "",
-    "What would you change to improve performance toward our KPIs?",
-    "Does this plan deliver what the brief asked for?",
-    largest ? `Why does ${largest.channelName} get ${Math.round(largest.allocationPercent)}% of the budget?` : "",
-    openFindings > 0 ? `How should we handle the ${openFindings} open QA finding${openFindings === 1 ? "" : "s"}?` : "Which persona fits the brief least well, and what would you replace it with?",
-  ].filter(Boolean).slice(0, 4);
 }
 
 const selectionKey = (ids: string[]) => [...ids].sort().join("|");
@@ -404,7 +392,7 @@ function ProposalCard({
 
 export function ScoutAssistantPanel({
   planId, advertiserName, profile, revision, revisionBump, hasUnsavedChanges, isVisible, isBriefStale, hasAudit,
-  onApplied, onFollowUp, onUnread, preview, onPreview, request, onRequestHandled,
+  onApplied, onFollowUp, onUnread, preview, onPreview, kpis = [], request, onRequestHandled,
 }: Props) {
   const [messages, setMessages] = React.useState<Message[]>(() => loadMessages(planId));
   const [draft, setDraft] = React.useState("");
@@ -417,6 +405,16 @@ export function ScoutAssistantPanel({
   visibleRef.current = isVisible;
   const [pastCampaigns, setPastCampaigns] = React.useState<api.PerformanceCampaignSummary[]>([]);
   const [live, setLive] = React.useState<api.PlanVsActual | null>(null);
+  // The shared prompt library (Settings > ScoutAI Prompts). The built-in prompts stand in until
+  // it loads, or if it cannot be read.
+  const [library, setLibrary] = React.useState<ScoutPrompt[]>(DEFAULT_SCOUT_PROMPTS);
+  const [libraryOpen, setLibraryOpen] = React.useState(false);
+  // The library prompt that filled the input, sent with the message so the server knows what
+  // kind of turn it is. Cleared when the input is emptied or sent.
+  const [draftPromptId, setDraftPromptId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    api.getScoutPrompts().then((l) => setLibrary(l.prompts)).catch(() => setLibrary(DEFAULT_SCOUT_PROMPTS));
+  }, []);
   const [showPastPerformance, setShowPastPerformance] = React.useState(false);
   const loadPastCampaigns = React.useCallback(() => {
     api.listPerformanceCampaigns({ planId }).then(setPastCampaigns).catch(() => setPastCampaigns([]));
@@ -482,7 +480,7 @@ export function ScoutAssistantPanel({
 
   const selectedOps = (p: ProposalState) => p.items.filter((item) => p.selected.includes(item.id)).flatMap((item) => item.ops);
 
-  const send = async (text: string, tag: { recapRecommendationId?: string } = {}) => {
+  const send = async (text: string, tag: { recapRecommendationId?: string; promptId?: string } = {}) => {
     const content = text.trim();
     if (!content || isThinking) return;
     const userMessage: Message = { id: newId(), role: "user", text: content };
@@ -497,16 +495,16 @@ export function ScoutAssistantPanel({
     if (isThinking || !failed.retry) return;
     const history = messages.filter((m) => m.id !== failed.id);
     setMessages(history);
-    void ask(history, { recapRecommendationId: failed.retry.recapRecommendationId }, failed.retry.failures);
+    void ask(history, { recapRecommendationId: failed.retry.recapRecommendationId, promptId: failed.retry.promptId }, failed.retry.failures);
   };
 
-  const ask = async (history: Message[], tag: { recapRecommendationId?: string }, failures: number) => {
+  const ask = async (history: Message[], tag: { recapRecommendationId?: string; promptId?: string }, failures: number) => {
     setIsThinking(true);
     setThought(null);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const result = await api.askScout(planId, toTurns(history), (line) => setThought(line), controller.signal);
+      const result = await api.askScout(planId, toTurns(history), (line) => setThought(line), controller.signal, tag.promptId);
       setMessages((prev) => [...prev, {
         id: newId(),
         role: "assistant",
@@ -527,7 +525,7 @@ export function ScoutAssistantPanel({
         role: "assistant",
         text: `${err?.message || "ScoutAI couldn't answer just now. Please try again."}${hint}`,
         isError: true,
-        retry: { recapRecommendationId: tag.recapRecommendationId, failures: tries },
+        retry: { recapRecommendationId: tag.recapRecommendationId, promptId: tag.promptId, failures: tries },
       }]);
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
@@ -621,11 +619,45 @@ export function ScoutAssistantPanel({
     setThought(null);
   };
 
+  const sendDraft = () => {
+    const promptId = draftPromptId ?? undefined;
+    setDraftPromptId(null);
+    void send(draft, { promptId });
+  };
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      send(draft);
+      sendDraft();
     }
+  };
+
+  // What library prompts are checked against and filled from.
+  const promptContext: PromptContext = React.useMemo(() => {
+    const channels = profile.channelStrategy?.mediaPlan?.channels || [];
+    const largest = [...channels].sort((a, b) => b.allocationPercent - a.allocationPercent)[0];
+    return {
+      advertiser: advertiserName,
+      kpis,
+      largestMediaType: largest ? { name: largest.channelName, share: largest.allocationPercent } : null,
+      openQaFindings: (profile.auditResult?.findings || []).filter((f) => f.status !== "resolved").length,
+      hasPastCampaign: pastCampaigns.some((c) => c.kind !== "live"),
+      hasLiveCampaign: Boolean(live),
+      hasRecap: Boolean(profile.campaignRecap?.campaigns?.length),
+    };
+  }, [profile, advertiserName, kpis, pastCampaigns, live]);
+
+  // A prompt fills the input rather than sending, so the planner can adjust it first.
+  const choosePrompt = (prompt: ScoutPrompt, text: string) => {
+    setDraft(text);
+    setDraftPromptId(prompt.id);
+    setLibraryOpen(false);
+    requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(text.length, text.length);
+    });
   };
 
   // Only the most recent applied change can be reverted, and only while nothing has been saved since.
@@ -687,13 +719,13 @@ export function ScoutAssistantPanel({
               Ask why the plan looks the way it does, check it against the brief, or ask for changes and recommendations: channels, budget, personas, segments, the brief and the plan's text. Nothing is saved until you apply it.
             </p>
             <div className="mt-4 flex flex-col gap-1.5">
-              {suggestedPrompts(profile, pastCampaigns.length === 0 ? "none" : pastCampaigns.some((c) => c.advertiserKey === advertiserName.trim().toLowerCase().replace(/\s+/g, " ")) ? "own" : "reference", Boolean(live)).map((prompt) => (
+              {featuredPrompts(library, promptContext).map(({ prompt, text }) => (
                 <button
-                  key={prompt}
-                  onClick={() => send(prompt)}
+                  key={prompt.id}
+                  onClick={() => choosePrompt(prompt, text)}
                   className="text-left text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-indigo-50 hover:text-indigo-800 border border-slate-100 hover:border-indigo-200 rounded-lg px-3 py-2 cursor-pointer transition-colors"
                 >
-                  {prompt}
+                  {text}
                 </button>
               ))}
             </div>
@@ -811,18 +843,28 @@ export function ScoutAssistantPanel({
             You have unsaved changes. ScoutAI reads the last saved version of this plan.
           </p>
         )}
+        <PromptLibrary
+          prompts={library}
+          context={promptContext}
+          open={libraryOpen}
+          onToggle={() => setLibraryOpen((v) => !v)}
+          onChoose={choosePrompt}
+        />
         <div className="flex items-end gap-2 rounded-xl border border-slate-200 focus-within:border-indigo-300 focus-within:ring-2 focus-within:ring-indigo-100 bg-white px-2.5 py-2 transition-all">
           <textarea
             ref={inputRef}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              if (!e.target.value.trim()) setDraftPromptId(null);
+            }}
             onKeyDown={onKeyDown}
             rows={1}
             placeholder="Ask about or change this plan…"
             className="flex-1 resize-none overflow-y-hidden bg-transparent text-xs leading-snug text-slate-800 placeholder:text-slate-400 outline-none"
           />
           <button
-            onClick={() => send(draft)}
+            onClick={sendDraft}
             disabled={!draft.trim() || isThinking}
             aria-label="Send"
             className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
@@ -839,6 +881,62 @@ export function ScoutAssistantPanel({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The expandable library above the input, grouped by category. A prompt the plan cannot answer
+ * yet is shown greyed out with what it needs, so planners learn what unlocks it.
+ */
+function PromptLibrary({ prompts, context, open, onToggle, onChoose }: {
+  prompts: ScoutPrompt[];
+  context: PromptContext;
+  open: boolean;
+  onToggle: () => void;
+  onChoose: (prompt: ScoutPrompt, text: string) => void;
+}) {
+  const enabled = prompts.filter((p) => p.enabled);
+  if (!enabled.length) return null;
+  const categories = [...new Set(enabled.map((p) => p.category))];
+  return (
+    <div className="mb-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer"
+      >
+        <BookOpen className="w-3.5 h-3.5" /> Prompt library
+        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="mt-1.5 max-h-72 overflow-y-auto custom-scrollbar rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+          {categories.map((category) => (
+            <div key={category} className="mb-1.5 last:mb-0">
+              <div className="px-1.5 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">{category}</div>
+              {enabled.filter((p) => p.category === category).map((prompt) => {
+                const availability = promptAvailability(prompt, context);
+                return (
+                  <button
+                    key={prompt.id}
+                    type="button"
+                    disabled={!availability.available}
+                    onClick={() => onChoose(prompt, availability.text)}
+                    title={availability.available ? availability.text : availability.reason ?? undefined}
+                    className="w-full text-left rounded-lg px-2 py-1.5 hover:bg-indigo-50 disabled:hover:bg-transparent cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    <span className={`block text-[11px] font-semibold ${availability.available ? "text-slate-800" : "text-slate-400"}`}>{prompt.title}</span>
+                    {availability.available
+                      ? <span className="block text-[10px] text-slate-500 line-clamp-2">{availability.text}</span>
+                      : <span className="flex items-center gap-1 text-[10px] text-slate-400"><Lock className="w-2.5 h-2.5" /> {availability.reason}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

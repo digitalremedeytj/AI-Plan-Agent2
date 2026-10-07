@@ -2,6 +2,7 @@ import type { SavedProfile } from "../types";
 import type { PlanningSettings } from "../planning/settings";
 import type { CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import type { AssistantOp, ProposalChange } from "../assistant/operations";
+import type { ScoutPrompt } from "../assistant/promptLibrary";
 import type { ChatTurn } from "../assistant/scoutChat";
 import type { FollowUp } from "../assistant/followUps";
 import type { CampaignAnalysis } from "../performance/campaign";
@@ -340,11 +341,13 @@ export async function askScout(
   messages: ChatTurn[],
   onThought: (text: string) => void,
   signal?: AbortSignal,
+  /** The library prompt the planner started from, so the server knows what kind of turn it is. */
+  promptId?: string,
 ): Promise<ScoutReply> {
   const res = await authFetch(`/api/plans/${encodeURIComponent(id)}/assistant/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, ...(promptId ? { promptId } : {}) }),
     signal,
   });
   if (!res.ok || !res.body) {
@@ -400,6 +403,26 @@ export async function applyScoutChange(
   body: { ops: AssistantOp[]; baseRevision: number; revert?: boolean },
 ): Promise<{ plan: StoredPlan; changes: ProposalChange[]; revertOps: AssistantOp[]; followUps: FollowUp[] }> {
   return request(`/api/plans/${encodeURIComponent(id)}/assistant/apply`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export interface ScoutPromptLibrary {
+  prompts: ScoutPrompt[];
+  revision: number;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export function getScoutPrompts(): Promise<ScoutPromptLibrary> {
+  return request<ScoutPromptLibrary>("/api/scout-prompts");
+}
+
+/** Admin only. `baseRevision` is the revision that was edited; a stale one is refused with 409. */
+export function saveScoutPrompts(prompts: ScoutPrompt[], baseRevision: number): Promise<ScoutPromptLibrary> {
+  return request<ScoutPromptLibrary>("/api/scout-prompts", { method: "PUT", body: JSON.stringify({ prompts, baseRevision }) });
+}
+
+export function resetScoutPrompts(baseRevision: number): Promise<ScoutPromptLibrary> {
+  return request<ScoutPromptLibrary>("/api/scout-prompts/reset", { method: "POST", body: JSON.stringify({ baseRevision }) });
 }
 
 /** Builds (or rebuilds) the plan's Campaign Recap from its linked past campaigns and saves it. */
