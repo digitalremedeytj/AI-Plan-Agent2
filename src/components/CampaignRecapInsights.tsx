@@ -310,6 +310,11 @@ function RankingList({ ranking, campaign }: { ranking: RecapRanking; campaign: R
   const g = rankingGeometry(ranking);
   return (
     <div>
+      <div className="grid grid-cols-[minmax(0,12.5rem)_1fr_4.25rem] gap-2 pr-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+        <span />
+        <span className="flex justify-between"><span>← Worse than average</span><span>Better than average →</span></span>
+        <span />
+      </div>
       {/* Up to 30 rows: the list scrolls past 300px so the block stays the size of its neighbours. */}
       <div className="space-y-2 tabular-nums max-h-[300px] overflow-y-auto pr-3 py-1">
         {g.rows.map((r, i) => (
@@ -319,16 +324,19 @@ function RankingList({ ranking, campaign }: { ranking: RecapRanking; campaign: R
               <span className="truncate">{r.name}</span>
             </span>
             <div className="relative h-2.5 rounded-full bg-slate-100">
-              <div className={`h-full rounded-full ${r.thin ? "border border-dashed border-amber-500 bg-amber-50" : r.better ? "bg-emerald-500" : "bg-indigo-300"}`} style={{ width: `${r.width * 100}%` }} />
-              <div className="absolute -top-1 -bottom-1 w-0.5 bg-slate-400" style={{ left: `${g.averageAt * 100}%` }} />
+              <div
+                className={`absolute inset-y-0 ${r.side === "right" ? "rounded-r-full" : "rounded-l-full"} ${r.thin ? "border border-dashed border-amber-500 bg-amber-50" : r.better ? "bg-emerald-500" : "bg-indigo-300"}`}
+                style={r.side === "right" ? { left: "50%", width: `${r.width * 100}%` } : { right: "50%", width: `${r.width * 100}%` }}
+              />
+              <div className="absolute -top-1 -bottom-1 w-0.5 -ml-px bg-slate-400" style={{ left: `${g.averageAt * 100}%` }} />
             </div>
-            <span className={`text-xs font-bold text-right ${r.better ? "text-emerald-700" : "text-slate-700"}`}>{rankingValue(ranking, r.value, campaign.kpi)}{r.capped ? "+" : ""}</span>
+            <span className={`text-xs font-bold text-right ${r.better ? "text-emerald-700" : "text-slate-700"}`}>{rankingValue(ranking, r.value, campaign.kpi)}</span>
           </div>
         ))}
       </div>
       {rankingFootnote(ranking) && <p className="text-[11px] text-slate-500 mt-3">{rankingFootnote(ranking)}</p>}
       <p className="text-[11px] text-slate-500 mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="inline-flex items-center gap-1.5"><span className="inline-block w-3 h-0.5 bg-slate-400" /> Average</span>
+        <span className="inline-flex items-center gap-1.5"><span className="inline-block w-0.5 h-3 bg-slate-400" /> Average ({rankingValue(ranking, ranking.average, campaign.kpi)})</span>
         <span className="inline-flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Better than average</span>
         {g.rows.some((r) => r.thin) && <span className="inline-flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-sm border border-dashed border-amber-500" /> Under 30 {campaign.conversionLabel.toLowerCase()}</span>}
       </p>

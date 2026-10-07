@@ -184,21 +184,30 @@ export function rankingSubtitle(ranking: RecapRanking, conversionLabel: string, 
   return `${measure} against their average (${ranking.metric === "roas" ? roasText(ranking.average, kpi?.roasStyle) : compactMoney(ranking.average)})`;
 }
 
-/** One row's bar: length on the measure, the average marked, better than average in green. */
+/**
+ * Each row's bar grows out of the average line: right and green when it beat the average, left
+ * when it did not, so a cheaper cost per conversion and a higher ROAS both read as "right is
+ * better". Length is how many times better or worse (log scale, so 2x better and 2x worse are
+ * the same length). Thin rows never set the scale; a row past it is drawn to the edge.
+ */
 export function rankingGeometry(ranking: RecapRanking) {
-  // Thin rows (a handful of conversions) can sit far off the scale; they never set it, and are capped with "+".
+  const index = (value: number) => (ranking.metric === "roas" ? value / ranking.average : ranking.average / value);
+  const logOf = (value: number) => (value > 0 ? Math.log2(index(value)) : 0);
   const firm = ranking.rows.filter((r) => !r.thin);
-  const ceiling = Math.max(...(firm.length ? firm : ranking.rows).map((r) => r.value), ranking.average);
-  const cap = ranking.metric === "cpa" ? Math.min(ranking.average * 2.5, ceiling) : ceiling;
-  const max = Math.max(...ranking.rows.map((r) => Math.min(r.value, cap)), ranking.average) * 1.05;
+  const scale = Math.min(3, Math.max(1, ...(firm.length ? firm : ranking.rows).map((r) => Math.abs(logOf(r.value)))));
   return {
-    averageAt: ranking.average / max,
-    rows: ranking.rows.map((r) => ({
-      ...r,
-      width: Math.max(0.03, Math.min(r.value, cap) / max),
-      capped: r.value > cap,
-      better: !r.thin && (ranking.metric === "roas" ? r.value >= ranking.average : r.value <= ranking.average),
-    })),
+    averageAt: 0.5,
+    rows: ranking.rows.map((r) => {
+      const log = logOf(r.value);
+      return {
+        ...r,
+        side: log >= 0 ? ("right" as const) : ("left" as const),
+        /** Share of the whole track, at most half. */
+        width: Math.max(0.015, (Math.min(Math.abs(log), scale) / scale) * 0.5),
+        capped: Math.abs(log) > scale,
+        better: !r.thin && log >= 0,
+      };
+    }),
   };
 }
 

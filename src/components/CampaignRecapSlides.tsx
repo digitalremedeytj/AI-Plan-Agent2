@@ -473,6 +473,9 @@ function SlideRanking({ ranking, campaign }: { ranking: RecapRanking; campaign: 
   const g = rankingGeometry(slideRanking(ranking));
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr 120px", gap: "18px", fontSize: "13px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#94a3b8" }}>
+        <span /><span style={{ display: "flex", justifyContent: "space-between" }}><span>← Worse than average</span><span>Better than average →</span></span><span />
+      </div>
       {g.rows.map((r, i) => (
         <div key={`${r.name}-${i}`} style={{ display: "grid", gridTemplateColumns: "300px 1fr 120px", gap: "18px", alignItems: "center" }}>
           <span style={{ fontSize: "19px", fontWeight: r.better ? 700 : 500, color: r.better ? INK : BODY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -480,10 +483,10 @@ function SlideRanking({ ranking, campaign }: { ranking: RecapRanking; campaign: 
             {r.name}
           </span>
           <div style={{ position: "relative", height: "16px", borderRadius: "9999px", background: "#f1f5f9" }}>
-            <div style={{ height: "100%", width: `${r.width * 100}%`, borderRadius: "9999px", background: r.thin ? "#fffbeb" : r.better ? "#10b981" : "#a5b4fc", border: r.thin ? "2px dashed #d97706" : undefined, boxSizing: "border-box" }} />
-            <div style={{ position: "absolute", top: "-6px", bottom: "-6px", width: "3px", background: "#94a3b8", left: `${g.averageAt * 100}%` }} />
+            <div style={{ position: "absolute", top: 0, bottom: 0, ...(r.side === "right" ? { left: "50%", borderRadius: "0 9999px 9999px 0" } : { right: "50%", borderRadius: "9999px 0 0 9999px" }), width: `${r.width * 100}%`, background: r.thin ? "#fffbeb" : r.better ? "#10b981" : "#a5b4fc", border: r.thin ? "2px dashed #d97706" : undefined, boxSizing: "border-box" }} />
+            <div style={{ position: "absolute", top: "-6px", bottom: "-6px", width: "3px", marginLeft: "-1.5px", background: "#94a3b8", left: `${g.averageAt * 100}%` }} />
           </div>
-          <span style={{ fontSize: "19px", fontWeight: 800, textAlign: "right", color: r.better ? "#047857" : INK }}>{rankingValue(ranking, r.value, campaign.kpi)}{r.capped ? "+" : ""}</span>
+          <span style={{ fontSize: "19px", fontWeight: 800, textAlign: "right", color: r.better ? "#047857" : INK }}>{rankingValue(ranking, r.value, campaign.kpi)}</span>
         </div>
       ))}
     </div>
