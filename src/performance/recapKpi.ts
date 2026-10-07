@@ -196,6 +196,8 @@ export interface RecapRankRow {
   spendShare: number;
   /** Under 30 conversions: shown, never called a winner. */
   thin: boolean;
+  /** Creative only: whether the concept ran as video or display. */
+  format?: "Video" | "Display";
 }
 
 export interface RecapRanking {
@@ -204,6 +206,10 @@ export interface RecapRanking {
   /** The shown rows' own average, the line every bar is read against. */
   average: number;
   rows: RecapRankRow[];
+  /** Rows past the top by spend, or without the measure; said under the chart. */
+  omitted?: number;
+  /** Recaps built while creative sizes were combined: how many report rows went into the concepts. */
+  combinedFrom?: number;
 }
 
 const RANKING_DIMENSIONS: Array<[RankingKey, RegExp]> = [
@@ -211,25 +217,80 @@ const RANKING_DIMENSIONS: Array<[RankingKey, RegExp]> = [
   ["audience", /audience|segment/i],
   ["creative", /creative|ad\s*name|asset/i],
 ];
-const MAX_RANK_ROWS = 7;
-/** A row below this share of the cut's spend is noise next to the others. */
-const MIN_RANK_SPEND_SHARE = 0.01;
+/** The top rows by spend; the plan view scrolls them, the slides show fewer. */
+const MAX_RANK_ROWS = 30;
 
-/** "Acme - Video Theme A - 3840x2160.mp4" -> "Video Theme A · 3840x2160". */
-export function creativeName(name: string): string {
-  const parts = name.replace(/\.(mp4|mov|webm|m4v|jpe?g|png|gif|html?|zip)$/i, "").split(/\s+-\s+/).map((p) => p.trim()).filter(Boolean);
-  // The first part is usually the advertiser's own name when there are three or more.
-  return (parts.length >= 3 ? parts.slice(1) : parts).join(" · ") || name;
+const EXTENSION = /\.(mp4|mov|webm|m4v|jpe?g|png|gif|html?|zip)$/i;
+const SIZE = /\b\d{2,4}\s?x\s?\d{2,4}\b/gi;
+/** Trafficking codes, versions, edit marks and pure numbers: "24RTK23663", "D06", "H264", "15". */
+const CODE = /^[A-Z0-9]*\d[A-Z0-9]*$/;
+const TRAFFICKING = new Set(["webmix", "url", "final", "hd", "4k", "eng", "en", "mp4", "jpg", "png", "gif", "html5", "static", "animated", "mix", "edit"]);
+const ACRONYMS = new Set(["usa", "us", "tv", "ctv", "ott", "suv", "diy", "uk", "4x4"]);
+const SMALL = new Set(["a", "an", "and", "for", "in", "of", "on", "the", "to", "with", "at", "by"]);
+
+/**
+ * A creative in plain words: its concept without the file type, trafficking codes or the
+ * advertiser's own name, then its size, so each size stays its own row:
+ * "husky-cleans-faster-320x50.jpg" -> "Cleans Faster · 320x50";
+ * "24RTK23663-15-Husky-Challenger-200-CleansFaster-WebMix-URL-D06-R03-3840x2160-H264.mp4" -> "Challenger Cleans Faster · 3840x2160".
+ */
+export function creativeName(name: string, advertiser?: string): string {
+  const size = (name.match(SIZE) ?? [])[0]?.replace(/\s/g, "");
+  const concept = creativeConcept(name, advertiser);
+  return size ? `${concept} · ${size}` : concept;
 }
 
-function rankingFor(key: RankingKey, b: BreakdownDigest, metric: "roas" | "cpa"): RecapRanking | null {
-  const rows = b.rows.filter((r) => !r.flags.includes("media-type-row") && (r.metrics.spend ?? 0) > 0 && (r.spendShare ?? 0) >= MIN_RANK_SPEND_SHARE);
-  const valueOf = (r: DigestRow) => (metric === "roas" ? r.roas : r.cpa);
-  const top = [...rows].sort((a, z) => (z.metrics.spend ?? 0) - (a.metrics.spend ?? 0)).slice(0, MAX_RANK_ROWS).filter((r) => valueOf(r) !== null);
-  if (top.filter((r) => !r.flags.includes("low-sample")).length < 2) return null;
-  const spend = top.reduce((s, r) => s + (r.metrics.spend ?? 0), 0);
-  const conversions = top.reduce((s, r) => s + (r.metrics.conversions ?? 0), 0);
-  const revenue = top.reduce((s, r) => s + (r.metrics.revenue ?? 0), 0);
+function creativeConcept(name: string, advertiser?: string): string {
+  const base = name.replace(EXTENSION, "").replace(SIZE, " ");
+  const own = new Set((advertiser ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1));
+  const words = base
+    .split(/[\s\-_|·.]+/)
+    .filter(Boolean)
+    .filter((w) => !CODE.test(w) && !TRAFFICKING.has(w.toLowerCase()) && !own.has(w.toLowerCase()))
+    .flatMap((w) => w.replace(/([a-z])([A-Z0-9])/g, "$1 $2").replace(/([0-9])([A-Z])/g, "$1 $2").split(" "));
+  if (!words.length) return base.replace(/[\s\-_]+/g, " ").trim() || name;
+  return words
+    .map((w, i) => {
+      const lower = w.toLowerCase();
+      if (ACRONYMS.has(lower)) return lower.toUpperCase();
+      // "for", "in", "of" read lower case however the file wrote them; a lone "A" is a label ("Theme A").
+      if (i > 0 && SMALL.has(lower) && (w === lower || w.length > 1)) return lower;
+      return w === lower ? lower.charAt(0).toUpperCase() + lower.slice(1) : w;
+    })
+    .join(" ");
+}
+
+interface RankCandidate {
+  name: string;
+  metrics: DigestRow["metrics"];
+  spendShare: number;
+  format?: "Video" | "Display";
+}
+
+function rankingFor(key: RankingKey, b: BreakdownDigest, metric: "roas" | "cpa", advertiser?: string): RecapRanking | null {
+  const candidates: RankCandidate[] = b.rows
+    .filter((r) => !r.flags.includes("media-type-row"))
+    .map((r) => ({
+      name: key === "creative" ? creativeName(r.name, advertiser) : r.name,
+      metrics: r.metrics,
+      spendShare: r.spendShare ?? 0,
+      ...(key === "creative" ? { format: (r.metrics.videoCompletions ?? 0) > 0 || /\.(mp4|mov|webm|m4v)$/i.test(r.name) ? "Video" as const : "Display" as const } : {}),
+    }));
+  const valueOf = (c: RankCandidate) => {
+    const spend = c.metrics.spend ?? 0;
+    if (!(spend > 0)) return null;
+    if (metric === "roas") return (c.metrics.revenue ?? 0) > 0 ? (c.metrics.revenue as number) / spend : null;
+    return (c.metrics.conversions ?? 0) > 0 ? spend / (c.metrics.conversions as number) : null;
+  };
+  const top = candidates
+    .filter((c) => (c.metrics.spend ?? 0) > 0 && valueOf(c) !== null)
+    .sort((a, z) => (z.metrics.spend ?? 0) - (a.metrics.spend ?? 0))
+    .slice(0, MAX_RANK_ROWS);
+  const thin = (c: RankCandidate) => (c.metrics.conversions ?? 0) < MIN_CONVERSIONS;
+  if (top.filter((c) => !thin(c)).length < 2) return null;
+  const spend = top.reduce((s, c) => s + (c.metrics.spend ?? 0), 0);
+  const conversions = top.reduce((s, c) => s + (c.metrics.conversions ?? 0), 0);
+  const revenue = top.reduce((s, c) => s + (c.metrics.revenue ?? 0), 0);
   const average = metric === "roas" ? (spend > 0 ? revenue / spend : 0) : conversions > 0 ? spend / conversions : 0;
   if (!(average > 0)) return null;
   const better = (a: number, z: number) => (metric === "roas" ? z - a : a - z);
@@ -238,8 +299,9 @@ function rankingFor(key: RankingKey, b: BreakdownDigest, metric: "roas" | "cpa")
     metric,
     average,
     rows: top
-      .map((r) => ({ name: key === "creative" ? creativeName(r.name) : r.name, value: valueOf(r) as number, conversions: r.metrics.conversions ?? 0, spendShare: r.spendShare ?? 0, thin: r.flags.includes("low-sample") }))
+      .map((c) => ({ name: c.name, value: valueOf(c) as number, conversions: c.metrics.conversions ?? 0, spendShare: c.spendShare, thin: thin(c), ...(c.format ? { format: c.format } : {}) }))
       .sort((a, z) => Number(a.thin) - Number(z.thin) || better(a.value, z.value)),
+    omitted: candidates.length - top.length,
   };
 }
 
@@ -251,7 +313,7 @@ export function recapRankings(analysis: CampaignAnalysis, kpi: RecapKpi | null):
     const b = usable.find((x) => re.test(x.dimension));
     if (!b || out.some((r) => r.key === key)) continue;
     const metric = kpi?.metric === "roas" && (b.totals.revenue ?? 0) > 0 ? "roas" : "cpa";
-    const ranking = rankingFor(key, b, metric);
+    const ranking = rankingFor(key, b, metric, analysis.advertiser);
     if (ranking) out.push(ranking);
   }
   return out;

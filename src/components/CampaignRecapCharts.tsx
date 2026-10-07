@@ -186,7 +186,10 @@ export function rankingSubtitle(ranking: RecapRanking, conversionLabel: string, 
 
 /** One row's bar: length on the measure, the average marked, better than average in green. */
 export function rankingGeometry(ranking: RecapRanking) {
-  const cap = ranking.metric === "cpa" ? ranking.average * 2.5 : Infinity;
+  // Thin rows (a handful of conversions) can sit far off the scale; they never set it, and are capped with "+".
+  const firm = ranking.rows.filter((r) => !r.thin);
+  const ceiling = Math.max(...(firm.length ? firm : ranking.rows).map((r) => r.value), ranking.average);
+  const cap = ranking.metric === "cpa" ? Math.min(ranking.average * 2.5, ceiling) : ceiling;
   const max = Math.max(...ranking.rows.map((r) => Math.min(r.value, cap)), ranking.average) * 1.05;
   return {
     averageAt: ranking.average / max,
@@ -197,6 +200,24 @@ export function rankingGeometry(ranking: RecapRanking) {
       better: !r.thin && (ranking.metric === "roas" ? r.value >= ranking.average : r.value <= ranking.average),
     })),
   };
+}
+
+/** What the chart shows and leaves out: "Top 30 publishers by spend; 4 more not shown." */
+export function rankingFootnote(ranking: RecapRanking, shown = ranking.rows.length): string | null {
+  const unit = ranking.key === "creative" ? (ranking.combinedFrom ? "concept" : "creative") : ranking.key;
+  const more = (ranking.omitted ?? 0) + (ranking.rows.length - shown);
+  const parts: string[] = [];
+  // Recaps built while creative sizes were combined say so until they are rebuilt.
+  if (ranking.combinedFrom) parts.push(`${ranking.combinedFrom} creatives combined into concepts, sizes added together.`);
+  if (more > 0) parts.push(`Top ${shown} ${unit}s by spend; ${more} more not shown.`);
+  return parts.length ? parts.join(" ") : null;
+}
+
+/** The rows a slide has room for: the most spend first, in the ranking's own order. */
+export function slideRanking(ranking: RecapRanking, max = 10): RecapRanking {
+  if (ranking.rows.length <= max) return ranking;
+  const keep = new Set([...ranking.rows].sort((a, z) => z.spendShare - a.spendShare).slice(0, max));
+  return { ...ranking, rows: ranking.rows.filter((r) => keep.has(r)) };
 }
 
 export const rankingValue = (ranking: RecapRanking, value: number, kpi: RecapKpi | null | undefined) =>

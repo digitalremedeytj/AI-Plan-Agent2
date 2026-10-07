@@ -6,7 +6,7 @@ import {
 import type { RecapBlock, RecapCampaign, RecapMetric, RecapRecommendation } from "../performance/recap";
 import { activeTarget, kpiHigherIsBetter, KPI_METRICS, type KpiMetric, type RecapRanking } from "../performance/recapKpi";
 import type { FindingKind } from "../performance/review";
-import { QuadrantChart, quadrantPoints, RANKING_TITLES, rankingGeometry, rankingSubtitle, rankingValue, TrendChart, trendCaption } from "./CampaignRecapCharts";
+import { QuadrantChart, quadrantPoints, RANKING_TITLES, rankingFootnote, rankingGeometry, rankingSubtitle, rankingValue, TrendChart, trendCaption } from "./CampaignRecapCharts";
 import {
   compactMoney, compactNumber, cpaText, kpiBeatText, kpiCaption, kpiName, kpiSentence, kpiTargetText, kpiValueText, roasText, shareText, singular, splitStat, tileText,
 } from "./recapFormat";
@@ -310,10 +310,14 @@ function RankingList({ ranking, campaign }: { ranking: RecapRanking; campaign: R
   const g = rankingGeometry(ranking);
   return (
     <div>
-      <div className="space-y-2 tabular-nums">
-        {g.rows.map((r) => (
-          <div key={r.name} className="grid grid-cols-[minmax(0,10rem)_1fr_4.25rem] gap-2 items-center">
-            <span className={`text-xs truncate ${r.better ? "font-semibold text-slate-800" : "text-slate-600"}`} title={r.name}>{r.name}</span>
+      {/* Up to 30 rows: the list scrolls past 300px so the block stays the size of its neighbours. */}
+      <div className="space-y-2 tabular-nums max-h-[300px] overflow-y-auto pr-3 py-1">
+        {g.rows.map((r, i) => (
+          <div key={`${r.name}-${i}`} className="grid grid-cols-[minmax(0,12.5rem)_1fr_4.25rem] gap-2 items-center">
+            <span className={`text-xs truncate flex items-center gap-1.5 ${r.better ? "font-semibold text-slate-800" : "text-slate-600"}`} title={r.name}>
+              {r.format && <span className={`shrink-0 rounded px-1 py-px text-[9px] font-bold uppercase tracking-wide ${r.format === "Video" ? "bg-violet-50 text-violet-700" : "bg-sky-50 text-sky-700"}`}>{r.format}</span>}
+              <span className="truncate">{r.name}</span>
+            </span>
             <div className="relative h-2.5 rounded-full bg-slate-100">
               <div className={`h-full rounded-full ${r.thin ? "border border-dashed border-amber-500 bg-amber-50" : r.better ? "bg-emerald-500" : "bg-indigo-300"}`} style={{ width: `${r.width * 100}%` }} />
               <div className="absolute -top-1 -bottom-1 w-0.5 bg-slate-400" style={{ left: `${g.averageAt * 100}%` }} />
@@ -322,7 +326,8 @@ function RankingList({ ranking, campaign }: { ranking: RecapRanking; campaign: R
           </div>
         ))}
       </div>
-      <p className="text-[11px] text-slate-500 mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+      {rankingFootnote(ranking) && <p className="text-[11px] text-slate-500 mt-3">{rankingFootnote(ranking)}</p>}
+      <p className="text-[11px] text-slate-500 mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="inline-flex items-center gap-1.5"><span className="inline-block w-3 h-0.5 bg-slate-400" /> Average</span>
         <span className="inline-flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Better than average</span>
         {g.rows.some((r) => r.thin) && <span className="inline-flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-sm border border-dashed border-amber-500" /> Under 30 {campaign.conversionLabel.toLowerCase()}</span>}

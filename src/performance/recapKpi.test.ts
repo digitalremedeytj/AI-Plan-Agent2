@@ -82,15 +82,25 @@ test("conversions from retargeting CTV viewers are counted once, from one cut", 
   assert.equal(ctvAssist(analysis)?.conversions, 2099);
 });
 
-test("creative names drop the advertiser prefix and the file extension", () => {
-  assert.equal(creativeName("Acme - Video Theme A - 3840x2160.mp4"), "Video Theme A · 3840x2160");
+test("creative names drop the file type, trafficking codes and advertiser, and keep the size", () => {
+  assert.equal(creativeName("Acme - Video Theme A - 3840x2160.mp4", "Acme Auto Accessories"), "Video Theme A · 3840x2160");
+  assert.equal(creativeName("husky-cleans-faster-320x50.jpg", "Husky Liners"), "Cleans Faster · 320x50");
+  assert.equal(creativeName("24RTK23663-15-Husky-Challenger-200-CleansFaster-WebMix-URL-D06-R03-3840x2160-H264.mp4", "Husky Liners"), "Challenger Cleans Faster · 3840x2160");
+  assert.equal(creativeName("24RTK23663-15-Husky-Challenger-400-30PercentLess-WebMix-URL-D06-R03-3840x2160-H264.mp4", "Husky Liners"), "Challenger 30 Percent Less · 3840x2160");
+  assert.equal(creativeName("husky-made-in-usa-300x250.jpg", "Husky Liners"), "Made in USA · 300x250");
+  assert.equal(creativeName("Husky Liners - Factory mats - 300x250", "Husky Liners"), "Factory Mats · 300x250");
   assert.equal(creativeName("Spring Hero 30s"), "Spring Hero 30s");
 });
 
-test("a takeaway's stat splits into its figure, what it counts, and the rest", () => {
-  assert.deepEqual(splitStat("42% of checkouts from 9% of spend"), { figure: "42%", label: "of checkouts", rest: "from 9% of spend" });
-  assert.deepEqual(splitStat("$20.04 per checkout, below campaign average"), { figure: "$20.04", label: "per checkout", rest: "below campaign average" });
-  assert.equal(splitStat("Pluto TV at $34.63 per checkout"), null);
+test("rankings show up to the top 30 rows by spend, each creative size its own row", () => {
+  const rankings = recapRankings(analysis, resolveRecapKpi(analysis, { briefKpis: ["ROAS"] }).kpi);
+  const creative = rankings.find((r) => r.key === "creative")!;
+  assert.equal(creative.rows.length, 30);
+  assert.ok((creative.omitted ?? 0) > 0);
+  assert.equal(new Set(creative.rows.map((r) => r.name)).size, 30);
+  assert.equal(creative.rows.find((r) => r.name === "Video Theme A · 3840x2160")?.format, "Video");
+  assert.ok(creative.rows.some((r) => r.name === "Display Theme H · 320x50" && r.format === "Display"));
+  assert.ok(rankings.every((r) => r.rows.length <= 30));
 });
 
 test("recommendations are introduced toward the KPI and never as a verdict", () => {
