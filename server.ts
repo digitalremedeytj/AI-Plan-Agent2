@@ -197,7 +197,14 @@ const TIMEOUT_SYNTHESIS_MS = TIMEOUT_SYNTHESIS_HIGH_MS + TIMEOUT_SYNTHESIS_FALLB
 // The outer guard waits a little past the two attempts, so it cannot cut off a fallback that is
 // finishing at its own limit (2026-10-06: the guard fired at 180s as the 60s fallback ended).
 const SYNTHESIS_GUARD_GRACE_MS = 5000;
-const TIMEOUT_SCORING_MS = 60000;            // candidate-signal reasoning
+// Candidate-signal reasoning: medium, then one low retry. A single 60s attempt timed out on slow
+// days (2026-10-06) and the plan shipped with no channel plan at all.
+const SCORING_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: number }> = [
+  { thinkingLevel: "medium", timeoutMs: 75000 },
+  { thinkingLevel: "low", timeoutMs: 60000 },
+];
+const TIMEOUT_SCORING_MS = SCORING_ATTEMPTS.reduce((sum, attempt) => sum + attempt.timeoutMs, 0);
+const SCORING_GUARD_GRACE_MS = 5000;
 // QA runs on a different provider from the writer so the two do not share blind spots. Chosen
 // from a side-by-side run on a saved PetSmart plan (2026-09-23): Sol at high found real issues
 // medium missed in 92-123s; xhigh took 142-183s for no clearly better findings.
@@ -219,8 +226,11 @@ const TIMEOUT_NARRATIVE_MS = NARRATIVE_ATTEMPTS.reduce((sum, attempt) => sum + a
 // Quick mode (live demos) skips the QA audit, fix and verify, which are 4-6 minutes of a run,
 // and writes the narrative at medium. Synthesis and research stay at high: medium synthesis
 // mis-copied citation URLs and medium research returned about half the sources (see below).
-const QUICK_NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
-  { thinkingLevel: "medium", timeoutMs: 60000 },
+// One 60s attempt timed out on slow days (2026-10-06) and the plan shipped synthesis's draft
+// text, without the Publisher Insights pillars only this pass writes; so 90s, then a low retry.
+const QUICK_NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: number }> = [
+  { thinkingLevel: "medium", timeoutMs: 90000 },
+  { thinkingLevel: "low", timeoutMs: 60000 },
 ];
 // The whole generation must finish inside Cloud Run's 900s request timeout. Late stages check
 // what is left and step aside (with an alert) rather than be cut off mid-response.
@@ -839,23 +849,26 @@ ${JSON.stringify(candidates, null, 2)}
 
 Return one signal object per allowed candidate and no other products.`;
 
-  // Medium, not high: in testing high took ~49s of this 60s budget for near-identical scores.
-  // A failure throws: the channel strategy is then reported as failed rather than built from
-  // formula scores that would read as AI analysis.
+  // Medium, not high: in testing high took ~49s of a 60s budget for near-identical scores. A slow
+  // medium attempt falls back once to low (SCORING_ATTEMPTS). If both fail it throws: the channel
+  // strategy is then reported as failed rather than built from formula scores that would read as
+  // AI analysis.
   {
     const response: any = await withTimeout(
-      generateStructuredJson(getAiClient(), {
-        input: prompt,
-        schema: candidateSignalResponseSchema,
-        thinkingLevel: "medium",
-        timeoutMs: TIMEOUT_SCORING_MS,
+      generateStructuredJsonWithFallback(
+        getAiClient(),
+        { input: prompt, schema: candidateSignalResponseSchema },
+        SCORING_ATTEMPTS,
+      ).then((r) => r.data).catch((err) => {
+        console.warn(`[CHANNELS] Candidate reasoning failed: ${err?.message || err}`);
+        return null;
       }),
-      TIMEOUT_SCORING_MS,
+      TIMEOUT_SCORING_MS + SCORING_GUARD_GRACE_MS,
       null,
     );
     const parsed = response?.signals;
     if (!Array.isArray(parsed)) {
-      throw new Error(`AI candidate reasoning returned no signals (timed out after ${TIMEOUT_SCORING_MS / 1000}s or failed).`);
+      throw new Error(`AI candidate reasoning returned no signals (no answer within ${TIMEOUT_SCORING_MS / 1000}s across two tries, or failed).`);
     }
     const allowedIds = new Set(candidates.map((candidate) => candidate.channelId));
     return parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId));

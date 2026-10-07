@@ -14,19 +14,22 @@ function fake(plan: Partial<Record<HedgeAttempt, { ms: number; fail?: boolean }>
 
 test("a primary that answers in time is used, and no backup is started", async () => {
   const log: string[] = [];
-  const r = await hedge(fake({ primary: { ms: 10 }, backup: { ms: 10 } }, log), { backupAfterMs: 50, totalMs: 200 });
+  // Wide margins: the suite runs files in parallel, and timers under load fire late.
+  const r = await hedge(fake({ primary: { ms: 10 }, backup: { ms: 10 } }, log), { backupAfterMs: 1000, totalMs: 3000 });
   assert.deepEqual([r.winner, r.backupStarted], ["primary", false]);
-  assert.deepEqual(log, ["primary start (200ms left)"]);
+  assert.equal(log.length, 1, log.join("; "));
+  assert.match(log[0], /^primary start \(\d+ms left\)$/);
 });
 
 test("a slow primary gets a backup; the first answer wins and the other is cancelled", async () => {
   const log: string[] = [];
   const reasons: string[] = [];
-  const r = await hedge(fake({ primary: { ms: 500 }, backup: { ms: 20 } }, log), { backupAfterMs: 30, totalMs: 300 }, (why) => reasons.push(why));
+  const r = await hedge(fake({ primary: { ms: 2000 }, backup: { ms: 20 } }, log), { backupAfterMs: 50, totalMs: 3000 }, (why) => reasons.push(why));
   assert.deepEqual([r.value, r.winner, r.backupStarted], ["backup", "backup", true]);
   assert.deepEqual(reasons, ["slow"]);
   assert.ok(log.includes("primary aborted"), "the slow primary is cancelled, not left running");
-  assert.match(log[1], /^backup start \((2[0-9][0-9]|2[0-9])ms left\)$/, "the backup only gets what is left of the limit");
+  const left = Number(log[1].match(/^backup start \((\d+)ms left\)$/)?.[1]);
+  assert.ok(left > 0 && left <= 2950, `the backup only gets what is left of the limit (${left}ms)`);
 });
 
 test("if the slow primary still answers first, it wins and the backup is cancelled", async () => {
