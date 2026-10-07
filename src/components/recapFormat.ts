@@ -224,3 +224,6 @@ export function splitStat(stat: string): { figure: string; label: string; rest: 
   // A long label reads better under the figure than beside it.
   return label.split(/\s+/).length > 4 ? { figure: m[1].trim(), label: "", rest: tail.trim() } : { figure: m[1].trim(), label, rest };
 }
+
+/** The dollars a change moves: "+$4K", "−$5K". */
+export const shiftText = (delta: number) => `${delta >= 0 ? "+" : "−"}${roughMoney(Math.abs(delta))}`;

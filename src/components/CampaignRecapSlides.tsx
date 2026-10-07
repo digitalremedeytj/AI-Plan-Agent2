@@ -2,13 +2,13 @@ import React from "react";
 import { ArrowDownRight, ArrowUpRight, BarChart3, Check, ClipboardCheck, Equal, History, Lightbulb, Minus, Plus, Target, ThumbsDown, ThumbsUp, type LucideIcon } from "lucide-react";
 import { fundingSummary, projectChannel, projectPlan, type CampaignRecap, type RecapCampaign, type RecapChangeLine, type RecapRecommendation } from "../performance/recap";
 import type { FindingKind } from "../performance/review";
-import { AREA_ICONS, decisionLines, evidenceValue, lineValue, recommendationProjection, type PlanChannel } from "./CampaignRecapSection";
+import { AREA_ICONS, decisionLines, evidenceValue, lineShift, lineValue, recommendationProjection, type PlanChannel } from "./CampaignRecapSection";
 import { QuadrantChart, quadrantPoints, RANKING_TITLES, rankingGeometry, rankingSubtitle, rankingValue, TrendChart, trendCaption } from "./CampaignRecapCharts";
 import { ctvNote, supportingTiles, TAKEAWAY_STYLES, takeawayIcon, targetBarGeometry, tileDisplay } from "./CampaignRecapInsights";
 import type { RecapRanking } from "../performance/recapKpi";
 import {
   KIND_LABELS, PROJECTION_FOOTNOTE, STRENGTH_LABELS, projectsCtv, approxRange, fundingText, campaignSubtitle, compactMoney, cpaText, kpiBeatText, kpiCaption, kpiEffect, kpiName,
-  kpiSentence, kpiTargetText, kpiValueText, percentText, recommendationsIntro, roasText, shareText, singular, splitStat, tileText,
+  kpiSentence, kpiTargetText, kpiValueText, percentText, recommendationsIntro, roasText, shareText, shiftText, singular, splitStat, tileText,
 } from "./recapFormat";
 
 // The Campaign Recap as 16:9 slides (1920x1080), drawn off-screen and captured to PNG or PDF.
@@ -187,16 +187,19 @@ function Pill({ text, color, bg, border }: { text: string; color: string; bg: st
 }
 
 function SlideChangeLine({ line, applied, planChannels }: { line: RecapChangeLine; applied: boolean; planChannels: PlanChannel[] }) {
-  const value = lineValue(line, applied, planChannels);
+  const shift = lineShift(line, applied, planChannels);
   const up = line.kind === "channel_added" || line.kind === "publisher_added" || (line.kind === "allocation" && line.direction === "up");
   const Icon = line.kind === "allocation" ? (line.direction === "up" ? ArrowUpRight : ArrowDownRight) : up ? Plus : Minus;
   const name = "channelName" in line ? line.channelName : line.name;
-  const right = value ? `${percentText(value.percent)} · ${compactMoney(value.budget)}` : up ? "Added" : "Removed";
+  const move = shift
+    ? `${shift.from ? `${percentText(shift.from.percent)} → ` : line.kind === "channel_added" ? "New · " : ""}${percentText(shift.to.percent)} of budget`
+    : up ? "Added" : "Removed";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "18px" }}>
-      <Icon style={{ width: "20px", height: "20px", color: up ? "#059669" : "#f43f5e", flexShrink: 0 }} />
-      <span style={{ flex: 1, color: BODY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
-      <span style={{ fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>{right}</span>
+      <Icon style={{ width: "20px", height: "20px", color: up ? "#059669" : "#94a3b8", flexShrink: 0 }} />
+      <span style={{ flex: 1, color: INK, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
+      <span style={{ fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>{move}</span>
+      {shift && shift.delta !== 0 && <span style={{ fontWeight: 700, color: shift.delta > 0 ? "#047857" : MUTED, whiteSpace: "nowrap", minWidth: "64px", textAlign: "right" }}>{shiftText(shift.delta)}</span>}
     </div>
   );
 }

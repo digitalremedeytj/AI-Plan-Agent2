@@ -1,6 +1,6 @@
 import React from "react";
 import {
-  AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Brush, CalendarClock, Check, CircleDollarSign, ClipboardCheck,
+  AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Brush, CalendarClock, Check, ChevronDown, CircleDollarSign, ClipboardCheck,
   Download, Equal, FileText, FlaskConical, Gauge, History, Lightbulb, Loader2, Minus, Plus, Rocket, Ruler, Shield, Sparkles, Target, ThumbsDown,
   ThumbsUp, TrendingDown, TrendingUp, Tv, Undo2, Users, Wand2, X, type LucideIcon,
 } from "lucide-react";
@@ -16,7 +16,7 @@ import { DetailBlocks, KpiHero, Takeaways, type InsightControls } from "./Campai
 import { SectionVisibilityButton } from "./SectionVisibilityButton";
 import {
   KIND_LABELS, PROJECTION_FOOTNOTE, STRENGTH_HINTS, projectsCtv, STRENGTH_LABELS, approxRange, campaignSubtitle, compactMoney, fundingText,
-  cpaText, flightText, kpiEffect, percentText, recommendationsIntro, roasText, shareText, singular, tileText,
+  cpaText, flightText, kpiBeatText, kpiEffect, kpiName, kpiValueText, percentText, recommendationsIntro, roasText, shareText, shiftText, singular, tileText,
 } from "./recapFormat";
 
 // The client-facing Campaign Recap: their past campaign at a glance, what worked and what didn't,
@@ -99,6 +99,13 @@ export function CampaignRecapSection({ recap, planChannels, isHidden, isShareVie
   const controls = isShareView ? undefined : planner;
   // Hovering a finding lights up the recommendations built on it, and the other way round.
   const [linked, setLinked] = React.useState<string[]>([]);
+  // Collapsed by default so the plan opens on the plan; a fresh build opens it to show the result.
+  const [expanded, setExpanded] = React.useState(false);
+  const builtAt = recap?.builtAt;
+  const firstBuild = React.useRef(builtAt);
+  React.useEffect(() => {
+    if (builtAt && builtAt !== firstBuild.current) setExpanded(true);
+  }, [builtAt]);
   if (!recap?.campaigns?.length) {
     if (!controls?.canBuild) return null;
     return <BuildPrompt controls={controls} />;
@@ -111,8 +118,13 @@ export function CampaignRecapSection({ recap, planChannels, isHidden, isShareVie
     <div className={`group relative rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
       isHidden ? "border-dashed border-slate-300 bg-slate-100/70 opacity-60 hover:opacity-90" : "border-slate-100 bg-white hover:border-slate-200"
     }`}>
-      <div className="p-4 md:p-6 flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="p-4 md:p-6 flex flex-wrap items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer"
+        >
           <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
             <History className="w-4 h-4" />
           </div>
@@ -123,9 +135,11 @@ export function CampaignRecapSection({ recap, planChannels, isHidden, isShareVie
             </h3>
             {!several && <p className="text-[11px] text-slate-500">{campaignSubtitle(only)}</p>}
           </div>
-        </div>
-        {controls && (
-          <div className="flex items-center gap-2">
+          {!expanded && <CollapsedTeaser recap={recap} />}
+        </button>
+        <div className="flex items-center gap-2">
+          {controls && expanded && (
+            <>
             <ExportMenu controls={controls} />
             <button
               type="button"
@@ -137,14 +151,25 @@ export function CampaignRecapSection({ recap, planChannels, isHidden, isShareVie
               {controls.building ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
               {controls.building ? "Rebuilding…" : "Rebuild"}
             </button>
-            <SectionVisibilityButton sectionKey="campaignRecap" isInactive={isHidden} onToggle={onToggle} />
-          </div>
-        )}
+            </>
+          )}
+          {controls && <SectionVisibilityButton sectionKey="campaignRecap" isInactive={isHidden} onToggle={onToggle} />}
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Collapse the recap" : "Expand the recap"}
+            aria-label={expanded ? "Collapse the recap" : "Expand the recap"}
+            className="inline-flex items-center gap-1 h-8 px-2.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg cursor-pointer"
+          >
+            {expanded ? "Hide" : "View recap"}
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </button>
+        </div>
       </div>
 
-      {controls && <PlannerMessages controls={controls} />}
+      {controls && (expanded ? <PlannerMessages controls={controls} /> : controls.error && <PlannerMessages controls={{ ...controls, dropped: [] }} />)}
 
-      <div className="px-4 md:px-6 pb-6 space-y-6">
+      {expanded && <div className="px-4 md:px-6 pb-6 space-y-6">
         {recap.campaigns.map((campaign) => (
           <CampaignBlock
             key={campaign.campaignId}
@@ -161,7 +186,27 @@ export function CampaignRecapSection({ recap, planChannels, isHidden, isShareVie
           <Recommendations recap={recap} planChannels={planChannels} controls={controls} linked={linked} onHover={setLinked} />
         )}
         <PlanChangeStrip recap={recap} planChannels={planChannels} />
-      </div>
+      </div>}
+    </div>
+  );
+}
+
+/** The headline result while the recap is collapsed: "ROAS 373% · 24% above target · 3 recommendations". */
+function CollapsedTeaser({ recap }: { recap: CampaignRecap }) {
+  const campaign = recap.campaigns[0];
+  const kpi = recap.campaigns.length === 1 ? campaign?.kpi : null;
+  const beat = kpi ? kpiBeatText(kpi) : null;
+  const count = recap.recommendations.length;
+  if (!kpi && !count) return null;
+  return (
+    <div className="hidden sm:flex flex-wrap items-center gap-1.5 ml-auto pl-3">
+      {kpi && (
+        <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 tabular-nums">
+          <Target className="w-3.5 h-3.5" /> {kpiName(kpi.metric, campaign.conversionLabel)} {kpiValueText(kpi.metric, kpi.value, kpi.roasStyle)}
+        </span>
+      )}
+      {beat && <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><TrendingUp className="w-3.5 h-3.5" /> {beat}</span>}
+      {count > 0 && <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">{count} recommendation{count === 1 ? "" : "s"}</span>}
     </div>
   );
 }
@@ -622,9 +667,10 @@ function ChangeBox({ rec, kind, applied, planChannels }: { rec: RecapRecommendat
   const lines = decisionLines(rec);
   const funding = fundingSummary(rec.changes);
   const title = applied ? "In this plan" : kind === "keep" ? "In this plan" : kind === "execution" ? "How we'll run it" : "The change";
+  const moves = lines.some((l) => l.kind === "allocation" || l.kind === "channel_added");
   return (
     <div className="rounded-lg bg-slate-50 px-3 py-2.5">
-      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">{title}</div>
+      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">{title}{moves && !rec.needsReview ? " · share of budget" : ""}</div>
       {rec.needsReview ? (
         <p className="flex items-start gap-1.5 text-xs text-amber-800"><AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> Only you can see this: the plan has changed and this no longer fits. Work out a new change with ScoutAI.</p>
       ) : lines.length > 0 ? (
@@ -643,20 +689,49 @@ function ChangeBox({ rec, kind, applied, planChannels }: { rec: RecapRecommendat
   );
 }
 
+/**
+ * A buy line as a move: the media type's share of budget before and after, and the dollars that
+ * shift. Lines saved before the "from" values were kept work theirs out from the dollar change.
+ */
+export function lineShift(line: RecapChangeLine, applied: boolean, planChannels: PlanChannel[]): { from: { percent: number; budget: number } | null; to: { percent: number; budget: number }; delta: number } | null {
+  const to = lineValue(line, applied, planChannels);
+  if (!to) return null;
+  if (line.kind !== "allocation") return { from: null, to, delta: to.budget };
+  const fromBudget = line.fromBudget ?? (typeof line.delta === "number" ? line.budget - line.delta : null);
+  if (fromBudget === null) return { from: null, to, delta: 0 };
+  const fromPercent = line.fromPercent ?? (line.budget > 0 ? Math.round((line.percent * fromBudget) / line.budget) : null);
+  return { from: fromPercent === null ? null : { percent: fromPercent, budget: fromBudget }, to, delta: to.budget - fromBudget };
+}
+
 function ChangeLine({ line, applied, planChannels }: { line: RecapChangeLine; applied: boolean; planChannels: PlanChannel[] }) {
-  const value = lineValue(line, applied, planChannels);
+  const shift = lineShift(line, applied, planChannels);
+  const up = line.kind === "channel_added" || line.kind === "publisher_added" || (line.kind === "allocation" && line.direction === "up");
   const icon = line.kind === "allocation"
-    ? line.direction === "up" ? <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" /> : <ArrowDownRight className="w-3.5 h-3.5 text-rose-500" />
-    : line.kind === "channel_added" || line.kind === "publisher_added" ? <Plus className="w-3.5 h-3.5 text-emerald-600" /> : <Minus className="w-3.5 h-3.5 text-rose-500" />;
+    ? up ? <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <ArrowDownRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+    : up ? <Plus className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <Minus className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
   const name = "channelName" in line ? line.channelName : line.name;
-  const right = value
-    ? `${percentText(value.percent)} · ${compactMoney(value.budget)}`
-    : line.kind === "publisher_added" ? "Added" : line.kind === "publisher_removed" || line.kind === "channel_removed" ? "Removed" : "";
+  const status = line.kind === "publisher_added" ? "Added" : line.kind === "publisher_removed" || line.kind === "channel_removed" ? "Removed" : "";
   return (
-    <div className="flex items-center gap-1.5 text-xs">
-      {icon}
-      <span className="flex-1 min-w-0 truncate text-slate-700" title={name}>{name}</span>
-      <span className="font-bold text-slate-800 tabular-nums whitespace-nowrap">{right}</span>
+    <div className="text-xs">
+      <div className="flex items-center gap-1.5">
+        {icon}
+        <span className="flex-1 min-w-0 truncate font-semibold text-slate-700" title={name}>{name}</span>
+        {!shift && <span className="font-bold text-slate-800">{status}</span>}
+      </div>
+      {shift && (
+        <div className="pl-5 mt-0.5 flex items-baseline gap-1.5 tabular-nums text-slate-500 whitespace-nowrap">
+          {shift.from ? (
+            <>
+              <span>{percentText(shift.from.percent)}</span>
+              <span aria-hidden>→</span>
+              <span className="font-bold text-slate-800">{percentText(shift.to.percent)}</span>
+            </>
+          ) : (
+            <span><span className="font-bold text-slate-800">{line.kind === "channel_added" ? "New · " : ""}{percentText(shift.to.percent)}</span></span>
+          )}
+          {shift.delta !== 0 && <span className={`ml-auto font-bold whitespace-nowrap ${shift.delta > 0 ? "text-emerald-700" : "text-slate-600"}`}>{shiftText(shift.delta)}</span>}
+        </div>
+      )}
     </div>
   );
 }

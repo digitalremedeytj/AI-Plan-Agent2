@@ -153,7 +153,7 @@ test("only buy changes are kept as operations, and keep or execution carries non
   assert.deepEqual(copy.recommendations[1].ops, []);
 });
 
-test("the exact change reads the plan after the dry run, never the old value", () => {
+test("the exact change reads the plan before and after the dry run", () => {
   const before = { channelStrategy: { mediaPlan: { channels: [
     { channelId: "olv", channelName: "Online Video", allocationPercent: 14, allocationDollars: 14000 },
     { channelId: "display", channelName: "Programmatic Display", allocationPercent: 12, allocationDollars: 12000 },
@@ -164,8 +164,8 @@ test("the exact change reads the plan after the dry run, never the old value", (
   ] } }, ctvPublishers: [{ publisher: "ESPN" }, { publisher: "Tubi" }] };
   assert.deepEqual(changeLines(before, after), [
     { kind: "publisher_added", name: "Tubi" },
-    { kind: "allocation", channelId: "olv", channelName: "Online Video", percent: 16, budget: 16000, direction: "up", role: "decision", delta: 2000 },
-    { kind: "allocation", channelId: "display", channelName: "Programmatic Display", percent: 10, budget: 10000, direction: "down", role: "decision", delta: -2000 },
+    { kind: "allocation", channelId: "olv", channelName: "Online Video", percent: 16, budget: 16000, direction: "up", role: "decision", delta: 2000, fromPercent: 14, fromBudget: 14000 },
+    { kind: "allocation", channelId: "display", channelName: "Programmatic Display", percent: 10, budget: 10000, direction: "down", role: "decision", delta: -2000, fromPercent: 12, fromBudget: 12000 },
   ]);
   // With the recommendation's own media types named, the rest is the automatic rebalance.
   assert.equal((changeLines(before, after, ["olv"]).find((l: any) => l.channelId === "display") as any)?.role, "funding");

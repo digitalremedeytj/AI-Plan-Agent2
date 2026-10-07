@@ -126,12 +126,12 @@ export interface RecapEvidence {
 }
 
 /**
- * A line of the exact plan change, as the plan stands once it is made; the old value is never
- * shown. "decision" lines are what the recommendation chose; "funding" lines are the engine's
+ * A line of the exact plan change: where the media type ends up, and where it was (fromPercent,
+ * fromBudget), so the client reads it as a move rather than a final figure. "decision" lines are what the recommendation chose; "funding" lines are the engine's
  * automatic rebalance of everything else, shown to the client as one summary line.
  */
 export type RecapChangeLine =
-  | { kind: "allocation"; channelId: string; channelName: string; percent: number; budget: number; direction: "up" | "down"; role?: "decision" | "funding"; delta?: number }
+  | { kind: "allocation"; channelId: string; channelName: string; percent: number; budget: number; direction: "up" | "down"; role?: "decision" | "funding"; delta?: number; fromPercent?: number; fromBudget?: number }
   | { kind: "channel_added"; channelId: string; channelName: string; percent: number; budget: number }
   | { kind: "channel_removed"; channelId: string; channelName: string }
   | { kind: "publisher_added" | "publisher_removed"; name: string };
@@ -394,6 +394,8 @@ export function changeLines(beforeProfile: any, afterProfile: any, decisionChann
         direction: c.allocationPercent > old.allocationPercent ? "up" : "down",
         role: decisionChannelIds.length === 0 || decisionChannelIds.includes(c.channelId) ? "decision" : "funding",
         delta: c.allocationDollars - old.allocationDollars,
+        fromPercent: old.allocationPercent,
+        fromBudget: old.allocationDollars,
       });
     }
   }

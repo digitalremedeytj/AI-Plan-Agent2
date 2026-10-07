@@ -160,3 +160,20 @@ test("a detail block the planner hid never reaches the share link", () => {
   assert.ok(shared.rankings?.some((r) => r.key === "publisher"));
   assert.ok(recap.campaigns[0].trend, "the planner's copy is untouched");
 });
+
+test("a recommended change reads as a move: share before and after, and the dollars that shift", async () => {
+  const { changeLines } = await import("./recap");
+  const { lineShift } = await import("../components/CampaignRecapSection");
+  const plan = (olv: [number, number], ctv: [number, number]) => ({ channelStrategy: { mediaPlan: { channels: [
+    { channelId: "olv", channelName: "Online Video", allocationPercent: olv[0], allocationDollars: olv[1] },
+    { channelId: "ctv", channelName: "CTV", allocationPercent: ctv[0], allocationDollars: ctv[1] },
+  ] } } });
+  const lines = changeLines(plan([10, 10000], [20, 20000]), plan([14, 14000], [15, 15000]), ["olv"]);
+  const olv = lineShift(lines.find((l) => "channelId" in l && l.channelId === "olv")!, false, [])!;
+  assert.deepEqual(olv, { from: { percent: 10, budget: 10000 }, to: { percent: 14, budget: 14000 }, delta: 4000 });
+  const ctv = lineShift(lines.find((l) => "channelId" in l && l.channelId === "ctv")!, false, [])!;
+  assert.equal(ctv.delta, -5000);
+  // Lines saved before the "from" values existed work them out from the dollar change.
+  const legacy = lineShift({ kind: "allocation", channelId: "olv", channelName: "Online Video", percent: 14, budget: 14000, direction: "up", delta: 4000 }, false, [])!;
+  assert.deepEqual(legacy.from, { percent: 10, budget: 10000 });
+});
