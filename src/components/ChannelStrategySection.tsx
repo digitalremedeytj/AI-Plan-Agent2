@@ -428,8 +428,8 @@ export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
       <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-semibold text-slate-600">
         {monthlyEquivalentSpend !== undefined && <span className="rounded-md border border-slate-200 px-2 py-1">${monthlyEquivalentSpend.toLocaleString()} monthly equivalent</span>}
         {isPreview && <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-indigo-700">Allocation calculated after add</span>}
-        <span className="rounded-md border border-slate-200 px-2 py-1">Min {Math.ceil(minimumAllocationPercent)}% / Max {Math.floor(maximumAllocationPercent)}%</span>
-        <span className="rounded-md border border-slate-200 px-2 py-1">Min spend ${minimumTotalSpend.toLocaleString()}</span>
+        <span className="rounded-md border border-slate-200 px-2 py-1">Recommended {Math.ceil(minimumAllocationPercent)}–{Math.floor(maximumAllocationPercent)}%</span>
+        <span className="rounded-md border border-slate-200 px-2 py-1">Recommended min spend ${minimumTotalSpend.toLocaleString()}</span>
         {minimumFlightDays !== undefined && <span className="rounded-md border border-slate-200 px-2 py-1">Min flight {minimumFlightDays} days</span>}
         <span className="rounded-md border border-slate-200 px-2 py-1">{typicalCpmLow !== null && typicalCpmHigh !== null ? `Est. CPM $${typicalCpmLow}–$${typicalCpmHigh}` : 'CPM varies by buy model'}</span>
         {fundingSource && <span className="rounded-md border border-slate-200 px-2 py-1">{fundingSource}</span>}
@@ -623,14 +623,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
       return;
     }
     const cleanBudget = Math.round(parsed);
-    const sumMinSpends = mediaPlan.channels.reduce((sum, c) => sum + c.minimumTotalSpend, 0);
-    if (cleanBudget < sumMinSpends) {
-      setAllocationEditorError(`Budget of $${cleanBudget.toLocaleString()} is too low for the selected media mix. Minimum required is $${sumMinSpends.toLocaleString()} based on channel minimums.`);
-      setDraftBudget(cleanBudget);
-      setDraftBudgetInput(cleanBudget.toLocaleString());
-      setDraftInputs(allocationInputs(draftBasisPoints, cleanBudget));
-      return;
-    }
+    // The channels' minimum spends are recommendations; a smaller budget is the planner's call.
     try {
       const next = rebalanceBasisPoints(mediaPlan, draftBasisPoints, cleanBudget);
       setDraftBudget(cleanBudget);
@@ -961,12 +954,15 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                           activeBudget > 0 ? (channel.minimumTotalSpend / activeBudget) * 100 : 100,
                         ));
                         const effectiveMaximum = Math.floor(channel.maximumAllocationPercent);
+                        const draftPercent = (draftBasisPoints[channel.channelId] ?? 0) / 100;
+                        const outsideRange = draftPercent < effectiveMinimum || draftPercent > effectiveMaximum;
                         return (
                           <div key={channel.channelId} className={`px-3 py-3 transition-colors ${locked ? 'bg-indigo-50/40' : 'bg-white'}`}>
                             <div className="relative grid grid-cols-2 items-center gap-2 sm:grid-cols-[minmax(130px,1fr)_100px_130px_52px]">
                               <div className="col-span-2 row-start-1 min-w-0 pr-12 sm:col-span-1 sm:pr-0">
                                 <div className="truncate text-sm font-extrabold text-slate-900">{channel.channelName}</div>
-                                <div className="mt-0.5 text-[10px] font-semibold text-slate-500">{effectiveMinimum}% min · {effectiveMaximum}% max</div>
+                                <div className="mt-0.5 text-[10px] font-semibold text-slate-500">Recommended {effectiveMinimum}–{effectiveMaximum}%</div>
+                                {outsideRange && <div className="mt-0.5 text-[10px] font-semibold text-amber-700">Outside the recommended range</div>}
                               </div>
                               <label className="col-start-1 row-start-2 block sm:col-start-2 sm:row-start-1">
                                 <span className="sr-only">{channel.channelName} allocation percentage</span>

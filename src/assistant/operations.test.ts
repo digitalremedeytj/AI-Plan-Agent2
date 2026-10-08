@@ -144,13 +144,25 @@ test("several allocation targets are solved together instead of undoing each oth
   assert.equal(after.find((c: any) => c.channelId === second.channelId).allocationPercent, second.allocationPercent + 1);
 });
 
-test("an impossible allocation is rejected with the engine's reason and changes nothing", () => {
+test("ScoutAI can set an allocation outside the catalog's recommended range", () => {
   const before = payload();
   const channel = before.profile.channelStrategy.mediaPlan.channels[0];
-  const result = applyOps(before, [{ type: "set_allocation", channelId: channel.channelId, percent: Math.min(100, channel.maximumAllocationPercent + 5) }]);
+  const percent = Math.min(100, Math.floor(channel.maximumAllocationPercent) + 5);
+  const result = applyOps(before, [{ type: "set_allocation", channelId: channel.channelId, percent }]);
+  assert.equal(result.rejected.length, 0);
+  const plan = result.payload.profile.channelStrategy.mediaPlan as MediaRecommendationPlan;
+  assert.equal(plan.channels.find((c) => c.channelId === channel.channelId)!.allocationPercent, percent);
+  assert.equal(plan.channels.reduce((sum, c) => sum + c.allocationPercent, 0), 100);
+});
+
+test("an allocation that cannot add up is rejected with the reason and changes nothing", () => {
+  const before = payload();
+  const channels = before.profile.channelStrategy.mediaPlan.channels;
+  before.profile.channelStrategy.lockedAllocationChannelIds = channels.slice(1).map((c: any) => c.channelId);
+  const result = applyOps(before, [{ type: "set_allocation", channelId: channels[0].channelId, percent: 100 }]);
   assert.equal(result.ops.length, 0);
   assert.equal(result.changes.length, 0);
-  assert.match(result.rejected[0].reason, /must stay between|exceed|absorb/);
+  assert.match(result.rejected[0].reason, /more than 100%|add up|unlock/i);
 });
 
 test("a budget change rescales dollars, keeps the mix, and updates the brief's budget field", () => {

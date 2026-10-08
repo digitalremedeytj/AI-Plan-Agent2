@@ -164,7 +164,7 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
         const percent = Number((item as any).percent);
         if (!channelId || !Number.isFinite(percent)) { reject("needs a channelId and a percent"); break; }
         if (!Number.isInteger(percent)) { reject("allocations are whole percentages"); break; }
-        if (percent < 1 || percent > 100) { reject("allocation must be between 1% and 100%"); break; }
+        if (percent < 0 || percent > 100) { reject("allocation must be between 0% and 100%"); break; }
         ops.push({ type, channelId, percent });
         break;
       }
@@ -604,7 +604,7 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
           try {
             basisPoints = minimalRebalance(plan, current, targets, locked, budget);
           } catch {
-            // No small adjustment fits the limits; the engine's full rebalance explains why, or finds a way.
+            // No small adjustment works (everything else is locked); the full rebalance explains why.
             const fixed: AllocationBasisPoints = { ...targets };
             locked.forEach((id) => { if (fixed[id] === undefined && current[id] !== undefined) fixed[id] = current[id]; });
             basisPoints = rebalanceBasisPoints(plan, fixed, budget);
@@ -749,12 +749,13 @@ function minimalRebalance(
   const adjustable = plan.channels.filter((c) => targets[c.channelId] === undefined && !locked.includes(c.channelId));
   const step = remaining > 0 ? 100 : -100;
   while (remaining !== 0) {
-    const candidates = adjustable.filter((c) => {
-      const bounds = effectiveBounds(c, budget);
-      const value = next[c.channelId] + step;
-      return value >= bounds.minimum && value <= bounds.maximum;
-    });
-    if (candidates.length === 0) throw new Error("The other media types cannot absorb this change within their limits.");
+    // The catalog's ranges are a guide: a channel inside its range is preferred, then any channel
+    // that keeps at least 1%, then any at all. The planner's own targets are never limited.
+    const value = (c: typeof adjustable[number]) => next[c.channelId] + step;
+    const inRange = adjustable.filter((c) => { const bounds = effectiveBounds(c, budget); return value(c) >= bounds.minimum && value(c) <= bounds.maximum; });
+    const keepsSome = adjustable.filter((c) => value(c) >= 100 && value(c) <= 10_000);
+    const candidates = inRange.length ? inRange : keepsSome.length ? keepsSome : adjustable.filter((c) => value(c) >= 0 && value(c) <= 10_000);
+    if (candidates.length === 0) throw new Error("No unlocked media type can take up the difference.");
     // Proportional: give to the channel that has grown least relative to its size, take from the one
     // that has shrunk least; ties go to the larger channel.
     const ratio = (c: typeof adjustable[number]) => next[c.channelId] / Math.max(1, current[c.channelId]);

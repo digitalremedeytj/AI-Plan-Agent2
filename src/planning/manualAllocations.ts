@@ -125,9 +125,11 @@ function formatPercent(basisPoints: number): string {
 }
 
 /**
- * Rebalances a selected portfolio around fixed allocations. Every channel not in
- * fixedBasisPoints is adjusted proportionally to its current allocation while
- * respecting its effective minimum, maximum, and minimum-dollar requirements.
+ * Rebalances a selected portfolio around fixed allocations: the planner's own figures (an edited
+ * channel, a ScoutAI target) and locked channels. The planner's figures are never limited by the
+ * catalog; any whole percentage from 0% to 100% holds. The catalog's minimums, maximums and
+ * minimum spend are a guide for the channels that absorb the rest: they are followed when the
+ * portfolio allows it, and otherwise the rest is spread in proportion to each channel's size.
  */
 export function rebalanceBasisPoints(
   plan: MediaRecommendationPlan,
@@ -137,46 +139,62 @@ export function rebalanceBasisPoints(
   if (plan.channels.length === 0) return {};
   const budget = budgetOverride ?? plan.workingMediaBudget;
   const channelsById = new Map(plan.channels.map((channel) => [channel.channelId, channel]));
-  const current = rawAllocationBasisPoints(plan);
-  const next: AllocationBasisPoints = {};
+  const fixed: AllocationBasisPoints = {};
 
   Object.entries(fixedBasisPoints).forEach(([channelId, rawValue]) => {
     const channel = channelsById.get(channelId);
     if (!channel) throw new Error("That media type is no longer part of the selected plan.");
     const value = roundBasisPoints(rawValue);
-    const bounds = effectiveBounds(channel, budget);
-    if (value < Math.min(bounds.minimum, MANUAL_FLOOR_BASIS_POINTS) || value > bounds.maximum) {
-      throw new Error(
-        `${channel.channelName} must stay between ${formatPercent(bounds.minimum)} and ${formatPercent(bounds.maximum)} for this budget.`,
-      );
-    }
-    next[channelId] = value;
+    if (value < 0 || value > TOTAL_BASIS_POINTS) throw new Error(`${channel.channelName} must be between 0% and 100%.`);
+    fixed[channelId] = value;
   });
 
-  const adjustable = plan.channels.filter((channel) => fixedBasisPoints[channel.channelId] === undefined);
-  const floors = allocationFloors(plan.channels, budget, fixedBasisPoints);
+  const fixedTotal = Object.values(fixed).reduce((sum, value) => sum + value, 0);
+  if (fixedTotal > TOTAL_BASIS_POINTS) {
+    throw new Error("The set and locked allocations add up to more than 100%. Lower one, or unlock a media type.");
+  }
+  const adjustable = plan.channels.filter((channel) => fixed[channel.channelId] === undefined);
+  if (adjustable.length === 0) {
+    if (fixedTotal !== TOTAL_BASIS_POINTS) {
+      throw new Error(`Every media type is set or locked and they add up to ${formatPercent(fixedTotal)}. Unlock one so it can take up the difference.`);
+    }
+    return fixed;
+  }
+  try {
+    return withinCatalogGuides(plan, fixed, adjustable, budget);
+  } catch {
+    return { ...fixed, ...inProportion(adjustable, rawAllocationBasisPoints(plan), TOTAL_BASIS_POINTS - fixedTotal) };
+  }
+}
+
+/** The absorbing channels kept inside the catalog's minimums and maximums; throws when they cannot be. */
+function withinCatalogGuides(
+  plan: MediaRecommendationPlan,
+  fixed: AllocationBasisPoints,
+  adjustable: ChannelPlanRecommendation[],
+  budget: number,
+): AllocationBasisPoints {
+  const current = rawAllocationBasisPoints(plan);
+  const next: AllocationBasisPoints = { ...fixed };
+  const floors = allocationFloors(plan.channels, budget, fixed);
   adjustable.forEach((channel) => {
     next[channel.channelId] = floors.get(channel.channelId) ?? effectiveBounds(channel, budget).minimum;
   });
 
   let remaining = TOTAL_BASIS_POINTS - Object.values(next).reduce((sum, value) => sum + value, 0);
-  if (remaining < 0) {
-    throw new Error("The locked allocations exceed 100%. Unlock or reduce another media type, or increase the budget.");
-  }
+  if (remaining < 0) throw new Error("The absorbing media types cannot all keep their minimums.");
 
   const maximumCapacity = adjustable.reduce((sum, channel) => {
     const bounds = effectiveBounds(channel, budget);
     return sum + Math.max(0, bounds.maximum - next[channel.channelId]);
   }, 0);
-  if (remaining > maximumCapacity) {
-    throw new Error("The unlocked media types cannot absorb the remaining budget without exceeding their maximums.");
-  }
+  if (remaining > maximumCapacity) throw new Error("The absorbing media types cannot take the rest within their maximums.");
 
   while (remaining > 0) {
     const active = adjustable
       .filter((channel) => next[channel.channelId] < effectiveBounds(channel, budget).maximum)
       .sort((a, b) => a.channelId.localeCompare(b.channelId));
-    if (active.length === 0) throw new Error("No unlocked media type can absorb the remaining budget.");
+    if (active.length === 0) throw new Error("No absorbing media type has room left.");
     const totalWeight = active.reduce((sum, channel) => sum + Math.max(1, current[channel.channelId] || 1), 0);
     const startingRemainder = remaining;
     let distributed = 0;
@@ -202,6 +220,27 @@ export function rebalanceBasisPoints(
   }
 
   return next;
+}
+
+/**
+ * What is left, spread over the absorbing channels in proportion to their current size, in whole
+ * percentages. Each keeps at least 1% while there is room for that, so none silently drops out.
+ */
+function inProportion(adjustable: ChannelPlanRecommendation[], current: AllocationBasisPoints, available: number): AllocationBasisPoints {
+  const floor = available >= adjustable.length * 100 ? 100 : 0;
+  const units = (available - floor * adjustable.length) / 100;
+  const weights = adjustable.map((channel) => Math.max(1, current[channel.channelId] || 0));
+  const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+  const exact = adjustable.map((channel, index) => ({ id: channel.channelId, units: (units * weights[index]) / weightTotal }));
+  const out: AllocationBasisPoints = Object.fromEntries(exact.map((e) => [e.id, floor + Math.floor(e.units) * 100]));
+  let left = units - exact.reduce((sum, e) => sum + Math.floor(e.units), 0);
+  // Largest remainders first, so the rounding favours the channels it shortchanged most.
+  const order = [...exact].sort((a, b) => (b.units - Math.floor(b.units)) - (a.units - Math.floor(a.units)) || a.id.localeCompare(b.id));
+  for (let index = 0; left > 0; index = (index + 1) % order.length) {
+    out[order[index].id] += 100;
+    left -= 1;
+  }
+  return out;
 }
 
 export function rebalanceEditedAllocation(
@@ -238,13 +277,11 @@ export function applyBasisPointAllocations(
 
   const budget = budgetOverride ?? plan.workingMediaBudget;
   const dollars = allocateDollars(budget, basisPoints);
-  const floors = allocationFloors(plan.channels, budget, {});
+  // The catalog's ranges guide the engine's recommendation; a planner's allocation is theirs.
   const channels = plan.channels.map((channel) => {
     const value = roundBasisPoints(basisPoints[channel.channelId]);
-    const bounds = effectiveBounds(channel, budget);
-    const floor = Math.min(floors.get(channel.channelId) ?? bounds.minimum, bounds.minimum);
-    if (value < floor || value > bounds.maximum) {
-      throw new Error(`${channel.channelName} is outside its allowed allocation range for a $${budget.toLocaleString()} budget.`);
+    if (value < 0 || value > TOTAL_BASIS_POINTS) {
+      throw new Error(`${channel.channelName} must be between 0% and 100%.`);
     }
     const allocationDollars = dollars[channel.channelId];
     return {

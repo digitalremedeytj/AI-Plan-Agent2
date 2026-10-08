@@ -112,7 +112,7 @@ export function buildPlanContext(
       const p = `channelStrategy.mediaPlan.channels[${index}]`;
       return [
         `* ${c.channelName} (channelId: ${c.channelId}) - ${c.status}, ${c.allocationPercent}% = ${money(c.allocationDollars)}${locked.has(c.channelId) ? ", LOCKED" : ""}${c.manuallyForced ? ", added by a planner" : ""}`,
-        `  limits: ${c.manuallyForced ? 1 : c.minimumAllocationPercent}-${c.maximumAllocationPercent}% of budget, minimum spend ${money(c.minimumTotalSpend)}; typical CPM ${c.typicalCpmLow != null ? `$${c.typicalCpmLow}-$${c.typicalCpmHigh}` : "not set"}; score ${c.recommendationScore}, confidence ${c.confidence}; role: ${clip(c.role, 200)}`,
+        `  recommended range: ${c.manuallyForced ? 1 : c.minimumAllocationPercent}-${c.maximumAllocationPercent}% of budget (a guide, not a limit), recommended minimum spend ${money(c.minimumTotalSpend)}; typical CPM ${c.typicalCpmLow != null ? `$${c.typicalCpmLow}-$${c.typicalCpmHigh}` : "not set"}; score ${c.recommendationScore}, confidence ${c.confidence}; role: ${clip(c.role, 200)}`,
         `  [${p}.gapAddressed] ${clip(c.gapAddressed)}`,
         `  [${p}.allocationRationale] ${clip(c.allocationRationale)}`,
         ...(c.tradeoffs || []).map((t, i) => `  [${p}.tradeoffs[${i}]] ${clip(t, 400)}`),
@@ -254,7 +254,7 @@ How you answer:
 - Use only the plan, the Brief of Record, the original request, the research excerpts, the sources and, when given, the past campaign performance provided. If the plan does not contain something (a CPM it does not list, reach it did not estimate, a publisher it does not name), say so plainly. Never invent figures, research, benchmarks or expected results.
 - Be concise: you are in a narrow side panel. Lead with the answer. Short paragraphs or a few bullets; markdown is fine in your reply (never in text you write into the plan); no tables. Refer to media types by name, never by channelId or segmentId.
 - Check the plan against the original request and the Brief of Record when it matters: budget, KPIs, audience, geography, RFP asks. Point out conflicts the planner may not have noticed.
-- Channel numbers come from Digital Remedy's planning engine and its catalog rules (minimums, maximums, minimum spend). Explain them from the plan's rationale and limits; do not second-guess the catalog.
+- Channel numbers come from Digital Remedy's planning engine and its catalog guides (recommended ranges, minimum spend). Explain them from the plan's rationale. The ranges guide the recommendation but do not limit the planner: when asked, set any whole percentage from 0% to 100%, and mention it when a figure falls outside the recommended range.
 
 How you edit:
 - You never change the plan directly. You return a proposal; the planner sees the exact computed result and approves it before anything is saved. Say in the reply what you are proposing; never claim it is done.
@@ -263,7 +263,7 @@ How you edit:
   * When asked what you would change or how to improve the plan, return several independent items (usually 2 to 5), ordered by impact, so the planner can pick. Keep each item independent: it should make sense on its own.
 - Propose when the planner asks for a change, asks for recommendations, or agrees to one you suggested. If a request is too vague to act on well, you may propose your best reading and say what you assumed.
 - Operations. Use the exact channelId, segmentId, persona names, field keys and paths shown in the plan:
-  * set_allocation {channelId, percent}: a whole percentage. Channels you do not set keep their allocation unless your targets do not add up, in which case they absorb the difference in proportion; LOCKED channels never move. To move budget between channels, set both, and set only the channels that should change.
+  * set_allocation {channelId, percent}: any whole percentage from 0 to 100. Channels you do not set keep their allocation unless your targets do not add up, in which case they absorb the difference in proportion; LOCKED channels never move. To move budget between channels, set both, and set only the channels that should change.
   * add_channel {channelId} / remove_channel {channelId}: only media types listed as addable can be added.
   * lock_channel / unlock_channel {channelId}
   * set_budget {amount}: the working media budget in dollars.

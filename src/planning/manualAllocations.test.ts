@@ -95,13 +95,28 @@ test("adding and removing a media type preserves membership and the fixed budget
   assert.equal(removed.channels.reduce((sum, channel) => sum + channel.allocationDollars, 0), original.workingMediaBudget);
 });
 
-test("manual allocation editing rejects values below effective minimum", () => {
+test("a planner can set any allocation, outside the catalog's recommended range", () => {
   const original = plan();
   const channel = original.channels[0];
-  assert.throws(
-    () => rebalanceEditedAllocation(original, channel.channelId, 1),
-    /must stay between/i,
-  );
+  const total = (points: Record<string, number>) => Object.values(points).reduce((sum, value) => sum + value, 0);
+  for (const target of [100, 9_000, 0]) {
+    const next = rebalanceEditedAllocation(original, channel.channelId, target);
+    assert.equal(next[channel.channelId], target);
+    assert.equal(total(next), 10_000);
+    assert.ok(Object.values(next).every((value) => value >= 0 && value % 100 === 0));
+    const saved = applyBasisPointAllocations(original, next, "Planner edit");
+    assert.equal(saved.channels.find((c) => c.channelId === channel.channelId)!.allocationPercent, target / 100);
+  }
+  // The rest absorb it in proportion, each keeping at least 1% while there is room.
+  const big = rebalanceEditedAllocation(original, channel.channelId, 9_000);
+  assert.ok(original.channels.filter((c) => c.channelId !== channel.channelId).every((c) => big[c.channelId] >= 100));
+});
+
+test("allocations still have to add up: set and locked channels over 100% are refused", () => {
+  const original = plan();
+  const [a, b] = original.channels;
+  assert.throws(() => rebalanceEditedAllocation(original, a.channelId, 9_000, [b.channelId].concat(original.channels.slice(2).map((c) => c.channelId))), /add up to|more than 100%/);
+  assert.throws(() => rebalanceEditedAllocation(original, a.channelId, 10_100), /between 0% and 100%/);
 });
 
 test("manual allocation persistence rejects fractional percentages", () => {
