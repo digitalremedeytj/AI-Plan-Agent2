@@ -204,6 +204,16 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
       .filter((value): value is string => Boolean(value)),
   ));
 
+  const requiredChannelIds = (input.requiredChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id);
+  // "Only these" is expressed as exclusions rather than a separate cap so it survives the
+  // round trip through manualExcludedChannelIds and every later re-plan keeps honouring it.
+  const excludedChannelIds = Array.from(new Set([
+    ...(input.excludedChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id),
+    ...(input.requiredChannelsOnly && requiredChannelIds.length > 0
+      ? effectiveProducts.map((product) => product.id).filter((id) => !requiredChannelIds.includes(id))
+      : []),
+  ])).filter((id) => !requiredChannelIds.includes(id));
+
   return {
     advertiserName: input.advertiserName || "",
     advertiserUrl: input.advertiserUrl || "",
@@ -224,9 +234,9 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     planningMode: input.planningMode || (selectedOptions.length > 0 ? "reallocation" : "greenfield"),
     existingPlacements,
     existingChannelIds,
-    requiredChannelIds: (input.requiredChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id),
+    requiredChannelIds,
     preferredChannelIds: (input.preferredChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id),
-    excludedChannelIds: (input.excludedChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id),
+    excludedChannelIds,
     dataReadiness: { ...inferred.data, ...(input.dataReadiness || {}) },
     creativeReadiness: { ...inferred.creative, ...(input.creativeReadiness || {}) },
     measurementExpectations: input.measurementExpectations || [],

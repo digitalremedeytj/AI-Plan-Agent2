@@ -60,6 +60,9 @@ import Markdown from "react-markdown";
 
 import { AudienceProfile, type Persona, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
+import { docxLines } from "./utils/docxText";
+import { asWebsiteUrl } from "./utils/websiteUrl";
+import { asAdvertiserName } from "./utils/advertiserName";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import {
@@ -144,6 +147,7 @@ import type { AssistantOp } from "./assistant/operations";
 import { PlanText } from "./components/PlanText";
 import { PublisherInsightsPanel } from "./components/PublisherInsightsPanel";
 import { syncCtvChannelPublishers } from "./planning/ctvChannel";
+import { briefMediaTypeOptions } from "./planning/briefMediaTypes";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 
@@ -604,6 +608,12 @@ export default function App() {
   const [geoCopiedNotice, setGeoCopiedNotice] = useState(false);
   const geoFileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [campaignFocus, setCampaignFocus] = useState("Full-funnel digital media plan");
+  // Brief-level media-type picks (product ids). Empty means ScoutAI chooses the mix.
+  const [briefMediaTypes, setBriefMediaTypes] = useState<string[]>([]);
+  const [briefMediaTypesOnly, setBriefMediaTypesOnly] = useState(false);
+  // "Let AI pick" (the default) keeps the picker collapsed and sends no picks; switching back
+  // to it does not clear them, so a planner can flip between the two without re-picking.
+  const [isPickingMediaTypes, setIsPickingMediaTypes] = useState(false);
   const [additionalContext, setAdditionalContext] = useState("");
   const [isAdvancedPersonaOpen, setIsAdvancedPersonaOpen] = useState(false);
   const [targetPersonas, setTargetPersonas] = useState<string[]>(["", "", "", ""]);
@@ -681,6 +691,25 @@ export default function App() {
     }
     return geographyType;
   }, [geographyType, geoTargets]);
+
+  const briefMediaTypeChoices = React.useMemo(() => briefMediaTypeOptions(planningSettings), [planningSettings]);
+  // A pick a later settings change disabled would make every portfolio infeasible in the engine
+  // (a required media type it cannot select), so only live picks are sent.
+  const activeBriefMediaTypes = React.useMemo(
+    () => isPickingMediaTypes ? briefMediaTypes.filter((id) => briefMediaTypeChoices.some((option) => option.id === id)) : [],
+    [isPickingMediaTypes, briefMediaTypes, briefMediaTypeChoices],
+  );
+  // Picks whose product minimums the budget cannot cover. The engine still funds them (a pick is
+  // a planner override), so this is a heads-up before generating, not a block.
+  const briefMediaTypeShortfall = React.useMemo(() => {
+    const picked = briefMediaTypeChoices.filter((option) => activeBriefMediaTypes.includes(option.id));
+    const minimumTotal = picked.reduce((sum, option) => sum + option.minimumTotalSpend, 0);
+    const minimumMonthly = picked.reduce((sum, option) => sum + option.minimumNormalized30DaySpend, 0);
+    const budgetTotal = budgetNormalization.workingMediaBudget;
+    if (picked.length === 0 || !(budgetTotal > 0)) return null;
+    if (minimumTotal <= budgetTotal && minimumMonthly <= budgetNormalization.normalized30DayBudget) return null;
+    return { minimumTotal, minimumMonthly };
+  }, [briefMediaTypeChoices, activeBriefMediaTypes, budgetNormalization]);
 
   const geographyOptions = React.useMemo(() => {
     const base: string[] = ["National", "State", "DMA"];
@@ -878,15 +907,12 @@ export default function App() {
           const checkKey = keyPart || lowerCell.replace(/:$/, "").trim();
 
           if (!advertiserName && advLabels.some((l) => checkKey === l || checkKey.includes(l))) {
-            if (valPart && !advLabels.includes(valPart.toLowerCase())) {
-              advertiserName = valPart;
-            }
+            advertiserName = asAdvertiserName(valPart);
           }
 
+          // Only an actual address: spec tables put labels like "Landing Page" beside other text.
           if (!websiteUrl && urlLabels.some((l) => checkKey === l || checkKey.includes(l))) {
-            if (valPart && !urlLabels.includes(valPart.toLowerCase())) {
-              websiteUrl = valPart;
-            }
+            websiteUrl = asWebsiteUrl(valPart);
           }
 
           if (kpiLabels.some((l) => checkKey === l || checkKey.includes(l))) {
@@ -904,6 +930,17 @@ export default function App() {
     }
 
     return { advertiserName, websiteUrl, kpis: foundKpis };
+  };
+
+  // Fills the brief from an upload: the label scan of the file, then the AI's RFP extraction.
+  // Each value is checked, so a heading or spec text never lands in a field.
+  const applyBriefMetadata = (meta: { advertiserName?: unknown; websiteUrl?: unknown; kpis?: unknown } | null | undefined) => {
+    if (!meta) return;
+    const advertiser = asAdvertiserName(meta.advertiserName);
+    if (advertiser) setAdvertiserName(advertiser);
+    const websiteUrl = asWebsiteUrl(meta.websiteUrl);
+    if (websiteUrl && !url) setUrl(websiteUrl);
+    if (Array.isArray(meta.kpis) && meta.kpis.length > 0) setKpis(meta.kpis);
   };
 
   // Media plan upload states
@@ -1681,6 +1718,8 @@ export default function App() {
       rawInput: geoRawInput,
     },
     campaignFocus,
+    briefMediaTypes: activeBriefMediaTypes,
+    briefMediaTypesOnly: briefMediaTypesOnly && activeBriefMediaTypes.length > 0,
     additionalContext,
     targetPersonas: targetPersonas.filter(p => p.trim().length > 0),
     budget,
@@ -2315,6 +2354,10 @@ export default function App() {
     setUrl(body.url || "");
     restoreGeographyFromPayload(body);
     setCampaignFocus(body.campaignFocus || "Full-funnel digital media plan");
+    const restoredMediaTypes = Array.isArray(body.briefMediaTypes) ? body.briefMediaTypes.filter((id: unknown) => typeof id === "string") : [];
+    setBriefMediaTypes(restoredMediaTypes);
+    setBriefMediaTypesOnly(body.briefMediaTypesOnly === true);
+    setIsPickingMediaTypes(restoredMediaTypes.length > 0);
     setAdditionalContext(body.additionalContext || "");
     if (Array.isArray(body.targetPersonas) && body.targetPersonas.length > 0) {
       const restored = ["", "", "", ""];
@@ -2564,6 +2607,10 @@ export default function App() {
             setUploadedFileText(cached.uploadedFileText || "");
             setParsedSheetsData(cached.parsedSheetsData || []);
             setExtractedPlacements(cached.extractedPlacements);
+            setRfpAnalysis(cached.rfpAnalysis || null);
+            // The cached parse skips the reading below, so the brief is filled from it here.
+            applyBriefMetadata(extractCampaignMetadata(cached.parsedSheetsData || []));
+            applyBriefMetadata(cached.rfpAnalysis?.extractedMetadata);
             setActiveSheetIndex(0);
             setModalCurrentPage(1);
             setIsPreviewModalOpen(true);
@@ -2671,10 +2718,7 @@ export default function App() {
           localSheetsData = sheetsData;
 
           // Auto extract metadata (Advertiser Name, Website URL, KPIs)
-          const meta = extractCampaignMetadata(sheetsData);
-          if (meta.advertiserName) setAdvertiserName(meta.advertiserName);
-          if (meta.websiteUrl && !url) setUrl(meta.websiteUrl);
-          if (meta.kpis && meta.kpis.length > 0) setKpis(meta.kpis);
+          applyBriefMetadata(extractCampaignMetadata(sheetsData));
 
           setUploadedFileText(fullText.trim());
           setParsedSheetsData(sheetsData);
@@ -2688,73 +2732,78 @@ export default function App() {
       };
       reader.readAsArrayBuffer(file);
     } else {
-      // CSV or plain TXT
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        try {
-          const text = (evt.target?.result as string) || '';
-          localFullText = text;
+      // CSV, plain TXT and Word. Word and PDF files are binary: read as text they show their raw
+      // bytes, so .docx is unzipped for its text and PDF / legacy .doc get a note instead (the
+      // server-side parse below still reads the whole document).
+      const isDocx = extension === 'docx';
+      const isBinaryDocument = extension === 'pdf' || extension === 'doc';
+      const showTextRows = (text: string, rawRows: any[][], diagnostics: string) => {
+        localFullText = text;
 
-          const lines = text.split("\n").filter(l => l.trim() !== "");
-          const rawRows: any[][] = [];
-          
-          if (extension === 'csv') {
-            const delim = detectDelimiter(text);
-            lines.forEach(line => {
-              const cells = parseCSVLine(line, delim);
-              rawRows.push(cells);
-            });
-          } else {
-            lines.forEach(line => {
-              rawRows.push([line]);
-            });
-          }
-
-          if (rawRows.length === 0) {
-            throw new Error("Uploaded file is empty.");
-          }
-
-          // Find the maximum number of columns across all rows in this file
-          const maxCols = Math.max(1, ...rawRows.map(r => r.length));
-
-          // Normalize all rows to have exactly maxCols length
-          const normalizedRows = rawRows.map(row => {
-            const newRow = [...row];
-            while (newRow.length < maxCols) {
-              newRow.push("");
-            }
-            return newRow.map(cell => cell !== null && cell !== undefined ? String(cell).trim() : "");
-          });
-
-          // Generate column letters: A, B, C...
-          const headers = Array.from({ length: maxCols }, (_, i) => getColumnLetter(i));
-
-          const diagnostics = extension === 'csv' ? "CSV Data Table" : "Plain Text Document";
-          const sheetsData = [{
-            name: file.name,
-            rows: normalizedRows,
-            headers,
-            diagnostics
-          }];
-          localSheetsData = sheetsData;
-
-          // Auto extract metadata (Advertiser Name, Website URL, KPIs)
-          const meta = extractCampaignMetadata(sheetsData);
-          if (meta.advertiserName) setAdvertiserName(meta.advertiserName);
-          if (meta.websiteUrl && !url) setUrl(meta.websiteUrl);
-          if (meta.kpis && meta.kpis.length > 0) setKpis(meta.kpis);
-
-          setUploadedFileText(text);
-          setParsedSheetsData(sheetsData);
-          setActiveSheetIndex(0);
-          setModalCurrentPage(1);
-          setIsPreviewModalOpen(true);
-          setError(null);
-        } catch (err: any) {
-          setError("Error reading text file: " + err.message);
+        if (rawRows.length === 0) {
+          throw new Error("Uploaded file is empty.");
         }
+
+        // Find the maximum number of columns across all rows in this file
+        const maxCols = Math.max(1, ...rawRows.map(r => r.length));
+
+        // Normalize all rows to have exactly maxCols length
+        const normalizedRows = rawRows.map(row => {
+          const newRow = [...row];
+          while (newRow.length < maxCols) {
+            newRow.push("");
+          }
+          return newRow.map(cell => cell !== null && cell !== undefined ? String(cell).trim() : "");
+        });
+
+        // Generate column letters: A, B, C...
+        const headers = Array.from({ length: maxCols }, (_, i) => getColumnLetter(i));
+
+        const sheetsData = [{
+          name: file.name,
+          rows: normalizedRows,
+          headers,
+          diagnostics
+        }];
+        localSheetsData = sheetsData;
+
+        // Auto extract metadata (Advertiser Name, Website URL, KPIs)
+        applyBriefMetadata(extractCampaignMetadata(sheetsData));
+
+        setUploadedFileText(text);
+        setParsedSheetsData(sheetsData);
+        setActiveSheetIndex(0);
+        setModalCurrentPage(1);
+        setIsPreviewModalOpen(true);
+        setError(null);
       };
-      reader.readAsText(file);
+
+      if (isBinaryDocument) {
+        showTextRows("", [[`A preview isn't available for .${extension} files. ScoutAI reads the full document — see the AI-Extracted Content tab.`]], extension === 'pdf' ? "PDF Document" : "Word Document");
+      } else {
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          try {
+            if (isDocx) {
+              const lines = docxLines(new Uint8Array(evt.target?.result as ArrayBuffer));
+              showTextRows(lines.join("\n"), lines.map((line) => [line]), "Word Document");
+              return;
+            }
+            const text = (evt.target?.result as string) || '';
+            const lines = text.split("\n").filter(l => l.trim() !== "");
+            if (extension === 'csv') {
+              const delim = detectDelimiter(text);
+              showTextRows(text, lines.map((line) => parseCSVLine(line, delim)), "CSV Data Table");
+            } else {
+              showTextRows(text, lines.map((line) => [line]), "Plain Text Document");
+            }
+          } catch (err: any) {
+            setError(`Error reading ${isDocx ? "Word" : "text"} file: ` + err.message);
+          }
+        };
+        if (isDocx) reader.readAsArrayBuffer(file);
+        else reader.readAsText(file);
+      }
     }
 
     // Launch server-side high-accuracy AI parsing pipeline
@@ -2806,14 +2855,7 @@ export default function App() {
           setExtractedPlacements(data.placements);
           if (data.rfpAnalysis) {
             setRfpAnalysis(data.rfpAnalysis);
-            if (data.rfpAnalysis.extractedMetadata) {
-              const meta = data.rfpAnalysis.extractedMetadata;
-              if (meta.advertiserName) setAdvertiserName(meta.advertiserName);
-              if (meta.websiteUrl && !url) setUrl(meta.websiteUrl);
-              if (meta.kpis && meta.kpis.length > 0) {
-                setKpis(meta.kpis);
-              }
-            }
+            applyBriefMetadata(data.rfpAnalysis.extractedMetadata);
           } else {
             setRfpAnalysis(null);
           }
@@ -2938,6 +2980,10 @@ export default function App() {
           url,
           geography,
           campaignFocus,
+          // Picks become planner-required media types; "only these" excludes the rest. The server
+          // returns them as manualIncluded/ExcludedChannelIds, so later re-plans keep them.
+          requiredChannelIds: activeBriefMediaTypes,
+          requiredChannelsOnly: briefMediaTypesOnly && activeBriefMediaTypes.length > 0,
           additionalContext,
           targetPersonas: targetPersonas.map(p => p.trim()).filter(p => p.length > 0),
           regenerateType: typeOverride,
@@ -3382,6 +3428,9 @@ export default function App() {
     setGeoUnrecognized([]);
     setGeoUploadNotice(null);
     setCampaignFocus("Full-funnel digital media plan");
+    setBriefMediaTypes([]);
+    setIsPickingMediaTypes(false);
+    setBriefMediaTypesOnly(false);
     setAdditionalContext("");
     setIsAdvancedPersonaOpen(false);
     setTargetPersonas(["", "", "", ""]);
@@ -5024,7 +5073,76 @@ export default function App() {
                       <option value="Full-funnel digital media plan">Full-Funnel</option>
                       <option value="Display/social/video plan">Display & Social</option>
                     </select>
+                    <p className="mt-1 text-[10px] leading-4 text-slate-400">
+                      Sets emphasis, not a channel limit. Use Media Types below to choose the mix.
+                    </p>
                   </div>
+                </div>
+
+                {/* Optional media-type picker: planner-required channels, optionally exclusive.
+                    Collapsed under "Let AI pick" by default to keep the brief short. */}
+                <div className="rounded-xl border border-slate-200 bg-white">
+                  <div className="flex items-center justify-between gap-3 px-3 py-2">
+                    <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                      <Layers className="w-3.5 h-3.5 text-slate-400" />
+                      Media Types
+                    </span>
+                    <select
+                      value={isPickingMediaTypes ? "pick" : "ai"}
+                      onChange={(e) => setIsPickingMediaTypes(e.target.value === "pick")}
+                      aria-label="How media types are chosen"
+                      className="text-xs px-2 py-1.5 border border-slate-200 bg-white rounded-lg focus:outline-hidden focus:border-indigo-500 cursor-pointer font-medium text-slate-700"
+                    >
+                      <option value="ai">Let AI pick</option>
+                      <option value="pick">I want to pick</option>
+                    </select>
+                  </div>
+                  {!isPickingMediaTypes ? (
+                    <p className="px-3 pb-2 -mt-1 text-[10px] leading-4 text-slate-400">
+                      ScoutAI chooses up to {appliedBudgetTier.maxChannels} media types for this budget.
+                    </p>
+                  ) : (
+                    <div className="border-t border-slate-100 px-3 py-2.5">
+                      <div className="flex flex-wrap gap-1.5">
+                        {briefMediaTypeChoices.map((option) => {
+                          const picked = briefMediaTypes.includes(option.id);
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              aria-pressed={picked}
+                              onClick={() => setBriefMediaTypes((prev) => picked ? prev.filter((id) => id !== option.id) : [...prev, option.id])}
+                              className={`text-[11px] px-2.5 py-1 rounded-full border font-medium transition-colors cursor-pointer ${picked ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:border-indigo-300"}`}
+                            >
+                              {option.displayName}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <label className={`mt-2 flex items-center gap-2 text-xs ${activeBriefMediaTypes.length === 0 ? "text-slate-400" : "text-slate-700 cursor-pointer"}`}>
+                        <input
+                          type="checkbox"
+                          checked={briefMediaTypesOnly && activeBriefMediaTypes.length > 0}
+                          disabled={activeBriefMediaTypes.length === 0}
+                          onChange={(e) => setBriefMediaTypesOnly(e.target.checked)}
+                          className="accent-indigo-600"
+                        />
+                        Use only these media types
+                      </label>
+                      <p className="mt-1 text-[10px] leading-4 text-slate-400">
+                        {activeBriefMediaTypes.length === 0
+                          ? `None picked yet: ScoutAI will choose up to ${appliedBudgetTier.maxChannels} media types.`
+                          : briefMediaTypesOnly
+                            ? "The plan will contain exactly the media types you picked."
+                            : `Picked media types are always included; ScoutAI may add others up to the ${appliedBudgetTier.maxChannels}-type cap.`}
+                      </p>
+                      {briefMediaTypeShortfall && (
+                        <p className="mt-1 text-[10px] leading-4 text-amber-700">
+                          The budget is below the combined product minimums for these picks (${briefMediaTypeShortfall.minimumTotal.toLocaleString()} total, ${briefMediaTypeShortfall.minimumMonthly.toLocaleString()} per 30 days). They will still be planned, below minimum, and flagged in the plan.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Conditional Geo-Targeting Panel for State or DMA */}

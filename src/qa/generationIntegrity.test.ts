@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   checkPersonas,
+  withoutPersonalName,
   clearSectionsForFailedDossiers,
   mergeRemediatedProfile,
   reportChartsNotFound,
@@ -127,4 +128,32 @@ test("remediation may correct chart values but cannot delete a chart", () => {
   assert.equal(rewritten.demographics.genderChartData[0].value, 52, "a corrected chart keeps its corrections");
   assert.equal(rewritten.deviceTypeIndex.chartData[0].value, 62);
   assert.deepEqual(rewritten.temporalPatterns.dayOfWeekChartData, original.temporalPatterns.dayOfWeekChartData, "a dropped section gets its charts back");
+});
+
+test("an invented personal name is cut from a persona label, leaving the archetype", () => {
+  assert.equal(withoutPersonalName("Molly Smith - Outdoor Active Mom"), "Outdoor Active Mom");
+  assert.equal(withoutPersonalName("Molly Smith – Outdoor Active Mom"), "Outdoor Active Mom");
+  assert.equal(withoutPersonalName("Priya: The Budget-Savvy Student"), "The Budget-Savvy Student");
+  assert.equal(withoutPersonalName("Marcus, the Weekend Grill Master"), "Weekend Grill Master");
+  assert.equal(withoutPersonalName("Meet \u201cJamal\u201d \u2014 Cord-Cutting Sports Fan"), "Cord-Cutting Sports Fan");
+  assert.equal(withoutPersonalName("Outdoor Active Mom - Molly Smith"), "Outdoor Active Mom");
+  assert.equal(withoutPersonalName("Outdoor Active Mom (Molly)"), "Outdoor Active Mom");
+});
+
+test("an archetype label that merely has a separator is left alone", () => {
+  assert.equal(withoutPersonalName("Outdoor Active Mom"), "Outdoor Active Mom");
+  assert.equal(withoutPersonalName("Busy Parents - Weekend Shoppers"), "Busy Parents - Weekend Shoppers");
+  assert.equal(withoutPersonalName("Gen Z: Mobile-First Streamers"), "Gen Z: Mobile-First Streamers");
+  assert.equal(withoutPersonalName("Sports Fans (Live Events)"), "Sports Fans (Live Events)");
+});
+
+test("a persona label the user typed keeps any name in it", () => {
+  const profile: any = { personas: [
+    { name: "Molly Smith - Outdoor Active Mom", sourceType: "User" },
+    { name: "Jamal Carter - Cord-Cutting Sports Fan", sourceType: "ScoutAI" },
+  ] };
+
+  checkPersonas(profile, { mediaPlanUploaded: false });
+
+  assert.deepEqual(profile.personas.map((p: any) => p.name), ["Molly Smith - Outdoor Active Mom", "Cord-Cutting Sports Fan"]);
 });

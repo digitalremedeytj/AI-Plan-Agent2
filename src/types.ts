@@ -45,6 +45,20 @@ export interface Persona {
   avatarHistory?: PersonaAvatarVersion[];
   sourceType?: 'RFP' | 'ScoutAI' | 'User';
   isExpansion?: boolean;
+  /** Hidden casting brief for the headshot, written by synthesis. Plans made before it have none. */
+  portrait?: PersonaPortrait;
+}
+
+export interface PersonaPortrait {
+  apparentAge: number;
+  gender: string;
+  ethnicity: string;
+  /** The dossier figure the casting follows, or "market population". Never shown. */
+  ethnicityBasis: string;
+  appearance: string;
+  wardrobe: string;
+  setting: string;
+  expression: string;
 }
 
 export type SegmentDimension = "Demographics" | "In-Market / Intent" | "Interest & Affinity" | "Behavioral";
@@ -447,6 +461,10 @@ export interface SavedProfile {
   geography: string;
   geographyConfig?: GeographyTargetConfig;
   campaignFocus: string;
+  /** Media types picked in the brief before generation (product ids). See src/planning/briefMediaTypes. */
+  briefMediaTypes?: string[];
+  /** "Use only these media types": the plan holds exactly briefMediaTypes. */
+  briefMediaTypesOnly?: boolean;
   additionalContext: string;
   targetPersonas?: string[];
   budget?: string;

@@ -132,6 +132,45 @@ export function mergeRemediatedProfile(original: any, corrected: any): { profile
 
 const PERSONA_SOURCE_TYPES = new Set(["User", "RFP", "ScoutAI"]);
 
+// A persona is an archetype ("Outdoor Active Mom"), never a made-up person. The schema says so,
+// but the model still writes "Molly Smith - Outdoor Active Mom" now and then. A leading or
+// trailing part counts as a personal name only when its first word is a common first name, so
+// a label like "Busy Parents - Weekend Shoppers" is never cut.
+const FIRST_NAMES = new Set(`
+aaliyah aaron abby adam adriana ahmed aisha alex alexis alicia allison amanda amber amelia amir amy ana andre andrea andrew angela anita anna anthony antonio ashley ava barbara ben benjamin beth brandon brenda brian brittany bryan camila carla carlos carmen carol caroline carrie casey catherine charles charlotte chen chloe chris christina christopher cindy claire daniel danielle darius david deborah denise derek diana diego dmitri donna dylan elena eli elijah elizabeth ella emily emma eric erica ethan eva evelyn fatima gabriel gabriela grace greg hailey hannah harper heather henry hiro holly ian isabella isaiah jack jacob jada james jamal jasmine jason javier jen jenna jennifer jeremy jessica jim joe john jordan jorge jose joseph josh joshua juan julia julie justin karen kate katie kayla keisha kelly ken kenji kevin kim kimberly kyle laura lauren leah lily linda lisa logan lucas lucia luis luke madison malik marcus maria mariana mark marta mary mason matt matthew maya megan mei melissa mia michael michelle miguel mike mila molly monica nancy naomi natalie nathan nicole noah olivia omar paige patricia paul priya rachel rafael raj ravi rebecca riley rob robert rosa ryan sam samantha sara sarah scott sean sofia sophia stephanie steve susan tanya taylor terrell tiffany tom tony tyler valeria vanessa victor wei william xavier yuki zoe
+`.trim().split(/\s+/));
+const NAME_PART = String.raw`[A-Z][a-zA-Z'’.-]*(?:\s+[A-Z][a-zA-Z'’.-]*){0,2}`;
+const SEPARATOR = String.raw`\s*(?:[-–—:|]|,\s*(?:[Tt]he|[Aa]n?)\b)\s*`;
+const NAME_PATTERNS = [
+  new RegExp(String.raw`^(?:[Mm]eet\s+)?["“]?(${NAME_PART})["”]?${SEPARATOR}(.+)$`), // "Molly Smith - Outdoor Active Mom"
+  new RegExp(String.raw`^(.+?)\s*[-–—:|]\s*(${NAME_PART})$`), // "Outdoor Active Mom - Molly Smith"
+  new RegExp(String.raw`^(.+?)\s*\(\s*(${NAME_PART})\s*\)$`), // "Outdoor Active Mom (Molly)"
+];
+
+function isPersonalName(part: string): boolean {
+  return FIRST_NAMES.has(part.trim().split(/\s+/)[0].replace(/["“”]/g, "").toLowerCase());
+}
+
+/** The persona's label with any invented personal name removed. */
+export function withoutPersonalName(label: string): string {
+  const name = String(label || "").trim();
+  const [leading, trailing, parenthetical] = NAME_PATTERNS.map((pattern) => name.match(pattern));
+  if (leading && isPersonalName(leading[1]) && leading[2].trim().split(/\s+/).length >= 2) return leading[2].trim();
+  for (const match of [trailing, parenthetical]) {
+    if (match && isPersonalName(match[2]) && match[1].trim().split(/\s+/).length >= 2) return match[1].trim();
+  }
+  return name;
+}
+
+/** Strips invented personal names from persona labels. A label the user typed is kept as typed. */
+export function stripPersonaNames(personas: any[]): void {
+  if (!Array.isArray(personas)) return;
+  for (const persona of personas) {
+    if (!persona || persona.sourceType === "User" || typeof persona.name !== "string") continue;
+    persona.name = withoutPersonalName(persona.name);
+  }
+}
+
 /**
  * Keeps the personas the model produced and labels them only from what is known. Nothing is
  * padded: fewer than four personas is reported, not topped up with stand-ins.
@@ -140,6 +179,7 @@ export function checkPersonas(profile: any, options: { mediaPlanUploaded: boolea
   const alerts: GenerationAlert[] = [];
   if (!Array.isArray(profile.personas)) profile.personas = [];
   if (profile.personas.length > 4) profile.personas = profile.personas.slice(0, 4);
+  stripPersonaNames(profile.personas);
 
   for (const persona of profile.personas) {
     if (!options.mediaPlanUploaded && persona.sourceType !== "User") {

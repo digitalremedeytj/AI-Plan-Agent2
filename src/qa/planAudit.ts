@@ -162,7 +162,7 @@ export function planForAudit(profile: any): string {
   };
   const view = {
     ...rest,
-    personas: (rest.personas || []).map(({ avatarUrl, avatarHistory, ...p }: any) => p),
+    personas: (rest.personas || []).map(({ avatarUrl, avatarHistory, portrait, ...p }: any) => p),
     demographics: stripCharts(rest.demographics, ["ageChartData", "genderChartData", "incomeChartData"]),
     browserAndReach: stripCharts(rest.browserAndReach, ["chartData"]),
     deviceTypeIndex: stripCharts(rest.deviceTypeIndex, ["chartData"]),

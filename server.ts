@@ -12,6 +12,7 @@ import { CANONICAL_MEDIA_TAXONOMY, isNonMediaItem, normalizeRawChannel } from ".
 import { buildCampaignFacts, buildMediaRecommendationPlan, profileSignals } from "./src/planning/engine";
 import { validateProductRegistry } from "./src/planning/knowledge/registry";
 import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
+import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
 import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter } from "./src/storage";
@@ -56,6 +57,7 @@ import {
   runVerify,
   type AuditInputs,
 } from "./src/qa/auditRunner";
+import { PORTRAIT_SYSTEM_INSTRUCTION, applyPortraits, buildPortraitInput, buildPortraitResponseSchema } from "./src/research/personaPortraits";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeSchema } from "./src/research/planNarrative";
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
@@ -87,6 +89,7 @@ import { NATIONAL_BASELINES } from "./src/planning/knowledge/nationalBaselines";
 import {
   PROFILE_CHARTS,
   checkPersonas,
+  stripPersonaNames,
   clearSectionsForFailedDossiers,
   pushAlert,
   reportChartsNotFound,
@@ -190,9 +193,11 @@ const TIMEOUT_PARALLEL_RESEARCH_MS = 150000;
 // one dossier even at 150s, and a longer limit would come out of the narrative and QA stages.
 const RESEARCH_BACKUP_AFTER_MS = 75000;
 const RESEARCH_BACKUP_THINKING_LEVEL: GeminiThinkingLevel = "medium";
-// Synthesis gets 120s at high thinking plus one 120s medium-thinking fallback (see SYNTHESIS_ATTEMPTS).
-const TIMEOUT_SYNTHESIS_HIGH_MS = 120000;
-const TIMEOUT_SYNTHESIS_FALLBACK_MS = 120000;
+// Synthesis gets 165s at high thinking plus one 105s medium-thinking fallback (see SYNTHESIS_ATTEMPTS).
+// 2026-10-07: high ran past 120s on slow days (research took twice as long that day too) and the
+// restart cost another ~85s at medium, so high gets longer and the fallback only what medium needs.
+const TIMEOUT_SYNTHESIS_HIGH_MS = 165000;
+const TIMEOUT_SYNTHESIS_FALLBACK_MS = 105000;
 const TIMEOUT_SYNTHESIS_MS = TIMEOUT_SYNTHESIS_HIGH_MS + TIMEOUT_SYNTHESIS_FALLBACK_MS;
 // The outer guard waits a little past the two attempts, so it cannot cut off a fallback that is
 // finishing at its own limit (2026-10-06: the guard fired at 180s as the 60s fallback ended).
@@ -221,6 +226,12 @@ const TIMEOUT_VERIFY_MS = 120000;
 const NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
   { thinkingLevel: "high", timeoutMs: 100000 },
   { thinkingLevel: "medium", timeoutMs: 50000 },
+];
+// Headshot casting briefs run beside the channel plan, narrative and QA, so these limits never
+// hold up the run; they only bound how long the end of the run will wait for them.
+const PORTRAIT_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: number }> = [
+  { thinkingLevel: "medium", timeoutMs: 60000 },
+  { thinkingLevel: "low", timeoutMs: 45000 },
 ];
 const TIMEOUT_NARRATIVE_MS = NARRATIVE_ATTEMPTS.reduce((sum, attempt) => sum + attempt.timeoutMs, 0);
 // Quick mode (live demos) skips the QA audit, fix and verify, which are 4-6 minutes of a run,
@@ -466,7 +477,7 @@ const audienceProfileSchema = {
       items: {
         type: Type.OBJECT,
         properties: {
-          name: { type: Type.STRING, description: "Professional, non-cliché persona name representing their consumer/media archetype" },
+          name: { type: Type.STRING, description: "A 2-5 word archetype label for this consumer, e.g. 'Outdoor Active Mom' or 'Cord-Cutting Sports Fan'. A persona is an archetype, not a person: never give it a first or last name, and never write 'Name - Label' or 'Name, the Label'." },
           gender: { type: Type.STRING, description: "Gender range/breakdown, e.g. 'Skews Female (60%)' or 'Any'" },
           income: { type: Type.STRING, description: "Household income range, e.g. '$75,000 - $120,000'" },
           age: { type: Type.STRING, description: "Age range, e.g. '25 - 39'" },
@@ -665,46 +676,8 @@ const audienceProfileSchema = {
       type: Type.STRING,
       description: "A highly polished paragraph explaining why the recommended publishers align with the audience, their media consumption behavior, and how this fits the overall campaign."
     },
-    additionalRfpRequirements: {
-      type: Type.OBJECT,
-      description: "Optional RFP requirements, operational specifications, questions/asks, and Digital Remedy solution responses when an RFP document is uploaded.",
-      properties: {
-        isRfpDocument: { type: Type.BOOLEAN },
-        rfpSummary: { type: Type.STRING },
-        rfpAsksAndQuestions: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING }
-        },
-        digitalRemedyCapabilityMatches: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              rfpAsk: { type: Type.STRING },
-              digitalRemedySolution: { type: Type.STRING },
-              capabilityDetails: { type: Type.STRING },
-              isSupported: { type: Type.BOOLEAN }
-            },
-            required: ["rfpAsk", "digitalRemedySolution", "capabilityDetails", "isSupported"]
-          }
-        },
-        extractedMetadata: {
-          type: Type.OBJECT,
-          properties: {
-            advertiserName: { type: Type.STRING },
-            websiteUrl: { type: Type.STRING },
-            budget: { type: Type.NUMBER },
-            kpis: { type: Type.ARRAY, items: { type: Type.STRING } },
-            flightDates: { type: Type.STRING },
-            targetAudiences: { type: Type.ARRAY, items: { type: Type.STRING } },
-            geographies: { type: Type.ARRAY, items: { type: Type.STRING } },
-            submissionDueDate: { type: Type.STRING },
-            paymentTerms: { type: Type.STRING },
-            reportingRequirements: { type: Type.ARRAY, items: { type: Type.STRING } }
-          }
-        }
-      }
-    }
+    // additionalRfpRequirements is not asked of synthesis: the server builds it from the RFP
+    // analysis (the text already exists), which keeps the stage a run cannot lose smaller.
   },
   required: [
     "intro",
@@ -889,6 +862,8 @@ async function buildChannelStrategy(
     campaignFlightDays?: number | null;
     planningSettings?: unknown;
     requiredChannelIds?: string[];
+    /** The brief's "use only these media types": exclude everything outside requiredChannelIds. */
+    requiredChannelsOnly?: boolean;
     excludedChannelIds?: string[];
     candidateSignals?: AiCandidateSignal[];
     /** The research dossiers, so the channel reasoning cites findings instead of recalling studies. */
@@ -932,6 +907,7 @@ async function buildChannelStrategy(
     planningMode: mode,
     selectedPlanOptions,
     requiredChannelIds: options?.requiredChannelIds,
+    requiredChannelsOnly: options?.requiredChannelsOnly,
     excludedChannelIds: options?.excludedChannelIds,
     planningSettings,
     ctvPublishers: audienceProfile?.ctvPublishers,
@@ -1080,6 +1056,7 @@ app.post("/api/parse-plan", upload.single("file"), async (req, res) => {
     if (isPdfOrDoc) {
       parseInstructions = `You are an expert RFP analysis and media strategy agent for Digital Remedy.
 You have been provided with an uploaded document (PDF/Word/Text) which represents a Request for Proposal (RFP), brief, or client guidelines.
+The uploaded file is named: "${originalName.replace(/["\n\r]/g, "").slice(0, 200)}"
 PDF documents may contain text, embedded data tables, diagrams, workflow charts, or screenshots/images of campaign specifications or past performance.
 
 --- DIGITAL REMEDY OFFICIAL COMPANY CONTEXT ---
@@ -1121,8 +1098,8 @@ Output ONLY a raw JSON object with NO markdown code block wrapping:
     }
   ],
   "extractedMetadata": {
-    "advertiserName": "Name if found (e.g. View Boston)",
-    "websiteUrl": "URL if found",
+    "advertiserName": "The advertiser (the brand the campaign is for) as the document names it, e.g. View Boston. If the document never names it, use the file name when the file name clearly contains the brand (e.g. 'Media RFP 2026 - View Boston.pdf' gives View Boston). Otherwise an empty string. Never a form label or heading such as 'Account / Advertiser', 'Client Name' or 'Brand', and never the agency issuing the RFP on the brand's behalf or Digital Remedy.",
+    "websiteUrl": "The advertiser's website address (e.g. www.viewboston.com) only if the document states one; otherwise an empty string. Never a spec, label or other text.",
     "budget": 100000,
     "kpis": ["Primary Objective: Drive Individual Ticket Sales (Goal: 510,000 tickets)", "ROAS of at least $4", "Incremental reach"],
     "flightDates": "April 1 to December 31, 2026",
@@ -1594,6 +1571,7 @@ app.post("/api/analyze-media-plan", async (req, res) => {
       campaignFlightDays,
       planningSettings,
       requiredChannelIds,
+      requiredChannelsOnly,
       excludedChannelIds,
       candidateSignals,
     } = req.body;
@@ -1609,7 +1587,7 @@ app.post("/api/analyze-media-plan", async (req, res) => {
       budgetStrategyMode || 'reallocation',
       advertiserName,
       kpis,
-      { advertiserUrl, campaignFocus, geography, workingMediaBudget, campaignFlightDays, planningSettings, requiredChannelIds, excludedChannelIds, candidateSignals },
+      { advertiserUrl, campaignFocus, geography, workingMediaBudget, campaignFlightDays, planningSettings, requiredChannelIds, requiredChannelsOnly: requiredChannelsOnly === true, excludedChannelIds, candidateSignals },
     );
     res.json({ success: true, channelStrategy });
   } catch (err: any) {
@@ -2890,7 +2868,21 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
       ? ` Creative instructions & styling directive: ${instruction.trim()}.`
       : "";
 
-    const prompt = `A clean, authentic, high-quality 1:1 square photographic studio headshot portrait of a ${rawAge} year old ${rawGender}, styled as ${personaName}.${customDirective} Professional portrait lighting, neutral soft-focus studio background, warm, confident, approachable facial expression facing directly toward camera. Single subject, tightly centered on head and shoulders.`;
+    // New plans carry a casting brief written alongside the other three personas, so the four
+    // headshots come out as different people. Plans made before it keep the original prompt.
+    const portrait = persona.portrait && typeof persona.portrait === "object" ? persona.portrait : null;
+    const clean = (value: unknown) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
+    const prompt = portrait
+      ? [
+          `A clean, authentic, high-quality 1:1 square photorealistic headshot portrait of a ${clean(portrait.apparentAge) || rawAge} year old ${clean(portrait.ethnicity)} ${clean(portrait.gender) || rawGender}.`,
+          clean(portrait.appearance) && `Appearance: ${clean(portrait.appearance)}.`,
+          clean(portrait.wardrobe) && `Wearing: ${clean(portrait.wardrobe)}.`,
+          clean(portrait.expression) && `Expression: ${clean(portrait.expression)}, looking toward the camera.`,
+          clean(portrait.setting) && `Background: ${clean(portrait.setting)}, softly out of focus.`,
+          customDirective.trim(),
+          "Natural, flattering portrait lighting. A real, specific individual, not a generic stock model. Single subject, centered on head and shoulders. No text, captions or name tags in the image.",
+        ].filter(Boolean).join(" ")
+      : `A clean, authentic, high-quality 1:1 square photographic studio headshot portrait of a ${rawAge} year old ${rawGender}, styled as ${personaName}.${customDirective} Professional portrait lighting, neutral soft-focus studio background, warm, confident, approachable facial expression facing directly toward camera. Single subject, tightly centered on head and shoulders.`;
 
     console.log(`[GEMINI IMAGE GEN] Generating headshot photo for persona: '${personaName}' (attempt ${retryCount + 1})${instruction ? ` [Instruction: ${instruction.slice(0, 60)}]` : ""}...`);
     
@@ -4184,6 +4176,11 @@ app.post("/api/generate-profile", async (req, res) => {
     draft,
   } = req.body;
   const quickMode = req.body?.quickMode === true;
+  // The brief's media-type picker. Only ids from the live catalog survive buildCampaignFacts.
+  const briefMediaTypeIds: string[] = Array.isArray(req.body?.requiredChannelIds)
+    ? req.body.requiredChannelIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 50)
+    : [];
+  const briefMediaTypesOnly = req.body?.requiredChannelsOnly === true && briefMediaTypeIds.length > 0;
   const pastCampaignIds: string[] = Array.isArray(req.body?.pastCampaignIds)
     ? req.body.pastCampaignIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 10)
     : [];
@@ -4385,6 +4382,7 @@ Search the web for real, reputable statistics regarding:
 2. Gender split percentages (Male, Female, Non-Binary/Other).
 3. Household Income distribution splits (e.g., <$50k, $50k-$75k, $75k-$100k, $100k-$150k, $150k+).
 4. Geographic/regional or DMA concentrations (e.g. urban, suburban skews).
+5. Racial/ethnic composition of this audience or the category's buyers, where a source reports it (e.g. share of Hispanic, Black, Asian and White adults, or an over/under-index against the population). Report it only as found; if no source covers it, say so.
 
 INSTRUCTIONS:
 - Search for and cite real stats from high-authority sources (e.g., Census Bureau, Pew Research, GWI, MRI-Simmons, eMarketer, Statista, trade associations).
@@ -4711,6 +4709,8 @@ ${cleanTargetPersonas.map((p, idx) => `     * Persona Slot ${idx + 1}: "${p}" (M
      * Up to 3 personas MUST be derived directly from the listed target audiences in the uploaded media plan RFP (set 'sourceType': 'RFP' for these personas).
      * At least 1 persona MUST be a ScoutAI recommended "expansion persona" targeting a high-potential complementary audience segment not explicitly in the RFP that expands total addressable reach (set 'sourceType': 'ScoutAI' for this expansion persona).
      * If the uploaded media plan lists fewer than 3 audiences (e.g., 2, 1, or 0), generate as many ScoutAI expansion personas ('sourceType': 'ScoutAI') as needed so the total array length is EXACTLY 4.`}
+   - PERSONA NAMES: Every 'name' is an archetype label ("Outdoor Active Mom"), never a person's name. Do not invent first or last names for personas, in the name or anywhere else ("Molly Smith - Outdoor Active Mom" is wrong).
+   - The Demographics dossier may report the audience's racial/ethnic makeup; it is used only to cast the persona headshots. Do not build personas around race or ethnicity or mention it in persona fields.
 
 11. UPLOADED MEDIA PLAN AUDIENCE ANALYSIS (MANDATORY WHEN MEDIA PLAN CONTAINS AUDIENCES):
     If an uploaded media plan is provided and includes audience target specifications (e.g. listed audience segments in plan placements), you MUST populate 'audienceAnalysis' with a detailed, professional paragraph evaluating how well the listed audiences in the plan align with the advertiser, their brand positioning, product offering, and campaign goals.
@@ -4740,21 +4740,7 @@ You are provided with a pool of real URLs discovered during search research. You
   * In 'supportedClaims', write a highly detailed, quantitative sentence explaining exactly what this source validated in this profile (e.g., 'Validated that 3 in 4 women play games and have differing spending patterns').
   * Specify the 'usageType' as one of: 'Primary Source', 'Secondary Confirmation', 'Directional Context'.
 - Every entry MUST come from the POOL OF REAL WEB SOURCE CITATIONS DISCOVERED below. Never introduce a URL from memory, and never invent a deep link: an unverifiable citation is worse than a missing one.
-
-STRATEGY 3: RFP REQUIREMENTS & AGENCY CAPABILITY RESPONSES:
-If an uploaded RFP document, RFP questions, or RFP analysis is provided in the user prompt:
-- You MUST populate the 'additionalRfpRequirements' field in the JSON response.
-- 'additionalRfpRequirements' must contain:
-  * 'isRfpDocument': true
-  * 'rfpSummary': An executive summary (2-3 sentences) detailing the RFP objectives, client asks, and scope.
-  * 'rfpAsksAndQuestions': A comprehensive list of all specific questions, methodologies, operational asks, or process requirements stated in the RFP.
-  * 'digitalRemedyCapabilityMatches': An array of objects for EVERY question/ask identified in the RFP. Each item must have:
-    - 'rfpAsk': The exact requirement or question asked in the RFP.
-    - 'digitalRemedySolution': Digital Remedy's official solution, capability, or strategic response.
-    - 'capabilityDetails': Deep technical or operational explanation of how Digital Remedy executes this (e.g. DSP partners, brand safety tools, reporting frequencies, attribution methodology).
-    - 'isSupported': true
-  * 'extractedMetadata': Object containing submissionDueDate, flightDates, paymentTerms, reportingRequirements, budget, kpis, targetAudiences, geographies.
-  * 'additionalNotes': Thorough narrative addressing any non-placement questions, custom processes, brand safety policies, or agency workflow details asked in the RFP.`;
+`;
 
     const synthesisUserPrompt = `You are provided with four highly detailed, domain-specific research dossiers for the target audience: "${cleanAudienceDesc}".
 
@@ -4815,7 +4801,6 @@ ${JSON.stringify(rfpAnalysis.extractedMetadata || {}, null, 2)}
 TASK:
 Synthesize these 4 dossiers into a single high-quality media strategy profile in JSON.
 Map the discovered real web source citations to the 'sources' field inside the JSON. Apply 'Strategy 2: Authority Filtering' to classify and label them, and curate down to the 8-12 strongest - every entry drawn from the pool above, each tied to a claim you actually made.
-${rfpAnalysis ? "IMPORTANT: Populated the 'additionalRfpRequirements' object in the JSON to address all specific RFP questions, operational requirements, and capability matches." : ""}
 Ensure that all chart arrays are fully populated with exact numbers (percentages should be numbers like 45, not strings like "45%").
 Return ONLY the formatted JSON matching the schema. No markdown wrapping except a raw JSON string, or standard JSON formatting.`;
 
@@ -4843,34 +4828,37 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
     if (!synthesisResult) {
       throw new Error(`Synthesis stage exceeded the safety limit of ${TIMEOUT_SYNTHESIS_MS / 1000}s. Please simplify your input parameters and try again.`);
     }
+    console.log(`Synthesis input ${synthesisUserPrompt.length} chars (pool ${JSON.stringify(deduplicatedSources).length}); output ${JSON.stringify(synthesisResult.data).length} chars.`);
     console.log(`Synthesis complete via ${GEMINI_FLASH_MODEL} (${synthesisResult.thinkingLevel} thinking) in ${((Date.now() - synthesisStartedAt) / 1000).toFixed(1)}s.`);
 
     const originalData = synthesisResult.data as any;
     if (briefOfRecord) originalData.briefOfRecord = briefOfRecord;
+    // Before anything downstream (narrative, channel reasoning, QA) refers to personas by name.
+    stripPersonaNames(originalData.personas);
+    // Headshot casting briefs, written beside the rest of the run (see personaPortraits.ts).
+    const synthesizedPersonas: any[] = Array.isArray(originalData.personas) ? originalData.personas : [];
+    const portraitsPromise: Promise<unknown> = synthesizedPersonas.length === 0
+      ? Promise.resolve(null)
+      : generateStructuredJsonWithFallback(
+          getAiClient(),
+          {
+            systemInstruction: PORTRAIT_SYSTEM_INSTRUCTION,
+            input: buildPortraitInput(synthesizedPersonas, demoResult.text, geography),
+            schema: buildPortraitResponseSchema(synthesizedPersonas.length),
+          },
+          PORTRAIT_ATTEMPTS,
+        ).then(({ data }) => data, (err: any) => {
+          console.warn(`[PORTRAITS] Casting briefs failed; headshots use the standard prompt (${err?.message || err}).`);
+          return null;
+        });
 
     // Publisher picks are settled here, before the channel strategy snapshots them: in the
     // enabled pool, each once, with the admin's category.
     for (const alert of settlePublisherSelection(originalData, enabledPublishers, targetPublisherCount)) pushAlert(generationAlerts, alert);
 
-    // Fallback/merge RFP requirements if rfpAnalysis was supplied
-    if (rfpAnalysis) {
-      if (!originalData.additionalRfpRequirements) {
-        originalData.additionalRfpRequirements = rfpAnalysis;
-      } else {
-        if (!originalData.additionalRfpRequirements.rfpSummary && rfpAnalysis.rfpSummary) {
-          originalData.additionalRfpRequirements.rfpSummary = rfpAnalysis.rfpSummary;
-        }
-        if ((!originalData.additionalRfpRequirements.rfpAsksAndQuestions || originalData.additionalRfpRequirements.rfpAsksAndQuestions.length === 0) && rfpAnalysis.rfpAsksAndQuestions) {
-          originalData.additionalRfpRequirements.rfpAsksAndQuestions = rfpAnalysis.rfpAsksAndQuestions;
-        }
-        if ((!originalData.additionalRfpRequirements.digitalRemedyCapabilityMatches || originalData.additionalRfpRequirements.digitalRemedyCapabilityMatches.length === 0) && rfpAnalysis.digitalRemedyCapabilityMatches) {
-          originalData.additionalRfpRequirements.digitalRemedyCapabilityMatches = rfpAnalysis.digitalRemedyCapabilityMatches;
-        }
-        if (!originalData.additionalRfpRequirements.extractedMetadata && rfpAnalysis.extractedMetadata) {
-          originalData.additionalRfpRequirements.extractedMetadata = rfpAnalysis.extractedMetadata;
-        }
-      }
-    }
+    // The RFP section is the upload's own analysis, not rewritten by synthesis (rewriting it added
+    // output the model had to generate while synthesis was running out of time).
+    if (rfpAnalysis) originalData.additionalRfpRequirements = rfpAnalysis;
 
     // Populate Audience Analysis paragraph if uploaded media plan contains audience target descriptions
     const planAudiences = selectedPlanOptions ? extractPlanAudiences(selectedPlanOptions) : [];
@@ -4928,6 +4916,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             workingMediaBudget: Number(workingMediaBudget) || 0,
             campaignFlightDays: Number(campaignFlightDays) || null,
             planningSettings,
+            requiredChannelIds: briefMediaTypeIds,
+            requiredChannelsOnly: briefMediaTypesOnly,
             research: [
               ...researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
               ...(history?.dossier ? [{ ...history.dossier, failed: false }] : []),
@@ -4936,6 +4926,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
           },
         );
         originalData.channelStrategy = channelStrategy;
+        // A pick the budget cannot fund is kept below its product minimum rather than dropped;
+        // say so, or the plan looks executable when it is not.
+        for (const message of plannerPickAlerts(channelStrategy.mediaPlan, channelStrategy.manualIncludedChannelIds)) {
+          pushAlert(generationAlerts, { section: "channelStrategy", severity: "flagged", message });
+        }
         sendEvent("status", { message: "Media portfolio and allocation constraints validated successfully." });
       } catch (channelErr: any) {
         console.error("Error generating media recommendation plan:", channelErr);
@@ -5220,6 +5215,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       finalProfile.sources.unshift({ ...DIGITAL_REMEDY_SOURCE });
     }
 
+    if (Array.isArray(finalProfile.personas)) {
+      const attached = applyPortraits(finalProfile.personas, await portraitsPromise);
+      console.log(`[PORTRAITS] ${attached}/${finalProfile.personas.length} headshot casting briefs attached.`);
+    }
+
     // Personas are shown as generated - never padded to four, never relabelled by position.
     const isMediaPlanUploaded = Boolean(selectedPlanOptions && selectedPlanOptions.length > 0);
     for (const alert of checkPersonas(finalProfile, { mediaPlanUploaded: isMediaPlanUploaded })) pushAlert(generationAlerts, alert);
@@ -5281,6 +5281,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             geography,
             geographyConfig: draft?.geographyConfig,
             campaignFocus,
+            briefMediaTypes: briefMediaTypeIds,
+            briefMediaTypesOnly,
             additionalContext: additionalContext || "",
             targetPersonas: cleanTargetPersonas,
             budget: draft?.budget,

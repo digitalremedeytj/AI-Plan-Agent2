@@ -258,6 +258,11 @@ export interface CampaignFactsInput {
   planningMode?: PlanningMode;
   selectedPlanOptions?: ParsedPlanOption[];
   requiredChannelIds?: string[];
+  /**
+   * "Use only these media types" from the brief: every catalog media type outside
+   * requiredChannelIds is excluded, so the plan holds exactly the planner's picks.
+   */
+  requiredChannelsOnly?: boolean;
   preferredChannelIds?: string[];
   excludedChannelIds?: string[];
   dataReadiness?: Partial<DataReadinessFacts>;
