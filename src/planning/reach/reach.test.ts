@@ -4,7 +4,7 @@ import type { GeoTargeting } from "../../types";
 import { CANONICAL_MEDIA_TAXONOMY } from "../../utils/mediaTaxonomy";
 import { NATIONAL_TV_HOUSEHOLDS } from "../knowledge/stateHouseholds";
 import { describeAudienceShare, resolveAudienceShare } from "./audienceShare";
-import { estimateMonthlyReach } from "./reachModel";
+import { estimateReach } from "./reachModel";
 import {
   DEFAULT_REACH_SETTINGS,
   REACH_MEDIA_TYPE_IDS,
@@ -67,21 +67,69 @@ test("entries that cannot be sized are reported, and nothing sized falls back to
 
 test("the Washington DC test plan cannot reach more households than the DMA holds", () => {
   // $1.5M over 365 days at about $15.90 CPM: the case that showed 17.3M HH before.
-  const estimate = estimateMonthlyReach({
+  const estimate = estimateReach({
     channels: [{ mediaTypeId: "ctv", impressions: 94_360_087 }],
     universe: DC_DMA,
     flightDays: 365,
     settings: DEFAULT_REACH_SETTINGS,
   });
   assert.ok(estimate.monthlyReach < DC_DMA.households * 0.8);
-  assert.ok(Math.abs(estimate.monthlyReach - 1_333_822) < 1_000, `got ${estimate.monthlyReach}`);
-  assert.ok(Math.abs(estimate.monthlyFrequency - 5.81) < 0.01, `got ${estimate.monthlyFrequency}`);
+  assert.ok(Math.abs(estimate.monthlyReach - 1_166_335) < 1_000, `got ${estimate.monthlyReach}`);
+  assert.ok(Math.abs(estimate.monthlyFrequency - 6.65) < 0.01, `got ${estimate.monthlyFrequency}`);
+  // Over the year: unique households, not 12 × monthly (which would be 14M, 5.7× the DMA).
+  assert.ok(estimate.flight, "a 365-day flight reports flight reach");
+  assert.ok(Math.abs(estimate.flight.reach - 1_948_806) < 1_000, `got ${estimate.flight.reach}`);
+  assert.ok(Math.abs(estimate.flight.frequency - 48.42) < 0.01, `got ${estimate.flight.frequency}`);
+});
+
+// --- Flight reach and the NBD curve ---
+
+const ctvOnly = (concentrationK: number) => withRow(DEFAULT_REACH_SETTINGS, "ctv", { concentrationK });
+const ctvFlight = (months: number, settings: ReachSettings = DEFAULT_REACH_SETTINGS) =>
+  estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 7_755_624 * months }], universe: DC_DMA, flightDays: 30 * months, settings });
+
+test("flight reach grows with flight length but far slower than monthly reach × months", () => {
+  const monthly = ctvFlight(1).monthlyReach;
+  let previous = monthly;
+  for (const months of [3, 6, 12]) {
+    const flight = ctvFlight(months).flight;
+    assert.ok(flight, `${months}-month flight reports flight reach`);
+    assert.ok(flight.reach > previous, `no growth at ${months} months`);
+    assert.ok(flight.reach < monthly * months);
+    assert.ok(flight.reach <= DC_DMA.households * 0.8);
+    previous = flight.reach;
+  }
+});
+
+test("with concentrated delivery, reach is still building late in a long flight", () => {
+  // An even spread (large k) has stopped by month 6; concentrated delivery (k = 1) keeps finding households.
+  const gain = (k: number) => ctvFlight(12, ctvOnly(k)).flight!.reach - ctvFlight(6, ctvOnly(k)).flight!.reach;
+  assert.ok(gain(20) < 60_000, `even spread still gained ${gain(20)}`);
+  assert.ok(gain(1) > 100_000, `concentrated gained only ${gain(1)}`);
+});
+
+test("a very even spread reproduces the plain exponential curve", () => {
+  const estimate = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 94_360_087 }], universe: DC_DMA, flightDays: 365, settings: ctvOnly(20) });
+  // The exponential curve gave 1,333,822 households a month; k = 20 is within 2% of it.
+  assert.ok(Math.abs(estimate.monthlyReach - 1_333_822) / 1_333_822 < 0.02, `got ${estimate.monthlyReach}`);
+});
+
+test("flights of a month or less have no separate flight figure", () => {
+  assert.equal(ctvFlight(1).flight, null);
+  const unknown = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e6 }], universe: DC_DMA, flightDays: null, settings: DEFAULT_REACH_SETTINGS });
+  assert.equal(unknown.flight, null);
+});
+
+test("audience concentration outside its range is rejected", () => {
+  const errors: string[] = [];
+  validateReachSettings(ctvOnly(0), errors);
+  assert.ok(errors.some((error) => /CTV \/ OTT: audience concentration \(k\)/.test(error)));
 });
 
 test("reach never falls as impressions grow and never passes the media type's ceiling", () => {
   let previous = 0;
   for (const impressions of [1e5, 1e6, 1e7, 1e8, 1e9, 1e11]) {
-    const { monthlyReach } = estimateMonthlyReach({ channels: [{ mediaTypeId: "ctv", impressions }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
+    const { monthlyReach } = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
     assert.ok(monthlyReach >= previous, `reach fell at ${impressions}`);
     assert.ok(monthlyReach <= DC_DMA.households * 0.8 + 1);
     previous = monthlyReach;
@@ -89,13 +137,13 @@ test("reach never falls as impressions grow and never passes the media type's ce
 });
 
 test("at low volume reach is close to impressions divided by the duplication factor", () => {
-  const { monthlyReach, monthlyFrequency } = estimateMonthlyReach({ channels: [{ mediaTypeId: "ctv", impressions: 100_000 }], universe: NATIONAL, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
+  const { monthlyReach, monthlyFrequency } = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 100_000 }], universe: NATIONAL, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
   assert.ok(Math.abs(monthlyReach - 100_000 / 3.5) / (100_000 / 3.5) < 0.001);
   assert.ok(Math.abs(monthlyFrequency - 3.5) < 0.01);
 });
 
 test("combined reach is at least the best single media type and at most the universe", () => {
-  const estimate = estimateMonthlyReach({
+  const estimate = estimateReach({
     channels: [
       { mediaTypeId: "ctv", impressions: 40_000_000 },
       { mediaTypeId: "digital_audio", impressions: 20_000_000 },
@@ -111,18 +159,18 @@ test("combined reach is at least the best single media type and at most the univ
 });
 
 test("two placements of one media type are pooled rather than treated as separate audiences", () => {
-  const split = estimateMonthlyReach({ channels: [{ mediaTypeId: "ctv", impressions: 5e6 }, { mediaTypeId: "ctv", impressions: 5e6 }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
-  const pooled = estimateMonthlyReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e7 }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
+  const split = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 5e6 }, { mediaTypeId: "ctv", impressions: 5e6 }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
+  const pooled = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e7 }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
   assert.equal(split.channels.length, 1);
   assert.equal(split.monthlyReach, pooled.monthlyReach);
 });
 
 test("media types that do not count toward reach add neither reach nor frequency", () => {
-  const withSearch = estimateMonthlyReach({
+  const withSearch = estimateReach({
     channels: [{ mediaTypeId: "ctv", impressions: 1e7 }, { mediaTypeId: "google_search", impressions: 5e7 }, { mediaTypeId: "ad_serving", impressions: 1e7 }],
     universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS,
   });
-  const ctvOnly = estimateMonthlyReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e7 }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
+  const ctvOnly = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e7 }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
   assert.equal(withSearch.monthlyReach, ctvOnly.monthlyReach);
   assert.equal(withSearch.monthlyFrequency, ctvOnly.monthlyFrequency);
   const search = withSearch.channels.find((channel) => channel.mediaTypeId === "google_search");
@@ -132,21 +180,21 @@ test("media types that do not count toward reach add neither reach nor frequency
 
 test("people-based media is converted to households when a planner turns it on", () => {
   const settings = withRow(DEFAULT_REACH_SETTINGS, "digital_out_of_home", { countsTowardReach: true });
-  const estimate = estimateMonthlyReach({ channels: [{ mediaTypeId: "digital_out_of_home", impressions: 2_500_000 }], universe: DC_DMA, flightDays: 30, settings });
+  const estimate = estimateReach({ channels: [{ mediaTypeId: "digital_out_of_home", impressions: 2_500_000 }], universe: DC_DMA, flightDays: 30, settings });
   assert.equal(estimate.channels[0].monthlyImpressions, 1_000_000);
   assert.ok(estimate.monthlyReach > 0);
 });
 
 test("a media type is left out when the geography is below its minimum targetable size", () => {
   const settings = withRow(DEFAULT_REACH_SETTINGS, "linear_tv", { minimumTargetableHouseholds: 5_000_000 });
-  const estimate = estimateMonthlyReach({ channels: [{ mediaTypeId: "linear_tv", impressions: 1e7 }], universe: DC_DMA, flightDays: 30, settings });
+  const estimate = estimateReach({ channels: [{ mediaTypeId: "linear_tv", impressions: 1e7 }], universe: DC_DMA, flightDays: 30, settings });
   assert.equal(estimate.monthlyReach, 0);
   assert.match(estimate.channels[0].excludedReason || "", /Not targetable/);
 });
 
 test("flights of a month or less are not scaled; longer flights are reduced to a month", () => {
   const run = (flightDays: number | null) =>
-    estimateMonthlyReach({ channels: [{ mediaTypeId: "ctv", impressions: 3_000_000 }], universe: NATIONAL, flightDays, settings: DEFAULT_REACH_SETTINGS });
+    estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 3_000_000 }], universe: NATIONAL, flightDays, settings: DEFAULT_REACH_SETTINGS });
   assert.equal(run(14).monthlyImpressions, 3_000_000);
   assert.equal(run(30).monthlyImpressions, 3_000_000);
   assert.equal(run(90).monthlyImpressions, 1_000_000);
@@ -156,9 +204,9 @@ test("flights of a month or less are not scaled; longer flights are reduced to a
 });
 
 test("frequency is flagged against the planner's target band", () => {
-  const low = estimateMonthlyReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e5 }], universe: NATIONAL, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
+  const low = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e5 }], universe: NATIONAL, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
   assert.equal(low.frequencyBand.withinBand, true, "3.5 sits inside the default 3-8 band");
-  const saturated = estimateMonthlyReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e8 }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
+  const saturated = estimateReach({ channels: [{ mediaTypeId: "ctv", impressions: 1e8 }], universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
   assert.equal(saturated.frequencyBand.withinBand, false);
 });
 
@@ -224,7 +272,7 @@ test("no narrowing, or only filters Settings no longer has, measures the whole g
 });
 
 test("narrowing the audience lowers reach and raises frequency for targeted media", () => {
-  const run = (overridePercent: number | null) => estimateMonthlyReach({
+  const run = (overridePercent: number | null) => estimateReach({
     channels: [{ mediaTypeId: "ctv", impressions: 8e6 }],
     universe: DC_DMA,
     flightDays: 30,
@@ -241,7 +289,7 @@ test("narrowing the audience lowers reach and raises frequency for targeted medi
 
 test("media types that cannot target an audience still reach across the whole geography", () => {
   const audience = resolveAudienceShare({ filterIds: [], overridePercent: 10 }, DEFAULT_REACH_SETTINGS);
-  const estimate = estimateMonthlyReach({
+  const estimate = estimateReach({
     channels: [{ mediaTypeId: "linear_tv", impressions: 2e7 }, { mediaTypeId: "ctv", impressions: 2e7 }],
     universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS, audience,
   });
@@ -256,8 +304,8 @@ test("media types that cannot target an audience still reach across the whole ge
 
 test("an audience share of 100% gives exactly the geography-only result", () => {
   const channels = [{ mediaTypeId: "ctv" as const, impressions: 3e7 }, { mediaTypeId: "digital_audio" as const, impressions: 1e7 }];
-  const plain = estimateMonthlyReach({ channels, universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
-  const full = estimateMonthlyReach({ channels, universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS, audience: resolveAudienceShare({ filterIds: [], overridePercent: 100 }, DEFAULT_REACH_SETTINGS) });
+  const plain = estimateReach({ channels, universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS });
+  const full = estimateReach({ channels, universe: DC_DMA, flightDays: 30, settings: DEFAULT_REACH_SETTINGS, audience: resolveAudienceShare({ filterIds: [], overridePercent: 100 }, DEFAULT_REACH_SETTINGS) });
   assert.equal(full.monthlyReach, plain.monthlyReach);
 });
 

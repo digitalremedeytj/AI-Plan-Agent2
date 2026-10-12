@@ -248,6 +248,6 @@ test("stored overview metrics pick up renamed labels, keeping their show choice"
     metric.id === "estimatedReach" ? { ...metric, label: "Estimated Reach", show: false } : metric);
   const migrated = migrateStoredSettings(stored) as any;
   const reach = migrated.overviewMetrics.find((metric: any) => metric.id === "estimatedReach");
-  assert.equal(reach.label, "Est. Monthly Reach");
+  assert.equal(reach.label, "Estimated Reach");
   assert.equal(reach.show, false);
 });

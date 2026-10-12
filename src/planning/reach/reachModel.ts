@@ -1,12 +1,14 @@
 /**
- * Monthly reach and frequency from impressions, a household universe and planner settings.
+ * Reach and frequency, per month and over the whole flight, from impressions, a household
+ * universe and planner settings.
  *
  * Reach is estimated per media type on a saturating curve, then combined across media types:
  *
  *   target    = universe × audienceShare%                        (100% unless narrowed)
  *   base_i    = target if the media type applies audience targeting, else universe
  *   ceiling_i = base_i × maxReach%_i
- *   reach_i   = ceiling_i × (1 − e^(−monthlyImpressions_i / (ceiling_i × s_i)))
+ *   x_i       = impressions_i / (ceiling_i × s_i)
+ *   reach_i   = ceiling_i × (1 − (1 + x_i / k_i)^(−k_i))         (NBD reach curve)
  *   targeted  = target × (1 − Π(1 − reach_i / target))           (Sainsbury: random overlap)
  *   reach     = universe × (1 − (1 − targeted / universe) × Π(1 − reach_j / universe))
  *   frequency = Σ monthlyImpressions_i / reach
@@ -18,8 +20,14 @@
  * new household; as volume grows each media type flattens toward its ceiling and frequency
  * climbs instead. Frequency is therefore an output, never an assumption.
  *
- * Everything is per month because the planning team flights campaigns monthly. A flight of
- * 30 days or less is its own month.
+ * The NBD (negative binomial) curve is the standard TV reach-build model. k captures how
+ * unevenly delivery falls across households: heavy users are reached early and light users
+ * trickle in for months, so over a long flight reach keeps creeping up rather than stopping
+ * dead at the ceiling, which is what the plain exponential curve (k → ∞) does.
+ *
+ * The same curve gives both views: one month's impressions give monthly reach (planning
+ * flights monthly), the whole flight's give unique reach over the campaign. Multiplying
+ * monthly reach by the number of months would count the same households again each month.
  */
 import type { HouseholdUniverse } from "./universe";
 import type { AudienceShare } from "./audienceShare";
@@ -39,10 +47,15 @@ export interface ChannelReach {
   label: string;
   /** Household-equivalent impressions per month (people-based media are converted). */
   monthlyImpressions: number;
+  /** Household-equivalent impressions over the whole flight. */
+  flightImpressions: number;
   maxReachPercent: number;
   duplicationFactor: number;
+  concentrationK: number;
   reachableHouseholds: number;
   monthlyReach: number;
+  /** Unique households over the whole flight; equals monthlyReach for flights of a month or less. */
+  flightReach: number;
   /** True when this media type was measured against the target audience, not the whole geo. */
   audienceTargeted: boolean;
   included: boolean;
@@ -65,8 +78,27 @@ export interface ReachEstimate {
   /** monthlyReach as a share of the universe, 0-100. */
   reachPercentOfUniverse: number;
   frequencyBand: { min: number; max: number; withinBand: boolean };
+  /** Unique reach over the whole flight; null when the flight is a month or less (or unknown). */
+  flight: FlightReach | null;
   channels: ChannelReach[];
   assumptions: string[];
+}
+
+export interface FlightReach {
+  days: number;
+  impressions: number;
+  reach: number;
+  /** Average exposures per reached household over the whole flight. */
+  frequency: number;
+  reachPercentOfUniverse: number;
+  reachPercentOfTarget: number;
+}
+
+/** NBD reach as a share of the ceiling. Large k tends to the exponential curve 1 − e^(−x). */
+export function reachShareOfCeiling(x: number, k: number): number {
+  if (!(x > 0)) return 0;
+  if (!(k > 0) || k > 1e6) return 1 - Math.exp(-x);
+  return 1 - Math.pow(1 + x / k, -k);
 }
 
 function monthlyShare(flightDays: number | null): number {
@@ -83,6 +115,7 @@ function settingFor(settings: ReachSettings, id: ReachMediaTypeId): ReachMediaTy
       countsTowardReach: true,
       maxReachPercent: 80,
       duplicationFactor: 4,
+      concentrationK: 1.5,
       unit: "households",
       peoplePerHousehold: 2.5,
       minimumTargetableHouseholds: 0,
@@ -91,7 +124,7 @@ function settingFor(settings: ReachSettings, id: ReachMediaTypeId): ReachMediaTy
     };
 }
 
-export function estimateMonthlyReach(input: {
+export function estimateReach(input: {
   channels: ReachChannelInput[];
   universe: HouseholdUniverse;
   flightDays: number | null | undefined;
@@ -128,6 +161,7 @@ export function estimateMonthlyReach(input: {
     const row = settingFor(settings, mediaTypeId);
     const householdImpressions = row.unit === "people" ? impressions / Math.max(1, row.peoplePerHousehold) : impressions;
     const monthlyImpressions = householdImpressions * share;
+    const flightImpressions = householdImpressions;
     const audienceTargeted = row.appliesAudienceTargeting !== false && sharePercent < 100;
     const baseHouseholds = audienceTargeted ? targetHouseholds : universe.households;
     const reachableHouseholds = baseHouseholds * (Math.max(0, Math.min(100, row.maxReachPercent)) / 100);
@@ -135,8 +169,10 @@ export function estimateMonthlyReach(input: {
       mediaTypeId,
       label: row.label,
       monthlyImpressions,
+      flightImpressions,
       maxReachPercent: row.maxReachPercent,
       duplicationFactor: row.duplicationFactor,
+      concentrationK: row.concentrationK,
       reachableHouseholds,
       audienceTargeted,
     };
@@ -148,27 +184,50 @@ export function estimateMonthlyReach(input: {
     } else if (reachableHouseholds <= 0) excludedReason = "Max reachable % is 0.";
 
     if (excludedReason) {
-      channels.push({ ...base, monthlyReach: 0, included: false, excludedReason });
+      channels.push({ ...base, monthlyReach: 0, flightReach: 0, included: false, excludedReason });
       continue;
     }
 
-    const saturation = monthlyImpressions / (reachableHouseholds * Math.max(1, row.duplicationFactor));
-    channels.push({ ...base, monthlyReach: reachableHouseholds * (1 - Math.exp(-saturation)), included: true });
+    const curve = (impressionsInWindow: number) =>
+      reachableHouseholds * reachShareOfCeiling(impressionsInWindow / (reachableHouseholds * Math.max(1, row.duplicationFactor)), row.concentrationK);
+    const monthlyReach = curve(monthlyImpressions);
+    channels.push({ ...base, monthlyReach, flightReach: share < 1 ? curve(flightImpressions) : monthlyReach, included: true });
   }
 
   const included = channels.filter((channel) => channel.included);
-  let targetUnreached = 1;
-  for (const channel of included.filter((entry) => entry.audienceTargeted)) {
-    targetUnreached *= 1 - Math.min(1, channel.monthlyReach / targetHouseholds);
-  }
-  const targetedReach = targetHouseholds > 0 ? targetHouseholds * (1 - targetUnreached) : 0;
-  let unreachedShare = universe.households > 0 ? 1 - Math.min(1, targetedReach / universe.households) : 1;
-  for (const channel of included.filter((entry) => !entry.audienceTargeted)) {
-    unreachedShare *= 1 - Math.min(1, channel.monthlyReach / universe.households);
-  }
-  const monthlyReach = universe.households > 0 ? universe.households * (1 - unreachedShare) : 0;
+  // Targeted media share one pool, so they combine within the target before the rest join.
+  const combine = (reachOf: (channel: ChannelReach) => number): number => {
+    if (universe.households <= 0) return 0;
+    let targetUnreached = 1;
+    for (const channel of included.filter((entry) => entry.audienceTargeted)) {
+      targetUnreached *= 1 - Math.min(1, reachOf(channel) / targetHouseholds);
+    }
+    const targetedReach = targetHouseholds > 0 ? targetHouseholds * (1 - targetUnreached) : 0;
+    let unreachedShare = 1 - Math.min(1, targetedReach / universe.households);
+    for (const channel of included.filter((entry) => !entry.audienceTargeted)) {
+      unreachedShare *= 1 - Math.min(1, reachOf(channel) / universe.households);
+    }
+    return universe.households * (1 - unreachedShare);
+  };
+  const percentOf = (reach: number, base: number) => (base > 0 ? (reach / base) * 100 : 0);
+
+  const monthlyReach = combine((channel) => channel.monthlyReach);
   const monthlyImpressions = included.reduce((total, channel) => total + channel.monthlyImpressions, 0);
   const monthlyFrequency = monthlyReach > 0 ? monthlyImpressions / monthlyReach : 0;
+
+  let flight: FlightReach | null = null;
+  if (flightDays !== null && share < 1) {
+    const reach = combine((channel) => channel.flightReach);
+    const impressions = included.reduce((total, channel) => total + channel.flightImpressions, 0);
+    flight = {
+      days: flightDays,
+      impressions,
+      reach,
+      frequency: reach > 0 ? impressions / reach : 0,
+      reachPercentOfUniverse: percentOf(reach, universe.households),
+      reachPercentOfTarget: percentOf(reach, targetHouseholds),
+    };
+  }
 
   const min = settings.targetMonthlyFrequencyMin;
   const max = settings.targetMonthlyFrequencyMax;
@@ -176,13 +235,14 @@ export function estimateMonthlyReach(input: {
     universe,
     audience,
     targetHouseholds,
-    reachPercentOfTarget: targetHouseholds > 0 ? (monthlyReach / targetHouseholds) * 100 : 0,
+    reachPercentOfTarget: percentOf(monthlyReach, targetHouseholds),
     flightDays,
     monthlyImpressions,
     monthlyReach,
     monthlyFrequency,
-    reachPercentOfUniverse: universe.households > 0 ? (monthlyReach / universe.households) * 100 : 0,
+    reachPercentOfUniverse: percentOf(monthlyReach, universe.households),
     frequencyBand: { min, max, withinBand: monthlyFrequency >= min && monthlyFrequency <= max },
+    flight,
     channels: channels.sort((a, b) => b.monthlyImpressions - a.monthlyImpressions),
     assumptions,
   };

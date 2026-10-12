@@ -34,7 +34,7 @@ export const DEFAULT_OVERVIEW_METRICS: OverviewMetricSetting[] = [
   { id: "impressions", label: "Estimated Impressions", show: true },
   { id: "completedViews", label: "Completed Views", show: true },
   { id: "costPerView", label: "Cost Per View", show: false },
-  { id: "estimatedReach", label: "Est. Monthly Reach", show: true },
+  { id: "estimatedReach", label: "Estimated Reach", show: true },
   { id: "avgFrequency", label: "Avg Monthly Frequency", show: false },
 ];
 

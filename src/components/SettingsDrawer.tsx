@@ -1503,7 +1503,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
               <div>
                 <h3 className="text-base font-bold text-slate-900">Reach &amp; Frequency</h3>
                 <p className="mt-1 text-sm leading-6 text-slate-600">
-                  The assumptions behind <span className="font-semibold">Est. Monthly Reach</span> and <span className="font-semibold">Avg Monthly Frequency</span> in the plan overview.
+                  The assumptions behind <span className="font-semibold">Estimated Reach</span> and <span className="font-semibold">Avg Monthly Frequency</span> in the plan overview.
                   Saved plans keep the values they were generated with.
                 </p>
               </div>
@@ -1516,8 +1516,8 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                 <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs leading-5">
                   <li><span className="font-semibold">Universe:</span> TV households in the plan's geography: the national total, the selected states, or the selected DMAs.</li>
                   <li><span className="font-semibold">Target audience (optional):</span> a planner can narrow the universe on the plan with filters from the audience share reference below, or their own %. Media types marked <em>Audience</em> are measured against that target; the rest against the whole geography.</li>
-                  <li><span className="font-semibold">Per month:</span> impressions are reduced to one month (impressions × 30 ÷ flight days). Flights of 30 days or less are one month.</li>
-                  <li><span className="font-semibold">Per media type:</span> ceiling = universe × max reachable %; reach = ceiling × (1 − e<sup>−impressions ÷ (ceiling × s)</sup>). Reach builds at about one household per <em>s</em> impressions, then flattens toward the ceiling.</li>
+                  <li><span className="font-semibold">Two windows:</span> the whole flight's impressions give unique reach over the campaign (the card's headline); one month's (impressions × 30 ÷ flight days) give monthly reach and frequency. Flights of 30 days or less are one month. Flight reach is not monthly reach × months: the same households are reached again each month.</li>
+                  <li><span className="font-semibold">Per media type:</span> ceiling = universe × max reachable %; x = impressions ÷ (ceiling × s); reach = ceiling × (1 − (1 + x ÷ k)<sup>−k</sup>), the NBD reach curve. Reach builds at about one household per <em>s</em> impressions; <em>k</em> sets how long light viewers keep trickling in before it flattens at the ceiling.</li>
                   <li><span className="font-semibold">Combined:</span> media types overlap at random, so total reach = universe × (1 − the product of each media type's unreached share).</li>
                   <li><span className="font-semibold">Frequency:</span> monthly impressions from counted media types ÷ monthly reach. It is a result, never an input.</li>
                 </ol>
@@ -1559,14 +1559,166 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                   <h4 className="text-sm font-extrabold text-slate-900">Assumptions by media type</h4>
                   <p className="mt-1 text-xs leading-5 text-slate-500">
                     <span className="font-semibold">Counts</span>: include in household reach. <span className="font-semibold">Max %</span>: share of the geo's TV households the media type can reach at all.{" "}
-                    <span className="font-semibold">s</span>: impressions per new household at low volume (higher builds reach more slowly).{" "}
+                    <span className="font-semibold">s</span>: impressions per new household at low volume (higher builds reach more slowly; see the explainer below).{" "}
+                    <span className="font-semibold">k</span>: audience concentration; lower means reach keeps building slowly over long flights (see below).{" "}
                     <span className="font-semibold">People/HH</span>: divides people-based impressions (DOOH) into households.{" "}
                     <span className="font-semibold">Min HH</span>: below this geo size the media type is not counted (0 = no minimum).{" "}
                     <span className="font-semibold">Audience</span>: bought against the plan's target audience; when off, the media type reaches across the whole geography.
                   </p>
                 </div>
+
+                {/* Explainer for the least intuitive assumption; collapsed so the table stays in view. */}
+                <details className="group rounded-xl border border-indigo-200 bg-indigo-50/40 text-xs leading-5 text-slate-700">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-2.5 font-bold text-slate-800">
+                    <span className="flex items-center gap-2">
+                      <HelpCircle className="h-4 w-4 shrink-0 text-indigo-600" />
+                      <span>What is <em>s</em> (duplication factor), and why it matters</span>
+                    </span>
+                    <ChevronDown className="h-4 w-4 text-slate-400 transition-transform group-open:rotate-180" />
+                  </summary>
+                  <div className="space-y-3 border-t border-indigo-100 px-4 py-3">
+                    <p>
+                      <span className="font-semibold">s says how quickly a media type wastes impressions on households it has already reached.</span>{" "}
+                      It is roughly the number of impressions it takes to find one new household early in a campaign.
+                    </p>
+
+                    <div>
+                      <p className="font-semibold text-slate-800">Why it exists</p>
+                      <p>Ads never land on a fresh household every time. Even on day one the same households see the ad again, because:</p>
+                      <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                        <li>heavy viewers, browsers and listeners are served far more ads than light users;</li>
+                        <li>one session can show several ads (an ad break, a scrolling feed, a page with several slots);</li>
+                        <li>targeting and bidding keep returning to the same high-value viewers.</li>
+                      </ul>
+                      <p className="mt-1">
+                        So with s = 3.5, 1,000 impressions reach about 1,000 ÷ 3.5 ≈ 285 households, each seeing the ad about 3.5 times.
+                        That is why frequency starts out close to s.
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold text-slate-800">What it does in the formula</p>
+                      <p className="font-mono text-[11px] text-slate-600">x = impressions ÷ (ceiling × s) · reach = ceiling × (1 − (1 + x ÷ k)<sup>−k</sup>)</p>
+                      <p className="mt-1">
+                        The ceiling is the most households the media type could reach (households × Max %). s sets how fast reach climbs toward it:
+                        a higher s spends more impressions on households already reached, so reach builds more slowly and frequency builds faster.
+                        Rule of thumb at k = 2 (the CTV default): reach gets to about <span className="font-semibold">56%</span> of the ceiling when impressions = ceiling × s,
+                        about <span className="font-semibold">75%</span> at twice that, and about <span className="font-semibold">84%</span> at three times.
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold text-slate-800">Why it matters: one plan, three values of s</p>
+                      <p>
+                        Example: $1.5M over a year, all CTV, Washington DC DMA only (2.48M TV households, 80% ceiling, k = 2), about 7.76M impressions a month.
+                        Same impressions in every row; only s changes.
+                      </p>
+                      <table className="mt-1.5 w-full max-w-md border-collapse overflow-hidden rounded-lg bg-white text-left">
+                        <thead className="text-[10px] uppercase tracking-wide text-slate-500">
+                          <tr className="border-b border-slate-200">
+                            <th className="px-2 py-1">s</th>
+                            <th className="px-2 py-1 text-right">Monthly reach</th>
+                            <th className="px-2 py-1 text-right">% of DMA</th>
+                            <th className="px-2 py-1 text-right">Frequency</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          <tr><td className="px-2 py-1">2</td><td className="px-2 py-1 text-right">1.48M HH</td><td className="px-2 py-1 text-right">60%</td><td className="px-2 py-1 text-right">5.3×</td></tr>
+                          <tr className="font-semibold"><td className="px-2 py-1">3.5 (CTV default)</td><td className="px-2 py-1 text-right">1.17M HH</td><td className="px-2 py-1 text-right">47%</td><td className="px-2 py-1 text-right">6.6×</td></tr>
+                          <tr><td className="px-2 py-1">6</td><td className="px-2 py-1 text-right">0.85M HH</td><td className="px-2 py-1 text-right">35%</td><td className="px-2 py-1 text-right">9.1×</td></tr>
+                        </tbody>
+                      </table>
+                      <p className="mt-1">Monthly reach moves by about 1.7× on this one assumption, which is why Media Planning owns it.</p>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold text-slate-800">Why the defaults differ by media type</p>
+                      <ul className="list-disc space-y-0.5 pl-5">
+                        <li><span className="font-semibold">About 3–3.5 (CTV, YouTube TV, linear):</span> a limited number of ad breaks per viewing session, spread across more homes, so new households come more easily.</li>
+                        <li><span className="font-semibold">About 4–5 (online video, audio, social, native):</span> moderate; heavy users of these platforms take a fair share of impressions.</li>
+                        <li><span className="font-semibold">About 6 or more (programmatic display, geofence):</span> heavy browsers see many display ads per session and across sites, so frequency builds quickly and reach slowly.</li>
+                      </ul>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold text-slate-800">How to calibrate it</p>
+                      <p>
+                        From a DSP reach forecast or a past campaign's reported reach, take a light, early stretch of delivery (well below saturation):
+                        <span className="font-semibold"> s ≈ impressions ÷ reach</span>. For example, 2M CTV impressions in a month reaching about 600K households gives s ≈ 3.3.
+                        Strict frequency caps push delivery toward new households, so a team that always runs tight caps may use a lower s for that media type.
+                      </p>
+                    </div>
+                  </div>
+                </details>
+
+                <details className="group rounded-xl border border-indigo-200 bg-indigo-50/40 text-xs leading-5 text-slate-700">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-2.5 font-bold text-slate-800">
+                    <span className="flex items-center gap-2">
+                      <HelpCircle className="h-4 w-4 shrink-0 text-indigo-600" />
+                      <span>What is <em>k</em> (audience concentration), and why it matters for long flights</span>
+                    </span>
+                    <ChevronDown className="h-4 w-4 text-slate-400 transition-transform group-open:rotate-180" />
+                  </summary>
+                  <div className="space-y-3 border-t border-indigo-100 px-4 py-3">
+                    <p>
+                      <span className="font-semibold">k says how unevenly a media type's delivery falls across households.</span>{" "}
+                      Some households watch, browse or listen far more than others. Heavy users are reached early; light users trickle in slowly, often over months.
+                    </p>
+                    <div>
+                      <p className="font-semibold text-slate-800">What it changes</p>
+                      <ul className="list-disc space-y-0.5 pl-5">
+                        <li><span className="font-semibold">Small k (about 0.5–1):</span> delivery is concentrated in heavy users. Reach builds slowly and keeps creeping up over a long flight.</li>
+                        <li><span className="font-semibold">Large k (3 or more):</span> delivery is spread evenly. Reach climbs quickly, then stops dead at the ceiling.</li>
+                        <li>s still sets the starting pace (about one new household per s impressions); k shapes the long tail.</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-slate-800">Why it matters: reach building over a year</p>
+                      <p>Same DC example (all CTV, s = 3.5, about 7.76M impressions a month). Unique households reached as the flight goes on:</p>
+                      <div className="mt-1.5 overflow-x-auto">
+                        <table className="w-full min-w-[520px] max-w-2xl border-collapse rounded-lg bg-white text-left">
+                          <thead className="text-[10px] uppercase tracking-wide text-slate-500">
+                            <tr className="border-b border-slate-200">
+                              <th className="px-2 py-1">Curve</th>
+                              <th className="px-2 py-1 text-right">1 month</th>
+                              <th className="px-2 py-1 text-right">3 months</th>
+                              <th className="px-2 py-1 text-right">6 months</th>
+                              <th className="px-2 py-1 text-right">12 months</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                          <tr><td className="px-2 py-1">Even spread (k → ∞)</td><td className="px-2 py-1 text-right">1.33M (54%)</td><td className="px-2 py-1 text-right">1.91M (77%)</td><td className="px-2 py-1 text-right">1.98M (80%)</td><td className="px-2 py-1 text-right">1.98M (80%)</td></tr>
+                          <tr className="font-semibold"><td className="px-2 py-1">k = 2 (CTV default)</td><td className="px-2 py-1 text-right">1.17M (47%)</td><td className="px-2 py-1 text-right">1.70M (69%)</td><td className="px-2 py-1 text-right">1.88M (76%)</td><td className="px-2 py-1 text-right">1.95M (79%)</td></tr>
+                          <tr><td className="px-2 py-1">k = 1</td><td className="px-2 py-1 text-right">1.05M (42%)</td><td className="px-2 py-1 text-right">1.53M (62%)</td><td className="px-2 py-1 text-right">1.72M (70%)</td><td className="px-2 py-1 text-right">1.84M (74%)</td></tr>
+                          <tr><td className="px-2 py-1">k = 0.5</td><td className="px-2 py-1 text-right">0.88M (36%)</td><td className="px-2 py-1 text-right">1.27M (51%)</td><td className="px-2 py-1 text-right">1.46M (59%)</td><td className="px-2 py-1 text-right">1.61M (65%)</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="mt-1">
+                        With an even spread, months 7–12 add no one; real campaigns keep finding light viewers. Lower k also lowers monthly reach,
+                        because the same concentration means fewer different households in any one month.
+                      </p>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-slate-800">Why the defaults differ</p>
+                      <ul className="list-disc space-y-0.5 pl-5">
+                        <li><span className="font-semibold">k ≈ 2 (CTV, linear, TV-like streaming):</span> TV viewing is spread across more homes.</li>
+                        <li><span className="font-semibold">k ≈ 1.5 (online video, audio):</span> in between.</li>
+                        <li><span className="font-semibold">k ≈ 1 (display, native, social, geofence):</span> heavy browsers and scrollers take most impressions.</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-slate-800">How to calibrate it</p>
+                      <p>
+                        Set s first from an early, light stretch of delivery. Then compare reach at a later point (say month 3 or month 6) from a DSP forecast or a past
+                        campaign: if real reach kept growing more than the curve shows, lower k; if it flattened sooner, raise it.
+                        This is the NBD (negative binomial) reach model, the long-standing standard for TV reach building.
+                      </p>
+                    </div>
+                  </div>
+                </details>
                 <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-xs">
-                  <table className="w-full min-w-[990px] border-collapse text-left">
+                  <table className="w-full min-w-[1060px] border-collapse text-left">
                     <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500">
                       <tr>
                         <th className="px-3 py-2.5">Media type</th>
@@ -1574,6 +1726,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                         <th className="w-16 px-2 py-2.5 text-center" title="Bought against the plan's target audience">Audience</th>
                         <th className="w-20 px-2 py-2.5">Max %</th>
                         <th className="w-20 px-2 py-2.5">s</th>
+                        <th className="w-20 px-2 py-2.5" title="Audience concentration">k</th>
                         <th className="w-36 px-2 py-2.5">Unit</th>
                         <th className="w-20 px-2 py-2.5">People/HH</th>
                         <th className="w-28 px-2 py-2.5">Min HH</th>
@@ -1611,6 +1764,14 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                               type="number" min="1" max="50" step="0.5" aria-label={`${row.label} duplication factor`}
                               value={Number.isFinite(row.duplicationFactor) ? row.duplicationFactor : ""}
                               onChange={(e) => updateReachMediaType(row.mediaTypeId, { duplicationFactor: numericValue(e.target.value) })}
+                              className={`${inputClass} mt-0 px-2 py-1.5`}
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number" min="0.1" max="20" step="0.5" aria-label={`${row.label} audience concentration k`}
+                              value={Number.isFinite(row.concentrationK) ? row.concentrationK : ""}
+                              onChange={(e) => updateReachMediaType(row.mediaTypeId, { concentrationK: numericValue(e.target.value) })}
                               className={`${inputClass} mt-0 px-2 py-1.5`}
                             />
                           </td>

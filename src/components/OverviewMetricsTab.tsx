@@ -27,7 +27,7 @@ import {
 import { DEFAULT_OVERVIEW_METRICS, OverviewMetricSetting } from "../planning/settings";
 import { DEFAULT_REACH_SETTINGS, UNMAPPED_MEDIA_TYPE_ID, type AudienceShareFilter, type ReachMediaTypeId, type ReachSettings } from "../planning/reach/reachSettings";
 import { MIN_OVERRIDE_PERCENT, describeAudienceShare, resolveAudienceShare } from "../planning/reach/audienceShare";
-import { estimateMonthlyReach, type ReachChannelInput, type ReachEstimate } from "../planning/reach/reachModel";
+import { estimateReach, type ReachChannelInput, type ReachEstimate } from "../planning/reach/reachModel";
 import { resolveHouseholdUniverse } from "../planning/reach/universe";
 import { geoTargetingFromBrief } from "../planning/reach/briefGeography";
 import { normalizeRawChannel } from "../utils/mediaTaxonomy";
@@ -40,7 +40,7 @@ interface OverviewMetricsTabProps {
   metricSettings?: OverviewMetricSetting[];
   /** The plan's geography as the brief's picker holds it; reach is sized to it. */
   geography?: GeographyTargetConfig | null;
-  /** Assumptions behind Est. Monthly Reach, from the settings revision the plan was built with. */
+  /** Assumptions behind Estimated Reach, from the settings revision the plan was built with. */
   reachSettings?: ReachSettings;
   /** Internal-only breakdown of how reach was calculated. */
   showReachDetails?: boolean;
@@ -221,11 +221,13 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
 
   const audience = resolveAudienceShare(profileData?.audienceNarrowing, reachSettings);
   const reachFor = (mix: ReachChannelInput[], impressions: number): ReachEstimate =>
-    estimateMonthlyReach({ channels: scaleMix(mix, impressions), universe, flightDays, settings: reachSettings, audience });
+    estimateReach({ channels: scaleMix(mix, impressions), universe, flightDays, settings: reachSettings, audience });
   const plannedReach = reachFor(uploadedMix, plannedImpressions);
   const aiReach = reachFor(scoutMix.length > 0 ? scoutMix : uploadedMix, aiImpressions);
-  const plannedReachHH = Math.round(plannedReach.monthlyReach);
-  const aiReachHH = Math.round(aiReach.monthlyReach);
+  // The card leads with unique reach over the flight, matching the flight-total budget and
+  // impressions beside it; the monthly view is its sub-line.
+  const plannedReachHH = Math.round(plannedReach.flight?.reach ?? plannedReach.monthlyReach);
+  const aiReachHH = Math.round(aiReach.flight?.reach ?? aiReach.monthlyReach);
   const plannedFreq = plannedReach.monthlyFrequency;
   const aiFreq = aiReach.monthlyFrequency;
 
@@ -324,7 +326,7 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
     },
     {
       id: "estimatedReach",
-      label: "Est. Monthly Reach",
+      label: "Estimated Reach",
       icon: Users,
       iconBg: "bg-rose-50 text-rose-500",
       plannedVal: plannedReachHH,
@@ -478,10 +480,11 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
                     </div>
 
                     {metric.id === "estimatedReach" && (
-                      <div className="mt-0.5 truncate text-[10.5px] leading-tight text-slate-500" title={`${formatNumber(universe.households)} TV households · ${universe.sourceLabel}`}>
-                        {audience.method !== "none" && aiReach.reachPercentOfTarget <= 100
-                          ? `${formatPercent(aiReach.reachPercentOfTarget)} of ${compact(aiReach.targetHouseholds)} target HH in ${universe.label}`
-                          : `${formatPercent(aiReach.reachPercentOfUniverse)} of ${universe.label} TV HH`}
+                      <div className="mt-0.5 space-y-0.5 text-[10.5px] leading-tight text-slate-500" title={`${formatNumber(universe.households)} TV households · ${universe.sourceLabel}`}>
+                        <div className="truncate">{reachShareLine(aiReach)}</div>
+                        {aiReach.flight && (
+                          <div className="truncate">≈{compact(aiReach.monthlyReach)} HH per month · {aiReach.monthlyFrequency.toFixed(1)}x / mo</div>
+                        )}
                       </div>
                     )}
                     {metric.id === "avgFrequency" && !hasUploadedContent && (
@@ -591,7 +594,7 @@ const compact = (val: number) =>
   val >= 1_000_000 ? `${(val / 1_000_000).toFixed(1)}M` : val >= 1_000 ? `${(val / 1_000).toFixed(0)}K` : Math.round(val).toLocaleString("en-US");
 
 /**
- * The working behind Est. Monthly Reach, for planners: what the plan is measured against and
+ * The working behind Estimated Reach, for planners: what the plan is measured against and
  * what each media type contributed. Internal-only, since it exposes planning assumptions.
  */
 const ReachDetails: React.FC<{
@@ -677,6 +680,14 @@ const ReachDetails: React.FC<{
             <dd className="text-right text-slate-800">
               {compact(estimate.monthlyImpressions)} imps → {compact(estimate.monthlyReach)} HH at {estimate.monthlyFrequency.toFixed(1)}x
             </dd>
+            {estimate.flight && (
+              <>
+                <dt className="font-semibold text-slate-500">Whole flight</dt>
+                <dd className="text-right font-semibold text-slate-800">
+                  {compact(estimate.flight.impressions)} imps → {compact(estimate.flight.reach)} unique HH at {estimate.flight.frequency.toFixed(1)}x
+                </dd>
+              </>
+            )}
           </dl>
 
           {included.length > 0 && (
@@ -685,8 +696,9 @@ const ReachDetails: React.FC<{
                 <tr>
                   <th className="py-1 text-left font-bold">Media type</th>
                   <th className="py-1 text-right font-bold">Imps/mo</th>
-                  <th className="py-1 text-right font-bold" title="Max reachable % of HH · duplication factor">Max · s</th>
-                  <th className="py-1 text-right font-bold">Reach</th>
+                  <th className="py-1 text-right font-bold" title="Max reachable % of HH · duplication factor (s) · audience concentration (k)">Max · s · k</th>
+                  <th className="py-1 text-right font-bold">Reach/mo</th>
+                  {estimate.flight && <th className="py-1 text-right font-bold" title="Unique households over the whole flight">Flight</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -699,8 +711,9 @@ const ReachDetails: React.FC<{
                       )}
                     </td>
                     <td className="py-1 text-right">{compact(channel.monthlyImpressions)}</td>
-                    <td className="py-1 text-right">{channel.maxReachPercent}% · {channel.duplicationFactor}</td>
+                    <td className="py-1 text-right">{channel.maxReachPercent}% · {channel.duplicationFactor} · {channel.concentrationK}</td>
                     <td className="py-1 text-right font-semibold text-slate-800">{compact(channel.monthlyReach)}</td>
+                    {estimate.flight && <td className="py-1 text-right font-semibold text-slate-800">{compact(channel.flightReach)}</td>}
                   </tr>
                 ))}
               </tbody>
@@ -722,8 +735,9 @@ const ReachDetails: React.FC<{
           )}
 
           <p className="leading-snug text-slate-500">
-            Each media type's reach flattens toward its ceiling (universe × max %); media types are combined assuming random
-            overlap. Frequency = impressions ÷ reach. Target band {formatBand(estimate)} / month.
+            Each media type's reach flattens toward its ceiling (universe × max %) on an NBD curve: s sets how fast it starts,
+            k how long light viewers keep trickling in. Media types are combined assuming random overlap. Flight reach counts each
+            household once over the whole campaign, so it is not monthly reach × months. Frequency = impressions ÷ reach. Target band {formatBand(estimate)} / month.
             {isPlannerView ? " Assumptions are in Settings > Reach & Frequency." : ""}
             {comparedWithPlan ? " The planned figures use the same method on the uploaded plan's mix." : ""}
           </p>
@@ -829,3 +843,24 @@ const AudienceEditor: React.FC<{
     </div>
   );
 };
+
+/** "over 12 months" for long flights, "over 21 days" for short ones, "per month" when unknown. */
+export function flightDurationLabel(days: number | null): string {
+  if (days === null) return "per month";
+  if (days >= 60) return `over ${Math.round(days / 30.4)} months`;
+  return `over ${days} days`;
+}
+
+/** The reach card's first sub-line: the window, then the share of the households it is measured against. */
+function reachShareLine(estimate: ReachEstimate): string {
+  const reach = estimate.flight ?? {
+    reachPercentOfTarget: estimate.reachPercentOfTarget,
+    reachPercentOfUniverse: estimate.reachPercentOfUniverse,
+  };
+  const window = flightDurationLabel(estimate.flightDays);
+  const pct = (val: number) => (val > 0 && val < 1 ? "<1%" : `${Math.round(val)}%`);
+  const narrowed = estimate.audience && estimate.audience.method !== "none" && reach.reachPercentOfTarget <= 100;
+  return narrowed
+    ? `${window} · ${pct(reach.reachPercentOfTarget)} of ${compact(estimate.targetHouseholds)} target HH in ${estimate.universe.label}`
+    : `${window} · ${pct(reach.reachPercentOfUniverse)} of ${estimate.universe.label} TV HH`;
+}

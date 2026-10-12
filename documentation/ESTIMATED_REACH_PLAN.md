@@ -253,6 +253,22 @@ Starting defaults, **for Media Planning to review before launch**:
 
 ---
 
+## Flight reach and the NBD curve (added 2026-10-12)
+
+- **Reach card headline:** unique reach over the whole flight, with monthly reach and frequency as
+  the sub-line. This matches the flight-total budget and impressions on the other cards. Flight
+  reach is the curve applied to the whole flight's impressions, never monthly reach × months.
+  Flights of 30 days or less show a single figure.
+- **Curve:** the per-media-type curve is now the NBD (negative binomial) reach model,
+  `reach = ceiling × (1 − (1 + x/k)^−k)` with `x = impressions / (ceiling × s)`. k ("audience
+  concentration", editable in Settings) lets reach keep building slowly over long flights as
+  light viewers are found.
+  - Defaults: TV-like media 2, online video and audio 1.5, display, native and social 1.
+  - Large k reproduces the earlier exponential curve.
+- **Known behaviour:** for budgets that are small relative to the universe (for example a modest
+  national plan), flight reach comes out close to monthly reach × months. Coverage is too thin
+  for the curve to bend, so the model treats each month as reaching mostly new households.
+
 ## Phase 2: Audience-share narrowing
 
 > **As built (2026-10-12):** override and Settings filters are implemented, along with the

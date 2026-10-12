@@ -28,6 +28,12 @@ export interface ReachMediaTypeSetting {
    * means reach builds more slowly and frequency climbs sooner.
    */
   duplicationFactor: number;
+  /**
+   * Audience concentration (the NBD curve's k). Small values mean delivery is concentrated in
+   * heavy users: reach builds slowly and keeps creeping up over long flights as light users
+   * are found. Large values approach an even spread, where reach flattens hard at the ceiling.
+   */
+  concentrationK: number;
   /** DOOH counts people, not households; its impressions are divided by peoplePerHousehold. */
   unit: ReachUnit;
   peoplePerHousehold: number;
@@ -69,7 +75,7 @@ export interface ReachSettings {
   minimumAudienceSharePercent: number;
 }
 
-type ReachDefault = Omit<ReachMediaTypeSetting, "mediaTypeId" | "label" | "unit" | "peoplePerHousehold" | "minimumTargetableHouseholds" | "appliesAudienceTargeting">
+type ReachDefault = Omit<ReachMediaTypeSetting, "mediaTypeId" | "label" | "unit" | "peoplePerHousehold" | "minimumTargetableHouseholds" | "appliesAudienceTargeting" | "concentrationK">
   & Partial<Pick<ReachMediaTypeSetting, "unit" | "peoplePerHousehold" | "minimumTargetableHouseholds" | "appliesAudienceTargeting">>;
 
 /**
@@ -111,6 +117,21 @@ export const REACH_MEDIA_TYPE_IDS: ReachMediaTypeId[] = [
   UNMAPPED_MEDIA_TYPE_ID,
 ];
 
+/**
+ * Starting k values, accepted by Media Planning on 2026-10-12: TV-like media spread more
+ * evenly across households than display and social, which heavy browsers dominate.
+ */
+const CONCENTRATION_K: Partial<Record<ReachMediaTypeId, number>> = {
+  ctv: 2, youtube_tv: 2, sports_ott: 2, amazon_ott: 2, linear_tv: 2,
+  programmatic_video: 1.5, digital_video_blend: 1.5, youtube: 1.5, digital_audio: 1.5, digital_out_of_home: 1.5, unmapped: 1.5,
+  programmatic_display: 1, native: 1, social_advertising: 1, display_retargeting: 1, geofence_video: 1, geofence_display: 1,
+  google_search: 1, email_marketing: 1, advanced_measurement: 1, ad_serving: 1,
+};
+
+function concentrationDefault(id: ReachMediaTypeId): number {
+  return CONCENTRATION_K[id] ?? 1.5;
+}
+
 const CENSUS = "U.S. Census Bureau ACS, approx.";
 
 /**
@@ -147,6 +168,7 @@ export function buildDefaultReachSettings(): ReachSettings {
         countsTowardReach: defaults.countsTowardReach,
         maxReachPercent: defaults.maxReachPercent,
         duplicationFactor: defaults.duplicationFactor,
+        concentrationK: concentrationDefault(mediaTypeId),
         unit: defaults.unit ?? "households",
         peoplePerHousehold: defaults.peoplePerHousehold ?? 2.5,
         minimumTargetableHouseholds: defaults.minimumTargetableHouseholds ?? 0,
@@ -205,6 +227,7 @@ export function validateReachSettings(value: ReachSettings, errors: string[]): v
     if (typeof row.countsTowardReach !== "boolean") errors.push(`${label}: Counts toward reach must be true or false.`);
     if (!finite(row.maxReachPercent) || row.maxReachPercent < 0 || row.maxReachPercent > 100) errors.push(`${label}: max reachable % must be between 0 and 100.`);
     if (!finite(row.duplicationFactor) || row.duplicationFactor < 1 || row.duplicationFactor > 50) errors.push(`${label}: duplication factor must be between 1 and 50.`);
+    if (!finite(row.concentrationK) || row.concentrationK < 0.1 || row.concentrationK > 20) errors.push(`${label}: audience concentration (k) must be between 0.1 and 20.`);
     if (row.unit !== "households" && row.unit !== "people") errors.push(`${label}: unit must be households or people.`);
     if (!finite(row.peoplePerHousehold) || row.peoplePerHousehold < 1 || row.peoplePerHousehold > 10) errors.push(`${label}: people per household must be between 1 and 10.`);
     if (!finite(row.minimumTargetableHouseholds) || row.minimumTargetableHouseholds < 0 || !Number.isInteger(row.minimumTargetableHouseholds)) errors.push(`${label}: minimum targetable households must be a whole number, 0 or more.`);

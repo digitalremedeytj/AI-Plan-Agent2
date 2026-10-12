@@ -37,7 +37,7 @@ test("with a plan uploaded, overview applies requested metric defaults and rende
   assert.match(markup, /Planned Budget/);
   assert.match(markup, /Estimated Impressions/);
   assert.match(markup, /Completed Views/);
-  assert.match(markup, /Est\. Monthly Reach/);
+  assert.match(markup, /Estimated Reach/);
   assert.doesNotMatch(markup, /Estimated ECPM/);
   assert.doesNotMatch(markup, /Cost Per View/);
   assert.doesNotMatch(markup, /Avg Monthly Frequency/);
@@ -65,7 +65,7 @@ test("with nothing uploaded, overview respects metric visibility settings and di
   assert.match(markup, /\$100,000/);
   assert.match(markup, /Estimated Impressions/);
   assert.match(markup, /Completed Views/);
-  assert.match(markup, /Est\. Monthly Reach/);
+  assert.match(markup, /Estimated Reach/);
   assert.doesNotMatch(markup, /Estimated ECPM/);
   assert.doesNotMatch(markup, /Cost Per View/);
   assert.doesNotMatch(markup, /Avg Monthly Frequency/);
@@ -87,7 +87,7 @@ test("with nothing uploaded and only budget enabled in settings, overview displa
   assert.match(markup, /\$100,000/);
   assert.doesNotMatch(markup, /Estimated Impressions/);
   assert.doesNotMatch(markup, /Completed Views/);
-  assert.doesNotMatch(markup, /Est\. Monthly Reach/);
+  assert.doesNotMatch(markup, /Estimated Reach/);
   assert.match(markup, /Media Type Allocation/);
 });
 
@@ -135,16 +135,17 @@ const dcOnlyAnnualPlan = {
   },
 } as unknown as AudienceProfile;
 
-test("a single-DMA annual plan reports monthly reach within that DMA's households", () => {
+test("a single-DMA annual plan reports flight reach within that DMA's households, with the monthly view beneath", () => {
   const markup = renderToStaticMarkup(
     <OverviewMetricsTab extractedPlacements={[]} planOptions={[]} rfpAnalysis={null} profileData={dcOnlyAnnualPlan} metricSettings={DEFAULT_OVERVIEW_METRICS} />,
   );
   // The DMA holds 2.48M TV households; the old impressions / 5.45 showed 17.3M.
-  const reach = markup.match(/Est\. Monthly Reach<\/span><span[^>]*>([\d.]+)([MK]) HH/);
+  const reach = markup.match(/Estimated Reach<\/span><span[^>]*>([\d.]+)([MK]) HH/);
   assert.ok(reach, "reach card rendered");
   const households = Number(reach[1]) * (reach[2] === "M" ? 1e6 : 1e3);
   assert.ok(households < 2_476_680, `reach ${households} exceeds the DMA`);
-  assert.match(markup, /% of Washington, Dc \(Hagrstwn\) DMA TV HH/);
+  assert.match(markup, /over 12 months · \d+% of Washington, Dc \(Hagrstwn\) DMA TV HH/);
+  assert.match(markup, /HH per month · [\d.]+x \/ mo/);
 });
 
 test("the reach breakdown appears only when its internal-only setting allows it", () => {
