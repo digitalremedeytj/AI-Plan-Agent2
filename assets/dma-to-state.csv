@@ -74,7 +74,7 @@ rank,market_name,tv_hhs,%us,dma_code,state
 73,Spokane,"422,550",0.368,881,ID-MT-OR-WA
 74,Omaha,"416,210",0.363,652,IA-MO-NE
 75,"Springfield, Mo","409,020",0.357,619,AR-MO
-76,"Rochester, Ny","404,170",0.352,611,IA-MN
+76,"Rochester, Ny","404,170",0.352,538,NY
 77,"Columbia, Sc","400,790",0.349,546,SC
 78,Toledo,"400,170",0.349,547,MI-OH
 79,Huntsville-Decatur (Flor),"385,470",0.336,691,AL-TN
@@ -151,7 +151,7 @@ rank,market_name,tv_hhs,%us,dma_code,state
 150,Erie,"148,880",0.13,516,PA
 151,Joplin-Pittsburg,"144,110",0.126,603,KS-MO-OK
 152,"Albany, Ga","142,800",0.125,525,GA
-153,Rochestr-Mason City-Austin,"141,920",0.124,538,NY
+153,Rochestr-Mason City-Austin,"141,920",0.124,611,IA-MN
 154,Panama City,"141,740",0.124,656,FL
 155,Terre Haute,"133,780",0.117,581,IL-IN
 156,Bangor,"133,310",0.116,537,ME

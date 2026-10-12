@@ -817,14 +817,13 @@
       ]
     },
     {
-      "code": "611",
+      "code": "538",
       "name": "Rochester, Ny",
       "rank": 76,
       "tvHouseholds": 404170,
       "usSharePct": 0.352,
       "states": [
-        "IA",
-        "MN"
+        "NY"
       ]
     },
     {
@@ -1643,13 +1642,14 @@
       ]
     },
     {
-      "code": "538",
+      "code": "611",
       "name": "Rochestr-Mason City-Austin",
       "rank": 153,
       "tvHouseholds": 141920,
       "usSharePct": 0.124,
       "states": [
-        "NY"
+        "IA",
+        "MN"
       ]
     },
     {

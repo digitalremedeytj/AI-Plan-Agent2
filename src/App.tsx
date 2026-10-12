@@ -1764,6 +1764,13 @@ export default function App() {
     });
   };
 
+  // The picker's state is restored from the plan on load (shared links included), so it is
+  // the plan's geography unless the planner edits the brief afterwards.
+  const overviewGeography = React.useMemo<GeographyTargetConfig>(
+    () => ({ type: geographyType, targets: geoTargets }),
+    [geographyType, geoTargets],
+  );
+
   const handleShareReachDetailsChange = (shared: boolean) => {
     reachPrefsDirtyRef.current = true;
     setProfileData((prev) => {
@@ -5929,6 +5936,7 @@ export default function App() {
                   rfpAnalysis={rfpAnalysis}
                   profileData={profileData}
                   metricSettings={planningSettings.overviewMetrics}
+                  geography={overviewGeography}
                   reachSettings={planningSettings.reach}
                   showReachDetails={Boolean(internalOnlyVisibility.reachCalculationDetails) && (!isShareView || profileData.shareReachDetails === true)}
                   shareReachDetails={profileData.shareReachDetails === true}

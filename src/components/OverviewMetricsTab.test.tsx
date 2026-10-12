@@ -176,3 +176,13 @@ test("the reach panel is hidden from the share link until a planner turns its ey
   const shareLink = render({ shareReachDetails: true });
   assert.doesNotMatch(shareLink, /share view"/, "no eye on the share link itself");
 });
+
+test("reach is sized to the DMA picked in the brief", () => {
+  const nationalPlan = { ...dcOnlyAnnualPlan, geoTargeting: undefined } as AudienceProfile;
+  const markup = renderToStaticMarkup(
+    <OverviewMetricsTab extractedPlacements={[]} planOptions={[]} rfpAnalysis={null} profileData={nationalPlan}
+      metricSettings={DEFAULT_OVERVIEW_METRICS} geography={{ type: "DMA", targets: ["Washington, DC (Hag, Wsh)"] }} />,
+  );
+  assert.match(markup, /% of Washington, Dc \(Hagrstwn\) DMA TV HH/);
+  assert.doesNotMatch(markup, /United States TV HH/);
+});

@@ -21,13 +21,15 @@ import {
   ParsedPlanOption,
   RfpAnalysis,
   AudienceProfile,
-  AudienceNarrowing
+  AudienceNarrowing,
+  GeographyTargetConfig
 } from "../types";
 import { DEFAULT_OVERVIEW_METRICS, OverviewMetricSetting } from "../planning/settings";
 import { DEFAULT_REACH_SETTINGS, UNMAPPED_MEDIA_TYPE_ID, type AudienceShareFilter, type ReachMediaTypeId, type ReachSettings } from "../planning/reach/reachSettings";
 import { MIN_OVERRIDE_PERCENT, describeAudienceShare, resolveAudienceShare } from "../planning/reach/audienceShare";
 import { estimateMonthlyReach, type ReachChannelInput, type ReachEstimate } from "../planning/reach/reachModel";
 import { resolveHouseholdUniverse } from "../planning/reach/universe";
+import { geoTargetingFromBrief } from "../planning/reach/briefGeography";
 import { normalizeRawChannel } from "../utils/mediaTaxonomy";
 
 interface OverviewMetricsTabProps {
@@ -36,6 +38,8 @@ interface OverviewMetricsTabProps {
   rfpAnalysis: RfpAnalysis | null;
   profileData: AudienceProfile | null;
   metricSettings?: OverviewMetricSetting[];
+  /** The plan's geography as the brief's picker holds it; reach is sized to it. */
+  geography?: GeographyTargetConfig | null;
   /** Assumptions behind Est. Monthly Reach, from the settings revision the plan was built with. */
   reachSettings?: ReachSettings;
   /** Internal-only breakdown of how reach was calculated. */
@@ -84,6 +88,7 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
   rfpAnalysis,
   profileData,
   metricSettings = DEFAULT_OVERVIEW_METRICS,
+  geography = null,
   reachSettings = DEFAULT_REACH_SETTINGS,
   showReachDetails = false,
   onAudienceNarrowingChange,
@@ -190,7 +195,7 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
   // --- REACH & FREQUENCY (monthly; see src/planning/reach) ---
   // Both sides run through the same model, so any difference comes from impressions and
   // media mix, never from a constant.
-  const universe = resolveHouseholdUniverse(profileData?.geoTargeting);
+  const universe = resolveHouseholdUniverse(profileData?.geoTargeting ?? geoTargetingFromBrief(geography));
   const flightDays = profileData?.channelStrategy?.mediaPlan?.flightDays
     ?? selectedOptions.map((option) => daysBetween(option.flightDates?.start, option.flightDates?.end)).find((days) => days !== null)
     ?? null;

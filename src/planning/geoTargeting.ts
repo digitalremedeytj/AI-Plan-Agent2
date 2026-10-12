@@ -55,7 +55,7 @@ const DMA_ALIASES: Record<string, string[]> = {
   "673": ["tupelo"],
   "759": ["scottsbluff"],
   "627": ["lawton"],
-  "538": ["rochester minnesota"],
+  "611": ["rochester minnesota"],
   "648": ["champaign urbana"],
 };
 

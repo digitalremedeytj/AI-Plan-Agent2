@@ -74,6 +74,12 @@ resolveHouseholdUniverse(geo: GeoTargeting | undefined): HouseholdUniverse
 - **DMA:** sum the selected markets. This is the same figure `geoCoverage` reports today; reuse it.
 - **Unknown entries:** recorded in `unresolved`, and surfaced in the calculation details.
 
+**As built (fix):** the brief's geography lives in the picker (`geographyConfig`: display
+names from `src/utils/geoReference.ts`), not in `profile.geoTargeting`, which nothing sets.
+`src/planning/reach/briefGeography.ts` converts the picker's selection: DMAs by name, plus a
+checked table for 18 abbreviated names, because 23 of the picker's own codes point at other
+markets. A test asserts all 206 picker DMAs resolve.
+
 The resolver is the only place the geo scope is considered. The reach model only sees a household count.
 
 ### 1.3 Reach model
