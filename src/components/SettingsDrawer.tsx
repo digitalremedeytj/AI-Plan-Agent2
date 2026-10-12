@@ -50,6 +50,9 @@ import {
   validateCtvPublishers,
 } from "../planning/knowledge/ctvPublishers";
 import { authFetch } from "../api/client";
+import type { AudienceShareFilter, ReachMediaTypeSetting } from "../planning/reach/reachSettings";
+import { DMA_MARKETS, DMA_SOURCE_LABEL } from "../planning/knowledge/dmaMarkets";
+import { NATIONAL_TV_HOUSEHOLDS, STATE_HOUSEHOLDS, STATE_HOUSEHOLDS_SOURCE_LABEL } from "../planning/knowledge/stateHouseholds";
 import { ScoutPromptsSettings } from "./ScoutPromptsSettings";
 
 interface SettingsDrawerProps {
@@ -68,7 +71,7 @@ interface SettingsDrawerProps {
   saveError?: string | null;
 }
 
-type SettingsTab = "visibility" | "budgets" | "products" | "publishers" | "enhancements" | "prompts";
+type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "prompts";
 
 function numericValue(value: string): number {
   if (value.trim() === "") return Number.NaN;
@@ -268,6 +271,58 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     setDraftSettings((current) => ({
       ...current,
       customProducts: current.customProducts.filter((entry) => entry.productId !== product.productId),
+    }));
+    clearErrors();
+  };
+
+  const updateReachMediaType = (mediaTypeId: string, patch: Partial<ReachMediaTypeSetting>) => {
+    setDraftSettings((current) => ({
+      ...current,
+      reach: {
+        ...current.reach,
+        mediaTypes: current.reach.mediaTypes.map((row) =>
+          row.mediaTypeId === mediaTypeId ? { ...row, ...patch } : row
+        ),
+      },
+    }));
+    clearErrors();
+  };
+
+  const updateReachBand = (patch: { targetMonthlyFrequencyMin?: number; targetMonthlyFrequencyMax?: number; minimumAudienceSharePercent?: number }) => {
+    setDraftSettings((current) => ({ ...current, reach: { ...current.reach, ...patch } }));
+    clearErrors();
+  };
+
+  const updateAudienceFilter = (id: string, patch: Partial<AudienceShareFilter>) => {
+    setDraftSettings((current) => ({
+      ...current,
+      reach: {
+        ...current.reach,
+        audienceShareReference: current.reach.audienceShareReference.map((filter) => (filter.id === id ? { ...filter, ...patch } : filter)),
+      },
+    }));
+    clearErrors();
+  };
+
+  const addAudienceFilter = () => {
+    setDraftSettings((current) => ({
+      ...current,
+      reach: {
+        ...current.reach,
+        // Ids only need to be unique and stable; saved plans refer to filters by id.
+        audienceShareReference: [
+          ...current.reach.audienceShareReference,
+          { id: `custom-${Date.now().toString(36)}`, category: "", label: "", sharePercent: Number.NaN, source: "" },
+        ],
+      },
+    }));
+    clearErrors();
+  };
+
+  const removeAudienceFilter = (id: string) => {
+    setDraftSettings((current) => ({
+      ...current,
+      reach: { ...current.reach, audienceShareReference: current.reach.audienceShareReference.filter((filter) => filter.id !== id) },
     }));
     clearErrors();
   };
@@ -614,6 +669,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
   const tabs: Array<{ id: SettingsTab; label: string; count?: number }> = [
     { id: "publishers", label: "Recommended CTV Publishers", count: safePublishers.length },
     { id: "budgets", label: "Budget & Media-Type Limits" },
+    { id: "reach", label: "Reach & Frequency" },
     { id: "products", label: "Product Rules", count: safeProducts.length },
     { id: "enhancements", label: "Enhancements", count: safeEnhancements.length },
     { id: "visibility", label: "Visibility", count: safeOverviewMetrics.length + safeInternalOnly.length },
@@ -693,7 +749,8 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
               </div>
             </div>
           )}
-          <fieldset disabled={readOnly} className={readOnly ? "opacity-90" : undefined}>
+          {/* min-w-0: a fieldset defaults to min-content width, which lets a wide table stretch the drawer instead of scrolling in its own box. */}
+          <fieldset disabled={readOnly} className={`min-w-0 ${readOnly ? "opacity-90" : ""}`}>
           
           {/* ScoutAI prompt library: its own record, saved from inside the tab */}
           {activeTab === "prompts" && <ScoutPromptsSettings readOnly={readOnly} />}
@@ -1437,6 +1494,272 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
               >
                 <Plus className="h-4 w-4" /> Add budget tier
               </button>
+            </section>
+          )}
+
+          {/* TAB: REACH & FREQUENCY */}
+          {activeTab === "reach" && (
+            <section className="space-y-6">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Reach &amp; Frequency</h3>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  The assumptions behind <span className="font-semibold">Est. Monthly Reach</span> and <span className="font-semibold">Avg Monthly Frequency</span> in the plan overview.
+                  Saved plans keep the values they were generated with.
+                </p>
+              </div>
+
+              {/* METHOD */}
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 text-sm leading-6 text-slate-700">
+                <h4 className="flex items-center gap-2 text-sm font-extrabold text-slate-900">
+                  <Info className="h-4 w-4 text-indigo-600" /> How it is calculated
+                </h4>
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs leading-5">
+                  <li><span className="font-semibold">Universe:</span> TV households in the plan's geography: the national total, the selected states, or the selected DMAs.</li>
+                  <li><span className="font-semibold">Target audience (optional):</span> a planner can narrow the universe on the plan with filters from the audience share reference below, or their own %. Media types marked <em>Audience</em> are measured against that target; the rest against the whole geography.</li>
+                  <li><span className="font-semibold">Per month:</span> impressions are reduced to one month (impressions × 30 ÷ flight days). Flights of 30 days or less are one month.</li>
+                  <li><span className="font-semibold">Per media type:</span> ceiling = universe × max reachable %; reach = ceiling × (1 − e<sup>−impressions ÷ (ceiling × s)</sup>). Reach builds at about one household per <em>s</em> impressions, then flattens toward the ceiling.</li>
+                  <li><span className="font-semibold">Combined:</span> media types overlap at random, so total reach = universe × (1 − the product of each media type's unreached share).</li>
+                  <li><span className="font-semibold">Frequency:</span> monthly impressions from counted media types ÷ monthly reach. It is a result, never an input.</li>
+                </ol>
+              </div>
+
+              {/* FREQUENCY BAND */}
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                <h4 className="text-sm font-extrabold text-slate-900">Target monthly frequency</h4>
+                <p className="mt-1 text-xs text-slate-500">Avg Monthly Frequency is shown green inside this band and amber outside it.</p>
+                <div className="mt-3 grid grid-cols-2 gap-3 sm:max-w-sm">
+                  <label className={labelClass}>
+                    Minimum
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={Number.isFinite(draftSettings.reach.targetMonthlyFrequencyMin) ? draftSettings.reach.targetMonthlyFrequencyMin : ""}
+                      onChange={(e) => updateReachBand({ targetMonthlyFrequencyMin: numericValue(e.target.value) })}
+                      className={inputClass}
+                    />
+                  </label>
+                  <label className={labelClass}>
+                    Maximum
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={Number.isFinite(draftSettings.reach.targetMonthlyFrequencyMax) ? draftSettings.reach.targetMonthlyFrequencyMax : ""}
+                      onChange={(e) => updateReachBand({ targetMonthlyFrequencyMax: numericValue(e.target.value) })}
+                      className={inputClass}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* MEDIA TYPE ASSUMPTIONS */}
+              <div className="space-y-2">
+                <div>
+                  <h4 className="text-sm font-extrabold text-slate-900">Assumptions by media type</h4>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    <span className="font-semibold">Counts</span>: include in household reach. <span className="font-semibold">Max %</span>: share of the geo's TV households the media type can reach at all.{" "}
+                    <span className="font-semibold">s</span>: impressions per new household at low volume (higher builds reach more slowly).{" "}
+                    <span className="font-semibold">People/HH</span>: divides people-based impressions (DOOH) into households.{" "}
+                    <span className="font-semibold">Min HH</span>: below this geo size the media type is not counted (0 = no minimum).{" "}
+                    <span className="font-semibold">Audience</span>: bought against the plan's target audience; when off, the media type reaches across the whole geography.
+                  </p>
+                </div>
+                <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-xs">
+                  <table className="w-full min-w-[990px] border-collapse text-left">
+                    <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2.5">Media type</th>
+                        <th className="w-16 px-2 py-2.5 text-center">Counts</th>
+                        <th className="w-16 px-2 py-2.5 text-center" title="Bought against the plan's target audience">Audience</th>
+                        <th className="w-20 px-2 py-2.5">Max %</th>
+                        <th className="w-20 px-2 py-2.5">s</th>
+                        <th className="w-36 px-2 py-2.5">Unit</th>
+                        <th className="w-20 px-2 py-2.5">People/HH</th>
+                        <th className="w-28 px-2 py-2.5">Min HH</th>
+                        <th className="px-2 py-2.5">Rationale</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {draftSettings.reach.mediaTypes.map((row) => (
+                        <tr key={row.mediaTypeId} className={row.countsTowardReach ? undefined : "bg-slate-50/60"}>
+                          <td className="px-3 py-2 text-sm font-semibold text-slate-800">{row.label}</td>
+                          <td className="px-2 py-2 text-center">
+                            <ShowToggle
+                              checked={row.countsTowardReach}
+                              onChange={(countsTowardReach) => updateReachMediaType(row.mediaTypeId, { countsTowardReach })}
+                              label={`${row.label} in reach`}
+                            />
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            <ShowToggle
+                              checked={row.appliesAudienceTargeting}
+                              onChange={(appliesAudienceTargeting) => updateReachMediaType(row.mediaTypeId, { appliesAudienceTargeting })}
+                              label={`${row.label} audience targeting`}
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number" min="0" max="100" step="1" aria-label={`${row.label} max reachable percent`}
+                              value={Number.isFinite(row.maxReachPercent) ? row.maxReachPercent : ""}
+                              onChange={(e) => updateReachMediaType(row.mediaTypeId, { maxReachPercent: numericValue(e.target.value) })}
+                              className={`${inputClass} mt-0 px-2 py-1.5`}
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number" min="1" max="50" step="0.5" aria-label={`${row.label} duplication factor`}
+                              value={Number.isFinite(row.duplicationFactor) ? row.duplicationFactor : ""}
+                              onChange={(e) => updateReachMediaType(row.mediaTypeId, { duplicationFactor: numericValue(e.target.value) })}
+                              className={`${inputClass} mt-0 px-2 py-1.5`}
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <select
+                              aria-label={`${row.label} unit`}
+                              value={row.unit}
+                              onChange={(e) => updateReachMediaType(row.mediaTypeId, { unit: e.target.value as ReachMediaTypeSetting["unit"] })}
+                              className={`${inputClass} mt-0 min-w-[8rem] px-2 py-1.5`}
+                            >
+                              <option value="households">Households</option>
+                              <option value="people">People</option>
+                            </select>
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number" min="1" max="10" step="0.1" aria-label={`${row.label} people per household`}
+                              value={Number.isFinite(row.peoplePerHousehold) ? row.peoplePerHousehold : ""}
+                              disabled={row.unit !== "people"}
+                              onChange={(e) => updateReachMediaType(row.mediaTypeId, { peoplePerHousehold: numericValue(e.target.value) })}
+                              className={`${inputClass} mt-0 px-2 py-1.5 disabled:bg-slate-50 disabled:text-slate-400`}
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number" min="0" step="1000" aria-label={`${row.label} minimum targetable households`}
+                              value={Number.isFinite(row.minimumTargetableHouseholds) ? row.minimumTargetableHouseholds : ""}
+                              onChange={(e) => updateReachMediaType(row.mediaTypeId, { minimumTargetableHouseholds: numericValue(e.target.value) })}
+                              className={`${inputClass} mt-0 px-2 py-1.5`}
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="text" aria-label={`${row.label} rationale`}
+                              value={row.rationale}
+                              onChange={(e) => updateReachMediaType(row.mediaTypeId, { rationale: e.target.value })}
+                              className={`${inputClass} mt-0 min-w-[220px] px-2 py-1.5 text-xs`}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* AUDIENCE SHARE REFERENCE */}
+              <div className="space-y-2">
+                <div>
+                  <h4 className="text-sm font-extrabold text-slate-900">Audience share reference</h4>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    Planners pick these on a plan (overview &gt; How reach is calculated) to narrow reach to the target audience, or type their own share.
+                    Filters in the same category add up; different categories multiply. ScoutAI never sets these shares.
+                  </p>
+                </div>
+                <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-xs">
+                  <table className="w-full min-w-[720px] border-collapse text-left">
+                    <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="w-44 px-3 py-2.5">Category</th>
+                        <th className="w-52 px-2 py-2.5">Filter</th>
+                        <th className="w-24 px-2 py-2.5">% of HH</th>
+                        <th className="px-2 py-2.5">Source</th>
+                        <th className="w-12 px-2 py-2.5"><span className="sr-only">Remove</span></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {draftSettings.reach.audienceShareReference.map((filter) => (
+                        <tr key={filter.id}>
+                          <td className="px-3 py-2">
+                            <input type="text" aria-label="Audience filter category" value={filter.category}
+                              onChange={(e) => updateAudienceFilter(filter.id, { category: e.target.value })}
+                              className={`${inputClass} mt-0 px-2 py-1.5`} />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input type="text" aria-label="Audience filter label" value={filter.label}
+                              onChange={(e) => updateAudienceFilter(filter.id, { label: e.target.value })}
+                              className={`${inputClass} mt-0 px-2 py-1.5`} />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input type="number" min="0" max="100" step="0.5" aria-label={`${filter.label || "Audience filter"} share of households`}
+                              value={Number.isFinite(filter.sharePercent) ? filter.sharePercent : ""}
+                              onChange={(e) => updateAudienceFilter(filter.id, { sharePercent: numericValue(e.target.value) })}
+                              className={`${inputClass} mt-0 px-2 py-1.5`} />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input type="text" aria-label={`${filter.label || "Audience filter"} source`} value={filter.source}
+                              onChange={(e) => updateAudienceFilter(filter.id, { source: e.target.value })}
+                              className={`${inputClass} mt-0 px-2 py-1.5 text-xs`} />
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            <button type="button" onClick={() => removeAudienceFilter(filter.id)}
+                              className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                              aria-label={`Remove ${filter.label || "audience filter"}`}>
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <button type="button" onClick={addAudienceFilter}
+                    className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 shadow-xs">
+                    <Plus className="h-4 w-4" /> Add audience filter
+                  </button>
+                  <label className={`${labelClass} w-56`}>
+                    Minimum audience share (%)
+                    <input type="number" min="0.1" max="100" step="0.5"
+                      value={Number.isFinite(draftSettings.reach.minimumAudienceSharePercent) ? draftSettings.reach.minimumAudienceSharePercent : ""}
+                      onChange={(e) => updateReachBand({ minimumAudienceSharePercent: numericValue(e.target.value) })}
+                      className={inputClass} />
+                  </label>
+                </div>
+              </div>
+
+              {/* HOUSEHOLD UNIVERSE REFERENCE */}
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                <h4 className="text-sm font-extrabold text-slate-900">Household universe (reference)</h4>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  National: <span className="font-semibold text-slate-700">{NATIONAL_TV_HOUSEHOLDS.toLocaleString("en-US")}</span> TV households, the sum of the states.
+                  These figures are reference data, changed by replacing <code>assets/state-tv-hh.csv</code> or <code>assets/dma-to-state.csv</code> and regenerating, not edited here.
+                </p>
+                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <details className="rounded-lg border border-slate-200">
+                    <summary className="cursor-pointer px-3 py-2 text-xs font-bold text-slate-700">States ({STATE_HOUSEHOLDS.length}) · {STATE_HOUSEHOLDS_SOURCE_LABEL}</summary>
+                    <ul className="max-h-64 divide-y divide-slate-100 overflow-y-auto border-t border-slate-100 text-xs">
+                      {STATE_HOUSEHOLDS.map((state) => (
+                        <li key={state.code} className="flex justify-between gap-2 px-3 py-1.5">
+                          <span className="text-slate-700">{state.name}</span>
+                          <span className="font-semibold text-slate-900">{state.tvHouseholds.toLocaleString("en-US")}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                  <details className="rounded-lg border border-slate-200">
+                    <summary className="cursor-pointer px-3 py-2 text-xs font-bold text-slate-700">DMAs ({DMA_MARKETS.length}) · {DMA_SOURCE_LABEL}</summary>
+                    <ul className="max-h-64 divide-y divide-slate-100 overflow-y-auto border-t border-slate-100 text-xs">
+                      {DMA_MARKETS.map((market) => (
+                        <li key={market.code} className="flex justify-between gap-2 px-3 py-1.5">
+                          <span className="text-slate-700">{market.rank}. {market.name}</span>
+                          <span className="font-semibold text-slate-900">{market.tvHouseholds.toLocaleString("en-US")}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                </div>
+              </div>
             </section>
           )}
 

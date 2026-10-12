@@ -1,9 +1,16 @@
 import type { CanonicalMediaType } from "../types";
 import { planningKnowledgeBase } from "./knowledge/normalizeWorkbook";
 import { DIGITAL_REMEDY_PRODUCT_REGISTRY } from "./knowledge/registry";
+import {
+  buildDefaultReachSettings,
+  cloneReachSettings,
+  mergeReachSettings,
+  validateReachSettings,
+  type ReachSettings,
+} from "./reach/reachSettings";
 
 export const PLANNING_SETTINGS_STORAGE_KEY = "scoutai_planning_settings";
-export const PLANNING_SETTINGS_VERSION = 5 as const;
+export const PLANNING_SETTINGS_VERSION = 6 as const;
 export const MAX_REASONABLE_MEDIA_TYPES = 50;
 
 export type OverviewMetricId =
@@ -27,8 +34,8 @@ export const DEFAULT_OVERVIEW_METRICS: OverviewMetricSetting[] = [
   { id: "impressions", label: "Estimated Impressions", show: true },
   { id: "completedViews", label: "Completed Views", show: true },
   { id: "costPerView", label: "Cost Per View", show: false },
-  { id: "estimatedReach", label: "Estimated Reach", show: true },
-  { id: "avgFrequency", label: "Avg Frequency", show: false },
+  { id: "estimatedReach", label: "Est. Monthly Reach", show: true },
+  { id: "avgFrequency", label: "Avg Monthly Frequency", show: false },
 ];
 
 /**
@@ -43,7 +50,8 @@ export type InternalOnlySettingId =
   | "channelConfidenceBadge"
   | "channelStatusTag"
   | "planningAssumptions"
-  | "qaAudit";
+  | "qaAudit"
+  | "reachCalculationDetails";
 
 export interface InternalOnlySetting {
   id: InternalOnlySettingId;
@@ -94,6 +102,12 @@ export const DEFAULT_INTERNAL_ONLY_SETTINGS: InternalOnlySetting[] = [
     label: "Programmatic Media Buyer QA Audit",
     description: "The QA Audit & Scoring Center scorecard, media planning score, and auto-remediation details at the bottom of the plan.",
     show: false,
+  },
+  {
+    id: "reachCalculationDetails",
+    label: "Overview > Reach Calculation Details",
+    description: "The expandable breakdown under the overview metrics: household universe, per-media-type reach and the assumptions behind Est. Monthly Reach.",
+    show: true,
   },
 ];
 
@@ -200,6 +214,8 @@ export interface PlanningSettings {
   ctvTier2TargetPercent?: number;
   /** CTV Publisher target percentage for Tier 3 (FAST / Device OS, default 20). */
   ctvTier3TargetPercent?: number;
+  /** Assumptions behind Est. Monthly Reach and Avg Monthly Frequency. See src/planning/reach. */
+  reach: ReachSettings;
 }
 
 export interface SettingsValidationResult {
@@ -309,6 +325,7 @@ function buildDefaultSettings(): PlanningSettings {
     ctvTier1TargetPercent: 35,
     ctvTier2TargetPercent: 45,
     ctvTier3TargetPercent: 20,
+    reach: buildDefaultReachSettings(),
   };
 }
 
@@ -328,7 +345,7 @@ export function clonePlanningSettings(settings: PlanningSettings): PlanningSetti
   const metricsMap = new Map(rawMetrics.filter((m) => m && typeof m === "object").map((item) => [item.id, item]));
   const overviewMetrics = DEFAULT_OVERVIEW_METRICS.map((def) => {
     const existing = metricsMap.get(def.id);
-    return existing ? { ...def, ...existing } : { ...def };
+    return existing ? { ...def, ...existing, label: def.label } : { ...def };
   });
 
   return {
@@ -368,6 +385,7 @@ export function clonePlanningSettings(settings: PlanningSettings): PlanningSetti
     ctvTier3TargetPercent: typeof settings.ctvTier3TargetPercent === "number" && Number.isFinite(settings.ctvTier3TargetPercent)
       ? Math.max(0, Math.min(100, Math.round(settings.ctvTier3TargetPercent)))
       : 20,
+    reach: settings.reach ? cloneReachSettings(mergeReachSettings(settings.reach)) : buildDefaultReachSettings(),
   };
 }
 
@@ -531,6 +549,10 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
     ? Math.max(0, Math.min(100, Math.round(candidate.ctvTier3TargetPercent)))
     : 20;
 
+  const reach = mergeReachSettings(candidate.reach);
+  if (candidate.reach) validateReachSettings(reach, errors);
+  else errors.push("Reach settings are required.");
+
   if (errors.length > 0) return { valid: false, errors };
   return {
     valid: true,
@@ -548,6 +570,7 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
       ctvTier1TargetPercent,
       ctvTier2TargetPercent,
       ctvTier3TargetPercent,
+      reach,
     },
   };
 }
@@ -559,6 +582,21 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
  */
 export function migrateStoredSettings(value: unknown, defaults: PlanningSettings = DEFAULT_PLANNING_SETTINGS): unknown {
   if (!value || typeof value !== "object") return clonePlanningSettings(defaults);
+  return withVersion6Defaults(migrateToVersion5Shape(value, defaults));
+}
+
+/**
+ * Version 6 added the reach assumptions. Every older record predates them, so each one gets
+ * the defaults Media Planning signed off on; a version 6 record keeps its edits and only
+ * gains rows for media types added since.
+ */
+function withVersion6Defaults(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const stored = value as Record<string, unknown>;
+  return { ...stored, version: PLANNING_SETTINGS_VERSION, reach: mergeReachSettings(stored.reach) };
+}
+
+function migrateToVersion5Shape(value: object, defaults: PlanningSettings): unknown {
   const stored = value as Record<string, unknown> & { version?: number; budgetChannelTiers?: BudgetChannelTier[] };
   if (stored.version === 1 && Array.isArray(stored.budgetChannelTiers)) {
     return { ...clonePlanningSettings(defaults), budgetChannelTiers: stored.budgetChannelTiers.map((tier) => ({ ...tier })) };
@@ -600,7 +638,8 @@ function withMergedOverviewMetrics(stored: Record<string, unknown>): Record<stri
   const existingMap = new Map(rawList.filter((m) => m && typeof m === "object").map((m: any) => [m.id, m]));
   const merged = DEFAULT_OVERVIEW_METRICS.map((def) => {
     const existing = existingMap.get(def.id);
-    return existing ? { ...def, ...existing } : { ...def };
+    // Labels are not editable, so a renamed metric takes its new label.
+    return existing ? { ...def, ...existing, label: def.label } : { ...def };
   });
   return {
     ...stored,

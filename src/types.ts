@@ -364,6 +364,17 @@ export interface GenerationLogEntry {
   failed?: boolean;
 }
 
+/**
+ * Narrows the household universe to the campaign's target audience. Set by a planner, never
+ * by the AI: the shares come from Settings > Reach & Frequency or are typed in directly.
+ */
+export interface AudienceNarrowing {
+  /** Ids from the audience share reference in Settings. */
+  filterIds: string[];
+  /** The planner's own share of households (0.1-100). Wins over filters when set. */
+  overridePercent: number | null;
+}
+
 export interface AudienceProfile {
   intro: string;
   briefOfRecord?: BriefOfRecord;
@@ -399,6 +410,14 @@ export interface AudienceProfile {
   generationLog?: GenerationLogEntry[];
   geoInsights?: string;
   geoTargeting?: GeoTargeting;
+  /** Planner's choice of who reach is measured against within the geography. See src/planning/reach/audienceShare.ts. */
+  audienceNarrowing?: AudienceNarrowing;
+  /**
+   * Opt-in: show the "How reach is calculated" panel on the share link. Absent means hidden,
+   * since it exposes planning assumptions; this is why it is not one of the hiddenSections,
+   * which are shown until hidden.
+   */
+  shareReachDetails?: boolean;
   hiddenSections?: string[];
   /** "Built on your campaign history": learnings from the client's past campaigns, added through ScoutAI. */
   performanceLearnings?: Array<{ campaignId: string; campaignName: string; findingId: string; learning: string; action: string }>;

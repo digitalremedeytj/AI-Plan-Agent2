@@ -50,6 +50,7 @@ export interface InternalOnlyVisibility {
   channelStatusTag: boolean;
   planningAssumptions?: boolean;
   qaAudit?: boolean;
+  reachCalculationDetails?: boolean;
 }
 
 export const ALL_INTERNAL_VISIBLE: InternalOnlyVisibility = {
@@ -60,6 +61,7 @@ export const ALL_INTERNAL_VISIBLE: InternalOnlyVisibility = {
   channelStatusTag: true,
   planningAssumptions: true,
   qaAudit: true,
+  reachCalculationDetails: true,
 };
 
 interface AllocationInputValue {

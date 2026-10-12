@@ -58,7 +58,7 @@ import {
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, type Persona, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
+import { AudienceProfile, type AudienceNarrowing, type Persona, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { docxLines } from "./utils/docxText";
 import { asWebsiteUrl } from "./utils/websiteUrl";
@@ -1742,6 +1742,9 @@ export default function App() {
   const segmentsDirtyRef = React.useRef(false);
   const channelOverridesDirtyRef = React.useRef(false);
   const hiddenSectionsDirtyRef = React.useRef(false);
+  // Covers the target audience and the reach panel's share-link eye: both are reach display
+  // choices saved straight onto the plan.
+  const reachPrefsDirtyRef = React.useRef(false);
   const segmentAutoSaveQueueRef = React.useRef<Promise<void>>(Promise.resolve());
 
   const handleToggleSectionActive = (sectionKey: string, inactive: boolean) => {
@@ -1758,6 +1761,24 @@ export default function App() {
         ...prev,
         hiddenSections: Array.from(currentHidden),
       };
+    });
+  };
+
+  const handleShareReachDetailsChange = (shared: boolean) => {
+    reachPrefsDirtyRef.current = true;
+    setProfileData((prev) => {
+      if (!prev) return prev;
+      const { shareReachDetails: _previous, ...rest } = prev;
+      return shared ? { ...rest, shareReachDetails: true } : rest;
+    });
+  };
+
+  const handleAudienceNarrowingChange = (next: AudienceNarrowing | null) => {
+    reachPrefsDirtyRef.current = true;
+    setProfileData((prev) => {
+      if (!prev) return prev;
+      const { audienceNarrowing: _previous, ...rest } = prev;
+      return next ? { ...rest, audienceNarrowing: next } : rest;
     });
   };
 
@@ -1818,6 +1839,7 @@ export default function App() {
     removedSegmentsRef.current = [];
     segmentsDirtyRef.current = false;
     hiddenSectionsDirtyRef.current = false;
+    reachPrefsDirtyRef.current = false;
     if (segmentUndoTimerRef.current) clearTimeout(segmentUndoTimerRef.current);
     setSegmentUndoName(null);
     setSegmentStatus("idle");
@@ -2157,6 +2179,49 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileData?.hiddenSections, activeSavedId, isShareView]);
 
+  // Auto-save the planner's reach choices (target audience, share-link eye) onto an already-saved plan.
+  React.useEffect(() => {
+    if (!reachPrefsDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
+    const planId = activeSavedId;
+    const narrowing = profileData.audienceNarrowing;
+    const shareReachDetails = profileData.shareReachDetails === true;
+    const liveFingerprint = profileBaselineFingerprint(profileData);
+
+    const timer = setTimeout(() => {
+      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
+        const persisted = lastPersistedPlanRef.current;
+        const revision = activePlanRevisionRef.current;
+        if (!reachPrefsDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
+        // Other unsaved edits ride along with the planner's next full save instead.
+        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) return;
+
+        reachPrefsDirtyRef.current = false;
+        try {
+          const { audienceNarrowing: _previous, shareReachDetails: _shared, ...persistedProfile } = persisted.payload.profile;
+          const updated = await api.updatePlan(planId, revision, {
+            title: persisted.title,
+            advertiserName: persisted.advertiserName,
+            settingsRevision: persisted.settingsRevision,
+            payload: {
+              ...persisted.payload,
+              profile: {
+                ...persistedProfile,
+                ...(narrowing ? { audienceNarrowing: narrowing } : {}),
+                ...(shareReachDetails ? { shareReachDetails: true } : {}),
+              },
+            },
+          });
+          markPlanPersisted(updated);
+        } catch (err: any) {
+          console.error("Could not auto-save reach choices:", err);
+          reachPrefsDirtyRef.current = true;
+        }
+      });
+    }, 1200);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileData?.audienceNarrowing, profileData?.shareReachDetails, activeSavedId, isShareView]);
+
   // Auto-save the executive brief (generated, regenerated, hand-edited) onto an already-saved plan.
   React.useEffect(() => {
     if (!executiveBriefDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
@@ -2224,6 +2289,7 @@ export default function App() {
       }
       segmentsDirtyRef.current = false;
       hiddenSectionsDirtyRef.current = false;
+      reachPrefsDirtyRef.current = false;
       setSegmentAutoSaveError(null);
 
       await refreshPlans();
@@ -5863,6 +5929,11 @@ export default function App() {
                   rfpAnalysis={rfpAnalysis}
                   profileData={profileData}
                   metricSettings={planningSettings.overviewMetrics}
+                  reachSettings={planningSettings.reach}
+                  showReachDetails={Boolean(internalOnlyVisibility.reachCalculationDetails) && (!isShareView || profileData.shareReachDetails === true)}
+                  shareReachDetails={profileData.shareReachDetails === true}
+                  onShareReachDetailsChange={isShareView ? undefined : handleShareReachDetailsChange}
+                  onAudienceNarrowingChange={isShareView ? undefined : handleAudienceNarrowingChange}
                   hideHeader={isShareView}
                 />
               </ErrorBoundary>

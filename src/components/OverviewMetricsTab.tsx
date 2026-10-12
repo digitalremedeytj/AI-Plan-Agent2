@@ -12,15 +12,23 @@ import {
   Sparkles,
   ArrowUpRight,
   ArrowDownRight,
-  CheckCircle2
+  CheckCircle2,
+  ChevronDown,
+  EyeOff
 } from "lucide-react";
 import {
   ExtractedPlacement,
   ParsedPlanOption,
   RfpAnalysis,
-  AudienceProfile
+  AudienceProfile,
+  AudienceNarrowing
 } from "../types";
 import { DEFAULT_OVERVIEW_METRICS, OverviewMetricSetting } from "../planning/settings";
+import { DEFAULT_REACH_SETTINGS, UNMAPPED_MEDIA_TYPE_ID, type AudienceShareFilter, type ReachMediaTypeId, type ReachSettings } from "../planning/reach/reachSettings";
+import { MIN_OVERRIDE_PERCENT, describeAudienceShare, resolveAudienceShare } from "../planning/reach/audienceShare";
+import { estimateMonthlyReach, type ReachChannelInput, type ReachEstimate } from "../planning/reach/reachModel";
+import { resolveHouseholdUniverse } from "../planning/reach/universe";
+import { normalizeRawChannel } from "../utils/mediaTaxonomy";
 
 interface OverviewMetricsTabProps {
   extractedPlacements: ExtractedPlacement[];
@@ -28,7 +36,44 @@ interface OverviewMetricsTabProps {
   rfpAnalysis: RfpAnalysis | null;
   profileData: AudienceProfile | null;
   metricSettings?: OverviewMetricSetting[];
+  /** Assumptions behind Est. Monthly Reach, from the settings revision the plan was built with. */
+  reachSettings?: ReachSettings;
+  /** Internal-only breakdown of how reach was calculated. */
+  showReachDetails?: boolean;
+  /** Present when the planner may change the target audience; omitted in read-only views. */
+  onAudienceNarrowingChange?: (next: AudienceNarrowing | null) => void;
+  /** Whether the reach panel appears on the share link. Off unless a planner turns it on. */
+  shareReachDetails?: boolean;
+  /** Present for planners only: the panel's share-link eye. */
+  onShareReachDetailsChange?: (shared: boolean) => void;
   hideHeader?: boolean;
+}
+
+/** A taxonomy guess at confidence 0.5 is its catch-all fallback, so it is really unmapped. */
+const FALLBACK_TAXONOMY_CONFIDENCE = 0.5;
+
+function placementMediaTypeId(placement: ExtractedPlacement): ReachMediaTypeId {
+  const raw = placement.mediaType || placement.productType || placement.placementName || "";
+  if (!raw.trim()) return UNMAPPED_MEDIA_TYPE_ID;
+  const mapping = normalizeRawChannel(raw);
+  return mapping.confidence <= FALLBACK_TAXONOMY_CONFIDENCE ? UNMAPPED_MEDIA_TYPE_ID : mapping.canonicalId;
+}
+
+/**
+ * Spreads a total across media types in proportion to their weights. The impressions card
+ * and the reach model must agree on the total, so the mix only decides the split.
+ */
+function scaleMix(mix: ReachChannelInput[], total: number): ReachChannelInput[] {
+  const weight = mix.reduce((sum, entry) => sum + entry.impressions, 0);
+  if (total <= 0) return [];
+  if (weight <= 0) return [{ mediaTypeId: UNMAPPED_MEDIA_TYPE_ID, impressions: total }];
+  return mix.map((entry) => ({ mediaTypeId: entry.mediaTypeId, impressions: (entry.impressions / weight) * total }));
+}
+
+function daysBetween(start?: string, end?: string): number | null {
+  if (!start || !end) return null;
+  const days = Math.round((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1;
+  return Number.isFinite(days) && days >= 1 ? days : null;
 }
 
 const ALLOCATION_COLORS = ["#4f46e5", "#0f9f94", "#84a720", "#036987", "#db2777", "#d97706", "#7c3aed", "#0284c7", "#e11d48", "#64748b"];
@@ -39,8 +84,14 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
   rfpAnalysis,
   profileData,
   metricSettings = DEFAULT_OVERVIEW_METRICS,
+  reachSettings = DEFAULT_REACH_SETTINGS,
+  showReachDetails = false,
+  onAudienceNarrowingChange,
+  shareReachDetails = false,
+  onShareReachDetailsChange,
   hideHeader = false,
 }) => {
+  const [reachDetailsOpen, setReachDetailsOpen] = React.useState(false);
   // Determine active placements (selected plan options if any, else extracted placements)
   const safePlanOptions = Array.isArray(planOptions) ? planOptions : [];
   const safeExtractedPlacements = Array.isArray(extractedPlacements) ? extractedPlacements : [];
@@ -118,12 +169,10 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
     plannedImpressions = (plannedBudget / plannedEcpm) * 1000;
   }
 
-  // 3. Planned Video & Reach Metrics
+  // 3. Planned Video Metrics
   const plannedVcr = 0.92; // Baseline raw plan completion rate
   const plannedCompletedViews = Math.round(plannedImpressions * plannedVcr);
   const plannedCpv = plannedCompletedViews > 0 ? plannedBudget / plannedCompletedViews : 0;
-  const plannedFreq = 6.00; // Unoptimized frequency baseline
-  const plannedReachHH = Math.round(plannedImpressions / plannedFreq);
 
   // Determine whether this plan is comparing against an uploaded client file or presenting ScoutAI campaign estimates
   const hasUploadedContent = selectedOptions.length > 0 || safeExtractedPlacements.length > 0 || Boolean(rfpAnalysis);
@@ -137,13 +186,50 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
   const aiVcr = 0.98; // Non-skippable premium CTV targeting
   const aiCompletedViews = Math.round(aiImpressions * aiVcr);
   const aiCpv = aiCompletedViews > 0 ? aiBudget / aiCompletedViews : 0;
-  const aiFreq = 5.45; // AI Scout frequency capping cap in mid 5s
-  const aiReachHH = Math.round(aiImpressions / aiFreq);
+
+  // --- REACH & FREQUENCY (monthly; see src/planning/reach) ---
+  // Both sides run through the same model, so any difference comes from impressions and
+  // media mix, never from a constant.
+  const universe = resolveHouseholdUniverse(profileData?.geoTargeting);
+  const flightDays = profileData?.channelStrategy?.mediaPlan?.flightDays
+    ?? selectedOptions.map((option) => daysBetween(option.flightDates?.start, option.flightDates?.end)).find((days) => days !== null)
+    ?? null;
+  const fallbackCpm = blendedChannelCpm > 0 ? blendedChannelCpm : plannedEcpm;
+
+  // Each media type weighted by what its own CPM buys, not the blended rate.
+  const scoutMix: ReachChannelInput[] = recommendedChannels
+    .filter((channel) => (channel.allocationDollars || 0) > 0)
+    .map((channel) => {
+      const low = channel.typicalCpmLow || 0;
+      const high = channel.typicalCpmHigh || 0;
+      const cpm = low && high ? (low + high) / 2 : (low || high || fallbackCpm);
+      const mediaTypeId: ReachMediaTypeId = channel.canonicalId || placementMediaTypeId({ mediaType: channel.channelName } as ExtractedPlacement);
+      return { mediaTypeId, impressions: cpm > 0 ? (channel.allocationDollars / cpm) * 1000 : 0 };
+    });
+  const uploadedMix: ReachChannelInput[] = activePlacements.map((placement) => {
+    const budget = placement.budget || 0;
+    const impressions = placement.impressions && placement.impressions > 0
+      ? placement.impressions
+      : (plannedEcpm > 0 ? (budget / plannedEcpm) * 1000 : 0);
+    return { mediaTypeId: placementMediaTypeId(placement), impressions };
+  });
+
+  const audience = resolveAudienceShare(profileData?.audienceNarrowing, reachSettings);
+  const reachFor = (mix: ReachChannelInput[], impressions: number): ReachEstimate =>
+    estimateMonthlyReach({ channels: scaleMix(mix, impressions), universe, flightDays, settings: reachSettings, audience });
+  const plannedReach = reachFor(uploadedMix, plannedImpressions);
+  const aiReach = reachFor(scoutMix.length > 0 ? scoutMix : uploadedMix, aiImpressions);
+  const plannedReachHH = Math.round(plannedReach.monthlyReach);
+  const aiReachHH = Math.round(aiReach.monthlyReach);
+  const plannedFreq = plannedReach.monthlyFrequency;
+  const aiFreq = aiReach.monthlyFrequency;
 
   // Formatting helpers
   const formatCurrency = (val: number) => "$" + Math.round(val).toLocaleString("en-US");
   const formatDecimals = (val: number, decimals = 2) => "$" + val.toFixed(decimals);
   const formatNumber = (val: number) => Math.round(val).toLocaleString("en-US");
+
+  const formatPercent = (val: number) => (val > 0 && val < 1 ? "<1%" : `${Math.round(val)}%`);
 
   const formatReach = (val: number) => {
     if (val >= 1000000) {
@@ -233,7 +319,7 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
     },
     {
       id: "estimatedReach",
-      label: "Estimated Reach",
+      label: "Est. Monthly Reach",
       icon: Users,
       iconBg: "bg-rose-50 text-rose-500",
       plannedVal: plannedReachHH,
@@ -244,14 +330,15 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
     },
     {
       id: "avgFrequency",
-      label: "Avg Frequency",
+      label: "Avg Monthly Frequency",
       icon: Target,
       iconBg: "bg-slate-100 text-slate-600",
       plannedVal: plannedFreq,
       aiVal: aiFreq,
-      plannedFormatted: `${plannedFreq.toFixed(2)}x`,
-      aiFormatted: `${aiFreq.toFixed(2)}x`,
-      delta: getDeltaMeta(plannedFreq, aiFreq, true)
+      plannedFormatted: plannedFreq > 0 ? `${plannedFreq.toFixed(1)}x` : null,
+      aiFormatted: aiFreq > 0 ? `${aiFreq.toFixed(1)}x` : null,
+      // Lower is not automatically better: the badge reads against the planner's target band.
+      delta: getDeltaMeta(plannedFreq, aiFreq, false)
     }
   ];
 
@@ -343,7 +430,13 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
               let badgeClass = "bg-slate-100 text-slate-600 border-slate-200/60";
               let ArrowIcon = null;
 
-              if (!isNeutral) {
+              if (metric.id === "avgFrequency") {
+                // Frequency is judged against the planner's band, not by direction.
+                badgeClass = aiReach.frequencyBand.withinBand
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200/60 font-bold"
+                  : "bg-amber-50 text-amber-700 border-amber-200/60 font-bold";
+                ArrowIcon = isNeutral ? null : metric.delta.rawDiff > 0 ? ArrowUpRight : ArrowDownRight;
+              } else if (!isNeutral) {
                 if (isPositive) {
                   badgeClass = "bg-emerald-50 text-emerald-700 border-emerald-200/60 font-bold";
                   ArrowIcon = metric.delta.rawDiff > 0 ? ArrowUpRight : ArrowDownRight;
@@ -379,6 +472,19 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
                       </span>
                     </div>
 
+                    {metric.id === "estimatedReach" && (
+                      <div className="mt-0.5 truncate text-[10.5px] leading-tight text-slate-500" title={`${formatNumber(universe.households)} TV households · ${universe.sourceLabel}`}>
+                        {audience.method !== "none" && aiReach.reachPercentOfTarget <= 100
+                          ? `${formatPercent(aiReach.reachPercentOfTarget)} of ${compact(aiReach.targetHouseholds)} target HH in ${universe.label}`
+                          : `${formatPercent(aiReach.reachPercentOfUniverse)} of ${universe.label} TV HH`}
+                      </div>
+                    )}
+                    {metric.id === "avgFrequency" && !hasUploadedContent && (
+                      <div className="mt-0.5 text-[10.5px] leading-tight text-slate-500">
+                        Target {formatBand(aiReach)} / month{aiReach.frequencyBand.withinBand ? "" : " · outside target"}
+                      </div>
+                    )}
+
                     {hasUploadedContent && (
                       <div className="flex items-center justify-between gap-1.5 mt-0.5 text-[11px] leading-none">
                         <span className="text-slate-400 font-medium truncate">
@@ -400,6 +506,20 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
               );
             })}
           </div>
+
+          {showReachDetails && availableMetrics.some((metric) => metric.id === "estimatedReach") && (
+            <ReachDetails
+              estimate={aiReach}
+              open={reachDetailsOpen}
+              onToggle={() => setReachDetailsOpen((open) => !open)}
+              comparedWithPlan={hasUploadedContent}
+              reference={reachSettings.audienceShareReference}
+              narrowing={profileData?.audienceNarrowing ?? null}
+              onNarrowingChange={onAudienceNarrowingChange}
+              sharedInLink={shareReachDetails}
+              onSharedInLinkChange={onShareReachDetailsChange}
+            />
+          )}
         </>
       )}
 
@@ -453,6 +573,254 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
           </div>
         </section>
       )}
+    </div>
+  );
+};
+
+function formatBand(estimate: ReachEstimate): string {
+  const { min, max } = estimate.frequencyBand;
+  return `${min}–${max}x`;
+}
+
+const compact = (val: number) =>
+  val >= 1_000_000 ? `${(val / 1_000_000).toFixed(1)}M` : val >= 1_000 ? `${(val / 1_000).toFixed(0)}K` : Math.round(val).toLocaleString("en-US");
+
+/**
+ * The working behind Est. Monthly Reach, for planners: what the plan is measured against and
+ * what each media type contributed. Internal-only, since it exposes planning assumptions.
+ */
+const ReachDetails: React.FC<{
+  estimate: ReachEstimate;
+  open: boolean;
+  onToggle: () => void;
+  comparedWithPlan: boolean;
+  reference: AudienceShareFilter[];
+  narrowing: AudienceNarrowing | null;
+  onNarrowingChange?: (next: AudienceNarrowing | null) => void;
+  sharedInLink: boolean;
+  /** Absent on the share link itself, where there is nothing to toggle. */
+  onSharedInLinkChange?: (shared: boolean) => void;
+}> = ({
+  estimate,
+  open,
+  onToggle,
+  comparedWithPlan,
+  reference,
+  narrowing,
+  onNarrowingChange,
+  sharedInLink,
+  onSharedInLinkChange,
+}) => {
+  const { universe } = estimate;
+  const isPlannerView = Boolean(onSharedInLinkChange);
+  const hiddenFromLink = isPlannerView && !sharedInLink;
+  const audience = estimate.audience;
+  const included = estimate.channels.filter((channel) => channel.included);
+  const excluded = estimate.channels.filter((channel) => !channel.included);
+  return (
+    <section
+      className={`group rounded-xl border text-[11px] ${hiddenFromLink ? "border-dashed border-slate-300 bg-slate-50/70" : "border-slate-200 bg-white"}`}
+      aria-label="How reach is calculated"
+    >
+      <div className="flex items-center gap-1 pr-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-2 text-left font-bold text-slate-700 hover:bg-slate-50 rounded-xl"
+        >
+          <span className="flex items-center gap-1.5">
+            <Info className="h-3.5 w-3.5 text-indigo-600" /> How reach is calculated
+          </span>
+          <ChevronDown className={`h-3.5 w-3.5 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
+        </button>
+        {onSharedInLinkChange && (
+          <button
+            type="button"
+            onClick={() => onSharedInLinkChange(!sharedInLink)}
+            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-all ${
+              sharedInLink
+                ? "text-slate-400 opacity-0 hover:bg-slate-200/60 hover:text-slate-700 group-hover:opacity-100 focus:opacity-100"
+                : "bg-amber-100/80 text-amber-700 hover:bg-amber-200"
+            }`}
+            title={sharedInLink ? "Shown on the share link - click to hide" : "Hidden from the share link (default) - click to show"}
+            aria-label={sharedInLink ? "Hide from share view" : "Show in share view"}
+            aria-pressed={!sharedInLink}
+          >
+            {sharedInLink ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="space-y-2.5 border-t border-slate-100 px-3 py-2.5 text-slate-600">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            <dt className="font-semibold text-slate-500">Universe</dt>
+            <dd className="text-right font-semibold text-slate-800">{universe.label} · {Math.round(universe.households).toLocaleString("en-US")} TV HH</dd>
+            <dt className="font-semibold text-slate-500">Audience</dt>
+            <dd className="text-right text-slate-800">
+              {audience && audience.method !== "none"
+                ? `${describeAudienceShare(audience)} · ${audience.sharePercent.toFixed(1)}% = ${compact(estimate.targetHouseholds)} HH`
+                : "Whole geography (not narrowed)"}
+            </dd>
+            <dt className="font-semibold text-slate-500">Flight</dt>
+            <dd className="text-right text-slate-800">{estimate.flightDays === null
+                ? "Unknown, treated as 1 month"
+                : estimate.flightDays <= 30
+                  ? `${estimate.flightDays} days (one month)`
+                  : `${estimate.flightDays} days, shown per month`}</dd>
+            <dt className="font-semibold text-slate-500">Monthly</dt>
+            <dd className="text-right text-slate-800">
+              {compact(estimate.monthlyImpressions)} imps → {compact(estimate.monthlyReach)} HH at {estimate.monthlyFrequency.toFixed(1)}x
+            </dd>
+          </dl>
+
+          {included.length > 0 && (
+            <table className="w-full border-collapse">
+              <thead className="text-[9.5px] uppercase tracking-wide text-slate-400">
+                <tr>
+                  <th className="py-1 text-left font-bold">Media type</th>
+                  <th className="py-1 text-right font-bold">Imps/mo</th>
+                  <th className="py-1 text-right font-bold" title="Max reachable % of HH · duplication factor">Max · s</th>
+                  <th className="py-1 text-right font-bold">Reach</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {included.map((channel) => (
+                  <tr key={channel.mediaTypeId}>
+                    <td className="py-1 pr-2 font-semibold text-slate-700">
+                      {channel.label}
+                      {audience && audience.method !== "none" && !channel.audienceTargeted && (
+                        <span className="ml-1 font-normal text-slate-400" title="Cannot target an audience; measured against the whole geography">(whole geo)</span>
+                      )}
+                    </td>
+                    <td className="py-1 text-right">{compact(channel.monthlyImpressions)}</td>
+                    <td className="py-1 text-right">{channel.maxReachPercent}% · {channel.duplicationFactor}</td>
+                    <td className="py-1 text-right font-semibold text-slate-800">{compact(channel.monthlyReach)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {excluded.length > 0 && (
+            <ul className="space-y-0.5 text-slate-500">
+              {excluded.map((channel) => (
+                <li key={channel.mediaTypeId}>
+                  <span className="font-semibold text-slate-600">{channel.label}</span> not counted: {channel.excludedReason}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {onNarrowingChange && (
+            <AudienceEditor reference={reference} narrowing={narrowing} onChange={onNarrowingChange} />
+          )}
+
+          <p className="leading-snug text-slate-500">
+            Each media type's reach flattens toward its ceiling (universe × max %); media types are combined assuming random
+            overlap. Frequency = impressions ÷ reach. Target band {formatBand(estimate)} / month.
+            {isPlannerView ? " Assumptions are in Settings > Reach & Frequency." : ""}
+            {comparedWithPlan ? " The planned figures use the same method on the uploaded plan's mix." : ""}
+          </p>
+          {estimate.assumptions.map((assumption) => (
+            <p key={assumption} className="text-amber-700">{assumption}</p>
+          ))}
+          <p className="text-[10px] text-slate-400">Households: {universe.sourceLabel}</p>
+        </div>
+      )}
+    </section>
+  );
+};
+
+/**
+ * Lets a planner say who reach is measured against. Shares come from the reference table in
+ * Settings or the planner's own figure, never from the AI.
+ */
+const AudienceEditor: React.FC<{
+  reference: AudienceShareFilter[];
+  narrowing: AudienceNarrowing | null;
+  onChange: (next: AudienceNarrowing | null) => void;
+}> = ({ reference, narrowing, onChange }) => {
+  const selected = new Set(narrowing?.filterIds ?? []);
+  const override = narrowing?.overridePercent ?? null;
+  const [overrideText, setOverrideText] = React.useState(override === null ? "" : String(override));
+  React.useEffect(() => setOverrideText(override === null ? "" : String(override)), [override]);
+
+  const categories = Array.from(new Set(reference.map((filter) => filter.category)));
+  const emit = (filterIds: string[], overridePercent: number | null) =>
+    onChange(filterIds.length === 0 && overridePercent === null ? null : { filterIds, overridePercent });
+
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    emit(Array.from(next), override);
+  };
+
+  const commitOverride = () => {
+    const value = Number(overrideText);
+    const next = overrideText.trim() === "" || !Number.isFinite(value) ? null : Math.min(100, Math.max(MIN_OVERRIDE_PERCENT, value));
+    setOverrideText(next === null ? "" : String(next));
+    if (next !== override) emit(Array.from(selected), next);
+  };
+
+  return (
+    <div className="space-y-2 rounded-lg border border-indigo-100 bg-indigo-50/40 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-bold text-slate-700">Target audience</span>
+        {(selected.size > 0 || override !== null) && (
+          <button type="button" onClick={() => onChange(null)} className="text-[10.5px] font-semibold text-indigo-600 hover:underline">
+            Clear
+          </button>
+        )}
+      </div>
+      <label className="flex items-center justify-between gap-2 text-slate-600">
+        <span>Share of HH (overrides filters)</span>
+        <span className="flex items-center gap-1">
+          <input
+            type="number"
+            min={MIN_OVERRIDE_PERCENT}
+            max={100}
+            step="0.5"
+            value={overrideText}
+            placeholder="—"
+            onChange={(e) => setOverrideText(e.target.value)}
+            onBlur={commitOverride}
+            onKeyDown={(e) => { if (e.key === "Enter") commitOverride(); }}
+            aria-label="Target audience share of households, percent"
+            className="w-16 rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-right text-[11px] focus:border-indigo-500 focus:outline-none"
+          />
+          %
+        </span>
+      </label>
+      {categories.map((category) => (
+        <fieldset key={category} className={override !== null ? "opacity-50" : undefined}>
+          <legend className="mb-0.5 text-[9.5px] font-bold uppercase tracking-wide text-slate-400">{category}</legend>
+          <div className="flex flex-wrap gap-1">
+            {reference.filter((filter) => filter.category === category).map((filter) => {
+              const on = selected.has(filter.id);
+              return (
+                <button
+                  key={filter.id}
+                  type="button"
+                  aria-pressed={on}
+                  aria-label={`${filter.category}: ${filter.label} (${filter.sharePercent}% of households)`}
+                  onClick={() => toggle(filter.id)}
+                  title={`${filter.sharePercent}% of households · ${filter.source}`}
+                  className={`rounded-full border px-2 py-0.5 text-[10.5px] font-semibold transition-colors ${
+                    on ? "border-indigo-300 bg-indigo-600 text-white" : "border-slate-200 bg-white text-slate-600 hover:border-indigo-200"
+                  }`}
+                >
+                  {filter.label}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
+      ))}
+      <p className="text-[10px] leading-snug text-slate-400">
+        Same category adds up; categories multiply. Shares are from Settings &gt; Reach &amp; Frequency.
+      </p>
     </div>
   );
 };

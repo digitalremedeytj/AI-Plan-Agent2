@@ -1,0 +1,365 @@
+{
+  "sourceLabel": "State TV household estimates, supplied by Media Planning",
+  "sourceFile": "assets/state-tv-hh.csv",
+  "stateCount": 51,
+  "totalTvHouseholds": 122589000,
+  "states": [
+    {
+      "code": "CA",
+      "name": "California",
+      "rank": 1,
+      "tvHouseholds": 12610000,
+      "usSharePct": 10.09
+    },
+    {
+      "code": "TX",
+      "name": "Texas",
+      "rank": 2,
+      "tvHouseholds": 8730000,
+      "usSharePct": 6.98
+    },
+    {
+      "code": "NY",
+      "name": "New York",
+      "rank": 3,
+      "tvHouseholds": 7857000,
+      "usSharePct": 6.29
+    },
+    {
+      "code": "FL",
+      "name": "Florida",
+      "rank": 4,
+      "tvHouseholds": 7227000,
+      "usSharePct": 5.78
+    },
+    {
+      "code": "IL",
+      "name": "Illinois",
+      "rank": 5,
+      "tvHouseholds": 5190000,
+      "usSharePct": 4.15
+    },
+    {
+      "code": "PA",
+      "name": "Pennsylvania",
+      "rank": 6,
+      "tvHouseholds": 4947000,
+      "usSharePct": 3.96
+    },
+    {
+      "code": "OH",
+      "name": "Ohio",
+      "rank": 7,
+      "tvHouseholds": 4365000,
+      "usSharePct": 3.49
+    },
+    {
+      "code": "MI",
+      "name": "Michigan",
+      "rank": 8,
+      "tvHouseholds": 4074000,
+      "usSharePct": 3.26
+    },
+    {
+      "code": "NC",
+      "name": "North Carolina",
+      "rank": 9,
+      "tvHouseholds": 3250000,
+      "usSharePct": 2.6
+    },
+    {
+      "code": "GA",
+      "name": "Georgia",
+      "rank": 10,
+      "tvHouseholds": 3123000,
+      "usSharePct": 2.5
+    },
+    {
+      "code": "NJ",
+      "name": "New Jersey",
+      "rank": 11,
+      "tvHouseholds": 3007000,
+      "usSharePct": 2.41
+    },
+    {
+      "code": "AZ",
+      "name": "Arizona",
+      "rank": 12,
+      "tvHouseholds": 2832000,
+      "usSharePct": 2.27
+    },
+    {
+      "code": "DC",
+      "name": "District of Columbia",
+      "rank": 13,
+      "tvHouseholds": 2672000,
+      "usSharePct": 2.09
+    },
+    {
+      "code": "CO",
+      "name": "Colorado",
+      "rank": 14,
+      "tvHouseholds": 2667000,
+      "usSharePct": 2.13
+    },
+    {
+      "code": "TN",
+      "name": "Tennessee",
+      "rank": 15,
+      "tvHouseholds": 2667000,
+      "usSharePct": 2.13
+    },
+    {
+      "code": "VA",
+      "name": "Virginia",
+      "rank": 16,
+      "tvHouseholds": 2667000,
+      "usSharePct": 2.13
+    },
+    {
+      "code": "WA",
+      "name": "Washington",
+      "rank": 17,
+      "tvHouseholds": 2619000,
+      "usSharePct": 2.1
+    },
+    {
+      "code": "MO",
+      "name": "Missouri",
+      "rank": 18,
+      "tvHouseholds": 2396000,
+      "usSharePct": 1.92
+    },
+    {
+      "code": "WI",
+      "name": "Wisconsin",
+      "rank": 19,
+      "tvHouseholds": 2345000,
+      "usSharePct": 1.88
+    },
+    {
+      "code": "IN",
+      "name": "Indiana",
+      "rank": 20,
+      "tvHouseholds": 2280000,
+      "usSharePct": 1.82
+    },
+    {
+      "code": "MN",
+      "name": "Minnesota",
+      "rank": 21,
+      "tvHouseholds": 2280000,
+      "usSharePct": 1.82
+    },
+    {
+      "code": "MD",
+      "name": "Maryland",
+      "rank": 22,
+      "tvHouseholds": 2243000,
+      "usSharePct": 1.79
+    },
+    {
+      "code": "MA",
+      "name": "Massachusetts",
+      "rank": 23,
+      "tvHouseholds": 2231000,
+      "usSharePct": 1.78
+    },
+    {
+      "code": "KY",
+      "name": "Kentucky",
+      "rank": 24,
+      "tvHouseholds": 1795000,
+      "usSharePct": 1.44
+    },
+    {
+      "code": "OR",
+      "name": "Oregon",
+      "rank": 25,
+      "tvHouseholds": 1785000,
+      "usSharePct": 1.43
+    },
+    {
+      "code": "OK",
+      "name": "Oklahoma",
+      "rank": 26,
+      "tvHouseholds": 1680000,
+      "usSharePct": 1.34
+    },
+    {
+      "code": "SC",
+      "name": "South Carolina",
+      "rank": 27,
+      "tvHouseholds": 1680000,
+      "usSharePct": 1.34
+    },
+    {
+      "code": "CT",
+      "name": "Connecticut",
+      "rank": 28,
+      "tvHouseholds": 1669000,
+      "usSharePct": 1.34
+    },
+    {
+      "code": "AL",
+      "name": "Alabama",
+      "rank": 29,
+      "tvHouseholds": 1615000,
+      "usSharePct": 1.29
+    },
+    {
+      "code": "LA",
+      "name": "Louisiana",
+      "rank": 30,
+      "tvHouseholds": 1552000,
+      "usSharePct": 1.24
+    },
+    {
+      "code": "IA",
+      "name": "Iowa",
+      "rank": 31,
+      "tvHouseholds": 1407000,
+      "usSharePct": 1.13
+    },
+    {
+      "code": "KS",
+      "name": "Kansas",
+      "rank": 32,
+      "tvHouseholds": 1379000,
+      "usSharePct": 1.1
+    },
+    {
+      "code": "AR",
+      "name": "Arkansas",
+      "rank": 33,
+      "tvHouseholds": 1339000,
+      "usSharePct": 1.07
+    },
+    {
+      "code": "NV",
+      "name": "Nevada",
+      "rank": 34,
+      "tvHouseholds": 1339000,
+      "usSharePct": 1.07
+    },
+    {
+      "code": "UT",
+      "name": "Utah",
+      "rank": 35,
+      "tvHouseholds": 1213000,
+      "usSharePct": 0.97
+    },
+    {
+      "code": "MS",
+      "name": "Mississippi",
+      "rank": 36,
+      "tvHouseholds": 1096000,
+      "usSharePct": 0.88
+    },
+    {
+      "code": "ID",
+      "name": "Idaho",
+      "rank": 37,
+      "tvHouseholds": 1057000,
+      "usSharePct": 0.85
+    },
+    {
+      "code": "NM",
+      "name": "New Mexico",
+      "rank": 38,
+      "tvHouseholds": 970000,
+      "usSharePct": 0.78
+    },
+    {
+      "code": "NE",
+      "name": "Nebraska",
+      "rank": 39,
+      "tvHouseholds": 912000,
+      "usSharePct": 0.73
+    },
+    {
+      "code": "WV",
+      "name": "West Virginia",
+      "rank": 40,
+      "tvHouseholds": 873000,
+      "usSharePct": 0.7
+    },
+    {
+      "code": "HI",
+      "name": "Hawaii",
+      "rank": 41,
+      "tvHouseholds": 709000,
+      "usSharePct": 0.57
+    },
+    {
+      "code": "NH",
+      "name": "New Hampshire",
+      "rank": 42,
+      "tvHouseholds": 679000,
+      "usSharePct": 0.54
+    },
+    {
+      "code": "ME",
+      "name": "Maine",
+      "rank": 43,
+      "tvHouseholds": 582000,
+      "usSharePct": 0.47
+    },
+    {
+      "code": "DE",
+      "name": "Delaware",
+      "rank": 44,
+      "tvHouseholds": 505000,
+      "usSharePct": 0.4
+    },
+    {
+      "code": "RI",
+      "name": "Rhode Island",
+      "rank": 45,
+      "tvHouseholds": 466000,
+      "usSharePct": 0.37
+    },
+    {
+      "code": "MT",
+      "name": "Montana",
+      "rank": 46,
+      "tvHouseholds": 437000,
+      "usSharePct": 0.35
+    },
+    {
+      "code": "SD",
+      "name": "South Dakota",
+      "rank": 47,
+      "tvHouseholds": 388000,
+      "usSharePct": 0.31
+    },
+    {
+      "code": "ND",
+      "name": "North Dakota",
+      "rank": 48,
+      "tvHouseholds": 349000,
+      "usSharePct": 0.28
+    },
+    {
+      "code": "AK",
+      "name": "Alaska",
+      "rank": 49,
+      "tvHouseholds": 320000,
+      "usSharePct": 0.26
+    },
+    {
+      "code": "VT",
+      "name": "Vermont",
+      "rank": 50,
+      "tvHouseholds": 320000,
+      "usSharePct": 0.26
+    },
+    {
+      "code": "WY",
+      "name": "Wyoming",
+      "rank": 51,
+      "tvHouseholds": 194000,
+      "usSharePct": 0.16
+    }
+  ]
+}

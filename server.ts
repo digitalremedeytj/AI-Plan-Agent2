@@ -14,7 +14,7 @@ import { validateProductRegistry } from "./src/planning/knowledge/registry";
 import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
-import { DEFAULT_PLANNING_SETTINGS, validatePlanningSettings } from "./src/planning/settings";
+import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter } from "./src/storage";
 import {
   actorName,
@@ -873,7 +873,9 @@ async function buildChannelStrategy(
   },
 ) {
   const totalRfpBudget = selectedPlanOptions.reduce((acc, opt) => acc + (opt.budget || 0), 0);
-  const validatedSettings = validatePlanningSettings(options?.planningSettings);
+  // Migrate first: a client still holding an older settings version would otherwise fail
+  // validation and silently plan against defaults instead of the team's settings.
+  const validatedSettings = validatePlanningSettings(migrateStoredSettings(options?.planningSettings));
   const planningSettings = validatedSettings.valid && validatedSettings.settings
     ? validatedSettings.settings
     : DEFAULT_PLANNING_SETTINGS;

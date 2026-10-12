@@ -37,10 +37,10 @@ test("with a plan uploaded, overview applies requested metric defaults and rende
   assert.match(markup, /Planned Budget/);
   assert.match(markup, /Estimated Impressions/);
   assert.match(markup, /Completed Views/);
-  assert.match(markup, /Estimated Reach/);
+  assert.match(markup, /Est\. Monthly Reach/);
   assert.doesNotMatch(markup, /Estimated ECPM/);
   assert.doesNotMatch(markup, /Cost Per View/);
-  assert.doesNotMatch(markup, /Avg Frequency/);
+  assert.doesNotMatch(markup, /Avg Monthly Frequency/);
   assert.match(markup, /Media Type Allocation/);
   assert.match(markup, /CTV \/ OTT/);
   assert.match(markup, /60\.0%/);
@@ -65,10 +65,10 @@ test("with nothing uploaded, overview respects metric visibility settings and di
   assert.match(markup, /\$100,000/);
   assert.match(markup, /Estimated Impressions/);
   assert.match(markup, /Completed Views/);
-  assert.match(markup, /Estimated Reach/);
+  assert.match(markup, /Est\. Monthly Reach/);
   assert.doesNotMatch(markup, /Estimated ECPM/);
   assert.doesNotMatch(markup, /Cost Per View/);
-  assert.doesNotMatch(markup, /Avg Frequency/);
+  assert.doesNotMatch(markup, /Avg Monthly Frequency/);
   assert.match(markup, /Media Type Allocation/);
 });
 
@@ -87,7 +87,7 @@ test("with nothing uploaded and only budget enabled in settings, overview displa
   assert.match(markup, /\$100,000/);
   assert.doesNotMatch(markup, /Estimated Impressions/);
   assert.doesNotMatch(markup, /Completed Views/);
-  assert.doesNotMatch(markup, /Estimated Reach/);
+  assert.doesNotMatch(markup, /Est\. Monthly Reach/);
   assert.match(markup, /Media Type Allocation/);
 });
 
@@ -120,4 +120,59 @@ test("hideHeader prop suppresses the internal Campaign Overview header badge", (
   );
   assert.doesNotMatch(markup, /Campaign Overview/);
   assert.match(markup, /Working Media Budget/);
+});
+
+const dcOnlyAnnualPlan = {
+  geoTargeting: { scope: "dma", entries: [{ id: "511", name: "Washington, DC" }], unresolved: [], inputMethod: "select" },
+  channelStrategy: {
+    totalRfpBudget: 1_500_000,
+    mediaPlan: {
+      flightDays: 365,
+      channels: [
+        { channelId: "ctv", canonicalId: "ctv", channelName: "CTV / OTT", allocationPercent: 100, allocationDollars: 1_500_000, typicalCpmLow: 14, typicalCpmHigh: 18 },
+      ],
+    },
+  },
+} as unknown as AudienceProfile;
+
+test("a single-DMA annual plan reports monthly reach within that DMA's households", () => {
+  const markup = renderToStaticMarkup(
+    <OverviewMetricsTab extractedPlacements={[]} planOptions={[]} rfpAnalysis={null} profileData={dcOnlyAnnualPlan} metricSettings={DEFAULT_OVERVIEW_METRICS} />,
+  );
+  // The DMA holds 2.48M TV households; the old impressions / 5.45 showed 17.3M.
+  const reach = markup.match(/Est\. Monthly Reach<\/span><span[^>]*>([\d.]+)([MK]) HH/);
+  assert.ok(reach, "reach card rendered");
+  const households = Number(reach[1]) * (reach[2] === "M" ? 1e6 : 1e3);
+  assert.ok(households < 2_476_680, `reach ${households} exceeds the DMA`);
+  assert.match(markup, /% of Washington, Dc \(Hagrstwn\) DMA TV HH/);
+});
+
+test("the reach breakdown appears only when its internal-only setting allows it", () => {
+  const render = (showReachDetails: boolean) => renderToStaticMarkup(
+    <OverviewMetricsTab extractedPlacements={[]} planOptions={[]} rfpAnalysis={null} profileData={dcOnlyAnnualPlan} metricSettings={DEFAULT_OVERVIEW_METRICS} showReachDetails={showReachDetails} />,
+  );
+  assert.match(render(true), /How reach is calculated/);
+  assert.doesNotMatch(render(false), /How reach is calculated/);
+});
+
+test("a narrowed audience is reported against target households, not the whole DMA", () => {
+  const narrowed = { ...dcOnlyAnnualPlan, audienceNarrowing: { filterIds: [], overridePercent: 25 } } as AudienceProfile;
+  const markup = renderToStaticMarkup(
+    <OverviewMetricsTab extractedPlacements={[]} planOptions={[]} rfpAnalysis={null} profileData={narrowed} metricSettings={DEFAULT_OVERVIEW_METRICS} />,
+  );
+  assert.match(markup, /% of 619K target HH in Washington, Dc \(Hagrstwn\) DMA/);
+});
+
+test("the reach panel is hidden from the share link until a planner turns its eye on", () => {
+  const render = (props: Partial<React.ComponentProps<typeof OverviewMetricsTab>>) => renderToStaticMarkup(
+    <OverviewMetricsTab extractedPlacements={[]} planOptions={[]} rfpAnalysis={null} profileData={dcOnlyAnnualPlan}
+      metricSettings={DEFAULT_OVERVIEW_METRICS} showReachDetails {...props} />,
+  );
+  const byDefault = render({ onShareReachDetailsChange: () => {} });
+  assert.match(byDefault, /aria-label="Show in share view"/, "defaults to hidden, offering to show");
+  assert.match(byDefault, /border-dashed/);
+  const shared = render({ onShareReachDetailsChange: () => {}, shareReachDetails: true });
+  assert.match(shared, /aria-label="Hide from share view"/);
+  const shareLink = render({ shareReachDetails: true });
+  assert.doesNotMatch(shareLink, /share view"/, "no eye on the share link itself");
 });

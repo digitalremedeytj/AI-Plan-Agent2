@@ -6,7 +6,9 @@ import {
   findBudgetChannelTier,
   loadPlanningSettings,
   normalizeCampaignBudget,
+  migrateStoredSettings,
   PLANNING_SETTINGS_STORAGE_KEY,
+  PLANNING_SETTINGS_VERSION,
   savePlanningSettings,
   validatePlanningSettings,
 } from "./settings";
@@ -54,7 +56,7 @@ test("version 1 browser settings migrate budget edits into the usable catalog de
   legacyTiers[0].maxChannels = 2;
   storage.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify({ version: 1, budgetChannelTiers: legacyTiers }));
   const migrated = loadPlanningSettings(storage);
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, PLANNING_SETTINGS_VERSION);
   assert.equal(migrated.budgetChannelTiers[0].maxChannels, 2);
   assert.equal(migrated.products.length, 14);
   assert.equal(migrated.publishers.length, 67);
@@ -69,7 +71,7 @@ test("version 2 browser settings retain catalog edits and receive overview defau
   const { overviewMetrics: _overviewMetrics, ...withoutOverviewMetrics } = current;
   storageVersion2.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify({ ...withoutOverviewMetrics, version: 2 }));
   const migrated = loadPlanningSettings(storageVersion2);
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, PLANNING_SETTINGS_VERSION);
   assert.equal(migrated.products[0].minimumTotalSpend, 12_345);
   assert.deepEqual(migrated.overviewMetrics, DEFAULT_PLANNING_SETTINGS.overviewMetrics);
 });
@@ -84,6 +86,7 @@ test("internal-only defaults hide dollars, confidence, assumptions, and qa audit
     channelStatusTag: false,
     planningAssumptions: false,
     qaAudit: false,
+    reachCalculationDetails: true,
   });
 });
 
@@ -95,7 +98,7 @@ test("version 3 settings keep their catalog edits instead of being reseeded from
   const { internalOnly: _internalOnly, ...withoutInternalOnly } = current;
   storage.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify({ ...withoutInternalOnly, version: 3 }));
   const migrated = loadPlanningSettings(storage);
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, PLANNING_SETTINGS_VERSION);
   assert.equal(migrated.products[0].minimumTotalSpend, 54_321);
   assert.equal(migrated.overviewMetrics[1].show, true);
   assert.deepEqual(migrated.internalOnly, DEFAULT_PLANNING_SETTINGS.internalOnly);
@@ -114,7 +117,7 @@ test("version 4 settings gain the enabled switch already on, so no product silen
   storage.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify(stripped));
 
   const migrated = loadPlanningSettings(storage);
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, PLANNING_SETTINGS_VERSION);
   assert.equal(migrated.products[0].minimumTotalSpend, 11_111);
   assert.ok(migrated.products.every((product) => product.enabled), "every pre-existing product stays in play");
   assert.deepEqual(migrated.customProducts, []);
@@ -183,7 +186,7 @@ test("migrating and cloning backfills missing internalOnly and overviewMetrics t
 
   const cloned = clonePlanningSettings(legacy);
   assert.equal(cloned.ctvPublisherTargetCount, 12);
-  assert.equal(cloned.internalOnly.length, 7);
+  assert.equal(cloned.internalOnly.length, 8);
   assert.equal(cloned.overviewMetrics.length, 7);
 
   const validation = validatePlanningSettings(cloned);
@@ -199,7 +202,7 @@ test("partial internalOnly settings are cleanly merged with defaults without dup
     ],
   };
   const cloned = clonePlanningSettings(partial);
-  assert.equal(cloned.internalOnly.length, 7);
+  assert.equal(cloned.internalOnly.length, 8);
   const allocToggle = cloned.internalOnly.find((s) => s.id === "channelAllocationColumn");
   assert.equal(allocToggle?.show, false);
   const dollarsToggle = cloned.internalOnly.find((s) => s.id === "channelDollarsColumn");
@@ -209,3 +212,42 @@ test("partial internalOnly settings are cleanly merged with defaults without dup
   assert.equal(validation.valid, true);
 });
 
+test("version 5 settings keep their edits and gain the reach defaults Media Planning signed off on", () => {
+  const { reach: _reach, ...withoutReach } = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  const stored = { ...withoutReach, version: 5, ctvPublisherTargetCount: 12 };
+  const result = validatePlanningSettings(migrateStoredSettings(stored));
+  assert.equal(result.valid, true, result.errors.join("; "));
+  assert.equal(result.settings?.version, PLANNING_SETTINGS_VERSION);
+  assert.equal(result.settings?.ctvPublisherTargetCount, 12);
+  assert.deepEqual(result.settings?.reach, DEFAULT_PLANNING_SETTINGS.reach);
+});
+
+test("a planner's reach edits survive save and reload", () => {
+  const storage = new MemoryStorage();
+  const settings = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  settings.reach.mediaTypes = settings.reach.mediaTypes.map((row) => (row.mediaTypeId === "ctv" ? { ...row, maxReachPercent: 72 } : row));
+  settings.reach.targetMonthlyFrequencyMax = 10;
+  assert.equal(savePlanningSettings(storage, settings).valid, true);
+  const loaded = loadPlanningSettings(storage);
+  assert.equal(loaded.reach.mediaTypes.find((row) => row.mediaTypeId === "ctv")?.maxReachPercent, 72);
+  assert.equal(loaded.reach.targetMonthlyFrequencyMax, 10);
+});
+
+test("invalid reach assumptions block a save instead of reaching every plan", () => {
+  const settings = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  settings.reach.mediaTypes = settings.reach.mediaTypes.map((row) => (row.mediaTypeId === "ctv" ? { ...row, maxReachPercent: 140 } : row));
+  const result = validatePlanningSettings(settings);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((error) => /CTV \/ OTT: max reachable %/.test(error)));
+});
+
+test("stored overview metrics pick up renamed labels, keeping their show choice", () => {
+  const stored: any = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  stored.version = 5;
+  stored.overviewMetrics = stored.overviewMetrics.map((metric: any) =>
+    metric.id === "estimatedReach" ? { ...metric, label: "Estimated Reach", show: false } : metric);
+  const migrated = migrateStoredSettings(stored) as any;
+  const reach = migrated.overviewMetrics.find((metric: any) => metric.id === "estimatedReach");
+  assert.equal(reach.label, "Est. Monthly Reach");
+  assert.equal(reach.show, false);
+});
