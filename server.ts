@@ -3057,30 +3057,6 @@ const SLIDE_ASPECT_RATIO_CONFIG: Record<
   "9:16": { size: "1440x2560", width: 1440, height: 2560, type: "vertical", name: "Vertical / Mobile" },
 };
 
-/**
- * Persists a high-resolution base64 PNG slide to disk under /assets/slides/
- * and returns the static asset URL path (/assets/slides/<filename>.png).
- * This prevents multi-megabyte image payloads from inflating Firestore documents.
- */
-function persistSlidePngToDisk(base64Data: string, prefix: string = "slide"): string {
-  try {
-    const slidesDir = path.join(process.cwd(), "assets", "slides");
-    if (!fs.existsSync(slidesDir)) {
-      fs.mkdirSync(slidesDir, { recursive: true });
-    }
-    const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, "");
-    const buffer = Buffer.from(cleanBase64, "base64");
-    const filename = `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.png`;
-    const fullPath = path.join(slidesDir, filename);
-    fs.writeFileSync(fullPath, buffer);
-    return `/assets/slides/${filename}`;
-  } catch (err) {
-    console.error("[persistSlidePngToDisk] Could not write slide PNG to disk:", err);
-    // Graceful fallback to data URL if writing fails
-    return base64Data.startsWith("data:") ? base64Data : `data:image/png;base64,${base64Data}`;
-  }
-}
-
 // API: Generate Presentation Slides for Personas using gpt-image-2.5-sunburst
 app.post("/api/personas/generate-slide", async (req, res) => {
   // Prevent socket timeout on long-running image generation
@@ -3446,12 +3422,13 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
       }
     }
 
-    const savedAssetUrl = persistSlidePngToDisk(resultImageBase64, `persona-${mode}-${personaIndex}`);
-    const finalImageUrl = savedAssetUrl;
+    // Returned as a data URL: Cloud Run instances do not share disk, so slides
+    // are never written to the container filesystem.
+    const slideDataUrl = `data:image/png;base64,${resultImageBase64}`;
     res.json({
       success: true,
-      imageUrl: finalImageUrl,
-      dataUrl: `data:image/png;base64,${resultImageBase64}`,
+      imageUrl: slideDataUrl,
+      dataUrl: slideDataUrl,
       model: "gpt-image-2.5-sunburst",
       mode,
       personaIndex,
@@ -3821,12 +3798,13 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     const revisedPrompt = genResponse.data[0].revised_prompt;
     console.log("[API /api/channels/generate-slide] Successfully generated channel slide using openai.images.generate!");
 
-    const savedAssetUrl = persistSlidePngToDisk(resultImageBase64, `channel-${mode}-${channelIndex}`);
-    const finalImageUrl = savedAssetUrl;
+    // Returned as a data URL: Cloud Run instances do not share disk, so slides
+    // are never written to the container filesystem.
+    const slideDataUrl = `data:image/png;base64,${resultImageBase64}`;
     res.json({
       success: true,
-      imageUrl: finalImageUrl,
-      dataUrl: `data:image/png;base64,${resultImageBase64}`,
+      imageUrl: slideDataUrl,
+      dataUrl: slideDataUrl,
       model: "gpt-image-2.5-sunburst",
       mode,
       channelIndex,
@@ -4005,12 +3983,13 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     const revisedPrompt = genResponse.data[0].revised_prompt;
     console.log("[API /api/segments/generate-slide] Successfully generated segments slide using openai.images.generate!");
 
-    const savedAssetUrl = persistSlidePngToDisk(resultImageBase64, `segments-recommendations`);
-    const finalImageUrl = savedAssetUrl;
+    // Returned as a data URL: Cloud Run instances do not share disk, so slides
+    // are never written to the container filesystem.
+    const slideDataUrl = `data:image/png;base64,${resultImageBase64}`;
     res.json({
       success: true,
-      imageUrl: finalImageUrl,
-      dataUrl: `data:image/png;base64,${resultImageBase64}`,
+      imageUrl: slideDataUrl,
+      dataUrl: slideDataUrl,
       model: "gpt-image-2.5-sunburst",
       aspectRatio,
       dimensions: { width: ratioInfo.width, height: ratioInfo.height },
