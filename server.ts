@@ -857,6 +857,7 @@ async function buildChannelStrategy(
   options?: {
     advertiserUrl?: string;
     campaignFocus?: string;
+    additionalContext?: string;
     geography?: string;
     workingMediaBudget?: number;
     campaignFlightDays?: number | null;
@@ -901,6 +902,7 @@ async function buildChannelStrategy(
     audienceType: audienceProfile?.briefOfRecord?.audienceType,
     kpis,
     campaignFocus: options?.campaignFocus,
+    additionalContext: options?.additionalContext,
     audienceDescriptions: signals.audienceDescriptions,
     audienceSignals: signals.audienceSignals,
     geography: options?.geography || "United States",
@@ -1568,6 +1570,7 @@ app.post("/api/analyze-media-plan", async (req, res) => {
       advertiserUrl,
       kpis,
       campaignFocus,
+      additionalContext,
       geography,
       workingMediaBudget,
       campaignFlightDays,
@@ -1589,7 +1592,7 @@ app.post("/api/analyze-media-plan", async (req, res) => {
       budgetStrategyMode || 'reallocation',
       advertiserName,
       kpis,
-      { advertiserUrl, campaignFocus, geography, workingMediaBudget, campaignFlightDays, planningSettings, requiredChannelIds, requiredChannelsOnly: requiredChannelsOnly === true, excludedChannelIds, candidateSignals },
+      { advertiserUrl, campaignFocus, additionalContext: typeof additionalContext === "string" ? additionalContext.slice(0, 500) : undefined, geography, workingMediaBudget, campaignFlightDays, planningSettings, requiredChannelIds, requiredChannelsOnly: requiredChannelsOnly === true, excludedChannelIds, candidateSignals },
     );
     res.json({ success: true, channelStrategy });
   } catch (err: any) {
@@ -4914,6 +4917,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
           {
             advertiserUrl: cleanUrl,
             campaignFocus,
+            additionalContext: cleanAdditionalContext,
             geography,
             workingMediaBudget: Number(workingMediaBudget) || 0,
             campaignFlightDays: Number(campaignFlightDays) || null,

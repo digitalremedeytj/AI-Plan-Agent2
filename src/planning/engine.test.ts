@@ -640,3 +640,31 @@ test("compatibility rows resolve to the tactic records they name, so those tacti
   // The workbook has a compatibility row for this, but no targeting record to attach.
   assert.deepEqual(unmatched, ["tactic.cross_channel_sequential_messaging"]);
 });
+
+test("a brief that rules out pixels gets no pixel-dependent measurement", () => {
+  const facts = buildCampaignFacts({
+    kpis: ["awareness", "site visits", "conversion"],
+    campaignFocus: "full-funnel",
+    additionalContext: "Looking to promote YNHH as the go-to hospital. Cannot place pixels so can't track lower funnel activity",
+    workingMediaBudget: 50_000,
+    campaignFlightDays: 30,
+    geography: "Connecticut",
+    requiredChannelIds: ["channel.ctv"],
+    planningSettings: settings(),
+  });
+  assert.equal(facts.dataReadiness.sitePixel, false);
+  assert.equal(facts.dataReadiness.conversionEvents, false);
+  const measurement = buildMediaRecommendationPlan(facts).channels.flatMap((channel) => channel.measurementCapabilities.map((record) => record.id));
+  for (const id of ["measurement.consumer_journey_analytics_opa", "measurement.online_booking_order_attribution", "measurement.halo_effect", "measurement.leadmatch"]) {
+    assert.ok(!measurement.includes(id), `${id} needs a pixel`);
+  }
+});
+
+test("pixel negations are read from the planner's own phrasing", () => {
+  const pixelFor = (additionalContext: string) => buildCampaignFacts({ additionalContext, workingMediaBudget: 50_000, planningSettings: settings() }).dataReadiness.sitePixel;
+  for (const phrase of ["Cannot place pixels", "client can't place a pixel on the site", "We are unable to add tracking pixels", "Pixels are not allowed on the hospital site", "no pixels"]) {
+    assert.equal(pixelFor(phrase), false, phrase);
+  }
+  assert.equal(pixelFor("Site pixel installed on all pages"), true);
+  assert.equal(pixelFor("Promote the hospital statewide"), "unknown");
+});

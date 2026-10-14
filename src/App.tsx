@@ -3620,6 +3620,7 @@ export default function App() {
           advertiserUrl: url,
           kpis: kpis.filter((k) => k.trim().length > 0),
           campaignFocus,
+          additionalContext,
           geography,
           workingMediaBudget: budgetNormalization.workingMediaBudget,
           campaignFlightDays: budgetNormalization.campaignFlightDays,

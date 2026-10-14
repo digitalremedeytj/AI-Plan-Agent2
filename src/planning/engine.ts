@@ -102,19 +102,26 @@ function includesAny(haystack: string, needles: string[]): number {
   return needles.filter((needle) => normalized.includes(needle.toLowerCase())).length;
 }
 
-function inferTriState(text: string, positive: string[], negative: string[]): TriState {
+function inferTriState(text: string, positive: string[], negative: Array<string | RegExp>): TriState {
   const normalized = text.toLowerCase();
-  if (negative.some((term) => normalized.includes(term))) return false;
+  if (negative.some((term) => typeof term === "string" ? normalized.includes(term) : term.test(normalized))) return false;
   if (positive.some((term) => normalized.includes(term))) return true;
   return "unknown";
 }
+
+// Planners write constraints as sentences ("Cannot place pixels so can't track lower funnel
+// activity"), which fixed phrases like "no pixel" missed: the pixel stayed "unknown" and
+// pixel-dependent measurement was still recommended. A negation within a few words of "pixel"
+// counts as a no.
+const NO_PIXEL = /\b(?:no|cannot|can ?not|can['’]?t|unable to|not able to|won['’]?t|will not|don['’]?t|do not|doesn['’]?t|does not|not allowed to|not permitted to)\b[^.;\n]{0,40}\bpixel|\bpixels?\b[^.;\n]{0,20}\b(?:not allowed|not permitted|not possible|unavailable|prohibited|not an option)\b/;
+const NO_LOWER_FUNNEL_TRACKING = /\b(?:cannot|can ?not|can['’]?t|unable to|not able to|no way to)\b[^.;\n]{0,30}\b(?:track|measure|attribute)\b[^.;\n]{0,30}\b(?:lower[- ]funnel|conversions?|site activity|on-site)/;
 
 function inferReadiness(text: string): { data: DataReadinessFacts; creative: CreativeReadinessFacts } {
   return {
     data: {
       ...DEFAULT_DATA_READINESS,
-      sitePixel: inferTriState(text, ["site pixel", "pixel installed", "tracking pixel"], ["no pixel", "pixel unavailable"]),
-      conversionEvents: inferTriState(text, ["conversion tracking", "defined conversion", "purchase event"], ["no conversion tracking"]),
+      sitePixel: inferTriState(text, ["site pixel", "pixel installed", "tracking pixel"], ["pixel unavailable", NO_PIXEL]),
+      conversionEvents: inferTriState(text, ["conversion tracking", "defined conversion", "purchase event"], ["no conversion tracking", NO_PIXEL, NO_LOWER_FUNNEL_TRACKING]),
       meaningfulSiteTraffic: inferTriState(text, ["meaningful site traffic", "high site traffic", "retargeting pool"], ["no site traffic", "low site traffic"]),
       crmSeedList: inferTriState(text, ["crm seed", "customer list", "first-party list"], ["no crm", "no customer list"]),
       crmSuppressionList: inferTriState(text, ["suppression list", "crm suppression"], ["no suppression list"]),
@@ -191,6 +198,8 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
   const appliedBudgetTier = findBudgetChannelTier(normalization.normalized30DayBudget, input.planningSettings);
   const combinedText = [
     input.campaignFocus,
+    // The brief's free-text context is where planners state data constraints ("cannot place pixels").
+    input.additionalContext,
     ...(input.kpis || []),
     ...(input.audienceDescriptions || []),
     ...(input.audienceSignals || []),
@@ -878,8 +887,12 @@ function verticalAllowed(gate: string, vertical: string): boolean {
 // order attached LeadMatch and MatchBack to every CTV, display and video line and CrossView to
 // search and social. A product listed here with a 'requires' only attaches when the campaign
 // shows that condition; 'serves' ranks it for the KPIs it measures.
+// Products that read conversions off the site need a pixel; when the brief rules one out
+// ("cannot place pixels"), they cannot report anything and must not be recommended.
+const canTrackSite = (f: CampaignFacts) => f.dataReadiness.sitePixel !== false && f.dataReadiness.conversionEvents !== false;
+
 const MEASUREMENT_FIT: Record<string, { requires?: (facts: CampaignFacts, context: string) => boolean; serves?: string[] }> = {
-  "measurement.leadmatch": { requires: (_f, c) => includesAny(c, ["lead gen", "lead-gen", "leads", "lead quality", "form fill", "form submission", "qualified lead"]) > 0 },
+  "measurement.leadmatch": { requires: (f, c) => canTrackSite(f) && includesAny(c, ["lead gen", "lead-gen", "leads", "lead quality", "form fill", "form submission", "qualified lead"]) > 0 },
   "measurement.matchback": {
     requires: (f, c) => f.dataReadiness.crmSeedList === true || f.dataReadiness.offlineSalesData === true || f.dataReadiness.leadOrRevenueExports === true || includesAny(c, ["crm", "point of sale", "pos data", "offline sales"]) > 0,
   },
@@ -891,12 +904,12 @@ const MEASUREMENT_FIT: Record<string, { requires?: (facts: CampaignFacts, contex
   "measurement.in_store_sales_lift_pathformance": { requires: (f) => includesAny([...f.kpis, f.primaryKpi].join(" "), ["in-store sales", "store sales", "retail sales lift"]) > 0 },
   "measurement.consumer_panel_circana": { requires: (_f, c) => includesAny(c, ["cpg", "consumer packaged"]) > 0 },
   "measurement.cpg_sales_validation_circana_marketlift": { requires: (_f, c) => includesAny(c, ["cpg", "consumer packaged"]) > 0 },
-  "measurement.online_booking_order_attribution": { serves: ["site visit", "online sale", "ecommerce", "e-commerce", "conversion", "purchase", "booking", "order", "traffic", "sign up", "signup", "subscription"] },
-  "measurement.consumer_journey_analytics_opa": { serves: ["full-funnel", "full funnel", "conversion", "site visit"] },
+  "measurement.online_booking_order_attribution": { requires: canTrackSite, serves: ["site visit", "online sale", "ecommerce", "e-commerce", "conversion", "purchase", "booking", "order", "traffic", "sign up", "signup", "subscription"] },
+  "measurement.consumer_journey_analytics_opa": { requires: canTrackSite, serves: ["full-funnel", "full funnel", "conversion", "site visit"] },
   "measurement.reach_and_frequency": { serves: ["awareness", "reach", "frequency", "full-funnel", "full funnel"] },
   "measurement.brand_lift": { serves: ["awareness", "brand lift", "consideration", "perception"] },
   "measurement.incrementality": { serves: ["incremental", "lift", "causal"] },
-  "measurement.halo_effect": { serves: ["search", "halo"] },
+  "measurement.halo_effect": { requires: canTrackSite, serves: ["search", "halo"] },
 };
 
 export function measurementFitsCampaign(record: { id: string }, facts: CampaignFacts): boolean {

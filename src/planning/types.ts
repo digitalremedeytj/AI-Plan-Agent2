@@ -248,6 +248,8 @@ export interface CampaignFactsInput {
   audienceType?: CampaignAudienceType;
   kpis?: string[];
   campaignFocus?: string;
+  /** The brief's free-text context; read for data constraints such as "cannot place pixels". */
+  additionalContext?: string;
   audienceDescriptions?: string[];
   audienceSignals?: string[];
   geography?: string;
