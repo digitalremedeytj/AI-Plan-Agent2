@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { usePlanSlides } from "../utils/planSlideStore";
 import {
   X,
   Sparkles,
@@ -54,6 +55,8 @@ export const ASPECT_RATIO_OPTIONS: AspectRatioOption[] = [
 
 export interface PresentationSlideStudioModalProps {
   isOpen: boolean;
+  /** Generated slides are kept per plan; see src/utils/planSlideStore. */
+  planKey: string;
   onClose: () => void;
   initialSection?: "personas" | "channels" | "segments";
   personas?: any[];
@@ -87,6 +90,7 @@ interface GeneratedSlide {
 
 export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModalProps> = ({
   isOpen,
+  planKey,
   onClose,
   initialSection = "personas",
   personas = [],
@@ -125,13 +129,13 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
   const [error, setError] = useState<string | null>(null);
 
   // Gallery of generated slides separated by section so switching preserves state
-  const [personaSlides, setPersonaSlides] = useState<GeneratedSlide[]>([]);
+  const [personaSlides, setPersonaSlides] = usePlanSlides<GeneratedSlide[]>(planKey, "studio.personas", () => []);
   const [activePersonaSlideIndex, setActivePersonaSlideIndex] = useState<number>(0);
 
-  const [channelSlides, setChannelSlides] = useState<GeneratedSlide[]>([]);
+  const [channelSlides, setChannelSlides] = usePlanSlides<GeneratedSlide[]>(planKey, "studio.channels", () => []);
   const [activeChannelSlideIndex, setActiveChannelSlideIndex] = useState<number>(0);
 
-  const [segmentSlides, setSegmentSlides] = useState<GeneratedSlide[]>([]);
+  const [segmentSlides, setSegmentSlides] = usePlanSlides<GeneratedSlide[]>(planKey, "studio.segments", () => []);
   const [activeSegmentSlideIndex, setActiveSegmentSlideIndex] = useState<number>(0);
 
   // Copy feedback & zoom

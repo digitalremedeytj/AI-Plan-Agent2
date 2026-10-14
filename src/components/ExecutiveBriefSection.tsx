@@ -60,6 +60,8 @@ export interface ExecutiveBriefSectionProps {
   geography?: string;
   /** Campaign-history learnings for their slide; passed only while that section is shown to the client. */
   learnings?: Array<{ learning: string; action: string; campaignName: string }>;
+  /** Which plan's generated slides the slide studio shows (see src/utils/planSlideStore). */
+  slidePlanKey: string;
 }
 
 const SECTION_ICONS: Record<BriefSectionKey, React.ComponentType<{ className?: string }>> = {
@@ -384,6 +386,7 @@ export const ExecutiveBriefSection: React.FC<ExecutiveBriefSectionProps> = ({
   advertiserName,
   geography,
   learnings,
+  slidePlanKey,
 }) => {
   const [showRegenerate, setShowRegenerate] = useState(false);
   const [slideModalOpen, setSlideModalOpen] = useState(false);
@@ -685,6 +688,9 @@ export const ExecutiveBriefSection: React.FC<ExecutiveBriefSectionProps> = ({
 
       {brief && !readOnly && (
         <ExecutiveBriefSlideModal
+          // Remounted per plan so nothing from the previous plan's studio carries over.
+          key={slidePlanKey}
+          planKey={slidePlanKey}
           isOpen={slideModalOpen}
           onClose={() => setSlideModalOpen(false)}
           brief={brief}

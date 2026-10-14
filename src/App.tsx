@@ -92,6 +92,7 @@ import { CtvPublisherCard } from "./components/CtvPublisherCard";
 import { CtvSlideExportView } from "./components/CtvSlideExportView";
 import { CtvExportDropdown } from "./components/CtvExportDropdown";
 import { PersonaSlideExportModal } from "./components/PersonaSlideExportModal";
+import { clearPlanSlides, movePlanSlides, UNSAVED_PLAN_SLIDE_KEY } from "./utils/planSlideStore";
 import { PersonaAvatarModal } from "./components/PersonaAvatarModal";
 import { SegmentRecommendations, SEGMENT_DIMENSION_STYLES, type SegmentStatus } from "./components/SegmentRecommendations";
 import {
@@ -1624,6 +1625,12 @@ export default function App() {
     return null;
   });
   const isShareView = Boolean(shareToken);
+  // Which plan's generated slides the slide studios show. A plan without a saved id shares one
+  // "unsaved" bucket, emptied whenever the open plan is cleared so a new run starts with none.
+  const slidePlanKey = activeSavedId ?? (shareToken ? `share:${shareToken}` : UNSAVED_PLAN_SLIDE_KEY);
+  React.useEffect(() => {
+    if (!activeSavedId) clearPlanSlides(UNSAVED_PLAN_SLIDE_KEY);
+  }, [activeSavedId]);
   const [sharedPlanLoading, setSharedPlanLoading] = useState<boolean>(Boolean(shareToken));
   const [sharedPlanError, setSharedPlanError] = useState<string | null>(null);
 
@@ -2291,6 +2298,7 @@ export default function App() {
         markPlanPersisted(updated);
       } else {
         const created = await api.createPlan(input);
+        if (!activeSavedId) movePlanSlides(UNSAVED_PLAN_SLIDE_KEY, created.id);
         setActiveSavedId(created.id);
         markPlanPersisted(created);
       }
@@ -2351,6 +2359,7 @@ export default function App() {
         targetTitle = created.title;
         targetShareToken = created.shareToken;
         targetIsShared = Boolean(created.isShared);
+        if (!activeSavedId) movePlanSlides(UNSAVED_PLAN_SLIDE_KEY, created.id);
         setActiveSavedId(created.id);
         markPlanPersisted(created);
         segmentsDirtyRef.current = false;
@@ -7576,6 +7585,7 @@ export default function App() {
                     advertiserName={advertiserName}
                     geography={geography}
                     learnings={hiddenSections.has("performanceLearnings") ? undefined : profileData.performanceLearnings}
+                    slidePlanKey={slidePlanKey}
                   />
                 )}
 
@@ -8956,6 +8966,9 @@ export default function App() {
       {/* Presentation AI Slide Studio (gpt-image-2.5-sunburst) Export Modal */}
       {profileData && (
         <PersonaSlideExportModal
+          // Remounted per plan so nothing from the previous plan's studio carries over.
+          key={slidePlanKey}
+          planKey={slidePlanKey}
           isOpen={isSlideStudioOpen}
           onClose={() => setIsSlideStudioOpen(false)}
           initialSection={slideStudioSection}

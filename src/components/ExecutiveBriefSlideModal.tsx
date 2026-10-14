@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { usePlanSlides } from '../utils/planSlideStore';
 import {
   AlertCircle,
   AlertTriangle,
@@ -44,6 +45,8 @@ interface GeneratedBriefSlide {
 
 export interface ExecutiveBriefSlideModalProps {
   isOpen: boolean;
+  /** Generated slides are kept per plan; see src/utils/planSlideStore. */
+  planKey: string;
   onClose: () => void;
   brief: ExecutiveBrief;
   context: BriefSlideContext;
@@ -71,6 +74,7 @@ async function copyText(text: string) {
 
 export const ExecutiveBriefSlideModal: React.FC<ExecutiveBriefSlideModalProps> = ({
   isOpen,
+  planKey,
   onClose,
   brief,
   context,
@@ -84,7 +88,7 @@ export const ExecutiveBriefSlideModal: React.FC<ExecutiveBriefSlideModalProps> =
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [customNotes, setCustomNotes] = useState('');
   const [specs, setSpecs] = useState<Record<BriefSlideVariant, BriefSlideSpec[]>>({ highlights: [], full: [] });
-  const [slides, setSlides] = useState<Record<BriefSlideVariant, GeneratedBriefSlide[]>>({ highlights: [], full: [] });
+  const [slides, setSlides] = usePlanSlides<Record<BriefSlideVariant, GeneratedBriefSlide[]>>(planKey, 'executiveBrief', () => ({ highlights: [], full: [] }));
   const [activeIndex, setActiveIndex] = useState(0);
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
