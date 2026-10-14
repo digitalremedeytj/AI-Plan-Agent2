@@ -38,6 +38,10 @@ import {
   DEFAULT_PLANNING_SETTINGS,
   EnhancementPlanningSetting,
   InternalOnlySettingId,
+  MEASUREMENT_DATA_REQUIREMENTS,
+  MeasurementAvailability,
+  MeasurementDataRequirement,
+  MeasurementPlanningSetting,
   OverviewMetricId,
   PlanningSettings,
   ProductPlanningSetting,
@@ -54,6 +58,7 @@ import type { AudienceShareFilter, ReachMediaTypeSetting } from "../planning/rea
 import { DMA_MARKETS, DMA_SOURCE_LABEL } from "../planning/knowledge/dmaMarkets";
 import { NATIONAL_TV_HOUSEHOLDS, STATE_HOUSEHOLDS, STATE_HOUSEHOLDS_SOURCE_LABEL } from "../planning/knowledge/stateHouseholds";
 import { ScoutPromptsSettings } from "./ScoutPromptsSettings";
+import { planningKnowledgeBase } from "../planning/knowledge/normalizeWorkbook";
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -71,7 +76,17 @@ interface SettingsDrawerProps {
   saveError?: string | null;
 }
 
-type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "prompts";
+type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "measurement" | "prompts";
+
+const MEASUREMENT_AVAILABILITY_OPTIONS: Array<{ id: MeasurementAvailability; label: string; hint: string }> = [
+  { id: "recommend", label: "Recommend", hint: "ScoutAI attaches it when the campaign fits." },
+  { id: "manual", label: "Manual add only", hint: "Never recommended; planners can still add it to a media type." },
+  { id: "off", label: "Off", hint: "Not offered anywhere." },
+];
+
+// Workbook detail shown beside each measurement product. Read-only: it describes the product,
+// while the settings decide how ScoutAI uses it.
+const MEASUREMENT_CATALOG = new Map(planningKnowledgeBase.measurementCapabilities.map((record) => [record.id, record]));
 
 function numericValue(value: string): number {
   if (value.trim() === "") return Number.NaN;
@@ -203,6 +218,21 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
       ),
     }));
     clearErrors();
+  };
+
+  const updateMeasurement = (measurementId: string, patch: Partial<MeasurementPlanningSetting>) => {
+    setDraftSettings((current) => ({
+      ...current,
+      measurement: current.measurement.map((row) => (row.measurementId === measurementId ? { ...row, ...patch } : row)),
+    }));
+    clearErrors();
+  };
+
+  const toggleMeasurementRequirement = (row: MeasurementPlanningSetting, requirement: MeasurementDataRequirement) => {
+    const has = row.dataRequirements.includes(requirement);
+    updateMeasurement(row.measurementId, {
+      dataRequirements: has ? row.dataRequirements.filter((id) => id !== requirement) : [...row.dataRequirements, requirement],
+    });
   };
 
   const updateOverviewMetric = (metricId: OverviewMetricId, show: boolean) => {
@@ -647,6 +677,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
   const safePublishers = Array.isArray(draftPublishers) ? draftPublishers : [];
   const safeProducts = Array.isArray(draftSettings?.products) ? draftSettings.products : [];
   const safeEnhancements = Array.isArray(draftSettings?.enhancements) ? draftSettings.enhancements : [];
+  const safeMeasurement = Array.isArray(draftSettings?.measurement) ? draftSettings.measurement : [];
   const safeOverviewMetrics = Array.isArray(draftSettings?.overviewMetrics) ? draftSettings.overviewMetrics : [];
   const safeInternalOnly = Array.isArray(draftSettings?.internalOnly) ? draftSettings.internalOnly : [];
 
@@ -666,12 +697,19 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
         .includes(normalizedSearch)
   );
 
+  const visibleMeasurement = safeMeasurement.filter((row) => {
+    if (!normalizedSearch) return true;
+    const record = MEASUREMENT_CATALOG.get(row.measurementId);
+    return `${row.displayName} ${record?.metadata["Group"] || ""} ${record?.attachesTo.join(" ") || ""} ${record?.verticalGate || ""}`.toLowerCase().includes(normalizedSearch);
+  });
+
   const tabs: Array<{ id: SettingsTab; label: string; count?: number }> = [
     { id: "publishers", label: "Recommended CTV Publishers", count: safePublishers.length },
     { id: "budgets", label: "Budget & Media-Type Limits" },
     { id: "reach", label: "Reach & Frequency" },
     { id: "products", label: "Product Rules", count: safeProducts.length },
     { id: "enhancements", label: "Enhancements", count: safeEnhancements.length },
+    { id: "measurement", label: "Measurement", count: safeMeasurement.length },
     { id: "visibility", label: "Visibility", count: safeOverviewMetrics.length + safeInternalOnly.length },
     { id: "prompts", label: "ScoutAI Prompts" },
   ];
@@ -2409,6 +2447,95 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                     </div>
                   </article>
                 ))}
+              </div>
+            </section>
+          )}
+
+          {activeTab === "measurement" && (
+            <section className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Measurement Products</h3>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  Choose which measurement products ScoutAI may recommend, and the client data each one needs.
+                  When the brief says the client does not have a required item (for example &ldquo;cannot place pixels&rdquo;),
+                  that product is not recommended. If the brief says nothing about the data, the product can still be recommended.
+                </p>
+              </div>
+
+              <div className="relative my-3">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                  placeholder="Search measurement products, groups, channels, or verticals..."
+                />
+              </div>
+
+              <div className="space-y-3">
+                {visibleMeasurement.map((row) => {
+                  const record = MEASUREMENT_CATALOG.get(row.measurementId);
+                  const group = String(record?.metadata["Group"] || "").trim();
+                  const proves = String(record?.metadata["Answers / What It Proves"] || "").trim();
+                  const gate = record?.verticalGate && record.verticalGate.toLowerCase() !== "none" ? record.verticalGate : "";
+                  return (
+                    <article key={row.measurementId} className={`rounded-xl border border-slate-200 bg-white p-4 shadow-xs ${row.availability === "off" ? "opacity-70" : ""}`}>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-slate-900">{row.displayName}</p>
+                          <p className="mt-0.5 text-[11px] text-slate-500">
+                            {[group, record?.attachesTo.join(", "), record?.pricing ? String(record.pricing).split("\n")[0] : ""].filter(Boolean).join(" · ")}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 rounded-lg border border-slate-200 bg-slate-50 p-0.5" role="radiogroup" aria-label={`${row.displayName} availability`}>
+                          {MEASUREMENT_AVAILABILITY_OPTIONS.map((option) => (
+                            <button
+                              key={option.id}
+                              type="button"
+                              role="radio"
+                              aria-checked={row.availability === option.id}
+                              title={option.hint}
+                              onClick={() => updateMeasurement(row.measurementId, { availability: option.id })}
+                              className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${
+                                row.availability === option.id
+                                  ? option.id === "off" ? "bg-white text-rose-700 shadow-sm ring-1 ring-slate-200" : "bg-white text-indigo-700 shadow-sm ring-1 ring-slate-200"
+                                  : "text-slate-500 hover:text-slate-800"
+                              }`}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {proves ? <p className="mt-2 text-xs leading-5 text-slate-600">{proves}</p> : null}
+                      {gate ? <p className="mt-1 text-[11px] font-medium text-amber-700">Vertical limit: {gate}</p> : null}
+                      <div className="mt-3">
+                        <p className={labelClass}>Client must have</p>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {MEASUREMENT_DATA_REQUIREMENTS.map((requirement) => {
+                            const checked = row.dataRequirements.includes(requirement.id);
+                            return (
+                              <button
+                                key={requirement.id}
+                                type="button"
+                                aria-pressed={checked}
+                                title={requirement.description}
+                                onClick={() => toggleMeasurementRequirement(row, requirement.id)}
+                                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                                  checked ? "border-indigo-300 bg-indigo-50 text-indigo-800" : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                                }`}
+                              >
+                                {checked ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+                                {requirement.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+                {visibleMeasurement.length === 0 ? <p className="text-sm text-slate-500">No measurement products match that search.</p> : null}
               </div>
             </section>
           )}

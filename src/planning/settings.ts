@@ -10,7 +10,7 @@ import {
 } from "./reach/reachSettings";
 
 export const PLANNING_SETTINGS_STORAGE_KEY = "scoutai_planning_settings";
-export const PLANNING_SETTINGS_VERSION = 6 as const;
+export const PLANNING_SETTINGS_VERSION = 7 as const;
 export const MAX_REASONABLE_MEDIA_TYPES = 50;
 
 export type OverviewMetricId =
@@ -197,6 +197,45 @@ export interface EnhancementPlanningSetting {
   specificationNotes: string;
 }
 
+/**
+ * "recommend": ScoutAI may attach it when the campaign fits. "manual": never recommended, but a
+ * planner can still add it to a media type. "off": gone from plans and from the manual-add list.
+ */
+export type MeasurementAvailability = "recommend" | "manual" | "off";
+export const MEASUREMENT_AVAILABILITIES: MeasurementAvailability[] = ["recommend", "manual", "off"];
+
+/** Client data a measurement product cannot report without. Keys of DataReadinessFacts. */
+export type MeasurementDataRequirement =
+  | "sitePixel"
+  | "conversionEvents"
+  | "crmSeedList"
+  | "leadOrRevenueExports"
+  | "offlineSalesData"
+  | "locationData"
+  | "productFeed";
+
+export const MEASUREMENT_DATA_REQUIREMENTS: Array<{ id: MeasurementDataRequirement; label: string; description: string }> = [
+  { id: "sitePixel", label: "Site pixel", description: "The client can place a tracking pixel on their site." },
+  { id: "conversionEvents", label: "Conversion tracking", description: "Lower-funnel site actions (purchases, forms, bookings) can be tracked." },
+  { id: "crmSeedList", label: "CRM / customer list", description: "The client can share a customer or CRM list." },
+  { id: "leadOrRevenueExports", label: "Lead or revenue export", description: "The client can send recurring lead or revenue exports from their CRM." },
+  { id: "offlineSalesData", label: "Offline sales data", description: "Point-of-sale or offline transaction data is available." },
+  { id: "locationData", label: "Physical locations", description: "The client has stores, venues or other physical locations to measure visits to." },
+  { id: "productFeed", label: "Product feed", description: "A product or SKU feed is available." },
+];
+
+export interface MeasurementPlanningSetting {
+  measurementId: string;
+  /** From the workbook; shown for reference, not editable. */
+  displayName: string;
+  availability: MeasurementAvailability;
+  /**
+   * When the brief says the client lacks any of these ("cannot place pixels"), ScoutAI does not
+   * recommend the product. Unknown does not block: most briefs say nothing about data.
+   */
+  dataRequirements: MeasurementDataRequirement[];
+}
+
 export interface PlanningSettings {
   version: typeof PLANNING_SETTINGS_VERSION;
   overviewMetrics: OverviewMetricSetting[];
@@ -216,6 +255,8 @@ export interface PlanningSettings {
   ctvTier3TargetPercent?: number;
   /** Assumptions behind Est. Monthly Reach and Avg Monthly Frequency. See src/planning/reach. */
   reach: ReachSettings;
+  /** One row per live workbook measurement product. See mergeMeasurementSettings. */
+  measurement: MeasurementPlanningSetting[];
 }
 
 export interface SettingsValidationResult {
@@ -276,6 +317,49 @@ function inferEnhancementChannels(name: string, attachesTo: string[]): string[] 
   return ["Any Channel"];
 }
 
+// Starting requirements, from each product's outcome source in the workbook: anything that reads
+// conversions off the client's site needs a pixel, and the rest need the data they match against.
+const DEFAULT_MEASUREMENT_REQUIREMENTS: Record<string, MeasurementDataRequirement[]> = {
+  "measurement.leadmatch": ["sitePixel", "conversionEvents", "leadOrRevenueExports"],
+  "measurement.online_booking_order_attribution": ["sitePixel", "conversionEvents"],
+  "measurement.consumer_journey_analytics_opa": ["sitePixel", "conversionEvents"],
+  "measurement.halo_effect": ["sitePixel"],
+  "measurement.foot_traffic": ["locationData"],
+};
+
+function defaultMeasurementSettings(): MeasurementPlanningSetting[] {
+  return planningKnowledgeBase.measurementCapabilities
+    .filter((record) => record.status === "live")
+    .map((record) => ({
+      measurementId: record.id,
+      displayName: record.displayName,
+      availability: record.recommendationEligible ? "recommend" : "manual",
+      dataRequirements: [...(DEFAULT_MEASUREMENT_REQUIREMENTS[record.id] || [])],
+    }));
+}
+
+/**
+ * The workbook owns which measurement products exist; settings own how they are used. Stored rows
+ * are matched to the catalog by id, so a product added to the workbook appears with its defaults
+ * and one retired from it drops out, without a migration each time.
+ */
+export function mergeMeasurementSettings(stored: unknown): MeasurementPlanningSetting[] {
+  const rows = Array.isArray(stored) ? stored.filter((row) => row && typeof row === "object") as Array<Partial<MeasurementPlanningSetting>> : [];
+  const byId = new Map(rows.map((row) => [row.measurementId, row]));
+  const knownRequirements = new Set(MEASUREMENT_DATA_REQUIREMENTS.map((requirement) => requirement.id));
+  return defaultMeasurementSettings().map((def) => {
+    const row = byId.get(def.measurementId);
+    if (!row) return def;
+    return {
+      ...def,
+      availability: MEASUREMENT_AVAILABILITIES.includes(row.availability as MeasurementAvailability) ? row.availability as MeasurementAvailability : def.availability,
+      dataRequirements: Array.isArray(row.dataRequirements)
+        ? [...new Set(row.dataRequirements.filter((id) => knownRequirements.has(id)))]
+        : def.dataRequirements,
+    };
+  });
+}
+
 function buildDefaultSettings(): PlanningSettings {
   return {
     version: PLANNING_SETTINGS_VERSION,
@@ -326,6 +410,7 @@ function buildDefaultSettings(): PlanningSettings {
     ctvTier2TargetPercent: 45,
     ctvTier3TargetPercent: 20,
     reach: buildDefaultReachSettings(),
+    measurement: defaultMeasurementSettings(),
   };
 }
 
@@ -386,6 +471,7 @@ export function clonePlanningSettings(settings: PlanningSettings): PlanningSetti
       ? Math.max(0, Math.min(100, Math.round(settings.ctvTier3TargetPercent)))
       : 20,
     reach: settings.reach ? cloneReachSettings(mergeReachSettings(settings.reach)) : buildDefaultReachSettings(),
+    measurement: mergeMeasurementSettings(settings.measurement),
   };
 }
 
@@ -553,6 +639,16 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
   if (candidate.reach) validateReachSettings(reach, errors);
   else errors.push("Reach settings are required.");
 
+  if (!Array.isArray(candidate.measurement)) errors.push("Measurement settings are required.");
+  else {
+    candidate.measurement.forEach((row) => {
+      const label = row?.displayName || row?.measurementId || "Measurement product";
+      if (!MEASUREMENT_AVAILABILITIES.includes(row?.availability)) errors.push(`${label} availability must be Recommend, Manual add only, or Off.`);
+      if (!Array.isArray(row?.dataRequirements)) errors.push(`${label} data requirements must be a list.`);
+    });
+  }
+  const measurement = mergeMeasurementSettings(candidate.measurement);
+
   if (errors.length > 0) return { valid: false, errors };
   return {
     valid: true,
@@ -571,6 +667,7 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
       ctvTier2TargetPercent,
       ctvTier3TargetPercent,
       reach,
+      measurement,
     },
   };
 }
@@ -582,7 +679,17 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
  */
 export function migrateStoredSettings(value: unknown, defaults: PlanningSettings = DEFAULT_PLANNING_SETTINGS): unknown {
   if (!value || typeof value !== "object") return clonePlanningSettings(defaults);
-  return withVersion6Defaults(migrateToVersion5Shape(value, defaults));
+  return withVersion7Defaults(withVersion6Defaults(migrateToVersion5Shape(value, defaults)));
+}
+
+/**
+ * Version 7 made measurement products configurable. Older records get the workbook's live
+ * products with their default data requirements, which is what the engine applied before.
+ */
+function withVersion7Defaults(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const stored = value as Record<string, unknown>;
+  return { ...stored, version: PLANNING_SETTINGS_VERSION, measurement: mergeMeasurementSettings(stored.measurement) };
 }
 
 /**

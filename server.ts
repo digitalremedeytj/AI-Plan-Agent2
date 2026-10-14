@@ -2293,7 +2293,7 @@ async function scoutApplyContext(storage: StorageAdapter, plan: { id: string; ad
     storage.getCurrentPublishers(),
     Number.isInteger(plan.settingsRevision) ? storage.getSettingsRevision(plan.settingsRevision as number) : storage.getCurrentSettings(),
   ]);
-  const validated = validatePlanningSettings(settingsRecord?.settings);
+  const validated = validatePlanningSettings(migrateStoredSettings(settingsRecord?.settings));
   // Client learnings are checked against the campaigns linked to the plan when they are proposed
   // and again when they are applied, so a campaign unlinked in between cannot slip one through.
   const linked = await linkedCampaigns(storage, plan.id);
@@ -2316,7 +2316,7 @@ async function refreshCampaignRecap(storage: StorageAdapter, plan: { id: string;
       storage.getCurrentPublishers(),
       Number.isInteger(plan.settingsRevision) ? storage.getSettingsRevision(plan.settingsRevision as number) : storage.getCurrentSettings(),
     ]);
-    const validated = validatePlanningSettings(settingsRecord?.settings);
+    const validated = validatePlanningSettings(migrateStoredSettings(settingsRecord?.settings));
     const context = {
       publisherCatalog: publishers.map((p) => ({ name: p.name, category: p.category, enabled: p.enabled })),
       planningSettings: validated.valid && validated.settings ? validated.settings : DEFAULT_PLANNING_SETTINGS,
@@ -4618,7 +4618,7 @@ INSTRUCTIONS:
     if (pastCampaignIds.length > 0) {
       try {
         const past = await campaignsById(await getStorage(), pastCampaignIds);
-        const validated = validatePlanningSettings(planningSettings);
+        const validated = validatePlanningSettings(migrateStoredSettings(planningSettings));
         const channels = aiCandidateProducts(validated.valid && validated.settings ? validated.settings : DEFAULT_PLANNING_SETTINGS)
           .map((product: any) => ({ id: product.id, name: product.displayName, aliases: product.aliases || [] }));
         history = buildGenerationHistory(past, { advertiser: cleanAdvertiserName, channels, publisherPool: enabledPublishersForHistory(effectivePublishers) });

@@ -251,3 +251,50 @@ test("stored overview metrics pick up renamed labels, keeping their show choice"
   assert.equal(reach.label, "Estimated Reach");
   assert.equal(reach.show, false);
 });
+
+test("version 6 settings keep their edits and gain the measurement defaults the engine used before", () => {
+  const { measurement: _measurement, ...withoutMeasurement } = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  const stored = { ...withoutMeasurement, version: 6, ctvPublisherTargetCount: 11 };
+  const result = validatePlanningSettings(migrateStoredSettings(stored));
+  assert.equal(result.valid, true, result.errors.join("; "));
+  assert.equal(result.settings?.version, PLANNING_SETTINGS_VERSION);
+  assert.equal(result.settings?.ctvPublisherTargetCount, 11);
+  const opa = result.settings?.measurement.find((row) => row.measurementId === "measurement.consumer_journey_analytics_opa");
+  assert.equal(opa?.availability, "recommend");
+  assert.deepEqual(opa?.dataRequirements, ["sitePixel", "conversionEvents"]);
+});
+
+test("a planner's measurement edits survive save and reload", () => {
+  const storage = new MemoryStorage();
+  const settings = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  settings.measurement = settings.measurement.map((row) =>
+    row.measurementId === "measurement.brand_lift" ? { ...row, availability: "manual", dataRequirements: ["crmSeedList"] } : row,
+  );
+  assert.equal(savePlanningSettings(storage, settings).valid, true);
+  const brandLift = loadPlanningSettings(storage).measurement.find((row) => row.measurementId === "measurement.brand_lift");
+  assert.equal(brandLift?.availability, "manual");
+  assert.deepEqual(brandLift?.dataRequirements, ["crmSeedList"]);
+});
+
+test("measurement rows follow the workbook: retired products drop out and unknown requirements are ignored", () => {
+  const settings: any = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  settings.measurement = [
+    ...settings.measurement.filter((row: any) => row.measurementId !== "measurement.halo_effect"),
+    { measurementId: "measurement.retired_product", displayName: "Retired", availability: "recommend", dataRequirements: [] },
+  ];
+  settings.measurement[0] = { ...settings.measurement[0], dataRequirements: ["sitePixel", "telepathy"] };
+  const result = validatePlanningSettings(settings);
+  assert.equal(result.valid, true, result.errors.join("; "));
+  const ids = result.settings!.measurement.map((row) => row.measurementId);
+  assert.ok(ids.includes("measurement.halo_effect"));
+  assert.ok(!ids.includes("measurement.retired_product"));
+  assert.deepEqual(result.settings!.measurement[0].dataRequirements, ["sitePixel"]);
+});
+
+test("an invalid measurement availability blocks a save", () => {
+  const settings: any = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  settings.measurement[0] = { ...settings.measurement[0], availability: "sometimes" };
+  const result = validatePlanningSettings(settings);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((error) => /availability must be/.test(error)));
+});

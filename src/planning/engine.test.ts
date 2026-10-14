@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCampaignFacts, buildMediaRecommendationPlan, inferAudienceType, measurementFitsCampaign, profileSignals, tacticFitsCampaign } from "./engine";
+import { buildCampaignFacts, buildMediaRecommendationPlan, channelRecordOptions, inferAudienceType, measurementFitsCampaign, profileSignals, tacticFitsCampaign } from "./engine";
 import { planningKnowledgeBase, resolveCompatibilityTacticIds } from "./knowledge/normalizeWorkbook";
 import { validatePlanningKnowledgeBase } from "./knowledge/normalizeWorkbook";
 import { validateProductRegistry } from "./knowledge/registry";
@@ -667,4 +667,48 @@ test("pixel negations are read from the planner's own phrasing", () => {
   }
   assert.equal(pixelFor("Site pixel installed on all pages"), true);
   assert.equal(pixelFor("Promote the hospital statewide"), "unknown");
+});
+
+const ynhhFacts = (planningSettings = settings(), additionalContext = "Cannot place pixels so can't track lower funnel activity") => buildCampaignFacts({
+  kpis: ["awareness", "reach", "brand lift", "site visits"],
+  additionalContext,
+  workingMediaBudget: 50_000,
+  campaignFlightDays: 30,
+  requiredChannelIds: ["channel.ctv"],
+  planningSettings,
+});
+const recommendedMeasurement = (facts: ReturnType<typeof buildCampaignFacts>) =>
+  buildMediaRecommendationPlan(facts).channels.flatMap((channel) => channel.measurementCapabilities.map((record) => record.id));
+const withMeasurement = (id: string, patch: object) => {
+  const s = settings();
+  s.measurement = s.measurement.map((row) => (row.measurementId === id ? { ...row, ...patch } : row));
+  return s;
+};
+const ctv = () => {
+  const product = buildMediaRecommendationPlan(ynhhFacts()).evaluatedCandidates.find((candidate) => candidate.product.id === "channel.ctv")!.product;
+  return product;
+};
+
+test("a data requirement added in Settings blocks the product when the brief rules that data out", () => {
+  assert.ok(recommendedMeasurement(ynhhFacts()).includes("measurement.brand_lift"));
+  const s = withMeasurement("measurement.brand_lift", { dataRequirements: ["sitePixel"] });
+  assert.ok(!recommendedMeasurement(ynhhFacts(s)).includes("measurement.brand_lift"));
+});
+
+test("clearing a product's data requirements in Settings lets it be recommended without a pixel", () => {
+  const s = withMeasurement("measurement.consumer_journey_analytics_opa", { dataRequirements: [] });
+  const facts = ynhhFacts(s);
+  assert.equal(measurementFitsCampaign({ id: "measurement.consumer_journey_analytics_opa" }, facts), true);
+});
+
+test("manual-only measurement is never recommended but can still be added by a planner", () => {
+  const s = withMeasurement("measurement.brand_lift", { availability: "manual" });
+  assert.ok(!recommendedMeasurement(ynhhFacts(s)).includes("measurement.brand_lift"));
+  assert.ok(channelRecordOptions(ctv(), s).measurementCapabilities.some((record) => record.id === "measurement.brand_lift"));
+});
+
+test("measurement switched off in Settings is neither recommended nor offered for manual add", () => {
+  const s = withMeasurement("measurement.brand_lift", { availability: "off" });
+  assert.ok(!recommendedMeasurement(ynhhFacts(s)).includes("measurement.brand_lift"));
+  assert.ok(!channelRecordOptions(ctv(), s).measurementCapabilities.some((record) => record.id === "measurement.brand_lift"));
 });

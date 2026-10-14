@@ -7,7 +7,7 @@ import {
 } from "./knowledge/registry";
 import { planningKnowledgeBase } from "./knowledge/normalizeWorkbook";
 import { findEffectiveProduct, resolveEffectiveProducts } from "./effectiveProducts";
-import { findBudgetChannelTier, normalizeCampaignBudget, type PlanningSettings } from "./settings";
+import { findBudgetChannelTier, mergeMeasurementSettings, normalizeCampaignBudget, type MeasurementPlanningSetting, type PlanningSettings } from "./settings";
 import type {
   AiCandidateSignal,
   AllocationAuditEntry,
@@ -887,12 +887,8 @@ function verticalAllowed(gate: string, vertical: string): boolean {
 // order attached LeadMatch and MatchBack to every CTV, display and video line and CrossView to
 // search and social. A product listed here with a 'requires' only attaches when the campaign
 // shows that condition; 'serves' ranks it for the KPIs it measures.
-// Products that read conversions off the site need a pixel; when the brief rules one out
-// ("cannot place pixels"), they cannot report anything and must not be recommended.
-const canTrackSite = (f: CampaignFacts) => f.dataReadiness.sitePixel !== false && f.dataReadiness.conversionEvents !== false;
-
 const MEASUREMENT_FIT: Record<string, { requires?: (facts: CampaignFacts, context: string) => boolean; serves?: string[] }> = {
-  "measurement.leadmatch": { requires: (f, c) => canTrackSite(f) && includesAny(c, ["lead gen", "lead-gen", "leads", "lead quality", "form fill", "form submission", "qualified lead"]) > 0 },
+  "measurement.leadmatch": { requires: (_f, c) => includesAny(c, ["lead gen", "lead-gen", "leads", "lead quality", "form fill", "form submission", "qualified lead"]) > 0 },
   "measurement.matchback": {
     requires: (f, c) => f.dataReadiness.crmSeedList === true || f.dataReadiness.offlineSalesData === true || f.dataReadiness.leadOrRevenueExports === true || includesAny(c, ["crm", "point of sale", "pos data", "offline sales"]) > 0,
   },
@@ -904,15 +900,25 @@ const MEASUREMENT_FIT: Record<string, { requires?: (facts: CampaignFacts, contex
   "measurement.in_store_sales_lift_pathformance": { requires: (f) => includesAny([...f.kpis, f.primaryKpi].join(" "), ["in-store sales", "store sales", "retail sales lift"]) > 0 },
   "measurement.consumer_panel_circana": { requires: (_f, c) => includesAny(c, ["cpg", "consumer packaged"]) > 0 },
   "measurement.cpg_sales_validation_circana_marketlift": { requires: (_f, c) => includesAny(c, ["cpg", "consumer packaged"]) > 0 },
-  "measurement.online_booking_order_attribution": { requires: canTrackSite, serves: ["site visit", "online sale", "ecommerce", "e-commerce", "conversion", "purchase", "booking", "order", "traffic", "sign up", "signup", "subscription"] },
-  "measurement.consumer_journey_analytics_opa": { requires: canTrackSite, serves: ["full-funnel", "full funnel", "conversion", "site visit"] },
+  "measurement.online_booking_order_attribution": { serves: ["site visit", "online sale", "ecommerce", "e-commerce", "conversion", "purchase", "booking", "order", "traffic", "sign up", "signup", "subscription"] },
+  "measurement.consumer_journey_analytics_opa": { serves: ["full-funnel", "full funnel", "conversion", "site visit"] },
   "measurement.reach_and_frequency": { serves: ["awareness", "reach", "frequency", "full-funnel", "full funnel"] },
   "measurement.brand_lift": { serves: ["awareness", "brand lift", "consideration", "perception"] },
   "measurement.incrementality": { serves: ["incremental", "lift", "causal"] },
-  "measurement.halo_effect": { requires: canTrackSite, serves: ["search", "halo"] },
+  "measurement.halo_effect": { serves: ["search", "halo"] },
 };
 
+function measurementSettings(settings: PlanningSettings): Map<string, MeasurementPlanningSetting> {
+  return new Map(mergeMeasurementSettings(settings?.measurement).map((row) => [row.measurementId, row]));
+}
+
+/** Data the brief says the client does not have, among what this product needs (Settings > Measurement). */
+export function missingMeasurementData(setting: MeasurementPlanningSetting | undefined, facts: CampaignFacts): string[] {
+  return (setting?.dataRequirements ?? []).filter((requirement) => facts.dataReadiness[requirement] === false);
+}
+
 export function measurementFitsCampaign(record: { id: string }, facts: CampaignFacts): boolean {
+  if (missingMeasurementData(measurementSettings(facts.settings).get(record.id), facts).length > 0) return false;
   const requires = MEASUREMENT_FIT[record.id]?.requires;
   return requires ? requires(facts, triggerText(facts)) : true;
 }
@@ -926,9 +932,10 @@ function measurementRelevance(record: { id: string; trigger: string }, facts: Ca
 
 function attachMeasurement(product: MediaProductRecord, facts: CampaignFacts): AttachedPlanningRecord[] {
   const context = triggerText(facts);
+  const settings = measurementSettings(facts.settings);
   const eligible = planningKnowledgeBase.measurementCapabilities.filter((record) =>
     record.status === "live" &&
-    record.recommendationEligible &&
+    settings.get(record.id)?.availability === "recommend" &&
     attachmentMatches(record.attachesTo, product) &&
     verticalAllowed(record.verticalGate, facts.vertical) &&
     measurementFitsCampaign(record, facts),
@@ -1097,8 +1104,9 @@ export function channelRecordOptions(product: MediaProductRecord, settings: Plan
     inventoryControls: planningKnowledgeBase.inventoryControls
       .filter((record) => attachmentMatches(record.attachesTo, product))
       .map(({ id, displayName, rationale }) => ({ id, displayName, rationale })),
+    // "Manual add only" products stay offered here; only "Off" removes one.
     measurementCapabilities: planningKnowledgeBase.measurementCapabilities
-      .filter((record) => record.status === "live" && record.recommendationEligible && attachmentMatches(record.attachesTo, product))
+      .filter((record) => record.status === "live" && (measurementSettings(settings).get(record.id)?.availability ?? "off") !== "off" && attachmentMatches(record.attachesTo, product))
       .map(({ id, displayName, rationale, pricing, limitation }) => ({ id, displayName, rationale, pricing, limitation })),
   };
 }
