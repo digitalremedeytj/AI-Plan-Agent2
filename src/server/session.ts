@@ -72,6 +72,17 @@ export function verifySessionToken(token: string | undefined): SessionUser | nul
   }
 }
 
+/**
+ * A stable, pseudonymous id for Google Analytics' user_id. GA's terms forbid sending names,
+ * so it gets a keyed hash instead: the same person (however they capitalise their name) maps
+ * to the same id across devices, and the id cannot be reversed without the signing key.
+ * Names are only attached to usage in the server-side usage log.
+ */
+export function analyticsIdFor(name: string): string {
+  const normalized = name.trim().toLowerCase().replace(/\s+/g, " ");
+  return crypto.createHmac("sha256", getSigningKey()).update(`analytics:${normalized}`).digest("hex").slice(0, 32);
+}
+
 function sign(payload: string): string {
   return crypto.createHmac("sha256", getSigningKey()).update(payload).digest("base64url");
 }

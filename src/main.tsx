@@ -3,6 +3,10 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
+import { initAnalytics } from './analytics';
+
+// Before the first render, so the identity and screen effects have a tag to report to.
+initAnalytics();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

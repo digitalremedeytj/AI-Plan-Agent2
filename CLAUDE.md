@@ -87,6 +87,9 @@ src/research/           Crawl, Brief of Record (the audience every step is built
                         fingerprint for the out-of-date badge, fact guards, hand edits).
 src/api/                Typed browser client for the shared store + one-time
                         localStorage migration.
+src/analytics.ts        Google Analytics 4. Never sends a real URL (share tokens) or a name.
+src/usage/              Server-side usage log summary behind Settings -> Usage. See
+                        documentation/ANALYTICS.md before adding or renaming an event.
 src/components/         Extracted UI (SettingsDrawer, charts, tabs).
 documentation/          Technical guides. SHARED_PLANS_AND_SETTINGS.md is the
                         storage/auth reference.

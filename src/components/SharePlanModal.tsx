@@ -12,6 +12,7 @@ import {
   Lock
 } from "lucide-react";
 import * as api from "../api/client";
+import { track } from "../analytics";
 
 interface SharePlanModalProps {
   isOpen: boolean;
@@ -44,6 +45,7 @@ export const SharePlanModal: React.FC<SharePlanModalProps> = ({
     setError(null);
     try {
       const res = await api.enablePlanShare(planId, regenerate);
+      track("share_link_create", { plan_id: planId, regenerated: regenerate });
       setIsShared(Boolean(res.isShared));
       setShareToken(res.shareToken);
       onShareStatusChanged(Boolean(res.isShared), res.shareToken);
@@ -99,6 +101,7 @@ export const SharePlanModal: React.FC<SharePlanModalProps> = ({
     }
 
     if (success) {
+      track("share_link_copy", { plan_id: planId });
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } else {
@@ -118,6 +121,7 @@ export const SharePlanModal: React.FC<SharePlanModalProps> = ({
     setError(null);
     try {
       await api.revokePlanShare(planId);
+      track("share_link_revoke", { plan_id: planId });
       setIsShared(false);
       setShareToken(null);
       onShareStatusChanged(false, null);

@@ -260,6 +260,33 @@ export function toCampaignSummary(campaign: PerformanceCampaign): PerformanceCam
   return summary;
 }
 
+// --- usage log -------------------------------------------------------------------
+
+/**
+ * One thing a person did, recorded server-side for the admin Usage report. Google Analytics
+ * covers the same ground but may not receive names (its terms forbid personal data) and is
+ * blocked by some browsers, so this log is what "who used it" is answered from.
+ * Append-only: events are never edited or removed.
+ */
+export interface UsageEvent {
+  id: string;
+  /** ISO timestamp, set by the server. */
+  at: string;
+  /** Display name from the session, or SHARE_VIEWER_ACTOR for an unauthenticated share link. */
+  actor: string;
+  action: string;
+  planId?: string;
+  advertiserName?: string;
+  /** How long the action took, for generation and other long calls. */
+  durationMs?: number;
+  /** False when the action failed. Absent means it is not a pass/fail action. */
+  ok?: boolean;
+  /** A short qualifier, e.g. the export format or which slide studio. */
+  detail?: string;
+}
+
+export const SHARE_VIEWER_ACTOR = "(client share link)";
+
 /** Raised when a caller's If-Match revision no longer matches the stored plan. */
 export class RevisionConflictError extends Error {
   readonly currentRevision: number;
@@ -320,4 +347,8 @@ export interface StorageAdapter {
   updatePerformanceCampaign(id: string, input: PerformanceCampaignInput, expectedRevision: number): Promise<PerformanceCampaign>;
   /** Soft delete, like plans. */
   archivePerformanceCampaign(id: string, actor: string): Promise<void>;
+
+  recordUsageEvent(event: UsageEvent): Promise<void>;
+  /** Every event at or after `sinceIso`, oldest first. */
+  listUsageEvents(sinceIso: string): Promise<UsageEvent[]>;
 }

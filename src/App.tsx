@@ -133,6 +133,7 @@ import {
 } from "./planning/knowledge/ctvPublishers";
 import * as api from "./api/client";
 import { ApiError, type PlanSummary, type SessionUser } from "./api/client";
+import { identifyShareViewer, identifyUser, track, trackClientAction, trackScreen } from "./analytics";
 import { migrateLocalPlans } from "./api/migrateLocalPlans";
 import { BriefOfRecordCard } from "./components/BriefOfRecordCard";
 import { ExecutiveBriefSection, type ExecutiveBriefStatus } from "./components/ExecutiveBriefSection";
@@ -567,6 +568,7 @@ export default function App() {
         adminPassword: adminPasswordInput || undefined,
       });
       setSession(user);
+      track("login", { method: user.isAdmin ? "admin" : "password" });
       setLoginError(null);
       setPasswordInput("");
       setAdminPasswordInput("");
@@ -579,6 +581,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    track("logout");
     try {
       await api.logout();
     } catch (err) {
@@ -1625,6 +1628,14 @@ export default function App() {
     return null;
   });
   const isShareView = Boolean(shareToken);
+
+  // Analytics identity first, then the screen, so the page_view is attributed to the right
+  // user type. A planner opening their own share link while signed in stays "staff".
+  React.useEffect(() => {
+    if (session) identifyUser(session);
+    else if (isShareView) identifyShareViewer();
+    else identifyUser(null);
+  }, [session, isShareView]);
   // Which plan's generated slides the slide studios show. A plan without a saved id shares one
   // "unsaved" bucket, emptied whenever the open plan is cleared so a new run starts with none.
   const slidePlanKey = activeSavedId ?? (shareToken ? `share:${shareToken}` : UNSAVED_PLAN_SLIDE_KEY);
@@ -1633,6 +1644,17 @@ export default function App() {
   }, [activeSavedId]);
   const [sharedPlanLoading, setSharedPlanLoading] = useState<boolean>(Boolean(shareToken));
   const [sharedPlanError, setSharedPlanError] = useState<string | null>(null);
+  // One virtual page per screen: the app has no routes, so GA would otherwise see one page view
+  // per visit. The plan view ("overview" in the UI) is reported as "plan".
+  const analyticsScreen = isShareView
+    ? (sharedPlanLoading || sharedPlanError ? null : "share")
+    : !isSessionChecked ? null : !isAuthenticated ? "login" : leftTab === "overview" ? "plan" : leftTab;
+  React.useEffect(() => {
+    if (analyticsScreen) trackScreen(analyticsScreen);
+  }, [analyticsScreen]);
+  React.useEffect(() => {
+    if (isSettingsOpen) track("settings_open", { is_admin: canEditSettings });
+  }, [isSettingsOpen]);
 
   // Share Management Modal State (for planners)
   const [shareModalPlan, setShareModalPlan] = useState<{
@@ -2042,9 +2064,13 @@ export default function App() {
     return null;
   };
 
+  // Exports never reach the server, so they are reported from here (GA and the usage log).
+  const trackExport = (format: string) => trackClientAction("export", { planId: activeSavedId, advertiserName, format });
+
   const handleExportSegmentsCsv = () => {
     const segments = profileData?.segmentRecommendations ?? [];
     if (!profileData || segments.length === 0) return;
+    trackExport("segments_csv");
     const base = (advertiserName.trim() || profileData.personas?.[0]?.name || "audience")
       .replace(/[^a-z0-9]+/gi, "_")
       .replace(/^_+|_+$/g, "")
@@ -2293,15 +2319,19 @@ export default function App() {
       };
       const expectedRevision = activePlanRevisionRef.current;
 
+      let savedPlanId: string;
       if (activeSavedId && expectedRevision !== null) {
         const updated = await api.updatePlan(activeSavedId, expectedRevision, input);
         markPlanPersisted(updated);
+        savedPlanId = updated.id;
       } else {
         const created = await api.createPlan(input);
         if (!activeSavedId) movePlanSlides(UNSAVED_PLAN_SLIDE_KEY, created.id);
         setActiveSavedId(created.id);
         markPlanPersisted(created);
+        savedPlanId = created.id;
       }
+      trackClientAction("plan_save", { planId: savedPlanId, advertiserName: input.advertiserName });
       segmentsDirtyRef.current = false;
       hiddenSectionsDirtyRef.current = false;
       reachPrefsDirtyRef.current = false;
@@ -2553,6 +2583,7 @@ export default function App() {
       .then((stored) => {
         applyPlanToWorkspace(stored, true);
         setLeftTab("overview");
+        track("share_view", { plan_id: stored.id, advertiser_name: stored.advertiserName });
       })
       .catch((err: any) => {
         console.error("Could not load shared plan:", err);
@@ -2577,6 +2608,7 @@ export default function App() {
     try {
       const saved = await api.getPlan(summary.id);
       applyPlanToWorkspace(saved, false);
+      trackClientAction("plan_open", { planId: saved.id, advertiserName: saved.advertiserName });
     } catch (err: any) {
       console.error("Could not open plan:", err);
       setPlansError(err?.message || "Could not open that plan.");
@@ -3010,6 +3042,13 @@ export default function App() {
     setLoading(true);
     setError(null);
     setRegenType(typeOverride || null);
+    const generationStartedAt = Date.now();
+    const generationParams = {
+      advertiser_name: advertiserName,
+      mode: typeOverride ? `regenerate_${typeOverride}` : briefMode === "upload" ? "media_plan_upload" : "brief",
+      quick_mode: quickMode,
+    };
+    track("plan_generate_start", generationParams);
     setPersonaPage(0);
     setArePersonasExpanded(false);
     setIsDomainAffinityExpanded(false);
@@ -3176,8 +3215,14 @@ export default function App() {
       if (!sawComplete) {
         throw new Error("The research stream ended before a profile was returned. The server may have timed out or restarted. Please try again.");
       }
+      track("plan_generate_complete", { ...generationParams, duration_sec: Math.round((Date.now() - generationStartedAt) / 1000) });
     } catch (err: any) {
       console.error(err);
+      track("plan_generate_fail", {
+        ...generationParams,
+        duration_sec: Math.round((Date.now() - generationStartedAt) / 1000),
+        reason: err?.name === "AbortError" ? "client_timeout" : "error",
+      });
       const message = err?.name === "AbortError"
         ? `Generation exceeded ${Math.round(CLIENT_GENERATION_TIMEOUT_MS / 60000)} minutes and was cancelled. Please try again, or simplify the brief.`
         : (err.message || "An unexpected error occurred during profile generation.");
@@ -3341,6 +3386,7 @@ export default function App() {
 
   const handleExportRecap = async (target: number | "pdf") => {
     if (!profileData?.campaignRecap || recapExporting) return;
+    trackExport(target === "pdf" ? "recap_pdf" : "recap_slide");
     setRecapExporting(true);
     setRecapError(null);
     try {
@@ -3583,6 +3629,7 @@ export default function App() {
   // Copy Profile Markdown to clipboard
   const handleCopyProfile = () => {
     if (!profileData) return;
+    trackExport("copy_plan");
     const md = exportProfileToMarkdown(profileData, false, false);
     navigator.clipboard.writeText(md);
     setCopyProfileCopied(true);
@@ -3592,6 +3639,7 @@ export default function App() {
   // Copy Sources Markdown to clipboard
   const handleCopySources = () => {
     if (!profileData) return;
+    trackExport("copy_sources");
     const md = exportSourcesToMarkdown(profileData);
     navigator.clipboard.writeText(md);
     setCopySourcesCopied(true);
@@ -3789,6 +3837,7 @@ export default function App() {
   // Download Profile Markdown file
   const handleDownloadMarkdown = () => {
     if (!profileData) return;
+    trackExport("markdown");
     const md = exportProfileToMarkdown(profileData, true, Boolean(internalOnlyVisibility.qaAudit));
     const blob = new Blob([md], { type: "text/markdown;charset=utf-8;" });
     const fileUrl = URL.createObjectURL(blob);
@@ -3809,6 +3858,7 @@ export default function App() {
   // Download Profile Text file (Markdown format)
   const handleDownloadTxt = () => {
     if (!profileData) return;
+    trackExport("txt");
     const md = exportProfileToMarkdown(profileData, true, Boolean(internalOnlyVisibility.qaAudit));
     const blob = new Blob([md], { type: "text/plain;charset=utf-8;" });
     const fileUrl = URL.createObjectURL(blob);
@@ -3829,6 +3879,7 @@ export default function App() {
   // Download Profile PDF file using html2canvas and jsPDF
   const handleDownloadPDF = async () => {
     if (!profileData) return;
+    trackExport("pdf");
     setPdfGenerating(true);
 
     const originalGetComputedStyle = window.getComputedStyle;
@@ -4047,6 +4098,7 @@ export default function App() {
   // Export 16:9 Slide Image of CTV Publishers & Publisher Insights for Presentations (Detailed or Basic)
   const handleExportCtvSlide = async (variant: 'detailed' | 'basic' = 'detailed') => {
     if (isExportingCtvSlide) return;
+    trackExport(`ctv_slide_${variant}`);
     setIsExportingCtvSlide(true);
     setExportingVariant(variant);
     setCtvSlideExportSuccess(false);

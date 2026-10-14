@@ -15,9 +15,11 @@ import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effe
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
-import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter } from "./src/storage";
+import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent } from "./src/storage";
+import { isClientUsageAction, summarizeUsage, type UsageAction } from "./src/usage/usageSummary";
 import {
   actorName,
+  analyticsIdFor,
   clearSessionCookie,
   createSessionToken,
   getSession,
@@ -418,6 +420,69 @@ app.get("/api/health", async (_req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// ---- Usage log ----
+type UsageExtra = { actor?: string; planId?: string; advertiserName?: string; durationMs?: number; ok?: boolean; detail?: string };
+
+// Who did what, for the admin Usage report (src/usage/usageSummary.ts). Fire-and-forget: a
+// failed write is logged and never fails or slows the action it records. The actor always
+// comes from the session; a request without one is a client opening a share link.
+function logUsage(
+  req: express.Request,
+  action: UsageAction,
+  extra: UsageExtra = {},
+): void {
+  const event: UsageEvent = {
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    actor: extra.actor || getSession(req)?.name || SHARE_VIEWER_ACTOR,
+    action,
+    planId: extra.planId || undefined,
+    advertiserName: extra.advertiserName?.trim().slice(0, 200) || undefined,
+    durationMs: typeof extra.durationMs === "number" ? Math.round(extra.durationMs) : undefined,
+    ok: extra.ok,
+    detail: extra.detail?.slice(0, 60) || undefined,
+  };
+  getStorage()
+    .then((storage) => storage.recordUsageEvent(event))
+    .catch((err) => console.error(`[USAGE] Could not record '${action}':`, err?.message || err));
+}
+
+// Records the action once the response is sent, so it carries the outcome and how long it
+// took. A handler that only learns the plan or advertiser part-way through puts them in
+// res.locals.usage.
+function logUsageOnFinish(req: express.Request, res: express.Response, action: UsageAction, extra: UsageExtra = {}): void {
+  const startedAt = Date.now();
+  res.on("finish", () => {
+    logUsage(req, action, { ...extra, ...(res.locals.usage || {}), durationMs: Date.now() - startedAt, ok: res.statusCode < 400 });
+  });
+}
+
+// Actions only the browser sees, such as a PDF export. Only a fixed list is accepted.
+app.post("/api/usage/events", (req, res) => {
+  const { action, planId, advertiserName, detail } = req.body || {};
+  if (!isClientUsageAction(action)) {
+    res.status(400).json({ error: "Unknown usage action." });
+    return;
+  }
+  const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  logUsage(req, action, { planId: str(planId)?.slice(0, 100), advertiserName: str(advertiserName), detail: str(detail) });
+  res.status(204).end();
+});
+
+// Named usage is visible to admins only, the same people who may change global settings.
+app.get("/api/usage/summary", requireAdmin, async (req, res) => {
+  try {
+    const days = Math.min(365, Math.max(1, Math.round(Number(req.query.days) || 30)));
+    const until = new Date();
+    const since = new Date(until.getTime() - days * 24 * 60 * 60 * 1000);
+    const events = await (await getStorage()).listUsageEvents(since.toISOString());
+    res.json({ success: true, days, summary: summarizeUsage(events, since.toISOString(), until.toISOString()) });
+  } catch (err: any) {
+    console.error("[USAGE] Could not build the usage summary:", err);
+    res.status(500).json({ error: "Failed to load usage", details: err?.message || String(err) });
   }
 });
 
@@ -1636,6 +1701,7 @@ app.get("/api/settings/revisions/:revision", async (req, res) => {
 
 // API: Write the global Planning Settings. Admin-only once ADMIN_PASSWORD is configured.
 app.put("/api/settings", requireAdmin, async (req, res) => {
+  logUsageOnFinish(req, res, "settings_save");
   try {
     const record = await (await getStorage()).saveSettings(req.body, actorName(req));
     res.json({ success: true, settings: record.settings, revision: record.revision });
@@ -1832,11 +1898,12 @@ app.post("/api/auth/login", (req, res) => {
     const user = { name, isAdmin, issuedAt: Date.now() };
     const token = createSessionToken(user);
     setSessionCookie(res, user);
+    logUsage(req, "login", { actor: name });
     console.log(`[AUTH] '${name}' signed in${isAdmin ? " as an administrator" : ""}.`);
     res.json({
       success: true,
       token,
-      user: { name, isAdmin, canEditSettings: isAdminRequestAllowed(user) },
+      user: { name, isAdmin, canEditSettings: isAdminRequestAllowed(user), analyticsId: analyticsIdFor(name) },
     });
   } catch (err: any) {
     console.error("[AUTH ERROR] Error processing login:", err);
@@ -1856,7 +1923,7 @@ app.get("/api/auth/me", (req, res) => {
   res.json({
     authenticated: true,
     token,
-    user: { name: user.name, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user) },
+    user: { name: user.name, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user), analyticsId: analyticsIdFor(user.name) },
     adminPasswordConfigured: isAdminPasswordConfigured(),
   });
 });
@@ -1938,6 +2005,7 @@ app.post("/api/plans", async (req, res) => {
   try {
     const input = planPayloadFromBody(req.body);
     const plan = await (await getStorage()).createPlan({ ...input, actor: actorName(req) });
+    logUsage(req, "plan_create", { planId: plan.id, advertiserName: plan.advertiserName });
     res.status(201).json({ success: true, plan });
   } catch (err: any) {
     respondToStorageError(res, err, "save plan");
@@ -2017,12 +2085,14 @@ const manualAuditOptions = (effort: OpenAiEffort, timeoutMs: number) => ({
 
 app.post("/api/plans/:id/audit", async (req, res) => {
   req.socket.setTimeout(0);
+  logUsageOnFinish(req, res, "qa_audit", { planId: req.params.id });
   try {
     const plan = await (await getStorage()).getPlan(req.params.id);
     if (!plan || plan.archived) {
       res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
       return;
     }
+    res.locals.usage = { advertiserName: plan.advertiserName };
     const { profile, inputs } = auditInputsFromPlan(plan);
     const audit = await runAudit(getOpenaiClient(), profile, inputs, manualAuditOptions(AUDIT_EFFORT, TIMEOUT_AUDIT_MS));
 
@@ -2124,6 +2194,7 @@ app.post("/api/plans/:id/audit/apply", async (req, res) => {
 
 app.post("/api/plans/:id/assistant/chat", async (req, res) => {
   req.socket.setTimeout(0);
+  logUsageOnFinish(req, res, "scout_chat", { planId: req.params.id });
   let streaming = false;
   let analysisTurn = false;
   try {
@@ -2138,6 +2209,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
       return;
     }
+    res.locals.usage = { advertiserName: plan.advertiserName };
     const context = await scoutApplyContext(storage, plan);
     const linked = context.linked;
     const performanceAt = (depth: PerformanceDepth) => buildPerformanceContext(linked, {
@@ -2469,6 +2541,7 @@ app.post("/api/performance/preview", async (req, res) => {
 });
 
 app.post("/api/performance/campaigns", async (req, res) => {
+  logUsageOnFinish(req, res, "performance_upload", { advertiserName: typeof req.body?.advertiserName === "string" ? req.body.advertiserName : undefined });
   try {
     const storage = await getStorage();
     const { files: uploaded, rejected } = readUploadedFiles(req.body?.files, actorName(req));
@@ -2540,6 +2613,7 @@ app.get("/api/performance/campaigns/:id/files/:fileId", async (req, res) => {
 // Details, files and plan links in one revision-checked write. Every field is optional; what is
 // left out stays as it is.
 app.put("/api/performance/campaigns/:id", async (req, res) => {
+  logUsageOnFinish(req, res, "performance_upload", { detail: "update", advertiserName: typeof req.body?.advertiserName === "string" ? req.body.advertiserName : undefined });
   try {
     const expectedRevision = Number(req.get("If-Match"));
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
@@ -2622,6 +2696,7 @@ app.post("/api/performance/campaigns/:id/review", async (req, res) => {
 // one first. Written onto the saved plan with the usual revision check.
 app.post("/api/plans/:id/campaign-recap", async (req, res) => {
   req.socket.setTimeout(0);
+  logUsageOnFinish(req, res, "campaign_recap", { planId: req.params.id });
   let writingPlan = false;
   try {
     const expectedRevision = Number(req.body?.baseRevision);
@@ -2770,6 +2845,7 @@ app.delete("/api/performance/campaigns/:id", async (req, res) => {
 app.delete("/api/plans/:id", async (req, res) => {
   try {
     await (await getStorage()).archivePlan(req.params.id, actorName(req));
+    logUsage(req, "plan_archive", { planId: req.params.id });
     res.json({ success: true });
   } catch (err: any) {
     respondToStorageError(res, err, "archive plan");
@@ -2820,6 +2896,8 @@ app.get("/api/share/plan", async (req, res) => {
       });
       return;
     }
+    // A signed-in planner opening their own link is told apart from a client opening it.
+    logUsage(req, "share_view", { planId: plan.id, advertiserName: plan.advertiserName, detail: getSession(req) ? "staff_preview" : "client" });
     res.json({ success: true, plan: withoutHiddenClientSections(plan) });
   } catch (err: any) {
     respondToStorageError(res, err, "load shared plan");
@@ -2842,6 +2920,10 @@ app.post("/api/plans/:id/share", async (req, res) => {
       shareToken = `sec_${crypto.randomBytes(32).toString("base64url")}`;
     }
     const updated = await storage.setPlanShare(req.params.id, true, shareToken);
+    // Reopening the share dialog on an already-shared plan is not a new share.
+    if (!existing.isShared || shareToken !== existing.shareToken) {
+      logUsage(req, "share_create", { planId: existing.id, advertiserName: existing.advertiserName, detail: regenerate ? "regenerated" : undefined });
+    }
     res.json({ success: true, shareToken: updated.shareToken, isShared: true });
   } catch (err: any) {
     respondToStorageError(res, err, "enable plan sharing");
@@ -2853,6 +2935,7 @@ app.post("/api/plans/:id/unshare", async (req, res) => {
   try {
     const storage = await getStorage();
     const updated = await storage.setPlanShare(req.params.id, false);
+    logUsage(req, "share_revoke", { planId: updated.id, advertiserName: updated.advertiserName });
     res.json({ success: true, shareToken: updated.shareToken, isShared: false });
   } catch (err: any) {
     respondToStorageError(res, err, "revoke plan sharing");
@@ -2967,6 +3050,7 @@ app.post("/api/generate-persona-avatar", async (req, res) => {
 // profile has rendered - like the headshots - so the final, post-remediation personas are
 // the input and none of this time lands on the generate-profile deadline.
 app.post("/api/generate-segments", async (req, res) => {
+  logUsageOnFinish(req, res, "segments_generate", { advertiserName: typeof req.body?.advertiserName === "string" ? req.body.advertiserName : undefined });
   try {
     const request = sanitizeSegmentRequest(req.body);
     const usablePersonaIndices = request.personas
@@ -3018,6 +3102,7 @@ app.post("/api/generate-segments", async (req, res) => {
 // stands. The model writes the words; normalizeBrief fills the facts back in from the plan.
 app.post("/api/executive-brief", async (req, res) => {
   req.socket.setTimeout(0);
+  logUsageOnFinish(req, res, "exec_brief", { advertiserName: typeof req.body?.snapshot?.advertiserName === "string" ? req.body.snapshot.advertiserName : undefined });
   try {
     const snapshot = sanitizeBriefSnapshot(req.body?.snapshot);
     if (snapshot.channels.length === 0) {
@@ -3061,6 +3146,7 @@ const SLIDE_ASPECT_RATIO_CONFIG: Record<
 app.post("/api/personas/generate-slide", async (req, res) => {
   // Prevent socket timeout on long-running image generation
   req.socket.setTimeout(0);
+  logUsageOnFinish(req, res, "slide_generate", { detail: "personas", advertiserName: typeof req.body?.advertiserName === "string" ? req.body.advertiserName : undefined });
 
   try {
     const {
@@ -3450,6 +3536,7 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
 app.post("/api/channels/generate-slide", async (req, res) => {
   // Prevent socket timeout on long-running image generation
   req.socket.setTimeout(0);
+  logUsageOnFinish(req, res, "slide_generate", { detail: "channels", advertiserName: typeof req.body?.advertiserName === "string" ? req.body.advertiserName : undefined });
 
   try {
     const {
@@ -3826,6 +3913,7 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
 app.post("/api/segments/generate-slide", async (req, res) => {
   // Prevent socket timeout on long-running image generation
   req.socket.setTimeout(0);
+  logUsageOnFinish(req, res, "slide_generate", { detail: "segments", advertiserName: typeof req.body?.advertiserName === "string" ? req.body.advertiserName : undefined });
 
   try {
     const {
@@ -4015,6 +4103,7 @@ const MAX_SLIDE_TEXT = 4000;
 
 app.post("/api/executive-brief/generate-slide", async (req, res) => {
   req.socket.setTimeout(0);
+  logUsageOnFinish(req, res, "slide_generate", { detail: "executive_brief" });
   try {
     const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, MAX_SLIDE_TEXT) : "";
     if (!text) {
@@ -4205,6 +4294,21 @@ app.post("/api/generate-profile", async (req, res) => {
     return { onThought: progress.report, done: progress.stop };
   };
 
+  // One usage record per run, whichever way it ends (the stream is a 200 even when it fails).
+  let generationLogged = false;
+  const logGeneration = (ok: boolean, detail?: string) => {
+    if (generationLogged) return;
+    generationLogged = true;
+    logUsage(req, "plan_generate", {
+      advertiserName: typeof advertiserName === "string" ? advertiserName : undefined,
+      durationMs: Date.now() - runStartedAt,
+      ok,
+      detail: detail ?? (regenerateType ? `regenerate_${regenerateType}` : quickMode ? "quick" : undefined),
+    });
+  };
+  // A planner who closes the tab mid-run never sees an error; count it as a failed run.
+  res.on("close", () => logGeneration(false, "abandoned"));
+
   // Heartbeat to prevent connection timeouts during longer generation phases (e.g. synthesis)
   const keepAlive = setInterval(() => {
     res.write(":\n\n");
@@ -4215,6 +4319,7 @@ app.post("/api/generate-profile", async (req, res) => {
     if (Date.now() - lastEventTime > 240000) {
       console.warn("[WATCHDOG] Generation pipeline stalled without output for over 4 minutes. Terminating stream.");
       res.write(`data: ${JSON.stringify({ type: "error", error: "The research generation pipeline stalled. Please try again or simplify parameters." })}\n\n`);
+      logGeneration(false, "stalled");
       clearInterval(keepAlive);
       clearInterval(watchdog);
       res.end();
@@ -5301,6 +5406,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     }
 
     // Return structured profile and citations
+    logGeneration(true);
     sendEvent("complete", {
       savedPlanId,
       profile: finalProfile,
@@ -5309,6 +5415,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
 
   } catch (error: any) {
     console.error("Gemini API Error:", error);
+    logGeneration(false);
     sendEvent("error", {
       error: "An error occurred during audience profile generation.",
       details: error.message || error

@@ -249,3 +249,14 @@ test("the prompt library starts empty, and a stale save is refused instead of ov
   assert.equal(second.revision, 2);
   assert.equal((await adapter.getScoutPrompts())?.prompts[0].title, "Y");
 });
+
+test("usage events are read back oldest first, from the requested time onward", async () => {
+  const adapter = freshAdapter();
+  await adapter.recordUsageEvent({ id: "b", at: "2026-10-02T09:00:00.000Z", actor: "Ana", action: "export", detail: "pdf" });
+  await adapter.recordUsageEvent({ id: "a", at: "2026-10-01T09:00:00.000Z", actor: "Ana", action: "login" });
+  await adapter.recordUsageEvent({ id: "old", at: "2026-09-30T09:00:00.000Z", actor: "Ana", action: "login" });
+
+  const events = await new LocalFileAdapter((adapter as any).rootDir).listUsageEvents("2026-10-01T00:00:00.000Z");
+  assert.deepEqual(events.map((e) => e.id), ["a", "b"]);
+  assert.equal(events[1].detail, "pdf");
+});

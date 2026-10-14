@@ -24,6 +24,7 @@ import {
   type PerformanceCampaign,
   type PerformanceCampaignInput,
   type PerformanceCampaignSummary,
+  type UsageEvent,
 } from "./types";
 
 /**
@@ -35,6 +36,7 @@ import {
  *   settings_revisions/{n}      immutable history, referenced by each plan
  *   publishers/current          live CTV publisher list
  *   performance_campaigns/{id}  past campaign report sets: metadata fields + filesJson
+ *   usage_events/{id}           append-only usage log for the admin Usage report
  *
  * Concurrency is compare-and-swap: every write carries a currentDocument precondition
  * on the updateTime we read, so two people saving the same plan cannot silently clobber
@@ -49,6 +51,7 @@ const PUBLISHERS = "publishers";
 const SCOUT_PROMPTS = "scout_prompts";
 const CURRENT_DOC = "current";
 const PERFORMANCE = "performance_campaigns";
+const USAGE_EVENTS = "usage_events";
 
 const CAMPAIGN_SUMMARY_FIELDS = [
   "id", "revision", "kind", "snapshotsJson", "advertiserName", "advertiserKey", "name", "flightStart", "flightEnd", "conversionLabel", "campaignGoal", "notes",
@@ -563,6 +566,28 @@ export class FirestoreAdapter implements StorageAdapter {
       if (this.isPreconditionFailure(err)) throw new RevisionConflictError(existing.revision, "This campaign was changed by someone else.");
       throw err;
     }
+  }
+
+  // --- usage log -------------------------------------------------------------
+
+  async recordUsageEvent(event: UsageEvent): Promise<void> {
+    const fields = Object.fromEntries(Object.entries(event).filter(([, v]) => v !== undefined));
+    await this.putDocument(USAGE_EVENTS, event.id, fields, { requireAbsent: true });
+  }
+
+  // A range filter and sort on the one field Firestore indexes by default, so no composite
+  // index has to be created by hand before the report works.
+  async listUsageEvents(sinceIso: string): Promise<UsageEvent[]> {
+    const rows = await this.request("POST", ":runQuery", {
+      structuredQuery: {
+        from: [{ collectionId: USAGE_EVENTS }],
+        where: { fieldFilter: { field: { fieldPath: "at" }, op: "GREATER_THAN_OR_EQUAL", value: { stringValue: sinceIso } } },
+        orderBy: [{ field: { fieldPath: "at" }, direction: "ASCENDING" }],
+      },
+    });
+    return (Array.isArray(rows) ? rows : [])
+      .filter((row: any) => row?.document?.fields)
+      .map((row: any) => decodeFields(row.document.fields) as unknown as UsageEvent);
   }
 
   // Lists and files are JSON strings for the same reason plan payloads are: Firestore refuses

@@ -58,6 +58,7 @@ import type { AudienceShareFilter, ReachMediaTypeSetting } from "../planning/rea
 import { DMA_MARKETS, DMA_SOURCE_LABEL } from "../planning/knowledge/dmaMarkets";
 import { NATIONAL_TV_HOUSEHOLDS, STATE_HOUSEHOLDS, STATE_HOUSEHOLDS_SOURCE_LABEL } from "../planning/knowledge/stateHouseholds";
 import { ScoutPromptsSettings } from "./ScoutPromptsSettings";
+import { UsageReport } from "./UsageReport";
 import { planningKnowledgeBase } from "../planning/knowledge/normalizeWorkbook";
 
 interface SettingsDrawerProps {
@@ -76,7 +77,7 @@ interface SettingsDrawerProps {
   saveError?: string | null;
 }
 
-type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "measurement" | "prompts";
+type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "measurement" | "prompts" | "usage";
 
 const MEASUREMENT_AVAILABILITY_OPTIONS: Array<{ id: MeasurementAvailability; label: string; hint: string }> = [
   { id: "recommend", label: "Recommend", hint: "ScoutAI attaches it when the campaign fits." },
@@ -712,6 +713,8 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     { id: "measurement", label: "Measurement", count: safeMeasurement.length },
     { id: "visibility", label: "Visibility", count: safeOverviewMetrics.length + safeInternalOnly.length },
     { id: "prompts", label: "ScoutAI Prompts" },
+    // Names people, so it is shown to the same admins who may edit settings.
+    ...(readOnly ? [] : [{ id: "usage" as const, label: "Usage" }]),
   ];
 
   const currentEditingPub = editingLogoPubId
@@ -787,6 +790,8 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
               </div>
             </div>
           )}
+          {/* A report, not a setting: outside the fieldset, so its range buttons are never disabled. */}
+          {activeTab === "usage" && <UsageReport />}
           {/* min-w-0: a fieldset defaults to min-content width, which lets a wide table stretch the drawer instead of scrolling in its own box. */}
           <fieldset disabled={readOnly} className={`min-w-0 ${readOnly ? "opacity-90" : ""}`}>
           
@@ -2647,11 +2652,11 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
             </div>
           )}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
-            {/* The prompts tab saves itself; these act on the planning settings only. */}
+            {/* The prompts tab saves itself and Usage is read-only; these act on the planning settings only. */}
             <button
               type="button"
               disabled={readOnly}
-              hidden={activeTab === "prompts"}
+              hidden={activeTab === "prompts" || activeTab === "usage"}
               onClick={() => {
                 if (confirm("Reset planning settings to defaults?")) {
                   setDraftSettings(clonePlanningSettings(DEFAULT_PLANNING_SETTINGS));
@@ -2675,7 +2680,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                 type="button"
                 onClick={handleSave}
                 disabled={readOnly}
-                hidden={activeTab === "prompts"}
+                hidden={activeTab === "prompts" || activeTab === "usage"}
                 title={readOnly ? "Only administrators can change global settings." : undefined}
                 className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-bold text-white hover:bg-indigo-700 shadow-sm sm:flex-none disabled:cursor-not-allowed disabled:bg-slate-300"
               >

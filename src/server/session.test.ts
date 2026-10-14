@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  analyticsIdFor,
   createSessionToken,
   getSession,
   isAdminRequestAllowed,
@@ -105,3 +106,11 @@ test("getSession accepts x-session-token header", () => {
   assert.equal(user?.isAdmin, true);
 });
 
+
+test("the analytics id is stable per person, ignores capitalisation, and does not contain the name", () => {
+  const id = analyticsIdFor("TJ Pascal");
+  assert.equal(id, analyticsIdFor(" tj  pascal "));
+  assert.notEqual(id, analyticsIdFor("Ana Smith"));
+  assert.ok(!id.toLowerCase().includes("pascal"));
+  assert.match(id, /^[0-9a-f]{32}$/);
+});

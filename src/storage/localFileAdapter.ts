@@ -23,6 +23,7 @@ import {
   type PerformanceCampaign,
   type PerformanceCampaignInput,
   type PerformanceCampaignSummary,
+  type UsageEvent,
 } from "./types";
 
 /**
@@ -40,6 +41,7 @@ export class LocalFileAdapter implements StorageAdapter {
   private readonly publishersDir: string;
   private readonly performanceDir: string;
   private readonly promptsDir: string;
+  private readonly usageDir: string;
 
   constructor(rootDir: string = path.join(process.cwd(), "data", "store")) {
     this.rootDir = rootDir;
@@ -48,10 +50,11 @@ export class LocalFileAdapter implements StorageAdapter {
     this.publishersDir = path.join(rootDir, "publishers");
     this.performanceDir = path.join(rootDir, "performance");
     this.promptsDir = path.join(rootDir, "scout-prompts");
+    this.usageDir = path.join(rootDir, "usage");
   }
 
   async init(): Promise<void> {
-    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir]) {
+    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
@@ -327,6 +330,32 @@ export class LocalFileAdapter implements StorageAdapter {
   // Records written before live campaigns existed have no kind or snapshots.
   private campaignFromDisk(raw: PerformanceCampaign | null): PerformanceCampaign | null {
     return raw ? { ...raw, kind: raw.kind ?? "past", snapshots: raw.snapshots ?? [] } : null;
+  }
+
+  // --- usage log -------------------------------------------------------------
+
+  // One JSON line per event, one file per UTC day, so a report only reads the days it covers.
+  async recordUsageEvent(event: UsageEvent): Promise<void> {
+    await this.init();
+    fs.appendFileSync(path.join(this.usageDir, `${event.at.slice(0, 10)}.jsonl`), `${JSON.stringify(event)}\n`, "utf-8");
+  }
+
+  async listUsageEvents(sinceIso: string): Promise<UsageEvent[]> {
+    await this.init();
+    const sinceDay = sinceIso.slice(0, 10);
+    const events: UsageEvent[] = [];
+    for (const file of fs.readdirSync(this.usageDir).filter((f) => f.endsWith(".jsonl") && f.slice(0, 10) >= sinceDay)) {
+      for (const line of fs.readFileSync(path.join(this.usageDir, file), "utf-8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line) as UsageEvent;
+          if (event.at >= sinceIso) events.push(event);
+        } catch {
+          // A line cut short by a crash mid-append loses that one event, not the report.
+        }
+      }
+    }
+    return events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   }
 
   private campaignPath(id: string): string {

@@ -10,6 +10,7 @@ import type { PerformanceReview, ReviewFinding } from "../performance/review";
 import type { PlanVsActual } from "../performance/planVsActual";
 import type { PreparedFile } from "../performance/browserFiles";
 import type { PerformanceCampaignSummary } from "../storage/types";
+import type { UsageSummary } from "../usage/usageSummary";
 
 /**
  * Client for the shared server store.
@@ -24,6 +25,8 @@ export interface SessionUser {
   isAdmin: boolean;
   /** True when this user may write global settings (see ADMIN_PASSWORD on the server). */
   canEditSettings: boolean;
+  /** Pseudonymous Google Analytics user_id: a keyed hash of the name, never the name itself. */
+  analyticsId?: string;
 }
 
 /** Server-owned plan metadata. The sidebar renders from these without loading payloads. */
@@ -213,6 +216,26 @@ export async function logout(): Promise<void> {
   } finally {
     setAuthToken(null);
   }
+}
+
+// --- usage -----------------------------------------------------------------
+
+/**
+ * Records an action only the browser sees (an export, opening a plan) in the server's usage
+ * log. Best effort: losing one usage record must never surface as an error to the planner.
+ */
+export function recordUsage(action: "plan_open" | "plan_save" | "export", details: { planId?: string | null; advertiserName?: string; detail?: string } = {}): void {
+  if (!getAuthToken()) return;
+  request("/api/usage/events", {
+    method: "POST",
+    body: JSON.stringify({ action, planId: details.planId || undefined, advertiserName: details.advertiserName, detail: details.detail }),
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
+export async function getUsageSummary(days: number): Promise<UsageSummary> {
+  const body = await request<{ summary: UsageSummary }>(`/api/usage/summary?days=${encodeURIComponent(String(days))}`);
+  return body.summary;
 }
 
 // --- plans -----------------------------------------------------------------
