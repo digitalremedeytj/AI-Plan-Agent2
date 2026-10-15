@@ -12,7 +12,7 @@ import type { PreparedFile } from "../performance/browserFiles";
 import type { PerformanceCampaignSummary } from "../storage/types";
 import type { UsageSummary } from "../usage/usageSummary";
 import type { DashboardData } from "../usage/dashboard";
-import type { DashboardConfig, DashboardLink } from "../storage/types";
+import type { DashboardConfig, DashboardLink, ScoutLog } from "../storage/types";
 
 /**
  * Client for the shared server store.
@@ -540,6 +540,18 @@ export async function askScout(
 /** Thumbs up or down on a ScoutAI answer (null clears it), with an optional note. */
 export async function rateScoutAnswer(logId: string, rating: "up" | "down" | null, comment?: string): Promise<void> {
   await request(`/api/scout-logs/${encodeURIComponent(logId)}/feedback`, { method: "POST", body: JSON.stringify({ rating, ...(comment ? { comment } : {}) }) });
+}
+
+/** Admin-only: every ScoutAI question and answer between two times, newest first. */
+export async function listScoutLogs(options: { days: number; until: string; limit?: number }): Promise<{ logs: ScoutLog[]; since: string; until: string }> {
+  const params = new URLSearchParams({ days: String(options.days), until: options.until, limit: String(options.limit ?? 1000) });
+  return request(`/api/scout-logs?${params}`);
+}
+
+/** Admin-only: the reviewer's own rating of an answer (null clears it). Leaves the planner's thumbs alone. */
+export async function reviewScoutAnswer(logId: string, rating: "up" | "down" | null, notes?: string): Promise<ScoutLog> {
+  const { log } = await request<{ log: ScoutLog }>(`/api/scout-logs/${encodeURIComponent(logId)}/review`, { method: "POST", body: JSON.stringify({ rating, ...(notes ? { notes } : {}) }) });
+  return log;
 }
 
 /** Dry-runs the items a planner has kept. Changes nothing. */

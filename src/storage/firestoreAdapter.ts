@@ -620,6 +620,7 @@ export class FirestoreAdapter implements StorageAdapter {
       ok: log.ok,
       feedbackRating: log.feedback?.rating,
       outcomeStatus: log.outcome?.status,
+      reviewRating: log.review?.rating,
       body: JSON.stringify(log),
     };
   }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildScoutLog, sanitizeConversationId, SCOUT_LOG_LIMITS, type ScoutLogInput } from "./scoutLog";
+import { buildScoutLog, sanitizeConversationId, SCOUT_LOG_LIMITS, scoutReviewUpdate, type ScoutLogInput } from "./scoutLog";
 
 const base: ScoutLogInput = {
   id: "log-1",
@@ -53,4 +53,19 @@ test("only a browser-shaped conversation id is stored", () => {
   assert.equal(sanitizeConversationId("cabc123def"), "cabc123def");
   assert.equal(sanitizeConversationId("../../etc"), undefined);
   assert.equal(sanitizeConversationId(42), undefined);
+});
+
+test("a reviewer's rating only ever writes the review, never the planner's thumbs", () => {
+  const result = scoutReviewUpdate({ rating: "down", notes: "  Cited the wrong CPA  ", feedback: { rating: "up" } }, "Admin", new Date("2026-10-15T09:00:00.000Z"));
+  assert.ok("update" in result);
+  assert.deepEqual(Object.keys(result.update), ["review"]);
+  assert.deepEqual(result.update.review, { rating: "down", notes: "Cited the wrong CPA", by: "Admin", at: "2026-10-15T09:00:00.000Z" });
+});
+
+test("clearing a review removes it, and an unknown rating is refused", () => {
+  const cleared = scoutReviewUpdate({ rating: null }, "Admin");
+  assert.ok("update" in cleared);
+  assert.equal(cleared.update.review, undefined);
+  assert.ok("error" in scoutReviewUpdate({ rating: "meh" }, "Admin"));
+  assert.ok("error" in scoutReviewUpdate(null, "Admin"));
 });

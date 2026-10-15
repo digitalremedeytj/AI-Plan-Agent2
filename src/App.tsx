@@ -4552,6 +4552,18 @@ export default function App() {
                         <span>Dashboard</span>
                         <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
                       </a>
+                      {canEditSettings ? (
+                        <a
+                          href="/scout-review"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={() => setIsHeaderMenuOpen(false)}
+                          className="flex items-center justify-between w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
+                        >
+                          <span>ScoutAI Review</span>
+                          <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                        </a>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => { setIsHeaderMenuOpen(false); setIsSettingsOpen(true); }}

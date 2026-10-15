@@ -103,7 +103,16 @@ built by `src/assistant/scoutLog.ts`:
 - `outcome`: set when the planner applies or undoes that answer's proposal
 - `feedback`: the asking planner's thumbs up or down, with an optional note on a thumbs-down
   (`POST /api/scout-logs/{id}/feedback`, only the person who asked)
-- `review`: empty, reserved for the review page
+- `review`: an admin's own thumbs up or down with notes, from the review page
+  (`POST /api/scout-logs/{id}/review`, admin-only). It never touches `feedback`, so the
+  planner's rating and the reviewer's are always separate.
+
+**Review page** (`/scout-review`, `src/scoutReview/`; in the app menu for admins). The list
+filters by date range, person, prompt, type, the planner's thumbs, outcome (failed, proposed,
+applied, undone) and whether it has been reviewed, with search over the question and
+advertiser; the summary above it (questions, thumbs up/down among rated answers, failure
+rate, top prompts) follows the filters. Picking a question shows the whole conversation, every
+turn in order. It loads the newest 1,000 questions in the range; the filters work on those.
 
 **Size.** Texts are capped (question 4,000 characters, answer 20,000, the proposal 40,000 in
 all, shortened to fit), so a record is a few KB and never more than about 75 KB.

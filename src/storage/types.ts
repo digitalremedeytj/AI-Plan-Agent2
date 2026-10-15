@@ -314,7 +314,7 @@ export interface ScoutLog {
   outcome?: { status: "applied" | "reverted"; changes: number; by: string; at: string };
   /** The asking planner's thumbs up or down. */
   feedback?: ScoutRating;
-  /** Reserved for the review page. */
+  /** An admin's rating from the review page (/scout-review). Never touches `feedback`. */
   review?: ScoutRating & { notes?: string };
 }
 

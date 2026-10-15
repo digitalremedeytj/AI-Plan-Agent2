@@ -82,3 +82,20 @@ export function buildScoutLog(input: ScoutLogInput): ScoutLog {
     error: error ? { code: error.code, message: clip(error.message, SCOUT_LOG_LIMITS.error) } : undefined,
   };
 }
+
+export const SCOUT_REVIEW_NOTES_MAX = 2_000;
+
+/**
+ * An admin's review of an answer, from the review page's request body. The update holds only
+ * `review`, so a reviewer can never overwrite the planner's own thumbs (`feedback`). A null
+ * rating clears the review.
+ */
+export function scoutReviewUpdate(body: unknown, reviewer: string, now: Date = new Date()): { update: Pick<ScoutLog, "review"> } | { error: string } {
+  const raw = (body as { rating?: unknown } | null)?.rating;
+  if (raw === null) return { update: { review: undefined } };
+  if (raw !== "up" && raw !== "down") return { error: "Rating must be up, down or null." };
+  const rating: "up" | "down" = raw;
+  const rawNotes = (body as { notes?: unknown }).notes;
+  const notes = typeof rawNotes === "string" ? rawNotes.trim().slice(0, SCOUT_REVIEW_NOTES_MAX) : "";
+  return { update: { review: { rating, ...(notes ? { notes } : {}), by: reviewer, at: now.toISOString() } } };
+}

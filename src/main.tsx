@@ -2,12 +2,15 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import DashboardPage from './dashboard/DashboardPage';
+import ScoutReviewPage from './scoutReview/ScoutReviewPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 import { initAnalytics } from './analytics';
 
 // Before the first render, so the identity and screen effects have a tag to report to.
 initAnalytics();
+
+const page = window.location.pathname.replace(/\/+$/, '');
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -23,8 +26,9 @@ createRoot(document.getElementById('root')!).render(
         </div>
       )}
     >
-      {/* The leadership dashboard is its own page, reachable without the team login. */}
-      {window.location.pathname.replace(/\/+$/, '') === '/dashboard' ? <DashboardPage /> : <App />}
+      {/* The leadership dashboard is its own page, reachable without the team login. ScoutAI
+          review is its own page too, for admins only (the server refuses everyone else). */}
+      {page === '/dashboard' ? <DashboardPage /> : page === '/scout-review' ? <ScoutReviewPage /> : <App />}
     </ErrorBoundary>
   </StrictMode>,
 );

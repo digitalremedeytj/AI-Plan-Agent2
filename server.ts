@@ -17,7 +17,7 @@ import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normaliz
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
-import { buildScoutLog, sanitizeConversationId, type ScoutLogInput } from "./src/assistant/scoutLog";
+import { buildScoutLog, sanitizeConversationId, scoutReviewUpdate, type ScoutLogInput } from "./src/assistant/scoutLog";
 import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest } from "./src/server/longRequest";
@@ -2603,8 +2603,8 @@ app.post("/api/scout-logs/:id/feedback", async (req, res) => {
   }
 });
 
-// Every ScoutAI question and answer, newest first, for the (future) review page. Admin-only:
-// questions can carry client details, and this names who asked.
+// Every ScoutAI question and answer, newest first, for the review page (/scout-review).
+// Admin-only: questions can carry client details, and this names who asked.
 app.get("/api/scout-logs", requireAdmin, async (req, res) => {
   try {
     const days = Math.min(SCOUT_LOG_RETENTION_DAYS, Math.max(1, Math.round(Number(req.query.days) || 30)));
@@ -2615,6 +2615,26 @@ app.get("/api/scout-logs", requireAdmin, async (req, res) => {
     res.json({ success: true, logs, since, until });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to load ScoutAI logs", details: err?.message || String(err) });
+  }
+});
+
+// An admin's own rating of an answer on the review page. Writes only `review`
+// (scoutReviewUpdate), so the planner's thumbs stay as they gave them.
+app.post("/api/scout-logs/:id/review", requireAdmin, async (req, res) => {
+  const parsed = scoutReviewUpdate(req.body, actorName(req));
+  if ("error" in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  try {
+    const log = await (await getStorage()).updateScoutLog(req.params.id, parsed.update);
+    if (!log) {
+      res.status(404).json({ error: "That answer is no longer on record.", code: "NOT_FOUND" });
+      return;
+    }
+    res.json({ success: true, log });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to save the review", details: err?.message || String(err) });
   }
 });
 
