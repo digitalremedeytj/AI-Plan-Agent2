@@ -80,6 +80,36 @@ export interface UpdatePlanInput extends PlanPreviewFields {
   actor: string;
 }
 
+// --- plan version history ---------------------------------------------------------
+
+/**
+ * Why a checkpoint was taken. Each one holds the plan as it stood just before that event, so
+ * restoring it undoes the event. "original" is the plan as generation (or the first save) wrote it.
+ */
+export type PlanVersionReason = "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore";
+
+/** A checkpoint without its payload: what the history list shows. */
+export interface PlanVersionSummary {
+  id: string;
+  planId: string;
+  reason: PlanVersionReason;
+  /** When the checkpoint was taken and whose change prompted it. */
+  createdAt: string;
+  createdBy: string;
+  /** The plan revision captured, and who last changed the plan before it was captured. */
+  planRevision: number;
+  savedAt: string;
+  savedBy: string;
+  title: string;
+}
+
+/** A checkpoint with everything needed to put the plan back the way it was. */
+export interface PlanVersion extends PlanVersionSummary, PlanPreviewFields {
+  advertiserName?: string;
+  settingsRevision: number | null;
+  payload: PlanPayload;
+}
+
 export interface SettingsRecord {
   revision: number;
   settings: PlanningSettings;
@@ -425,6 +455,14 @@ export interface StorageAdapter {
   getPlanByShareToken(token: string): Promise<StoredPlan | null>;
   /** Update the sharing status and/or token for a plan. */
   setPlanShare(id: string, isShared: boolean, shareToken?: string | null): Promise<StoredPlan>;
+
+  /** Stores a checkpoint. When to take one and how many to keep is src/storage/planHistory.ts. */
+  savePlanVersion(version: PlanVersion): Promise<void>;
+  /** A plan's checkpoints without payloads, newest first. */
+  listPlanVersions(planId: string): Promise<PlanVersionSummary[]>;
+  getPlanVersion(planId: string, versionId: string): Promise<PlanVersion | null>;
+  /** Only for pruning old checkpoints; plan records themselves are never destroyed. */
+  deletePlanVersion(planId: string, versionId: string): Promise<void>;
 
   getCurrentSettings(): Promise<SettingsRecord>;
   getSettingsRevision(revision: number): Promise<SettingsRecord | null>;

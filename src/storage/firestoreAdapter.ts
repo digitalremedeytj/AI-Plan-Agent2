@@ -30,6 +30,8 @@ import {
   DEFAULT_DASHBOARD_CONFIG,
   type DashboardConfig,
   type DashboardLink,
+  type PlanVersion,
+  type PlanVersionSummary,
 } from "./types";
 
 /**
@@ -37,6 +39,7 @@ import {
  *
  * Collections
  *   plans/{id}                  metadata as real fields + payloadJson as one string
+ *   plans/{id}/versions/{vid}   checkpoints of the plan (see planHistory.ts), same shape
  *   settings/current            pointer to the live settings revision
  *   settings_revisions/{n}      immutable history, referenced by each plan
  *   publishers/current          live CTV publisher list
@@ -62,6 +65,9 @@ const USAGE_EVENTS = "usage_events";
 const SCOUT_LOGS = "scout_logs";
 const DASHBOARD_LINKS = "dashboard_links";
 const DASHBOARD_CONFIG = "dashboard_config";
+
+const PLAN_VERSIONS = "versions";
+const PLAN_VERSION_SUMMARY_FIELDS = ["id", "planId", "reason", "createdAt", "createdBy", "planRevision", "savedAt", "savedBy", "title"];
 
 const CAMPAIGN_SUMMARY_FIELDS = [
   "id", "revision", "kind", "snapshotsJson", "advertiserName", "advertiserKey", "name", "flightStart", "flightEnd", "conversionLabel", "campaignGoal", "notes",
@@ -316,6 +322,52 @@ export class FirestoreAdapter implements StorageAdapter {
       });
     }
     return updated;
+  }
+
+  // --- plan versions -----------------------------------------------------------
+
+  // A subcollection of the plan, so listing plans never reads checkpoints and a plan's own
+  // checkpoints list without an index. The payload is one string, like the plan's.
+  private versionsCollection(planId: string): string {
+    return `${PLANS}/${encodeURIComponent(planId)}/${PLAN_VERSIONS}`;
+  }
+
+  async savePlanVersion(version: PlanVersion): Promise<void> {
+    const { payload, ...rest } = version;
+    const fields = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+    await this.putDocument(this.versionsCollection(version.planId), version.id, { ...fields, payloadJson: JSON.stringify(payload ?? {}) }, { requireAbsent: true });
+  }
+
+  async listPlanVersions(planId: string): Promise<PlanVersionSummary[]> {
+    const docs = await this.listDocuments(this.versionsCollection(planId), PLAN_VERSION_SUMMARY_FIELDS);
+    return docs
+      .map((doc) => decodeFields(doc.fields || {}) as unknown as PlanVersionSummary)
+      .filter((v) => Boolean(v?.id))
+      .map((v) => ({ ...v, planRevision: Number(v.planRevision) || 0 }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async getPlanVersion(planId: string, versionId: string): Promise<PlanVersion | null> {
+    const doc = await this.getDocument(this.versionsCollection(planId), versionId);
+    if (!doc) return null;
+    const { payloadJson, ...fields } = decodeFields(doc.fields || {}) as Record<string, any>;
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = payloadJson ? JSON.parse(payloadJson) : {};
+    } catch (err) {
+      console.error(`[STORAGE:firestore] Version ${versionId} of plan ${planId} has unparseable payloadJson:`, err);
+      return null;
+    }
+    return {
+      ...(fields as PlanVersionSummary),
+      planRevision: Number(fields.planRevision) || 0,
+      settingsRevision: fields.settingsRevision === null || fields.settingsRevision === undefined ? null : Number(fields.settingsRevision),
+      payload,
+    } as PlanVersion;
+  }
+
+  async deletePlanVersion(planId: string, versionId: string): Promise<void> {
+    await this.request("DELETE", `/${this.versionsCollection(planId)}/${encodeURIComponent(versionId)}`);
   }
 
   private async setArchived(id: string, actor: string, archived: boolean): Promise<void> {

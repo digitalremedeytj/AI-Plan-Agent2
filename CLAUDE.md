@@ -14,7 +14,8 @@ what follows.
 Generation order: crawl -> Brief of Record -> four research dossiers -> synthesis (personas,
 charts, publishers, sources) -> channel plan (engine) -> chart estimates -> narrative written
 last -> QA audit on OpenAI `gpt-6-sol` (high) -> targeted Gemini text patches -> verify
-(`gpt-6-sol`, medium). Every finished run is auto-saved as a "(draft)" plan before it is sent.
+(`gpt-6-sol`, medium). Every finished run is saved as a plan before it is sent, and edits to an open plan auto-save
+(with version-history checkpoints; see Storage).
 After delivery the client requests segment recommendations, then the executive brief
 (`/api/executive-brief`), which is written from the plan as the planner sees it and can be
 regenerated at any time.
@@ -128,7 +129,11 @@ Rules that follow from this:
   later settings change cannot move the numbers under a saved plan. Preserve this.
 - **Plan writes are compare-and-swap.** Clients send `If-Match: <revision>`; a stale
   write gets 409. Never add a write path that skips the revision check.
-- **Deletes are soft** (`archived: true`). Nothing destroys a plan record.
+- **Plans auto-save, so every write path checkpoints first.** Call
+  `checkpointBeforeWrite` (`src/storage/planHistory.ts`) before any new `updatePlan`, and
+  `recordOriginal` after any new `createPlan`, or that write cannot be undone from History.
+- **Deletes are soft** (`archived: true`). Nothing destroys a plan record. (Old version-history
+  checkpoints are pruned; that is the one exception, and it never touches the plan itself.)
 - Plan payloads are stored as one JSON string field, which sidesteps Firestore's
   no-nested-arrays rule and keeps drivers independent of the app schema. Keep payloads
   under Firestore's 1MB document limit.

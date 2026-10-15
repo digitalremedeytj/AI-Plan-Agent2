@@ -15,6 +15,7 @@ import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effe
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
+import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
 import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink, type ScoutLog } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
 import { buildScoutLog, sanitizeConversationId, scoutReviewUpdate, type ScoutLogInput } from "./src/assistant/scoutLog";
@@ -2259,7 +2260,9 @@ app.get("/api/plans/:id", async (req, res) => {
 app.post("/api/plans", async (req, res) => {
   try {
     const input = planPayloadFromBody(req.body);
-    const plan = await (await getStorage()).createPlan({ ...input, actor: actorName(req) });
+    const storage = await getStorage();
+    const plan = await storage.createPlan({ ...input, actor: actorName(req) });
+    await recordOriginal(storage, plan, actorName(req));
     logUsage(req, "plan_create", { planId: plan.id, advertiserName: plan.advertiserName });
     res.status(201).json({ success: true, plan });
   } catch (err: any) {
@@ -2285,6 +2288,7 @@ app.put("/api/plans/:id", async (req, res) => {
     const input = planPayloadFromBody(req.body);
     const storage = await getStorage();
     await refreshCampaignRecap(storage, { id: req.params.id, settingsRevision: input.settingsRevision }, input.payload);
+    await checkpointBeforeWrite(storage, req.params.id, "editing", actorName(req));
     const plan = await storage.updatePlan(req.params.id, { ...input, actor: actorName(req) }, expectedRevision);
     res.json({ success: true, plan });
   } catch (err: any) {
@@ -2427,6 +2431,7 @@ app.post("/api/plans/:id/audit/apply", async (req, res) => {
       manualAudit: { at: new Date().toISOString(), by: actorName(req), proposed: accepted.length, applied: applied.length },
     };
 
+    await checkpointBeforeWrite(storage, plan.id, "qa_fixes", actorName(req), { existing: plan });
     const updated = await storage.updatePlan(plan.id, {
       ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload: { ...plan.payload, profile } }),
       actor: actorName(req),
@@ -2904,6 +2909,7 @@ app.post("/api/plans/:id/assistant/apply", async (req, res) => {
       return;
     }
     await refreshCampaignRecap(storage, plan, result.payload);
+    await checkpointBeforeWrite(storage, plan.id, "scout", actorName(req), { existing: plan });
     const updated = await storage.updatePlan(plan.id, {
       ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload: result.payload }),
       actor: actorName(req),
@@ -3244,6 +3250,7 @@ app.post("/api/plans/:id/campaign-recap", async (req, res) => {
       const payload = { ...(base.payload as any), profile: { ...baseProfile, campaignRecap: attemptRecap } };
       refreshRecapProposals(payload, (ops) => applyOps(payload, ops, applyContext));
       try {
+        await checkpointBeforeWrite(storage, base.id, "recap", actorName(req), { existing: base });
         const updated = await storage.updatePlan(base.id, {
           ...planPayloadFromBody({ title: base.title, advertiserName: base.advertiserName, settingsRevision: base.settingsRevision, payload }),
           actor: actorName(req),
@@ -3308,6 +3315,56 @@ app.delete("/api/plans/:id", async (req, res) => {
     res.json({ success: true });
   } catch (err: any) {
     respondToStorageError(res, err, "archive plan");
+  }
+});
+
+// ---- Version history ----
+// Checkpoints are taken by planHistory.ts as plans are written; these routes list them and put
+// one back. Restoring is itself a write, so it checkpoints the current plan first and can be undone.
+
+app.get("/api/plans/:id/versions", async (req, res) => {
+  try {
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    res.json({ success: true, versions: await storage.listPlanVersions(plan.id) });
+  } catch (err: any) {
+    respondToStorageError(res, err, "list plan versions");
+  }
+});
+
+app.post("/api/plans/:id/versions/:versionId/restore", async (req, res) => {
+  try {
+    const expectedRevision = Number(req.get("If-Match") ?? req.body?.expectedRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "An If-Match revision is required to restore a version.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    if (plan.revision !== expectedRevision) throw new RevisionConflictError(plan.revision);
+    const version = await storage.getPlanVersion(plan.id, req.params.versionId);
+    if (!version) {
+      res.status(404).json({ error: "That version is no longer kept.", code: "NOT_FOUND" });
+      return;
+    }
+    await checkpointBeforeWrite(storage, plan.id, "restore", actorName(req), { existing: plan });
+    // The plan's name is kept: a restore puts the content back, and renaming is its own action.
+    const updated = await storage.updatePlan(plan.id, {
+      ...planPayloadFromBody({ title: plan.title, advertiserName: version.advertiserName, settingsRevision: version.settingsRevision, payload: version.payload }),
+      actor: actorName(req),
+    }, expectedRevision);
+    console.log(`[HISTORY] Plan ${plan.id}: ${actorName(req)} restored the ${version.reason} version from ${version.createdAt} (r${version.planRevision}), r${expectedRevision} -> r${updated.revision}.`);
+    res.json({ success: true, plan: updated });
+  } catch (err: any) {
+    respondToStorageError(res, err, "restore that version");
   }
 });
 
@@ -5815,16 +5872,18 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     finalProfile.generationLog = generationLog;
     if (history) finalProfile.pastCampaignsUsed = history.used;
 
-    // Every finished run is saved as a draft before it is sent, so a browser tab that crashes,
-    // reloads or closes cannot lose a run that took minutes. Clicking Save later updates this
-    // same record. A failed draft save is reported but never blocks delivering the plan.
+    // Every finished run is saved before it is sent, so a browser tab that crashes, reloads or
+    // closes cannot lose a run that took minutes. The browser opens this record and auto-saves
+    // edits onto it. A failed save is reported but never blocks delivering the plan.
     let savedPlanId: string | null = null;
     try {
       const advertiserLabel = cleanAdvertiserName || cleanUrl || "Audience";
       const baseTitle = typeof draft?.title === "string" && draft.title.trim() ? draft.title.trim() : `${advertiserLabel} Plan`;
       const record = await (await getStorage()).createPlan({
         ...planPayloadFromBody({
-          title: `${baseTitle} (draft)`.slice(0, 200),
+          // No "(draft)" suffix: plans auto-save as they are edited, so every plan is as saved as
+          // any other, and the history keeps this run as the plan's "original" version.
+          title: baseTitle.slice(0, 200),
           advertiserName: cleanAdvertiserName || undefined,
           settingsRevision: draft?.settingsRevision,
           payload: {
@@ -5849,6 +5908,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         actor: actorName(req),
       });
       savedPlanId = record.id;
+      await recordOriginal(await getStorage(), record, actorName(req));
       console.log(`[DRAFT] Saved the finished run as plan ${record.id} ("${record.title}").`);
       // The campaigns the plan was built from stay linked to it, so ScoutAI reads them and their
       // learnings can go to the client. Linking is best effort: the plan is already saved.

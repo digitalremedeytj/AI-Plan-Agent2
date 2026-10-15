@@ -396,6 +396,36 @@ export async function updatePlan(
   return body.plan;
 }
 
+// --- version history ---------------------------------------------------------
+
+/** Mirrors PlanVersionSummary in src/storage/types.ts. Each holds the plan as it stood before `reason`. */
+export interface PlanVersionSummary {
+  id: string;
+  planId: string;
+  reason: "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore";
+  createdAt: string;
+  createdBy: string;
+  planRevision: number;
+  savedAt: string;
+  savedBy: string;
+  title: string;
+}
+
+export async function listPlanVersions(planId: string): Promise<PlanVersionSummary[]> {
+  const body = await request<{ versions: PlanVersionSummary[] }>(`/api/plans/${encodeURIComponent(planId)}/versions`);
+  return body.versions;
+}
+
+/** Puts a checkpoint back as the plan's newest revision. The plan as it was is checkpointed first. */
+export async function restorePlanVersion(planId: string, versionId: string, expectedRevision: number): Promise<StoredPlan> {
+  const body = await request<{ plan: StoredPlan }>(`/api/plans/${encodeURIComponent(planId)}/versions/${encodeURIComponent(versionId)}/restore`, {
+    method: "POST",
+    headers: { "If-Match": String(expectedRevision) },
+    body: JSON.stringify({}),
+  });
+  return body.plan;
+}
+
 // --- manual QA audit ----------------------------------------------------------
 
 export interface AuditProposal {

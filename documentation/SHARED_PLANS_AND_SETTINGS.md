@@ -73,6 +73,7 @@ resolve on deploy.
 | Path | Contents |
 | --- | --- |
 | `plans/{id}` | plan metadata as real fields, plus `payloadJson` (the plan body as one JSON string) |
+| `plans/{id}/versions/{vid}` | version history checkpoints of that plan, same shape (see below) |
 | `settings/current` | the live planning settings and their revision number |
 | `settings_revisions/{n}` | immutable settings history, referenced by each plan |
 | `publishers/current` | the live CTV publisher list |
@@ -89,6 +90,27 @@ Every plan write is compare-and-swap. Clients send the revision they last read a
 `If-Match`; the Firestore driver additionally pins the document's `updateTime`. A save
 against a stale revision returns **409** with the current revision, and the UI tells the
 user to reload rather than overwriting a colleague's work.
+
+### Auto-save and version history
+
+An open plan saves itself about 1.5s after each edit (`queueAutoSave` in `App.tsx`), one save
+at a time, against the revision it last read. It writes the workspace's profile onto the plan
+as last saved; the brief form is not included, so filling it in for the next run never
+rewrites the open plan. A 409 stops auto-save and offers a reload. Share links read the plan
+itself, so a client's link shows the latest saved edits.
+
+Because there is no "unsaved" state to back out of, every write path checkpoints first
+(`src/storage/planHistory.ts`). A checkpoint holds the plan as it stood *before* that write:
+
+- `editing`: at most one per 15 minutes of saves.
+- `scout`, `qa_fixes`, `recap`, `restore`: always, before those bigger changes.
+- `original`: the plan as generation or its first save created it.
+
+The oldest checkpoint and the newest 20 are kept; the rest are deleted (checkpoints are the one
+thing pruned - plan records are still never destroyed). Each is about the size of the plan,
+0.4-0.5 MB. A checkpoint that fails to write is logged and never blocks the save. Restoring a
+version writes it back as the plan's newest revision, checkpointing the current plan first, so
+a restore can be undone.
 
 ### Settings revisions
 
@@ -116,6 +138,8 @@ All routes require a session cookie except `/api/health` and `/api/auth/*`.
 | `PUT` | `/api/plans/:id` | requires `If-Match: <revision>`; 409 on conflict, 428 if absent |
 | `DELETE` | `/api/plans/:id` | soft delete (archive) - never destroys the record |
 | `POST` | `/api/plans/:id/restore` | un-archive |
+| `GET` | `/api/plans/:id/versions` | version history checkpoints, newest first, without payloads |
+| `POST` | `/api/plans/:id/versions/:versionId/restore` | requires `If-Match`; puts that version back as the newest revision |
 | `GET` | `/api/settings` | any signed-in user |
 | `GET` | `/api/settings/revisions/:n` | historical revision, for opening old plans |
 | `PUT` | `/api/settings` | **admin only** once `ADMIN_PASSWORD` is set |

@@ -29,6 +29,8 @@ import {
   DEFAULT_DASHBOARD_CONFIG,
   type DashboardConfig,
   type DashboardLink,
+  type PlanVersion,
+  type PlanVersionSummary,
 } from "./types";
 
 /**
@@ -49,6 +51,7 @@ export class LocalFileAdapter implements StorageAdapter {
   private readonly usageDir: string;
   private readonly dashboardDir: string;
   private readonly scoutLogsDir: string;
+  private readonly planVersionsDir: string;
 
   constructor(rootDir: string = path.join(process.cwd(), "data", "store")) {
     this.rootDir = rootDir;
@@ -60,10 +63,11 @@ export class LocalFileAdapter implements StorageAdapter {
     this.usageDir = path.join(rootDir, "usage");
     this.dashboardDir = path.join(rootDir, "dashboard");
     this.scoutLogsDir = path.join(rootDir, "scout-logs");
+    this.planVersionsDir = path.join(rootDir, "plan-versions");
   }
 
   async init(): Promise<void> {
-    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir, this.dashboardDir, this.scoutLogsDir]) {
+    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir, this.dashboardDir, this.scoutLogsDir, this.planVersionsDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
@@ -170,6 +174,44 @@ export class LocalFileAdapter implements StorageAdapter {
     };
     writeJsonAtomic(this.planPath(id), updated);
     return updated;
+  }
+
+  // --- plan versions: plan-versions/{planId}/{versionId}.json ----------------
+
+  async savePlanVersion(version: PlanVersion): Promise<void> {
+    await this.init();
+    fs.mkdirSync(this.planVersionDir(version.planId), { recursive: true });
+    writeJsonAtomic(this.planVersionPath(version.planId, version.id), version);
+  }
+
+  async listPlanVersions(planId: string): Promise<PlanVersionSummary[]> {
+    await this.init();
+    const dir = this.planVersionDir(planId);
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => readJson<PlanVersion>(path.join(dir, f)))
+      .filter((v): v is PlanVersion => Boolean(v))
+      .map(({ payload: _payload, settingsRevision: _settings, advertiserName: _advertiser, audienceDescription: _a, geography: _g, campaignFocus: _c, url: _u, ...summary }) => summary)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async getPlanVersion(planId: string, versionId: string): Promise<PlanVersion | null> {
+    await this.init();
+    return readJson<PlanVersion>(this.planVersionPath(planId, versionId));
+  }
+
+  async deletePlanVersion(planId: string, versionId: string): Promise<void> {
+    await this.init();
+    fs.rmSync(this.planVersionPath(planId, versionId), { force: true });
+  }
+
+  private planVersionDir(planId: string): string {
+    return path.join(this.planVersionsDir, safeFileId(planId));
+  }
+
+  private planVersionPath(planId: string, versionId: string): string {
+    return path.join(this.planVersionDir(planId), `${safeFileId(versionId)}.json`);
   }
 
   private async setArchived(id: string, actor: string, archived: boolean): Promise<void> {
@@ -469,6 +511,11 @@ export function toSummary(plan: StoredPlan): PlanSummary {
 
 export function sortByUpdatedDesc<T extends { updatedAt: string }>(records: T[]): T[] {
   return records.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+}
+
+/** An id from a URL, made safe to use as one path segment (no separators, no ".."). */
+function safeFileId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "") || "_";
 }
 
 function readJson<T>(filePath: string): T | null {

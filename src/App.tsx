@@ -86,6 +86,7 @@ import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
 import { SettingsDrawer, type SettingsTab } from "./components/SettingsDrawer";
 import { SharePlanModal } from "./components/SharePlanModal";
 import { ClonePlanModal } from "./components/ClonePlanModal";
+import { VersionHistoryModal } from "./components/VersionHistoryModal";
 import { DeletePlanModal } from "./components/DeletePlanModal";
 import { CtvPublishersModal } from "./components/CtvPublishersModal";
 import { CtvPublisherCard } from "./components/CtvPublisherCard";
@@ -1132,7 +1133,10 @@ export default function App() {
   const [segmentStatus, setSegmentStatus] = useState<SegmentStatus>("idle");
   const [isToppingUpSegments, setIsToppingUpSegments] = useState(false);
   const [segmentError, setSegmentError] = useState<string | null>(null);
-  const [segmentAutoSaveError, setSegmentAutoSaveError] = useState<string | null>(null);
+  // Auto-save of the open plan. "conflict" stops it until the planner reloads, so it never keeps
+  // writing over (or failing against) someone else's newer save.
+  const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error" | "conflict">("idle");
+  const [isVersionHistoryOpen, setIsVersionHistoryOpen] = useState(false);
   const [segmentUndoName, setSegmentUndoName] = useState<string | null>(null);
   const [hoveredSegment, setHoveredSegment] = useState<SegmentRecommendation | null>(null);
   /** Session-only removal history: powers Undo and keeps "Suggest more" from re-offering them. */
@@ -1303,8 +1307,8 @@ export default function App() {
             if (briefToken === briefRequestTokenRef.current) setAutoBriefToken(briefToken);
           });
         }
-        // The server already saved this run as a draft. Opening it as the active plan means
-        // Save updates that record instead of creating a second copy.
+        // The server already saved this run. Opening it as the active plan means auto-save
+        // updates that record instead of creating a second copy.
         const draftId = serverCompleteData.savedPlanId;
         if (draftId && adoptDraftRef.current) {
           setActiveSavedId(draftId);
@@ -1720,11 +1724,8 @@ export default function App() {
     if (!profileData) return;
     const advertiser = advertiserName.trim();
     const desc = audienceDescription.trim();
-    // The server names a finished run "<title> (draft)". Saving is the planner keeping it, so the
-    // suffix comes off here; otherwise every saved plan kept "(draft)" unless it was deleted by hand.
-    const savedTitle = activeSavedTitle ? activeSavedTitle.replace(/\s*\(draft\)\s*$/i, "").trim() : "";
-    const defaultTitle = savedTitle
-      ? savedTitle
+    const defaultTitle = activeSavedTitle
+      ? activeSavedTitle
       : advertiser
         ? (/\bplans?\b/i.test(advertiser) ? advertiser : `${advertiser} Plan`)
         : desc
@@ -1776,7 +1777,7 @@ export default function App() {
   // Covers the target audience and the reach panel's share-link eye: both are reach display
   // choices saved straight onto the plan.
   const reachPrefsDirtyRef = React.useRef(false);
-  const segmentAutoSaveQueueRef = React.useRef<Promise<void>>(Promise.resolve());
+  const autoSaveQueueRef = React.useRef<Promise<void>>(Promise.resolve());
 
   const handleToggleSectionActive = (sectionKey: string, inactive: boolean) => {
     hiddenSectionsDirtyRef.current = true;
@@ -1876,6 +1877,7 @@ export default function App() {
     setAutoBriefToken(null);
     removedSegmentsRef.current = [];
     segmentsDirtyRef.current = false;
+    channelOverridesDirtyRef.current = false;
     hiddenSectionsDirtyRef.current = false;
     reachPrefsDirtyRef.current = false;
     if (segmentUndoTimerRef.current) clearTimeout(segmentUndoTimerRef.current);
@@ -1883,7 +1885,6 @@ export default function App() {
     setSegmentStatus("idle");
     setIsToppingUpSegments(false);
     setSegmentError(null);
-    setSegmentAutoSaveError(null);
     setHoveredSegment(null);
   };
 
@@ -2088,215 +2089,100 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(href), 1000);
   };
 
-  // Auto-save segment edits onto an already-saved plan. Unsaved plans pick the segments up on
-  // their first manual save. Saves are queued so two quick edits never race each other into
-  // a self-inflicted revision conflict.
+  // Auto-save. Every edit to an open, saved plan is written a moment after it is made. It writes
+  // the workspace's profile onto the plan as last saved, so the brief form on the left (which a
+  // planner may be filling in for the next run) never rides along; Save on a never-saved plan
+  // still writes everything. Saves run one at a time on a queue, so quick edits never race each
+  // other into a self-inflicted revision conflict. Version checkpoints are taken server-side
+  // (src/storage/planHistory.ts), so auto-saving often costs no history.
+  const profileDataRef = React.useRef(profileData);
+  profileDataRef.current = profileData;
+  const autoSaveDirtyRefs = [segmentsDirtyRef, channelOverridesDirtyRef, hiddenSectionsDirtyRef, reachPrefsDirtyRef, executiveBriefDirtyRef];
+  // The profile object the last successful auto-save wrote. Right after a save the server's copy
+  // can differ from it (the Campaign Recap is re-checked on every save) until React re-renders
+  // with the server's recap, so "is this exactly what was just saved" is asked by identity.
+  const lastAutoSavedProfileRef = React.useRef<AudienceProfile | null>(null);
+
+  /** Queues a save of the open plan if it still differs from what was saved; resolves when done. */
+  const queueAutoSave = (planId: string): Promise<void> => {
+    autoSaveQueueRef.current = autoSaveQueueRef.current.then(async () => {
+      const persisted = lastPersistedPlanRef.current;
+      const revision = activePlanRevisionRef.current;
+      const profile = profileDataRef.current;
+      if (!persisted || persisted.id !== planId || revision === null || !profile) return;
+      // Checked here rather than when queued: an earlier save in the queue may already have written it.
+      const changed = autoSaveDirtyRefs.some((ref) => ref.current)
+        || (profile !== lastAutoSavedProfileRef.current && profileBaselineFingerprint(persisted.payload.profile) !== profileBaselineFingerprint(profile));
+      if (!changed) return;
+
+      // Cleared before the write, so an edit made while it is in flight marks the plan dirty again.
+      for (const ref of autoSaveDirtyRefs) ref.current = false;
+      setAutoSaveStatus("saving");
+      try {
+        const updated = await api.updatePlan(planId, revision, {
+          title: persisted.title,
+          advertiserName: persisted.advertiserName,
+          settingsRevision: persisted.settingsRevision,
+          payload: { ...persisted.payload, profile },
+        });
+        if (lastPersistedPlanRef.current?.id !== planId) return; // the planner opened another plan meanwhile
+        markPlanPersisted(updated);
+        lastAutoSavedProfileRef.current = profile;
+        setAutoSaveStatus("saved");
+      } catch (err: any) {
+        console.error("Could not auto-save the plan:", err);
+        for (const ref of autoSaveDirtyRefs) ref.current = true;
+        setAutoSaveStatus(err instanceof ApiError && err.isConflict ? "conflict" : "error");
+      }
+    });
+    return autoSaveQueueRef.current;
+  };
+
   React.useEffect(() => {
-    if (!segmentsDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
+    if (isShareView || !activeSavedId || autoSaveStatus === "conflict" || !hasUnsavedChanges()) return;
     const planId = activeSavedId;
-    const segments = profileData.segmentRecommendations ?? [];
-    const liveFingerprint = profileBaselineFingerprint(profileData);
-
-    const timer = setTimeout(() => {
-      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
-        const persisted = lastPersistedPlanRef.current;
-        const revision = activePlanRevisionRef.current;
-        if (!segmentsDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
-        // A regenerated or otherwise edited profile is not the saved plan; writing its segments
-        // onto the saved one would mismatch them, so they wait for the planner's next Save.
-        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) {
-          setSegmentAutoSaveError("Other parts of this plan have unsaved changes, so segment changes will be saved with your next Save.");
-          return;
-        }
-
-        segmentsDirtyRef.current = false;
-        try {
-          const updated = await api.updatePlan(planId, revision, {
-            title: persisted.title,
-            advertiserName: persisted.advertiserName,
-            settingsRevision: persisted.settingsRevision,
-            payload: { ...persisted.payload, profile: { ...persisted.payload.profile, segmentRecommendations: segments } },
-          });
-          markPlanPersisted(updated);
-          setSegmentAutoSaveError(null);
-        } catch (err: any) {
-          console.error("Could not auto-save segment changes:", err);
-          segmentsDirtyRef.current = true;
-          setSegmentAutoSaveError(
-            err instanceof ApiError && err.isConflict
-              ? "Someone else updated this plan, so segment changes were not auto-saved. Reload it from the saved list to continue."
-              : "Segment changes could not be auto-saved. Use Save to try again.",
-          );
-        }
-      });
-    }, 1200);
+    // A failed save retries, but slowly, so a dropped connection does not mean a request every second.
+    const timer = setTimeout(() => { void queueAutoSave(planId); }, autoSaveStatus === "error" ? 15_000 : 1500);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileData?.segmentRecommendations, activeSavedId, isShareView]);
+  }, [profileData, activeSavedId, activePlanRevision, autoSaveStatus, isShareView]);
 
-  // Auto-save channel overrides onto an already-saved plan
+  // Switching to another tab or window saves straight away rather than after the delay.
   React.useEffect(() => {
-    if (!channelOverridesDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
-    const planId = activeSavedId;
-    const overrides = profileData.channelStrategy?.channelOverrides;
-    const liveFingerprint = profileBaselineFingerprint(profileData);
-
-    const timer = setTimeout(() => {
-      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
-        const persisted = lastPersistedPlanRef.current;
-        const revision = activePlanRevisionRef.current;
-        if (!channelOverridesDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
-        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) {
-          return;
-        }
-
-        channelOverridesDirtyRef.current = false;
-        try {
-          const updated = await api.updatePlan(planId, revision, {
-            title: persisted.title,
-            advertiserName: persisted.advertiserName,
-            settingsRevision: persisted.settingsRevision,
-            payload: {
-              ...persisted.payload,
-              profile: {
-                ...persisted.payload.profile,
-                channelStrategy: persisted.payload.profile.channelStrategy
-                  ? {
-                      ...persisted.payload.profile.channelStrategy,
-                      channelOverrides: overrides,
-                    }
-                  : undefined,
-              },
-            },
-          });
-          markPlanPersisted(updated);
-        } catch (err: any) {
-          console.error("Could not auto-save channel overrides:", err);
-          channelOverridesDirtyRef.current = true;
-        }
-      });
-    }, 1200);
-    return () => clearTimeout(timer);
+    const flush = () => {
+      if (document.visibilityState !== "hidden" || !activeSavedId || autoSaveStatus === "conflict") return;
+      if (hasUnsavedChangesRef.current()) void queueAutoSave(activeSavedId);
+    };
+    document.addEventListener("visibilitychange", flush);
+    return () => document.removeEventListener("visibilitychange", flush);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileData?.channelStrategy?.channelOverrides, activeSavedId, isShareView]);
+  }, [activeSavedId, autoSaveStatus]);
 
-  // Auto-save hidden sections onto an already-saved plan
-  React.useEffect(() => {
-    if (!hiddenSectionsDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
-    const planId = activeSavedId;
-    const hidden = profileData.hiddenSections || [];
-    const liveFingerprint = profileBaselineFingerprint(profileData);
+  React.useEffect(() => { setAutoSaveStatus("idle"); }, [activeSavedId]);
 
-    const timer = setTimeout(() => {
-      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
-        const persisted = lastPersistedPlanRef.current;
-        const revision = activePlanRevisionRef.current;
-        if (!hiddenSectionsDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
-        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) {
-          return;
-        }
+  /** Reloads the open plan from the server, dropping edits that could not be saved over a newer save. */
+  const handleReloadAfterConflict = async () => {
+    if (!activeSavedId) return;
+    try {
+      const latest = await api.getPlan(activeSavedId);
+      applyPlanToWorkspace(latest, false);
+      setAutoSaveStatus("idle");
+    } catch (err: any) {
+      setActionError(err?.message || "Could not reload the plan.");
+    }
+  };
 
-        hiddenSectionsDirtyRef.current = false;
-        try {
-          const updated = await api.updatePlan(planId, revision, {
-            title: persisted.title,
-            advertiserName: persisted.advertiserName,
-            settingsRevision: persisted.settingsRevision,
-            payload: {
-              ...persisted.payload,
-              profile: {
-                ...persisted.payload.profile,
-                hiddenSections: hidden,
-              },
-            },
-          });
-          markPlanPersisted(updated);
-        } catch (err: any) {
-          console.error("Could not auto-save hidden sections:", err);
-          hiddenSectionsDirtyRef.current = true;
-        }
-      });
-    }, 1200);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileData?.hiddenSections, activeSavedId, isShareView]);
-
-  // Auto-save the planner's reach choices (target audience, share-link eye) onto an already-saved plan.
-  React.useEffect(() => {
-    if (!reachPrefsDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
-    const planId = activeSavedId;
-    const narrowing = profileData.audienceNarrowing;
-    const shareReachDetails = profileData.shareReachDetails === true;
-    const liveFingerprint = profileBaselineFingerprint(profileData);
-
-    const timer = setTimeout(() => {
-      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
-        const persisted = lastPersistedPlanRef.current;
-        const revision = activePlanRevisionRef.current;
-        if (!reachPrefsDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
-        // Other unsaved edits ride along with the planner's next full save instead.
-        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) return;
-
-        reachPrefsDirtyRef.current = false;
-        try {
-          const { audienceNarrowing: _previous, shareReachDetails: _shared, ...persistedProfile } = persisted.payload.profile;
-          const updated = await api.updatePlan(planId, revision, {
-            title: persisted.title,
-            advertiserName: persisted.advertiserName,
-            settingsRevision: persisted.settingsRevision,
-            payload: {
-              ...persisted.payload,
-              profile: {
-                ...persistedProfile,
-                ...(narrowing ? { audienceNarrowing: narrowing } : {}),
-                ...(shareReachDetails ? { shareReachDetails: true } : {}),
-              },
-            },
-          });
-          markPlanPersisted(updated);
-        } catch (err: any) {
-          console.error("Could not auto-save reach choices:", err);
-          reachPrefsDirtyRef.current = true;
-        }
-      });
-    }, 1200);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileData?.audienceNarrowing, profileData?.shareReachDetails, activeSavedId, isShareView]);
-
-  // Auto-save the executive brief (generated, regenerated, hand-edited) onto an already-saved plan.
-  React.useEffect(() => {
-    if (!executiveBriefDirtyRef.current || isShareView || !activeSavedId || !profileData) return;
-    const planId = activeSavedId;
-    const brief = profileData.executiveBrief;
-    const liveFingerprint = profileBaselineFingerprint(profileData);
-
-    const timer = setTimeout(() => {
-      segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
-        const persisted = lastPersistedPlanRef.current;
-        const revision = activePlanRevisionRef.current;
-        if (!executiveBriefDirtyRef.current || !persisted || persisted.id !== planId || revision === null) return;
-        // Other unsaved changes: the brief waits for the planner's next Save, like the segments.
-        if (profileBaselineFingerprint(persisted.payload.profile) !== liveFingerprint) return;
-
-        executiveBriefDirtyRef.current = false;
-        try {
-          const updated = await api.updatePlan(planId, revision, {
-            title: persisted.title,
-            advertiserName: persisted.advertiserName,
-            settingsRevision: persisted.settingsRevision,
-            payload: { ...persisted.payload, profile: { ...persisted.payload.profile, executiveBrief: brief } },
-          });
-          markPlanPersisted(updated);
-        } catch (err: any) {
-          console.error("Could not auto-save the executive brief:", err);
-          executiveBriefDirtyRef.current = true;
-        }
-      });
-    }, 1200);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileData?.executiveBrief, activeSavedId, isShareView]);
+  /** Puts a version back. Pending edits are saved first, so the restore checkpoints them too. */
+  const handleRestoreVersion = async (version: api.PlanVersionSummary) => {
+    if (!activeSavedId) return;
+    await queueAutoSave(activeSavedId);
+    const revision = activePlanRevisionRef.current;
+    if (revision === null) throw new Error("This plan has not been saved yet.");
+    const restored = await api.restorePlanVersion(activeSavedId, version.id, revision);
+    applyPlanToWorkspace(restored, false);
+    setAutoSaveStatus("saved");
+    await refreshPlans();
+  };
 
   /**
    * Save to the shared store. An existing plan is updated against the revision we last
@@ -2312,7 +2198,7 @@ export default function App() {
 
     try {
       // An in-flight segment auto-save would otherwise bump the revision underneath us.
-      await segmentAutoSaveQueueRef.current;
+      await autoSaveQueueRef.current;
       const input = {
         title: titleToSave,
         advertiserName: advertiserName || undefined,
@@ -2337,7 +2223,6 @@ export default function App() {
       segmentsDirtyRef.current = false;
       hiddenSectionsDirtyRef.current = false;
       reachPrefsDirtyRef.current = false;
-      setSegmentAutoSaveError(null);
 
       await refreshPlans();
       setIsSaving(false);
@@ -2604,7 +2489,7 @@ export default function App() {
    * global settings have moved on since.
    */
   const handleLoadSavedProfile = async (summary: { id: string; [key: string]: any }) => {
-    if (summary.id !== activeSavedId && !confirmDiscardUnsaved()) return;
+    if (summary.id !== activeSavedId && !(await confirmDiscardUnsaved())) return;
     setPlansError(null);
     setLoadingPlanId(summary.id);
 
@@ -2677,6 +2562,8 @@ export default function App() {
 
     if (activeSavedId) {
       try {
+        // Behind any auto-save in flight, so the two never race into a revision conflict.
+        await autoSaveQueueRef.current;
         const existing = await api.getPlan(activeSavedId);
         const updated = await api.updatePlan(activeSavedId, existing.revision, {
           title: nextTitle,
@@ -3299,9 +3186,22 @@ export default function App() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
-  /** Asks before an in-app action replaces the open plan; true when it may go ahead. */
-  const confirmDiscardUnsaved = () =>
-    !hasUnsavedChanges() || window.confirm("This plan has changes that are not saved yet. Leave without saving them?");
+  /**
+   * Before an in-app action replaces the open plan: a saved plan finishes saving first, and the
+   * planner is asked only if that fails or the plan was never saved. True when it may go ahead.
+   */
+  const confirmDiscardUnsaved = async (): Promise<boolean> => {
+    if (!hasUnsavedChanges()) return true;
+    if (activeSavedId && autoSaveStatus !== "conflict") {
+      await queueAutoSave(activeSavedId);
+      const persisted = lastPersistedPlanRef.current;
+      const profile = profileDataRef.current;
+      const stillUnsaved = !persisted || !profile || autoSaveDirtyRefs.some((ref) => ref.current)
+        || (profile !== lastAutoSavedProfileRef.current && profileBaselineFingerprint(persisted.payload.profile) !== profileBaselineFingerprint(profile));
+      if (!stillUnsaved) return true;
+    }
+    return window.confirm("This plan has changes that could not be saved. Leave without them?");
+  };
 
   // ---- Campaign Recap ----
   // Whether the plan has past campaigns to build a recap from; the plan's own pastCampaignsUsed
@@ -3324,7 +3224,7 @@ export default function App() {
 
   const handleBuildRecap = async () => {
     if (!activeSavedId || activePlanRevision === null || recapBuilding) return;
-    if (scoutHasUnsavedChanges) { setRecapError("Save your changes first: the recap is built onto the saved plan."); return; }
+    if (scoutHasUnsavedChanges) { setRecapError("Your latest changes are still saving. Try again in a moment: the recap is built onto the saved plan."); return; }
     setRecapBuilding(true);
     setRecapError(null);
     setRecapDropped([]);
@@ -3345,7 +3245,7 @@ export default function App() {
   // dry-run on the saved plan, shown, and saved only when the planner confirms.
   const handlePreviewRecapRecommendation = async (rec: RecapRecommendation) => {
     if (!activeSavedId || activePlanRevision === null) return;
-    if (scoutHasUnsavedChanges) { setRecapError("Save your changes first: recommendations are applied to the saved plan."); return; }
+    if (scoutHasUnsavedChanges) { setRecapError("Your latest changes are still saving. Try again in a moment: recommendations are applied to the saved plan."); return; }
     const ops: api.AssistantOp[] = [...(rec.ops ?? []), { type: "mark_recap_recommendation", id: rec.id, applied: true }];
     setRecapError(null);
     setRecapPending({ recId: rec.id, ops, changes: [], rejected: [], loading: true, applying: false });
@@ -3392,7 +3292,7 @@ export default function App() {
 
   const handleRemoveRecapItem = async (kind: "card" | "recommendation", id: string) => {
     if (!activeSavedId || activePlanRevision === null) return;
-    if (scoutHasUnsavedChanges) { setRecapError("Save your changes first: the recap is edited on the saved plan."); return; }
+    if (scoutHasUnsavedChanges) { setRecapError("Your latest changes are still saving. Try again in a moment: the recap is edited on the saved plan."); return; }
     setRecapError(null);
     try {
       const result = await api.applyScoutChange(activeSavedId, { ops: [{ type: "remove_recap_item", kind, id }], baseRevision: activePlanRevision });
@@ -3405,7 +3305,7 @@ export default function App() {
   /** Recap edits that are not removals (the KPI, a block's visibility), through the same revision-checked path. */
   const applyRecapOp = async (op: AssistantOp, failure: string) => {
     if (!activeSavedId || activePlanRevision === null) return;
-    if (scoutHasUnsavedChanges) { setRecapError("Save your changes first: the recap is edited on the saved plan."); return; }
+    if (scoutHasUnsavedChanges) { setRecapError("Your latest changes are still saving. Try again in a moment: the recap is edited on the saved plan."); return; }
     setRecapError(null);
     try {
       const result = await api.applyScoutChange(activeSavedId, { ops: [op], baseRevision: activePlanRevision });
@@ -3525,7 +3425,7 @@ export default function App() {
           const withHeadshot = (p: Persona): Persona => ({ ...p, avatarUrl, avatarHistory: [version, ...(p.avatarHistory || [])].slice(0, 8) });
           // Matched by name: the persona may have moved, or been changed again, since.
           setProfileData((prev) => prev ? { ...prev, personas: prev.personas.map((p) => (p.name === persona.name && !p.avatarUrl ? withHeadshot(p) : p)) } : prev);
-          segmentAutoSaveQueueRef.current = segmentAutoSaveQueueRef.current.then(async () => {
+          autoSaveQueueRef.current = autoSaveQueueRef.current.then(async () => {
             const persisted = lastPersistedPlanRef.current;
             const revision = activePlanRevisionRef.current;
             const savedPersonas: Persona[] = persisted?.payload?.profile?.personas || [];
@@ -3565,15 +3465,15 @@ export default function App() {
       setIsAuditModalOpen(true);
     } else if (action === "regenerate_plan") {
       const confirmed = window.confirm(
-        "Regenerate this plan from its current brief? Research, personas, segments and the channel plan are rebuilt, which takes several minutes. The result is saved as a new draft; this version stays in your saved plans.",
+        "Regenerate this plan from its current brief? Research, personas, segments and the channel plan are rebuilt, which takes several minutes. The result is saved as a new plan; this version stays in your saved plans.",
       );
       if (confirmed) handleGenerate(undefined, undefined, { pinBrief: true });
     }
   };
 
   // Reset workspace to a fresh blank brief and clear the active plan
-  const handleNewPlan = () => {
-    if (!confirmDiscardUnsaved()) return;
+  const handleNewPlan = async () => {
+    if (!(await confirmDiscardUnsaved())) return;
     // Reset brief input fields
     setAdvertiserName("");
     setPastCampaignSelection(null);
@@ -4457,17 +4357,29 @@ export default function App() {
                 )}
 
                 {/* Save to History Button */}
-                <button
-                  onClick={handleOpenSaveDialog}
-                  className="relative inline-flex items-center justify-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
-                  title={hasUnsavedChanges() ? "You have unsaved changes. Save them to this plan." : "Save this profile to history list"}
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{activeSavedId ? "Update Save" : "Save Profile"}</span>
-                  {hasUnsavedChanges() ? (
-                    <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-white" aria-label="Unsaved changes" />
-                  ) : null}
-                </button>
+                {/* A saved plan saves itself; one that never got saved (its first save failed) still has a Save button. */}
+                {activeSavedId ? (
+                  <>
+                    <AutoSaveIndicator status={autoSaveStatus} pending={hasUnsavedChanges()} />
+                    <button
+                      onClick={() => setIsVersionHistoryOpen(true)}
+                      className="inline-flex items-center justify-center gap-1.5 text-xs bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
+                      title="See earlier versions of this plan and restore one"
+                    >
+                      <History className="w-3.5 h-3.5" />
+                      <span>History</span>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={handleOpenSaveDialog}
+                    className="inline-flex items-center justify-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
+                    title="Save this plan to the shared plan list"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Save Profile</span>
+                  </button>
+                )}
 
                 {/* Share Plan Button */}
                 <button
@@ -5762,7 +5674,7 @@ export default function App() {
                   <Bookmark className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                   <p className="text-xs font-semibold text-slate-600">No Shared Plans Yet</p>
                   <p className="text-[11px] text-slate-400 mt-1 max-w-[200px] mx-auto leading-normal">
-                    Generate an audience profile, then click <strong className="text-indigo-600 font-semibold">Save Profile</strong> in the actions bar. Everyone on the team will see it.
+                    Generate an audience profile. It is saved automatically, and everyone on the team will see it here.
                   </p>
                   <button
                     onClick={() => setLeftTab("brief")}
@@ -6464,6 +6376,19 @@ export default function App() {
                   </div>
                 </div>
 
+                {autoSaveStatus === "conflict" && !isShareView && (
+                  <div role="alert" className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+                    <span className="flex-1 leading-relaxed">
+                      Someone else saved changes to this plan, so your latest edits here were not saved. Reload to see their version;
+                      your unsaved edits will be lost, but everything saved before is in History.
+                    </span>
+                    <button type="button" onClick={handleReloadAfterConflict} className="shrink-0 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold cursor-pointer">
+                      Reload plan
+                    </button>
+                  </div>
+                )}
+
                 {actionError && (
                   <div role="alert" className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-start gap-2.5">
                     <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
@@ -6775,7 +6700,6 @@ export default function App() {
                 status={segmentStatus}
                 isToppingUp={isToppingUpSegments}
                 error={segmentError}
-                autoSaveError={segmentAutoSaveError}
                 readOnly={isShareView}
                 undoName={segmentUndoName}
                 onRemove={handleRemoveSegment}
@@ -6918,7 +6842,7 @@ export default function App() {
                   onToggle={handleToggleSectionActive}
                   planner={activeSavedId ? {
                     canBuild: linkedPastCampaignCount > 0 || (profileData.pastCampaignsUsed || []).some((c) => c.own),
-                    blockedReason: scoutHasUnsavedChanges ? "Save your changes first: the recap is built onto the saved plan." : null,
+                    blockedReason: scoutHasUnsavedChanges ? "Your latest changes are still saving. Try again in a moment: the recap is built onto the saved plan." : null,
                     building: recapBuilding,
                     error: recapError,
                     dropped: recapDropped,
@@ -9008,6 +8932,16 @@ export default function App() {
         />
       )}
 
+      <VersionHistoryModal
+        isOpen={isVersionHistoryOpen}
+        onClose={() => setIsVersionHistoryOpen(false)}
+        planId={activeSavedId}
+        current={lastPersistedPlanRef.current && lastPersistedPlanRef.current.id === activeSavedId
+          ? { savedAt: lastPersistedPlanRef.current.updatedAt, savedBy: lastPersistedPlanRef.current.updatedBy }
+          : null}
+        onRestore={handleRestoreVersion}
+      />
+
       {/* Clone Plan Modal */}
       {cloneModalPlan && (
         <ClonePlanModal
@@ -9163,5 +9097,35 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+/** Where the open plan's auto-save stands, beside the plan's actions. */
+function AutoSaveIndicator({ status, pending }: { status: "idle" | "saving" | "saved" | "error" | "conflict"; pending: boolean }) {
+  if (status === "conflict") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-3 py-2 rounded-xl" title="Someone else saved this plan; reload it to continue">
+        <AlertCircle className="w-3.5 h-3.5" /> Not saved
+      </span>
+    );
+  }
+  if (status === "error") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-2 rounded-xl" title="The last save failed; it will try again shortly">
+        <AlertTriangle className="w-3.5 h-3.5" /> Couldn't save, retrying
+      </span>
+    );
+  }
+  if (status === "saving" || pending) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 px-2 py-2" aria-live="polite">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving...
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 px-2 py-2" aria-live="polite" title="Every change to this plan is saved automatically">
+      <Check className="w-3.5 h-3.5" /> Saved
+    </span>
   );
 }

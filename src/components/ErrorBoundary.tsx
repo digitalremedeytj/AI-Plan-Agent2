@@ -52,7 +52,7 @@ export function PlanRenderError({ error, retry, draftSaved }: { error: Error; re
       <p className="font-bold">This part of the plan could not be displayed.</p>
       <p className="text-rose-800">
         {draftSaved
-          ? "The plan itself is safe: it was saved as a draft and is in the Saved tab."
+          ? "The plan itself is safe: it was saved and is in the Saved tab."
           : "The plan is still loaded. Use Save Profile to keep it before leaving the page."}
       </p>
       <pre className="text-[11px] bg-white/70 border border-rose-100 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">{error.message}</pre>
