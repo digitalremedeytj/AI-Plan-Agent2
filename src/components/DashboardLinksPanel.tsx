@@ -46,7 +46,7 @@ export function DashboardLinksPanel() {
   };
 
   const create = () => run("create", async () => {
-    const link = await api.createDashboardLink(label.trim() || "Leadership dashboard");
+    const link = await api.createDashboardLink(label.trim() || "AI Plan Agent Dashboard");
     setLinks((list) => [link, ...list]);
     setLabel("");
     await copy(link.token);
@@ -94,7 +94,7 @@ export function DashboardLinksPanel() {
     <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-white to-white p-5 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="flex items-center gap-2 text-base font-bold text-slate-900"><Link2 className="h-4 w-4 text-indigo-600" /> Leadership dashboard</h3>
+          <h3 className="flex items-center gap-2 text-base font-bold text-slate-900"><Link2 className="h-4 w-4 text-indigo-600" /> AI Plan Agent Dashboard</h3>
           <p className="mt-0.5 max-w-xl text-xs text-slate-500">
             Headline numbers and charts for leadership. Share a view-only link: it needs no sign-in, never expires, and can be
             turned off at any time. It shows people's and advertisers' names.

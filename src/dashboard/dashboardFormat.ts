@@ -77,7 +77,7 @@ export function weeklySummaryText(data: DashboardData, hoursPerPlan: number, lin
   const top = data.users[0];
   const topChannel = data.channels[0];
   const lines = [
-    `AI Plan Agent update: ${formatRange(data.from, data.to)}`,
+    `AI Plan Agent update: ${formatRange(data.from, data.to)}${data.selectedUsers ? ` (${data.selectedUsers.join(", ")} only)` : ""}`,
     "",
     `• ${formatNumber(kpis.plans.value)} plan${kpis.plans.value === 1 ? "" : "s"} generated${withChange(kpis.plans)} by ${formatNumber(kpis.activeUsers.value)} ${kpis.activeUsers.value === 1 ? "person" : "people"}`,
     `• ${formatMoney(kpis.budget.value)} in media budget planned${withChange(kpis.budget)} across ${formatNumber(kpis.advertisers.value)} advertiser${kpis.advertisers.value === 1 ? "" : "s"}`,

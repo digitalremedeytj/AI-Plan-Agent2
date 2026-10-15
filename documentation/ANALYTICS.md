@@ -75,13 +75,13 @@ route that performs them. The browser reports only what the server cannot see (`
 A share-link view by a signed-in planner is recorded with `detail: "staff_preview"`;
 an unauthenticated view is attributed to `(client share link)`.
 
-## Leadership dashboard (`/dashboard`)
+## AI Plan Agent Dashboard (`/dashboard`)
 
 Headline numbers and charts for leadership, computed from the usage log
 (`src/usage/dashboard.ts`, page in `src/dashboard/`).
 
 **Access.** Signed-in admins open `/dashboard` directly. Everyone else needs a view-only
-link, created in Settings → Usage → Leadership dashboard:
+link, created in Settings → Usage → AI Plan Agent Dashboard:
 `/dashboard#key=dash_…`. The key sits after `#`, so browsers never send it to the server in
 the address (it travels in the `x-dashboard-key` header) and it stays out of Cloud Run request
 logs and referrers. The page removes it from the address bar once read. Links are named,

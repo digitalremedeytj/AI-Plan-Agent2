@@ -245,12 +245,13 @@ export async function getUsageSummary(days: number): Promise<UsageSummary> {
 export type DashboardViewer = { via: "admin"; name: string } | { via: "link"; label: string; sharedBy: string };
 
 /** `key` is a view-only dashboard link's key; without one the admin session is used. */
-export async function getDashboardData(range: { from: string; to: string }, options: { key?: string | null; firstLoad?: boolean } = {}): Promise<{ data: DashboardData; viewer: DashboardViewer }> {
+export async function getDashboardData(range: { from: string; to: string }, options: { key?: string | null; firstLoad?: boolean; users?: string[] | null } = {}): Promise<{ data: DashboardData; viewer: DashboardViewer }> {
   const headers: Record<string, string> = {};
   if (options.key) headers["x-dashboard-key"] = options.key;
   if (options.firstLoad) headers["x-dashboard-visit"] = "1";
   // The viewer's timezone, so the charts' days are the viewer's days.
   const query = new URLSearchParams({ from: range.from, to: range.to, tz: String(new Date().getTimezoneOffset()) });
+  for (const user of options.users ?? []) query.append("user", user);
   return request(`/api/dashboard/data?${query.toString()}`, { headers });
 }
 

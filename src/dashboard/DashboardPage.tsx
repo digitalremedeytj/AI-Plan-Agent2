@@ -3,8 +3,8 @@ import {
   Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  ArrowDownRight, ArrowUpRight, Building2, CalendarDays, Check, Clock, ClipboardCopy, DollarSign, Eye, FileText,
-  Link2, Loader2, Lock, Minus, Printer, Sparkles, Users,
+  ArrowDownRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, Clock, ClipboardCopy, DollarSign, Eye, FileText,
+  Link2, Loader2, Lock, Minus, Printer, Search, Sparkles, UserRound, Users,
 } from "lucide-react";
 import * as api from "../api/client";
 import { ApiError } from "../api/client";
@@ -172,6 +172,97 @@ function HoursEditor({ value, onChange, canSave }: { value: number; onChange: (v
   );
 }
 
+/**
+ * Who the numbers cover. Everyone by default; null means everyone, so a person who starts using
+ * the app later is included without anyone re-selecting them.
+ */
+function UserFilter({ allUsers, selected, onChange }: { allUsers: string[]; selected: string[] | null; onChange: (users: string[] | null) => void }) {
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  // Opens rightward unless that would run off the screen (the button sits at the far right on
+  // wide screens and wraps to the left on phones).
+  const [alignRight, setAlignRight] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
+  }, [open]);
+
+  const isChecked = (name: string) => selected === null || selected.includes(name);
+  const toggle = (name: string) => {
+    const current = selected ?? allUsers;
+    const next = current.includes(name) ? current.filter((n) => n !== name) : [...current, name];
+    if (next.length === 0) return; // at least one person; "All users" is the way back to everyone
+    onChange(next.length === allUsers.length ? null : next);
+  };
+  const label = selected === null
+    ? `All users (${allUsers.length})`
+    : selected.length === 1 ? selected[0] : `${selected.length} of ${allUsers.length} users`;
+  const visible = allUsers.filter((name) => name.toLowerCase().includes(query.trim().toLowerCase()));
+
+  return (
+    <div ref={ref} className="relative print:hidden">
+      <button
+        type="button"
+        onClick={() => {
+          const rect = ref.current?.getBoundingClientRect();
+          setAlignRight(Boolean(rect && rect.left + 288 + 16 > window.innerWidth));
+          setOpen((o) => !o);
+        }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={`inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-semibold ring-1 transition ${selected === null ? "bg-white/10 text-white ring-white/15 hover:bg-white/15" : "bg-white text-indigo-900 ring-white"}`}
+      >
+        <UserRound className="h-4 w-4" />
+        <span className="max-w-48 truncate">{label}</span>
+        <ChevronDown className={`h-3.5 w-3.5 transition ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open ? (
+        <div className={`absolute z-30 mt-2 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-900 shadow-2xl ${alignRight ? "right-0" : "left-0"}`}>
+          {allUsers.length > 8 ? (
+            <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2">
+              <Search className="h-4 w-4 text-slate-400" />
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Find a person"
+                className="w-full text-sm focus:outline-none"
+              />
+            </div>
+          ) : null}
+          <label className="flex cursor-pointer items-center gap-2.5 border-b border-slate-100 px-3 py-2.5 text-sm font-semibold hover:bg-slate-50">
+            <input type="checkbox" checked={selected === null} onChange={() => onChange(null)} className="h-4 w-4 accent-indigo-600" />
+            All users
+          </label>
+          <ul className="max-h-64 overflow-y-auto py-1" role="listbox" aria-multiselectable="true">
+            {visible.map((name) => (
+              <li key={name} className="group">
+                <label className="flex cursor-pointer items-center gap-2.5 px-3 py-1.5 text-sm hover:bg-slate-50">
+                  <input type="checkbox" checked={isChecked(name)} onChange={() => toggle(name)} className="h-4 w-4 accent-indigo-600" />
+                  <span className="flex-1 truncate">{name}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.preventDefault(); onChange([name]); }}
+                    className="rounded px-1.5 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
+                  >
+                    Only
+                  </button>
+                </label>
+              </li>
+            ))}
+            {visible.length === 0 ? <li className="px-3 py-3 text-center text-xs text-slate-500">No one matches.</li> : null}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const initial = React.useMemo(readHash, []);
   const [key] = React.useState<string | null>(initial.key);
@@ -183,13 +274,14 @@ export default function DashboardPage() {
   const [status, setStatus] = React.useState<"loading" | "ready" | "denied" | "error">("loading");
   const [error, setError] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
+  const [selectedUsers, setSelectedUsers] = React.useState<string[] | null>(null);
   const [shareLinkForSummary, setShareLinkForSummary] = React.useState<string | null>(null);
   const firstLoad = React.useRef(true);
 
   // Take the key out of the visible address once read, so a screenshot or screen-share of the
   // page does not show it. A reload still works for the rest of the browser session.
   React.useEffect(() => {
-    document.title = "AI Plan Agent · Leadership Dashboard";
+    document.title = "AI Plan Agent Dashboard";
     if (key) {
       try { sessionStorage.setItem("apa_dashboard_key", key); } catch { /* storage may be blocked */ }
       window.history.replaceState(null, "", "/dashboard");
@@ -205,7 +297,7 @@ export default function DashboardPage() {
     setError(null);
     try {
       const range = rangeFromDates(days.fromDay, days.toDay);
-      const result = await api.getDashboardData(range, { key: effectiveKey, firstLoad: firstLoad.current });
+      const result = await api.getDashboardData(range, { key: effectiveKey, firstLoad: firstLoad.current, users: selectedUsers });
       if (firstLoad.current) {
         firstLoad.current = false;
         if (result.viewer.via === "link") identifyDashboardViewer();
@@ -223,7 +315,7 @@ export default function DashboardPage() {
         setStatus("error");
       }
     }
-  }, [days, effectiveKey]);
+  }, [days, effectiveKey, selectedUsers]);
   React.useEffect(() => { void load(); }, [load]);
 
   // Signed-in admins: attribute GA hits to them, and offer their newest active link in the summary.
@@ -304,8 +396,8 @@ export default function DashboardPage() {
                 <img src={drIconWhite} alt="Digital Remedy" className="h-full w-full object-contain" />
               </div>
               <div>
-                <p className="text-xs font-semibold uppercase tracking-widest text-indigo-200 print:text-indigo-700">AI Plan Agent</p>
-                <h1 className="font-display text-xl font-bold sm:text-2xl">Leadership Dashboard</h1>
+                <p className="text-xs font-semibold uppercase tracking-widest text-indigo-200 print:text-indigo-700">Digital Remedy</p>
+                <h1 className="font-display text-xl font-bold sm:text-2xl">AI Plan Agent Dashboard</h1>
               </div>
             </div>
             <div className="flex flex-wrap gap-2 print:hidden">
@@ -362,9 +454,17 @@ export default function DashboardPage() {
                 aria-label="End date"
               />
             </div>
+            {data && data.allUsers.length > 0 ? (
+              <UserFilter
+                allUsers={data.allUsers}
+                selected={selectedUsers}
+                onChange={(users) => { setSelectedUsers(users); track("dashboard_user_filter", { selected: users?.length ?? 0 }); }}
+              />
+            ) : null}
             {data ? (
               <p className="text-sm text-indigo-100 print:text-slate-600">
                 {formatRange(data.from, data.to)} <span className="text-indigo-300 print:text-slate-400">· compared with the {Math.round((Date.parse(data.to) - Date.parse(data.from)) / 86_400_000)} days before</span>
+                {data.selectedUsers ? <span className="text-indigo-300 print:text-slate-400"> · {data.selectedUsers.join(", ")} only</span> : null}
               </p>
             ) : null}
             {status === "loading" && data ? <Loader2 className="h-4 w-4 animate-spin text-indigo-200" /> : null}

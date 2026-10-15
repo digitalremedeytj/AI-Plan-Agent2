@@ -125,6 +125,32 @@ test("a plan's budget and channel allocations are read from its media plan", () 
 
 test("days are the viewer's days: a 9pm New York plan is charted on that date, not the next", () => {
   // Oct 1-2 in New York (UTC-4, offset +240), as the browser sends it.
-  const data = buildDashboard([gen("2026-10-02T01:00:00.000Z", "Ana")], "2026-10-01T04:00:00.000Z", "2026-10-03T03:59:59.999Z", DEFAULT_DASHBOARD_CONFIG, 240);
+  const data = buildDashboard([gen("2026-10-02T01:00:00.000Z", "Ana")], "2026-10-01T04:00:00.000Z", "2026-10-03T03:59:59.999Z", DEFAULT_DASHBOARD_CONFIG, { tzOffsetMinutes: 240 });
   assert.deepEqual(data.series.map((p) => [p.start, p.plans]), [["2026-10-01", 1], ["2026-10-02", 0]]);
+});
+
+test("filtering to people keeps their work and the client views of plans they shared", () => {
+  const events = [
+    gen("2026-10-02T10:00:00.000Z", "Ana", { planId: "a1", advertiserName: "Acme", budget: 100 }),
+    gen("2026-10-02T11:00:00.000Z", "Ben", { planId: "b1", advertiserName: "Bolt", budget: 50 }),
+    ev("2026-10-03T10:00:00.000Z", "Ana", "share_create", { planId: "a1" }),
+    ev("2026-10-03T11:00:00.000Z", "Ben", "share_create", { planId: "b1" }),
+    ev("2026-10-04T10:00:00.000Z", SHARE_VIEWER_ACTOR, "share_view", { planId: "a1" }),
+    ev("2026-10-04T11:00:00.000Z", SHARE_VIEWER_ACTOR, "share_view", { planId: "b1" }),
+    ev("2026-10-04T12:00:00.000Z", SHARE_VIEWER_ACTOR, "share_view", { planId: "b1" }),
+  ];
+  const data = buildDashboard(events, FROM, TO, DEFAULT_DASHBOARD_CONFIG, { users: ["ana"] });
+  assert.equal(data.kpis.plans.value, 1);
+  assert.equal(data.kpis.budget.value, 100);
+  assert.equal(data.kpis.shareViews.value, 1);
+  assert.deepEqual(data.users.map((u) => u.name), ["Ana"]);
+  assert.deepEqual(data.funnel, { generated: 1, shared: 1, viewed: 1 });
+  assert.deepEqual(data.allUsers, ["Ana", "Ben"], "the filter still offers everyone");
+  assert.deepEqual(data.selectedUsers, ["Ana"]);
+});
+
+test("no selection means everyone", () => {
+  const data = build([gen("2026-10-02T10:00:00.000Z", "Ana"), gen("2026-10-02T11:00:00.000Z", "Ben")]);
+  assert.equal(data.kpis.plans.value, 2);
+  assert.equal(data.selectedUsers, null);
 });

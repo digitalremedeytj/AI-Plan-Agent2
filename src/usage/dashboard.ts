@@ -67,6 +67,10 @@ export interface DashboardData {
   };
   /** Everyone who has ever used the app, up to the end of the period. */
   totalUsers: number;
+  /** Everyone the user filter can offer, A-Z, regardless of the current selection. */
+  allUsers: string[];
+  /** The selection applied, or null for everyone. */
+  selectedUsers: string[] | null;
   reliability: { runs: number; failed: number; successRate: number | null; medianMinutes: number | null };
   series: DashboardSeriesPoint[];
   funnel: { generated: number; shared: number; viewed: number };
@@ -133,11 +137,40 @@ function budgetCountingRuns(generations: UsageEvent[]): Set<string> {
   return counted;
 }
 
-export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: string, config: DashboardConfig, tzOffsetMinutes = 0): DashboardData {
+export interface DashboardOptions {
+  /** The browser's getTimezoneOffset(), so chart days are the viewer's days. */
+  tzOffsetMinutes?: number;
+  /** Only these people (by name, any capitalisation). Empty or absent means everyone. */
+  users?: string[] | null;
+}
+
+export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: string, config: DashboardConfig, options: DashboardOptions = {}): DashboardData {
+  const tzOffsetMinutes = options.tzOffsetMinutes ?? 0;
   const excluded = new Set(config.excludedNames.map(toPersonKey));
-  const events = allEvents
+  const everything = allEvents
     .filter((e) => !excluded.has(toPersonKey(e.actor)))
     .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+
+  // Who created each plan's share link, so client views can be credited to them.
+  const sharerByPlan = new Map<string, string>();
+  const generatorByPlan = new Map<string, string>();
+  for (const e of everything) {
+    if (e.action === "share_create" && e.planId && !sharerByPlan.has(e.planId)) sharerByPlan.set(e.planId, e.actor.trim());
+    if (isGenerated(e) && e.planId && !generatorByPlan.has(e.planId)) generatorByPlan.set(e.planId, e.actor.trim());
+  }
+  const ownerOf = (planId?: string) => (planId ? sharerByPlan.get(planId) || generatorByPlan.get(planId) : undefined);
+
+  // Everyone the filter can offer, under the spelling they used last.
+  const names = new Map<string, string>();
+  for (const e of everything) if (e.actor !== SHARE_VIEWER_ACTOR && e.at <= toIso) names.set(toPersonKey(e.actor), e.actor.trim());
+  const allUsers = [...names.values()].sort((a, b) => a.localeCompare(b));
+
+  // The user filter keeps the selected people's own actions plus clients' views of the plans
+  // they shared, so a person's numbers read the same filtered as in the full leaderboard.
+  const selected = options.users?.length ? new Set(options.users.map(toPersonKey)) : null;
+  const events = selected
+    ? everything.filter((e) => (e.actor === SHARE_VIEWER_ACTOR ? selected.has(toPersonKey(ownerOf(e.planId) || "")) : selected.has(toPersonKey(e.actor))))
+    : everything;
 
   const from = Date.parse(fromIso);
   const to = Date.parse(toIso);
@@ -150,14 +183,6 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
   // Budget dedupe needs the run before the period too, or a brief re-run on the first morning
   // of the period would count again.
   const countedForBudget = budgetCountingRuns(events.filter(isGenerated));
-
-  // Who created each plan's share link, so client views can be credited to them.
-  const sharerByPlan = new Map<string, string>();
-  const generatorByPlan = new Map<string, string>();
-  for (const e of events) {
-    if (e.action === "share_create" && e.planId && !sharerByPlan.has(e.planId)) sharerByPlan.set(e.planId, e.actor.trim());
-    if (isGenerated(e) && e.planId && !generatorByPlan.has(e.planId)) generatorByPlan.set(e.planId, e.actor.trim());
-  }
 
   const measure = (list: UsageEvent[]) => {
     const people = new Set<string>();
@@ -212,8 +237,8 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
 
   // Funnel over the period's plans.
   const cohort = new Set(current.filter((e) => isGenerated(e) && e.planId).map((e) => e.planId as string));
-  const sharedPlans = new Set(events.filter((e) => e.action === "share_create" && e.planId && cohort.has(e.planId)).map((e) => e.planId as string));
-  const viewedPlans = new Set(events.filter((e) => isClientView(e) && e.planId && sharedPlans.has(e.planId)).map((e) => e.planId as string));
+  const sharedPlans = new Set(everything.filter((e) => e.action === "share_create" && e.planId && cohort.has(e.planId)).map((e) => e.planId as string));
+  const viewedPlans = new Set(everything.filter((e) => isClientView(e) && e.planId && sharedPlans.has(e.planId)).map((e) => e.planId as string));
 
   // Per person.
   const users = new Map<string, DashboardUser>();
@@ -235,7 +260,7 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
       if (e.action === "share_create") user.shareLinks += 1;
     }
     if (isClientView(e) && e.planId) {
-      const owner = sharerByPlan.get(e.planId) || generatorByPlan.get(e.planId);
+      const owner = ownerOf(e.planId);
       if (owner && !excluded.has(toPersonKey(owner))) userFor(owner, e.at).shareViews += 1;
     }
   }
@@ -279,6 +304,8 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
       budget: kpi("budget"),
     },
     totalUsers,
+    allUsers,
+    selectedUsers: selected ? allUsers.filter((name) => selected.has(toPersonKey(name))) : null,
     reliability: {
       runs: runs.length,
       failed,

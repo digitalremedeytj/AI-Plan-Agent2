@@ -536,7 +536,9 @@ app.get("/api/dashboard/data", async (req, res) => {
     const storage = await getStorage();
     const [events, config] = await Promise.all([storage.listUsageEvents(""), storage.getDashboardConfig()]);
     const tz = Math.max(-840, Math.min(840, Math.round(Number(req.query.tz) || 0)));
-    const data = buildDashboard(events, new Date(from).toISOString(), new Date(to).toISOString(), config, tz);
+    // Repeated ?user= params, since names can contain commas.
+    const users = ([] as unknown[]).concat(req.query.user ?? []).map((u) => sanitizeDisplayName(u)).filter(Boolean).slice(0, 200);
+    const data = buildDashboard(events, new Date(from).toISOString(), new Date(to).toISOString(), config, { tzOffsetMinutes: tz, users });
 
     // A link's first load in a browser session counts as a visit; changing the dates does not.
     if (access.via === "link" && req.get("x-dashboard-visit") === "1") {
@@ -568,7 +570,7 @@ app.get("/api/dashboard/links", requireAdmin, async (_req, res) => {
 
 app.post("/api/dashboard/links", requireAdmin, async (req, res) => {
   try {
-    const label = sanitizeDisplayName(req.body?.label) || "Leadership dashboard";
+    const label = sanitizeDisplayName(req.body?.label) || "AI Plan Agent Dashboard";
     const link: DashboardLink = {
       // 256 bits, like plan share links.
       token: `dash_${crypto.randomBytes(32).toString("base64url")}`,
