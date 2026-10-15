@@ -239,7 +239,7 @@ test("a 429 names the quota it hit, so the logs say which limit to raise", () =>
     "generativelanguage.googleapis.com/search_grounding_request_count (model gemini-3.8-flash, limit 1500); retry after 3600s",
   );
   // The legacy API only puts the body in the message.
-  const legacy = new Error(`got status: 429 . ${JSON.stringify({ error: quotaError().error })}`);
+  const legacy = new Error(`got status: 429 . ${JSON.stringify({ error: (quotaError() as any).error })}`);
   assert.equal(isQuotaError(legacy), true);
   assert.match(describeQuota(legacy), /search_grounding_request_count/);
   assert.equal(describeQuota(new Error("429 quota")), "");

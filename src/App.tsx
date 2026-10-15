@@ -1720,8 +1720,11 @@ export default function App() {
     if (!profileData) return;
     const advertiser = advertiserName.trim();
     const desc = audienceDescription.trim();
-    const defaultTitle = activeSavedTitle
-      ? activeSavedTitle
+    // The server names a finished run "<title> (draft)". Saving is the planner keeping it, so the
+    // suffix comes off here; otherwise every saved plan kept "(draft)" unless it was deleted by hand.
+    const savedTitle = activeSavedTitle ? activeSavedTitle.replace(/\s*\(draft\)\s*$/i, "").trim() : "";
+    const defaultTitle = savedTitle
+      ? savedTitle
       : advertiser
         ? (/\bplans?\b/i.test(advertiser) ? advertiser : `${advertiser} Plan`)
         : desc
@@ -2601,6 +2604,7 @@ export default function App() {
    * global settings have moved on since.
    */
   const handleLoadSavedProfile = async (summary: { id: string; [key: string]: any }) => {
+    if (summary.id !== activeSavedId && !confirmDiscardUnsaved()) return;
     setPlansError(null);
     setLoadingPlanId(summary.id);
 
@@ -3271,6 +3275,34 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileData, activePlanRevision, activeSavedId]);
 
+  // Edits that closing the tab now would lose: a change to the parts that only Save writes, an
+  // auto-save that failed or has not landed yet, or a plan that was never saved at all (its draft
+  // save failed). The leave prompt, the Save button's dot and the plan-switch guard all read this.
+  const hasUnsavedChanges = (): boolean => {
+    if (isShareView || !profileData || loading) return false;
+    if (!activeSavedId) return true;
+    return scoutHasUnsavedChanges
+      || segmentsDirtyRef.current
+      || channelOverridesDirtyRef.current
+      || hiddenSectionsDirtyRef.current
+      || reachPrefsDirtyRef.current
+      || executiveBriefDirtyRef.current;
+  };
+  const hasUnsavedChangesRef = React.useRef(hasUnsavedChanges);
+  hasUnsavedChangesRef.current = hasUnsavedChanges;
+  React.useEffect(() => {
+    const warn = (e: BeforeUnloadEvent) => {
+      if (!hasUnsavedChangesRef.current()) return;
+      e.preventDefault();
+      e.returnValue = ""; // older browsers only show the prompt when this is set
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
+  /** Asks before an in-app action replaces the open plan; true when it may go ahead. */
+  const confirmDiscardUnsaved = () =>
+    !hasUnsavedChanges() || window.confirm("This plan has changes that are not saved yet. Leave without saving them?");
+
   // ---- Campaign Recap ----
   // Whether the plan has past campaigns to build a recap from; the plan's own pastCampaignsUsed
   // covers campaigns used at generation, this covers ones linked afterwards.
@@ -3541,6 +3573,7 @@ export default function App() {
 
   // Reset workspace to a fresh blank brief and clear the active plan
   const handleNewPlan = () => {
+    if (!confirmDiscardUnsaved()) return;
     // Reset brief input fields
     setAdvertiserName("");
     setPastCampaignSelection(null);
@@ -4426,11 +4459,14 @@ export default function App() {
                 {/* Save to History Button */}
                 <button
                   onClick={handleOpenSaveDialog}
-                  className="inline-flex items-center justify-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
-                  title="Save this profile to history list"
+                  className="relative inline-flex items-center justify-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl transition-colors cursor-pointer font-semibold shadow-xs"
+                  title={hasUnsavedChanges() ? "You have unsaved changes. Save them to this plan." : "Save this profile to history list"}
                 >
                   <Save className="w-3.5 h-3.5" />
                   <span>{activeSavedId ? "Update Save" : "Save Profile"}</span>
+                  {hasUnsavedChanges() ? (
+                    <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-white" aria-label="Unsaved changes" />
+                  ) : null}
                 </button>
 
                 {/* Share Plan Button */}
