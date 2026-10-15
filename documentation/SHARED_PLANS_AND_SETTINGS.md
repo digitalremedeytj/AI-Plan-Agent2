@@ -76,6 +76,7 @@ resolve on deploy.
 | `settings/current` | the live planning settings and their revision number |
 | `settings_revisions/{n}` | immutable settings history, referenced by each plan |
 | `publishers/current` | the live CTV publisher list |
+| `scout_logs/{id}` | one ScoutAI question and answer each, as `body` (JSON string) plus filter fields; expires via TTL on `expireAt` (see ANALYTICS.md) |
 
 Payloads are stored as a **JSON string**, not a Firestore map. That sidesteps Firestore's
 no-nested-arrays rule (chart data hits it) and keeps the storage layer independent of the

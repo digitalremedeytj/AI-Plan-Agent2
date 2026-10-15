@@ -85,6 +85,42 @@ never the question's text:
 
 ScoutAI questions recorded before these fields existed have no `detail`.
 
+## ScoutAI conversation log
+
+Every ScoutAI question and its answer, kept so answer quality and what planners ask can be
+reviewed. Unlike the usage log it holds the words, so reading it is admin-only
+(`GET /api/scout-logs?days=30&limit=200`, newest first) and every record expires after a year.
+The browser's own chat history stays in `sessionStorage` as before; this is the server's copy.
+
+One record per question (`scout_logs/{id}`; `data/store/scout-logs/{day}/` in development),
+built by `src/assistant/scoutLog.ts`:
+
+- who, when, plan, advertiser, the plan revision answered against
+- the question and the answer (with the server's notes about left-out changes and unverified figures)
+- the proposal as the planner saw it: each recommendation's title, reasoning, evidence and before → after, not the raw operations
+- prompt, type of question, summary or full campaign data, model, thinking level, time taken, and the error on failure
+- `conversationId` and `turn`, so a whole chat reads back in order (a new id after Clear chat)
+- `outcome`: set when the planner applies or undoes that answer's proposal
+- `feedback`: the asking planner's thumbs up or down, with an optional note on a thumbs-down
+  (`POST /api/scout-logs/{id}/feedback`, only the person who asked)
+- `review`: empty, reserved for the review page
+
+**Size.** Texts are capped (question 4,000 characters, answer 20,000, the proposal 40,000 in
+all, shortened to fit), so a record is a few KB and never more than about 75 KB.
+
+**Retention: one year.** Each record carries `expireAt` (a Firestore timestamp, a year after
+`at`). Firestore deletes expired records itself once a TTL policy exists. **One-time setup**,
+run once per project (or Console → Firestore → Time-to-live → Create policy: collection group
+`scout_logs`, timestamp field `expireAt`):
+
+```bash
+gcloud firestore fields ttls update expireAt --collection-group=scout_logs --enable-ttl --project=ai-api-project-465519
+```
+
+Until the policy exists, nothing is deleted; records past `expireAt` simply stay. TTL deletion
+usually runs within a day of expiry. In development, the local driver removes expired days on
+the next write.
+
 ## AI Plan Agent Dashboard (`/dashboard`)
 
 Headline numbers and charts for executives, computed from the usage log

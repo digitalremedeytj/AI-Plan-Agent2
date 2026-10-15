@@ -1,6 +1,6 @@
 import React from "react";
 import Markdown from "react-markdown";
-import { AlertTriangle, ArrowRight, BarChart3, BookOpen, Check, ChevronDown, Eye, EyeOff, FileText, Loader2, Lock, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, BarChart3, BookOpen, Check, ChevronDown, Eye, EyeOff, FileText, Loader2, Lock, RotateCcw, Send, Sparkles, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
 import * as api from "../api/client";
 import { ApiError, type AssistantOp, type ChatTurn, type FollowUp, type ProposalChange, type ScoutProposal } from "../api/client";
 import type { AudienceProfile } from "../types";
@@ -46,6 +46,9 @@ interface Message {
   fromSummary?: boolean;
   /** The library prompt this answer came from, so applying it is credited to that prompt. */
   promptId?: string;
+  /** This answer's conversation-log record, for the thumbs and for recording what was applied. */
+  logId?: string;
+  feedback?: { rating: "up" | "down"; comment?: string; commentSaved?: boolean };
   /** A failed answer the planner can ask for again; `failures` counts tries at the same question. */
   retry?: { recapRecommendationId?: string; promptId?: string; failures: number };
 }
@@ -94,6 +97,20 @@ interface Props {
 }
 
 const storageKey = (planId: string) => `scoutai_chat_${planId}`;
+const conversationKey = (planId: string) => `scoutai_conversation_${planId}`;
+
+/** Ties this chat's questions together in the conversation log; a new one after Clear chat. */
+function conversationId(planId: string, renew = false): string {
+  try {
+    const existing = renew ? null : sessionStorage.getItem(conversationKey(planId));
+    if (existing) return existing;
+    const id = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    sessionStorage.setItem(conversationKey(planId), id);
+    return id;
+  } catch {
+    return "unsaved";
+  }
+}
 const newId = () => Math.random().toString(36).slice(2, 10);
 const MAX_INPUT_LINES = 4;
 
@@ -392,6 +409,52 @@ function ProposalCard({
   );
 }
 
+/** Thumbs up/down under an answer; a thumbs-down asks (optionally) what was wrong. */
+function AnswerFeedback({ feedback, onRate, onComment }: {
+  feedback: Message["feedback"];
+  onRate: (rating: "up" | "down") => void;
+  onComment: (comment: string) => void;
+}) {
+  const [comment, setComment] = React.useState("");
+  const button = (rating: "up" | "down", Icon: typeof ThumbsUp, label: string) => (
+    <button
+      type="button"
+      onClick={() => onRate(rating)}
+      aria-pressed={feedback?.rating === rating}
+      title={label}
+      aria-label={label}
+      className={`rounded-md p-1 cursor-pointer ${feedback?.rating === rating ? (rating === "up" ? "text-emerald-600 bg-emerald-50" : "text-rose-600 bg-rose-50") : "text-slate-300 hover:text-slate-600 hover:bg-slate-50"}`}
+    >
+      <Icon className="w-3 h-3" />
+    </button>
+  );
+  return (
+    <div className="mt-1">
+      <div className="flex items-center gap-0.5">
+        {button("up", ThumbsUp, "Good answer")}
+        {button("down", ThumbsDown, "Not a good answer")}
+      </div>
+      {feedback?.rating === "down" && (feedback.commentSaved ? (
+        <p className="mt-1 text-[10px] text-slate-400">Thanks, noted.</p>
+      ) : (
+        <form
+          className="mt-1 flex items-center gap-1.5"
+          onSubmit={(e) => { e.preventDefault(); onComment(comment); }}
+        >
+          <input
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            maxLength={1000}
+            placeholder="What was wrong? (optional)"
+            className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] focus:border-indigo-300 focus:outline-none"
+          />
+          <button type="submit" disabled={!comment.trim()} className="rounded-lg px-2 py-1 text-[11px] font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-40 cursor-pointer">Send</button>
+        </form>
+      ))}
+    </div>
+  );
+}
+
 export function ScoutAssistantPanel({
   planId, advertiserName, profile, revision, revisionBump, hasUnsavedChanges, isVisible, isBriefStale, hasAudit,
   onApplied, onFollowUp, onUnread, preview, onPreview, kpis = [], request, onRequestHandled,
@@ -506,7 +569,8 @@ export function ScoutAssistantPanel({
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const result = await api.askScout(planId, toTurns(history), (line) => setThought(line), controller.signal, tag.promptId, tag.recapRecommendationId ? "recap" : undefined);
+      const log = { conversationId: conversationId(planId), turn: history.filter((m) => m.role === "user").length };
+      const result = await api.askScout(planId, toTurns(history), (line) => setThought(line), controller.signal, tag.promptId, tag.recapRecommendationId ? "recap" : undefined, log);
       setMessages((prev) => [...prev, {
         id: newId(),
         role: "assistant",
@@ -516,6 +580,7 @@ export function ScoutAssistantPanel({
         ...(tag.recapRecommendationId && result.proposal ? { recapRecommendationId: tag.recapRecommendationId } : {}),
         ...(result.depth === "summary" ? { fromSummary: true } : {}),
         ...(tag.promptId ? { promptId: tag.promptId } : tag.recapRecommendationId ? { promptId: "recap" } : {}),
+        ...(result.logId ? { logId: result.logId } : {}),
       }]);
       if (!visibleRef.current) onUnread(true);
     } catch (err: any) {
@@ -572,7 +637,7 @@ export function ScoutAssistantPanel({
       // Applying a recap recommendation marks it "In this plan", whether or not ScoutAI said so.
       const recId = message.recapRecommendationId;
       if (recId && !ops.some((op) => op.type === "mark_recap_recommendation" && op.id === recId)) ops.push({ type: "mark_recap_recommendation", id: recId, applied: true });
-      const result = await api.applyScoutChange(planId, { ops, baseRevision: proposal.baseRevision, from: "scout", promptId: message.promptId });
+      const result = await api.applyScoutChange(planId, { ops, baseRevision: proposal.baseRevision, from: "scout", promptId: message.promptId, logId: message.logId });
       if (preview?.proposalId === message.id) onPreview(null);
       // The saved result is authoritative; show what the server applied.
       updateProposal(message.id, {
@@ -598,7 +663,7 @@ export function ScoutAssistantPanel({
     if (!proposal?.revertOps?.length || proposal.appliedRevision == null) return;
     updateProposal(message.id, { status: "reverting" });
     try {
-      const result = await api.applyScoutChange(planId, { ops: proposal.revertOps, baseRevision: proposal.appliedRevision, revert: true, from: "scout", promptId: message.promptId });
+      const result = await api.applyScoutChange(planId, { ops: proposal.revertOps, baseRevision: proposal.appliedRevision, revert: true, from: "scout", promptId: message.promptId, logId: message.logId });
       updateProposal(message.id, { status: "reverted", revertOps: undefined, followUps: [] });
       onApplied(result.plan);
     } catch (err: any) {
@@ -620,6 +685,21 @@ export function ScoutAssistantPanel({
     setMessages([]);
     setIsThinking(false);
     setThought(null);
+    conversationId(planId, true);
+  };
+
+  // Best effort: a rating that does not save is not worth interrupting the planner for.
+  const rate = (message: Message, rating: "up" | "down") => {
+    if (!message.logId) return;
+    const next = message.feedback?.rating === rating ? null : rating;
+    setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, feedback: next ? { rating: next } : undefined } : m)));
+    api.rateScoutAnswer(message.logId, next).catch(() => undefined);
+  };
+
+  const saveFeedbackComment = (message: Message, comment: string) => {
+    if (!message.logId || !message.feedback || !comment.trim()) return;
+    setMessages((prev) => prev.map((m) => (m.id === message.id && m.feedback ? { ...m, feedback: { ...m.feedback, comment: comment.trim(), commentSaved: true } } : m)));
+    api.rateScoutAnswer(message.logId, message.feedback.rating, comment.trim()).catch(() => undefined);
   };
 
   const sendDraft = () => {
@@ -763,6 +843,9 @@ export function ScoutAssistantPanel({
                 <div className="scout-markdown text-xs leading-relaxed text-slate-700">
                   <Markdown>{message.text}</Markdown>
                 </div>
+              )}
+              {message.logId && !message.isError && (
+                <AnswerFeedback feedback={message.feedback} onRate={(rating) => rate(message, rating)} onComment={(comment) => saveFeedbackComment(message, comment)} />
               )}
               {message.fromSummary && message.id === messages[messages.length - 1]?.id && (
                 <button

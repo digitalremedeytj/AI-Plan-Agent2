@@ -25,6 +25,8 @@ import {
   type PerformanceCampaignInput,
   type PerformanceCampaignSummary,
   type UsageEvent,
+  type ScoutLog,
+  type ScoutLogUpdate,
   DEFAULT_DASHBOARD_CONFIG,
   type DashboardConfig,
   type DashboardLink,
@@ -57,6 +59,7 @@ const SCOUT_PROMPTS = "scout_prompts";
 const CURRENT_DOC = "current";
 const PERFORMANCE = "performance_campaigns";
 const USAGE_EVENTS = "usage_events";
+const SCOUT_LOGS = "scout_logs";
 const DASHBOARD_LINKS = "dashboard_links";
 const DASHBOARD_CONFIG = "dashboard_config";
 
@@ -161,7 +164,7 @@ export class FirestoreAdapter implements StorageAdapter {
     collection: string,
     id: string,
     data: Record<string, unknown>,
-    options: { requireAbsent?: boolean; expectedUpdateTime?: string } = {},
+    options: { requireAbsent?: boolean; expectedUpdateTime?: string; timestamps?: string[] } = {},
   ): Promise<FirestoreDocument> {
     const query: string[][] = [];
     if (options.requireAbsent) query.push(["currentDocument.exists", "false"]);
@@ -170,7 +173,10 @@ export class FirestoreAdapter implements StorageAdapter {
     // field keeps the document an exact mirror of `data` (removed keys really go away).
     for (const key of Object.keys(data)) query.push(["updateMask.fieldPaths", key]);
 
-    return this.request("PATCH", `/${collection}/${encodeURIComponent(id)}`, { fields: encodeFields(data) }, query);
+    const fields = encodeFields(data);
+    // A TTL policy only acts on real timestamps, not ISO strings.
+    for (const key of options.timestamps || []) if (typeof data[key] === "string") fields[key] = { timestampValue: data[key] };
+    return this.request("PATCH", `/${collection}/${encodeURIComponent(id)}`, { fields }, query);
   }
 
   private async listDocuments(collection: string, fieldMask?: string[]): Promise<FirestoreDocument[]> {
@@ -595,6 +601,77 @@ export class FirestoreAdapter implements StorageAdapter {
     return (Array.isArray(rows) ? rows : [])
       .filter((row: any) => row?.document?.fields)
       .map((row: any) => decodeFields(row.document.fields) as unknown as UsageEvent);
+  }
+
+  // --- ScoutAI conversation log --------------------------------------------------
+
+  // The record is one JSON string (it nests arrays); the fields a review page filters on are
+  // copied alongside it. expireAt drives the collection's TTL policy.
+  private scoutLogToFields(log: ScoutLog): Record<string, unknown> {
+    return {
+      id: log.id,
+      at: log.at,
+      expireAt: log.expireAt,
+      actor: log.actor,
+      planId: log.planId,
+      conversationId: log.conversationId,
+      promptId: log.promptId,
+      kind: log.kind,
+      ok: log.ok,
+      feedbackRating: log.feedback?.rating,
+      outcomeStatus: log.outcome?.status,
+      body: JSON.stringify(log),
+    };
+  }
+
+  private scoutLogFromDoc(doc: FirestoreDocument | null | undefined): ScoutLog | null {
+    const body = doc?.fields ? decodeFields(doc.fields).body : null;
+    if (typeof body !== "string") return null;
+    try {
+      return JSON.parse(body) as ScoutLog;
+    } catch {
+      return null;
+    }
+  }
+
+  async recordScoutLog(log: ScoutLog): Promise<void> {
+    await this.putDocument(SCOUT_LOGS, log.id, this.scoutLogToFields(log), { requireAbsent: true, timestamps: ["expireAt"] });
+  }
+
+  async getScoutLog(id: string): Promise<ScoutLog | null> {
+    return this.scoutLogFromDoc(await this.getDocument(SCOUT_LOGS, id));
+  }
+
+  // Compare-and-swap, retried once: an Undo and a thumbs-down can land together.
+  async updateScoutLog(id: string, update: ScoutLogUpdate): Promise<ScoutLog | null> {
+    for (let attempt = 0; ; attempt++) {
+      const doc = await this.getDocument(SCOUT_LOGS, id);
+      const log = this.scoutLogFromDoc(doc);
+      if (!doc || !log) return null;
+      const updated = { ...log, ...update };
+      try {
+        await this.putDocument(SCOUT_LOGS, id, this.scoutLogToFields(updated), { expectedUpdateTime: doc.updateTime, timestamps: ["expireAt"] });
+        return updated;
+      } catch (err) {
+        if (attempt === 0 && this.isPreconditionFailure(err)) continue;
+        throw err;
+      }
+    }
+  }
+
+  // Range and sort on `at` alone, which Firestore indexes by default.
+  async listScoutLogs({ sinceIso, untilIso, limit = 500 }: { sinceIso: string; untilIso?: string; limit?: number }): Promise<ScoutLog[]> {
+    const filters = [{ fieldFilter: { field: { fieldPath: "at" }, op: "GREATER_THAN_OR_EQUAL", value: { stringValue: sinceIso } } }];
+    if (untilIso) filters.push({ fieldFilter: { field: { fieldPath: "at" }, op: "LESS_THAN_OR_EQUAL", value: { stringValue: untilIso } } });
+    const rows = await this.request("POST", ":runQuery", {
+      structuredQuery: {
+        from: [{ collectionId: SCOUT_LOGS }],
+        where: filters.length === 1 ? filters[0] : { compositeFilter: { op: "AND", filters } },
+        orderBy: [{ field: { fieldPath: "at" }, direction: "DESCENDING" }],
+        limit,
+      },
+    });
+    return (Array.isArray(rows) ? rows : []).map((row: any) => this.scoutLogFromDoc(row?.document)).filter((log): log is ScoutLog => Boolean(log));
   }
 
   // --- leadership dashboard ----------------------------------------------------

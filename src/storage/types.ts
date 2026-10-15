@@ -260,6 +260,66 @@ export function toCampaignSummary(campaign: PerformanceCampaign): PerformanceCam
   return summary;
 }
 
+// --- ScoutAI conversation log -------------------------------------------------------
+
+/** How long a ScoutAI turn is kept. Firestore deletes it at `expireAt` (a TTL policy on that field). */
+export const SCOUT_LOG_RETENTION_DAYS = 365;
+
+/** What a planner or reviewer thought of an answer. */
+export interface ScoutRating {
+  rating: "up" | "down";
+  comment?: string;
+  by: string;
+  at: string;
+}
+
+/**
+ * One ScoutAI question and its answer, for reviewing answer quality and what planners ask.
+ * Unlike the usage log this holds the words, so it is admin-only to read and expires after
+ * SCOUT_LOG_RETENTION_DAYS. Only the newest question is stored; earlier turns of the same
+ * conversation are their own records, linked by conversationId and turn.
+ */
+export interface ScoutLog {
+  id: string;
+  at: string;
+  expireAt: string;
+  actor: string;
+  planId: string;
+  advertiserName?: string;
+  planRevision: number;
+  /** Set by the browser per chat, so a conversation can be read back in order. */
+  conversationId?: string;
+  /** 1 for the first question of the conversation. */
+  turn: number;
+  /** Library prompt id, "typed", or "recap". */
+  promptId: string;
+  promptLabel: string;
+  kind: "plan" | "past" | "live";
+  ok: boolean;
+  durationMs: number;
+  question: string;
+  reply?: string;
+  /** What ScoutAI proposed, as the planner saw it (before -> after), without the raw operations. */
+  proposal?: {
+    summary?: string;
+    items: Array<{ title: string; why: string; evidence?: string; changes: Array<{ label: string; before: string; after: string }>; unverifiedFigures?: string[] }>;
+  };
+  /** Proposed changes the plan could not take, as told to the planner. */
+  dropped?: string[];
+  depth?: "summary" | "full";
+  model?: string;
+  thinkingLevel?: string;
+  error?: { code: string; message: string };
+  /** Set when the planner applies or undoes the proposal from this answer. */
+  outcome?: { status: "applied" | "reverted"; changes: number; by: string; at: string };
+  /** The asking planner's thumbs up or down. */
+  feedback?: ScoutRating;
+  /** Reserved for the review page. */
+  review?: ScoutRating & { notes?: string };
+}
+
+export type ScoutLogUpdate = Partial<Pick<ScoutLog, "outcome" | "feedback" | "review">>;
+
 // --- usage log -------------------------------------------------------------------
 
 /**
@@ -390,6 +450,13 @@ export interface StorageAdapter {
   recordUsageEvent(event: UsageEvent): Promise<void>;
   /** Every event at or after `sinceIso`, oldest first. */
   listUsageEvents(sinceIso: string): Promise<UsageEvent[]>;
+
+  recordScoutLog(log: ScoutLog): Promise<void>;
+  getScoutLog(id: string): Promise<ScoutLog | null>;
+  /** Merges outcome, feedback or review into the record. Returns null if it is gone (expired). */
+  updateScoutLog(id: string, update: ScoutLogUpdate): Promise<ScoutLog | null>;
+  /** Newest first, between the two times, at most `limit`. */
+  listScoutLogs(options: { sinceIso: string; untilIso?: string; limit?: number }): Promise<ScoutLog[]>;
 
   listDashboardLinks(): Promise<DashboardLink[]>;
   getDashboardLink(token: string): Promise<DashboardLink | null>;

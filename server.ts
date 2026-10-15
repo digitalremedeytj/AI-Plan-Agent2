@@ -15,8 +15,9 @@ import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effe
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
-import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink } from "./src/storage";
+import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
+import { buildScoutLog, sanitizeConversationId, type ScoutLogInput } from "./src/assistant/scoutLog";
 import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest } from "./src/server/longRequest";
@@ -473,6 +474,14 @@ function logUsage(
   getStorage()
     .then((storage) => storage.recordUsageEvent(event))
     .catch((err) => console.error(`[USAGE] Could not record '${action}':`, err?.message || err));
+}
+
+// ScoutAI conversation log: fire-and-forget like logUsage, so a failed write never fails the answer.
+function recordScoutLog(input: ScoutLogInput): void {
+  const log = buildScoutLog(input);
+  getStorage()
+    .then((storage) => storage.recordScoutLog(log))
+    .catch((err) => console.error(`[SCOUTAI] Could not record the conversation log:`, err?.message || err));
 }
 
 // Records the action once the response is sent, so it carries the outcome and how long it
@@ -2411,6 +2420,10 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
   logUsageOnFinish(req, res, "scout_chat", { planId: req.params.id });
   let streaming = false;
   let analysisTurn = false;
+  const startedAt = Date.now();
+  // The conversation log (src/assistant/scoutLog.ts): filled in as the turn runs, saved once it
+  // ends either way. Null until the plan is found, so a malformed request is not logged.
+  let logDraft: Omit<ScoutLogInput, "ok" | "durationMs"> | null = null;
   try {
     const turns = sanitizeTurns(req.body?.messages);
     if (turns.length === 0 || turns[turns.length - 1].role !== "user") {
@@ -2450,6 +2463,21 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
       detail: fromRecap ? "recap" : promptId ? promptId : "typed",
       label: fromRecap ? "Campaign recap recommendation" : promptId ? libraryPrompt?.title || promptId : "Typed question",
       kind: !analysisTurn ? "plan" : libraryPrompt ? (libraryPrompt.needs.includes("liveCampaign") ? "live" : "past") : hasLive ? "live" : "past",
+    };
+    const clientTurn = Number(req.body?.turn);
+    logDraft = {
+      id: crypto.randomUUID(),
+      at: new Date(startedAt).toISOString(),
+      actor: actorName(req),
+      planId: plan.id,
+      advertiserName: plan.advertiserName || undefined,
+      planRevision: plan.revision,
+      conversationId: sanitizeConversationId(req.body?.conversationId),
+      turn: Number.isInteger(clientTurn) && clientTurn > 0 ? clientTurn : turns.filter((t) => t.role === "user").length,
+      promptId: res.locals.usage.detail,
+      promptLabel: res.locals.usage.label,
+      kind: res.locals.usage.kind,
+      question,
     };
     // Analysis starts from the reviews and the recap when every past campaign has a current
     // review, unless the question needs rows the summary leaves out (see wantsFullData). Any
@@ -2518,7 +2546,18 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     if (replyUnverified.length > 0) reply += `\n\n_Not found in the campaign data or the plan, so check before using: ${replyUnverified.join(", ")}._`;
     console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s)${libraryPrompt ? `, library prompt "${libraryPrompt.id}"` : ""}, ${linked.length ? `${hasLive ? "live campaign + " : ""}${linked.length - (hasLive ? 1 : 0)} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking${analysisTurn ? `, ${depth} data` : ""}).`);
     res.locals.usage = { ...res.locals.usage, count: items.length };
-    send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision, depth: analysisTurn ? depth : null });
+    recordScoutLog({
+      ...logDraft,
+      ok: true,
+      durationMs: Date.now() - startedAt,
+      reply,
+      proposal: proposal ? { summary: response.summary, items } : null,
+      dropped,
+      depth: analysisTurn ? depth : undefined,
+      model: GEMINI_FLASH_MODEL,
+      thinkingLevel: String(thinkingLevel),
+    });
+    send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision, depth: analysisTurn ? depth : null, logId: logDraft.id });
     res.end();
   } catch (err: any) {
     const code = classifyScoutError(err);
@@ -2526,12 +2565,56 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     console.error(`[SCOUTAI] Chat failed (${code}${analysisTurn ? ", analysis" : ""}${attempts ? `; ${attempts}` : ""}):`, err);
     const limitMs = (analysisTurn ? SCOUT_ANALYSIS_ATTEMPTS : SCOUT_ATTEMPTS).reduce((sum, a) => sum + a.timeoutMs, 0);
     const error = scoutFailureMessage(code, analysisTurn, limitMs);
+    if (logDraft) recordScoutLog({ ...logDraft, ok: false, durationMs: Date.now() - startedAt, error: { code, message: `${error} (${err?.message || String(err)})` } });
     if (streaming) {
       res.write(`${JSON.stringify({ type: "error", error, code, details: err?.message || String(err) })}\n`);
       res.end();
     } else {
       res.status(502).json({ error, code, details: err?.message || String(err) });
     }
+  }
+});
+
+// Thumbs up/down on an answer, from the planner who asked it. A null rating clears it.
+app.post("/api/scout-logs/:id/feedback", async (req, res) => {
+  const rating = req.body?.rating;
+  if (rating !== "up" && rating !== "down" && rating !== null) {
+    res.status(400).json({ error: "Rating must be up, down or null." });
+    return;
+  }
+  try {
+    const storage = await getStorage();
+    const log = await storage.getScoutLog(req.params.id);
+    if (!log) {
+      res.status(404).json({ error: "That answer is no longer on record.", code: "NOT_FOUND" });
+      return;
+    }
+    if (toPersonKey(log.actor) !== toPersonKey(actorName(req))) {
+      res.status(403).json({ error: "Only the person who asked can rate this answer.", code: "FORBIDDEN" });
+      return;
+    }
+    const comment = typeof req.body?.comment === "string" ? req.body.comment.trim().slice(0, 1000) : "";
+    await storage.updateScoutLog(log.id, {
+      feedback: rating === null ? undefined : { rating, ...(comment ? { comment } : {}), by: actorName(req), at: new Date().toISOString() },
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to save the rating", details: err?.message || String(err) });
+  }
+});
+
+// Every ScoutAI question and answer, newest first, for the (future) review page. Admin-only:
+// questions can carry client details, and this names who asked.
+app.get("/api/scout-logs", requireAdmin, async (req, res) => {
+  try {
+    const days = Math.min(SCOUT_LOG_RETENTION_DAYS, Math.max(1, Math.round(Number(req.query.days) || 30)));
+    const until = typeof req.query.until === "string" && !Number.isNaN(Date.parse(req.query.until)) ? new Date(req.query.until).toISOString() : new Date().toISOString();
+    const since = new Date(Date.parse(until) - days * 24 * 60 * 60 * 1000).toISOString();
+    const limit = Math.min(1000, Math.max(1, Math.round(Number(req.query.limit) || 200)));
+    const logs = await (await getStorage()).listScoutLogs({ sinceIso: since, untilIso: until, limit });
+    res.json({ success: true, logs, since, until });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to load ScoutAI logs", details: err?.message || String(err) });
   }
 });
 
@@ -2689,6 +2772,12 @@ app.post("/api/plans/:id/assistant/apply", async (req, res) => {
       actor: actorName(req),
     }, expectedRevision);
     res.locals.usage = { advertiserName: plan.advertiserName, count: result.changes.length };
+    const logId = typeof req.body?.logId === "string" ? req.body.logId : "";
+    if (req.body?.from === "scout" && logId) {
+      storage
+        .updateScoutLog(logId, { outcome: { status: req.body?.revert === true ? "reverted" : "applied", changes: result.changes.length, by: actorName(req), at: new Date().toISOString() } })
+        .catch((err) => console.error("[SCOUTAI] Could not record the outcome on the conversation log:", err?.message || err));
+    }
     console.log(`[SCOUTAI] Plan ${plan.id}: ${req.body?.revert === true ? "reverted" : "applied"} ${result.changes.length} change(s) by ${actorName(req)}, r${expectedRevision} -> r${updated.revision}.`);
     res.json({ success: true, plan: updated, changes: result.changes, revertOps: result.revertOps, followUps: detectFollowUps(plan.payload, result.payload) });
   } catch (err: any) {

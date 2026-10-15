@@ -24,6 +24,8 @@ import {
   type PerformanceCampaignInput,
   type PerformanceCampaignSummary,
   type UsageEvent,
+  type ScoutLog,
+  type ScoutLogUpdate,
   DEFAULT_DASHBOARD_CONFIG,
   type DashboardConfig,
   type DashboardLink,
@@ -46,6 +48,7 @@ export class LocalFileAdapter implements StorageAdapter {
   private readonly promptsDir: string;
   private readonly usageDir: string;
   private readonly dashboardDir: string;
+  private readonly scoutLogsDir: string;
 
   constructor(rootDir: string = path.join(process.cwd(), "data", "store")) {
     this.rootDir = rootDir;
@@ -56,10 +59,11 @@ export class LocalFileAdapter implements StorageAdapter {
     this.promptsDir = path.join(rootDir, "scout-prompts");
     this.usageDir = path.join(rootDir, "usage");
     this.dashboardDir = path.join(rootDir, "dashboard");
+    this.scoutLogsDir = path.join(rootDir, "scout-logs");
   }
 
   async init(): Promise<void> {
-    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir, this.dashboardDir]) {
+    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir, this.dashboardDir, this.scoutLogsDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
@@ -365,6 +369,65 @@ export class LocalFileAdapter implements StorageAdapter {
       }
     }
     return events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  }
+
+  // --- ScoutAI conversation log --------------------------------------------------
+
+  // One file per record under a folder per UTC day. Records are updated in place (outcome,
+  // feedback), so this is not one append-only file like the usage log.
+  private scoutLogPath(id: string, at: string): string {
+    return path.join(this.scoutLogsDir, at.slice(0, 10), `${id.replace(/[^a-zA-Z0-9_-]/g, "")}.json`);
+  }
+
+  private findScoutLogFile(id: string): string | null {
+    const name = `${id.replace(/[^a-zA-Z0-9_-]/g, "")}.json`;
+    for (const day of fs.readdirSync(this.scoutLogsDir).sort().reverse()) {
+      const file = path.join(this.scoutLogsDir, day, name);
+      if (fs.existsSync(file)) return file;
+    }
+    return null;
+  }
+
+  async recordScoutLog(log: ScoutLog): Promise<void> {
+    await this.init();
+    const file = this.scoutLogPath(log.id, log.at);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(log, null, 2), { encoding: "utf-8", flag: "wx" });
+    // Firestore's TTL policy does this in production; here, drop whole days past their expiry.
+    const cutoffDay = new Date().toISOString().slice(0, 10);
+    for (const day of fs.readdirSync(this.scoutLogsDir)) {
+      const files = fs.readdirSync(path.join(this.scoutLogsDir, day));
+      const sample = files[0] ? readJson<ScoutLog>(path.join(this.scoutLogsDir, day, files[0])) : null;
+      if (sample?.expireAt && sample.expireAt.slice(0, 10) < cutoffDay) fs.rmSync(path.join(this.scoutLogsDir, day), { recursive: true, force: true });
+    }
+  }
+
+  async getScoutLog(id: string): Promise<ScoutLog | null> {
+    await this.init();
+    const file = this.findScoutLogFile(id);
+    return file ? readJson<ScoutLog>(file) : null;
+  }
+
+  async updateScoutLog(id: string, update: ScoutLogUpdate): Promise<ScoutLog | null> {
+    await this.init();
+    const file = this.findScoutLogFile(id);
+    const log = file ? readJson<ScoutLog>(file) : null;
+    if (!file || !log) return null;
+    const updated = { ...log, ...update };
+    fs.writeFileSync(file, JSON.stringify(updated, null, 2), "utf-8");
+    return updated;
+  }
+
+  async listScoutLogs({ sinceIso, untilIso, limit = 500 }: { sinceIso: string; untilIso?: string; limit?: number }): Promise<ScoutLog[]> {
+    await this.init();
+    const logs: ScoutLog[] = [];
+    for (const day of fs.readdirSync(this.scoutLogsDir).filter((d) => d >= sinceIso.slice(0, 10) && (!untilIso || d <= untilIso.slice(0, 10)))) {
+      for (const file of fs.readdirSync(path.join(this.scoutLogsDir, day))) {
+        const log = readJson<ScoutLog>(path.join(this.scoutLogsDir, day, file));
+        if (log && log.at >= sinceIso && (!untilIso || log.at <= untilIso)) logs.push(log);
+      }
+    }
+    return logs.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, limit);
   }
 
   // --- leadership dashboard ----------------------------------------------------

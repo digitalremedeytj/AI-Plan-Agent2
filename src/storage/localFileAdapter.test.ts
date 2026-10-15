@@ -260,3 +260,30 @@ test("usage events are read back oldest first, from the requested time onward", 
   assert.deepEqual(events.map((e) => e.id), ["a", "b"]);
   assert.equal(events[1].detail, "pdf");
 });
+
+test("a ScoutAI record can be rated and its outcome recorded, and lists newest first", async () => {
+  const adapter = freshAdapter();
+  const log = (id: string, at: string) => ({
+    id, at, expireAt: "2099-01-01T00:00:00.000Z", actor: "Ana", planId: "p1", planRevision: 1, turn: 1,
+    promptId: "typed", promptLabel: "Typed question", kind: "plan" as const, ok: true, durationMs: 1000, question: `q ${id}`,
+  });
+  await adapter.recordScoutLog(log("a", "2026-10-01T10:00:00.000Z"));
+  await adapter.recordScoutLog(log("b", "2026-10-02T10:00:00.000Z"));
+  await adapter.updateScoutLog("a", { feedback: { rating: "down", comment: "Wrong CPA", by: "Ana", at: "2026-10-01T11:00:00.000Z" } });
+  await adapter.updateScoutLog("a", { outcome: { status: "applied", changes: 2, by: "Ana", at: "2026-10-01T11:05:00.000Z" } });
+
+  const stored = await adapter.getScoutLog("a");
+  assert.equal(stored?.feedback?.rating, "down");
+  assert.equal(stored?.outcome?.status, "applied", "a later update keeps the earlier one");
+  assert.deepEqual((await adapter.listScoutLogs({ sinceIso: "2026-09-01T00:00:00.000Z" })).map((l) => l.id), ["b", "a"]);
+  assert.equal(await adapter.updateScoutLog("gone", { feedback: undefined }), null);
+});
+
+test("expired ScoutAI records are removed on the next write, like Firestore's TTL in production", async () => {
+  const adapter = freshAdapter();
+  const base = { actor: "Ana", planId: "p1", planRevision: 1, turn: 1, promptId: "typed", promptLabel: "Typed question", kind: "plan" as const, ok: true, durationMs: 1000, question: "q" };
+  await adapter.recordScoutLog({ ...base, id: "old", at: "2020-01-01T10:00:00.000Z", expireAt: "2021-01-01T10:00:00.000Z" });
+  await adapter.recordScoutLog({ ...base, id: "new", at: new Date().toISOString(), expireAt: "2099-01-01T00:00:00.000Z" });
+  assert.equal(await adapter.getScoutLog("old"), null);
+  assert.ok(await adapter.getScoutLog("new"));
+});

@@ -471,6 +471,8 @@ export interface ScoutReply {
   revision: number;
   /** For past-performance analysis: whether it read the review summary or the full campaign rows. */
   depth: "summary" | "full" | null;
+  /** The conversation-log record of this answer, for rating it and recording what was applied. */
+  logId: string | null;
 }
 
 /**
@@ -486,11 +488,13 @@ export async function askScout(
   promptId?: string,
   /** "recap" when the plan view asked on the planner's behalf, for the usage log. */
   from?: "recap",
+  /** Which chat this is and how many questions it has had, for the conversation log. */
+  log?: { conversationId: string; turn: number },
 ): Promise<ScoutReply> {
   const res = await authFetch(`/api/plans/${encodeURIComponent(id)}/assistant/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, ...(promptId ? { promptId } : {}), ...(from ? { from } : {}) }),
+    body: JSON.stringify({ messages, ...(promptId ? { promptId } : {}), ...(from ? { from } : {}), ...(log ?? {}) }),
     signal,
   });
   if (!res.ok || !res.body) {
@@ -513,6 +517,7 @@ export async function askScout(
         executiveSummaryInstructions: typeof event.executiveSummaryInstructions === "string" ? event.executiveSummaryInstructions : null,
         revision: Number(event.revision),
         depth: event.depth === "summary" || event.depth === "full" ? event.depth : null,
+        logId: typeof event.logId === "string" ? event.logId : null,
       };
     }
     else if (event.type === "error") throw new ApiError(502, event.error || "ScoutAI couldn't answer just now.", event);
@@ -532,6 +537,11 @@ export async function askScout(
   return result;
 }
 
+/** Thumbs up or down on a ScoutAI answer (null clears it), with an optional note. */
+export async function rateScoutAnswer(logId: string, rating: "up" | "down" | null, comment?: string): Promise<void> {
+  await request(`/api/scout-logs/${encodeURIComponent(logId)}/feedback`, { method: "POST", body: JSON.stringify({ rating, ...(comment ? { comment } : {}) }) });
+}
+
 /** Dry-runs the items a planner has kept. Changes nothing. */
 export async function previewScoutChange(
   id: string,
@@ -544,7 +554,7 @@ export async function previewScoutChange(
 export async function applyScoutChange(
   id: string,
   /** `from: "scout"` marks the ScoutAI panel's own Apply/Undo for the usage log, with the prompt that led to it. */
-  body: { ops: AssistantOp[]; baseRevision: number; revert?: boolean; from?: "scout"; promptId?: string },
+  body: { ops: AssistantOp[]; baseRevision: number; revert?: boolean; from?: "scout"; promptId?: string; logId?: string },
 ): Promise<{ plan: StoredPlan; changes: ProposalChange[]; revertOps: AssistantOp[]; followUps: FollowUp[] }> {
   return request(`/api/plans/${encodeURIComponent(id)}/assistant/apply`, { method: "POST", body: JSON.stringify(body) });
 }
