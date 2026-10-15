@@ -11,6 +11,8 @@ export interface ReviewFilters {
   /** toPersonKey-style match on the asker; "" for everyone. */
   person: string;
   promptId: string;
+  /** A topic id (src/assistant/scoutTopics.ts), or UNTAGGED for questions not tagged yet. */
+  topic: string;
   kind: "" | ScoutLog["kind"];
   /** The planner's own thumbs. */
   rating: RatingFilter;
@@ -20,15 +22,38 @@ export interface ReviewFilters {
   search: string;
 }
 
-export const EMPTY_FILTERS: ReviewFilters = { person: "", promptId: "", kind: "", rating: "all", reviewed: "all", status: "all", search: "" };
+export const UNTAGGED = "__untagged";
+
+export const EMPTY_FILTERS: ReviewFilters = { person: "", promptId: "", topic: "", kind: "", rating: "all", reviewed: "all", status: "all", search: "" };
 
 const personKey = (name: string) => name.trim().toLowerCase();
+
+const RATINGS: RatingFilter[] = ["all", "up", "down", "unrated"];
+const STATUSES: StatusFilter[] = ["all", "failed", "applied", "reverted", "proposed"];
+const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T => (allowed.includes(value as T) ? (value as T) : fallback);
+const text = (value: unknown, max: number) => (typeof value === "string" ? value.slice(0, max) : "");
+
+/** Filters from a request body, for the server to apply the page's own filters itself. */
+export function sanitizeReviewFilters(raw: unknown): ReviewFilters {
+  const f = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    person: text(f.person, 200),
+    promptId: text(f.promptId, 200),
+    topic: text(f.topic, 60),
+    kind: pick(f.kind, ["", "plan", "past", "live"] as const, ""),
+    rating: pick(f.rating, RATINGS, "all"),
+    reviewed: pick(f.reviewed, ["all", "reviewed", "unreviewed"] as const, "all"),
+    status: pick(f.status, STATUSES, "all"),
+    search: text(f.search, 500),
+  };
+}
 
 export function filterScoutLogs(logs: ScoutLog[], filters: ReviewFilters): ScoutLog[] {
   const words = filters.search.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return logs.filter((log) => {
     if (filters.person && personKey(log.actor) !== personKey(filters.person)) return false;
     if (filters.promptId && log.promptId !== filters.promptId) return false;
+    if (filters.topic && (filters.topic === UNTAGGED ? Boolean(log.topic) : log.topic?.id !== filters.topic)) return false;
     if (filters.kind && log.kind !== filters.kind) return false;
     if (filters.rating === "unrated" ? Boolean(log.feedback) : filters.rating !== "all" && log.feedback?.rating !== filters.rating) return false;
     if (filters.reviewed !== "all" && Boolean(log.review) !== (filters.reviewed === "reviewed")) return false;
@@ -89,7 +114,7 @@ export function summarizeScoutLogs(logs: ScoutLog[], topN = 5): ReviewSummary {
 }
 
 /** The choices the filter menus offer: everyone who asked and every prompt used, in the loaded range. */
-export function filterOptions(logs: ScoutLog[]): { people: string[]; prompts: Array<{ promptId: string; label: string }> } {
+export function filterOptions(logs: ScoutLog[]): { people: string[]; prompts: Array<{ promptId: string; label: string }>; topics: string[] } {
   const people = new Map<string, string>();
   const prompts = new Map<string, string>();
   for (const log of logs) {
@@ -99,6 +124,7 @@ export function filterOptions(logs: ScoutLog[]): { people: string[]; prompts: Ar
   return {
     people: [...people.values()].sort((a, b) => a.localeCompare(b)),
     prompts: [...prompts.entries()].map(([promptId, label]) => ({ promptId, label })).sort((a, b) => a.label.localeCompare(b.label)),
+    topics: [...new Set(logs.flatMap((l) => (l.topic ? [l.topic.id] : [])))],
   };
 }
 
@@ -123,3 +149,26 @@ export function formatDuration(ms: number): string {
 }
 
 export const KIND_LABELS: Record<ScoutLog["kind"], string> = { plan: "Plan", past: "Past performance", live: "Live campaign" };
+
+// A cell that starts with = + - or @ is a formula to Excel and Sheets; a question typed by a
+// planner must open as text.
+function csvCell(value: unknown): string {
+  let text = value === undefined || value === null ? "" : String(value);
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** The questions as CSV, one row per question, for reading in a spreadsheet. */
+export function scoutLogsCsv(logs: ScoutLog[], topicLabelOf: (id: string | undefined) => string): string {
+  const header = [
+    "Asked at (UTC)", "Person", "Advertiser", "Plan id", "Conversation", "Turn", "Prompt", "Type", "Topic", "Answered", "Error",
+    "Seconds", "Model", "Question", "Answer", "Changes proposed", "Outcome", "Planner rating", "Planner comment", "Review", "Review notes", "Reviewed by",
+  ];
+  const rows = logs.map((l) => [
+    l.at, l.actor, l.advertiserName ?? "", l.planId, l.conversationId ?? "", l.turn, l.promptLabel, KIND_LABELS[l.kind], topicLabelOf(l.topic?.id),
+    l.ok ? "yes" : "no", l.error ? `${l.error.code}: ${l.error.message}` : "", (l.durationMs / 1000).toFixed(1), l.model ?? "",
+    l.question, l.reply ?? "", l.proposal ? l.proposal.items.length : 0, l.outcome?.status ?? "",
+    l.feedback?.rating ?? "", l.feedback?.comment ?? "", l.review ? (l.review.rating === "up" ? "good" : "poor") : "", l.review?.notes ?? "", l.review?.by ?? "",
+  ]);
+  return [header, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n");
+}

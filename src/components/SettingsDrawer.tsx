@@ -78,9 +78,11 @@ interface SettingsDrawerProps {
   userName?: string;
   /** Error text from the last rejected save attempt, surfaced above the footer. */
   saveError?: string | null;
+  /** The tab to show when the drawer opens, e.g. the prompt library from a link on the review page. */
+  initialTab?: SettingsTab | null;
 }
 
-type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "measurement" | "prompts" | "dashboard" | "usage";
+export type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "measurement" | "prompts" | "dashboard" | "usage";
 
 const MEASUREMENT_AVAILABILITY_OPTIONS: Array<{ id: MeasurementAvailability; label: string; hint: string }> = [
   { id: "recommend", label: "Recommend", hint: "ScoutAI attaches it when the campaign fits." },
@@ -123,7 +125,7 @@ function ShowToggle({ checked, onChange, label }: { checked: boolean; onChange: 
   );
 }
 
-export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave, readOnly = false, saveError = null, userName = "" }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave, readOnly = false, saveError = null, userName = "", initialTab = null }: SettingsDrawerProps) {
   const [draftSettings, setDraftSettings] = React.useState<PlanningSettings>(() => clonePlanningSettings(settings));
   const [draftPublishers, setDraftPublishers] = React.useState<CtvPublisherSetting[]>(() =>
     Array.isArray(ctvPublishers) && ctvPublishers.length > 0
@@ -133,6 +135,9 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
 
   const [errors, setErrors] = React.useState<string[]>([]);
   const [activeTab, setActiveTab] = React.useState<SettingsTab>("publishers");
+  React.useEffect(() => {
+    if (open && initialTab) setActiveTab(initialTab);
+  }, [open, initialTab]);
   const [search, setSearch] = React.useState("");
   
   // CTV Publisher Filters & Modals

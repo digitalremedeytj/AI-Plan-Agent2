@@ -5,6 +5,7 @@ import {
   DEFAULT_SCOUT_PROMPTS, MODE_LABELS, NEED_LABELS, PROMPT_MODES, PROMPT_NEEDS, PROMPT_VARIABLES, VARIABLE_LABELS,
   validatePromptLibrary, type PromptMode, type PromptNeed, type ScoutPrompt,
 } from "../assistant/promptLibrary";
+import { takePromptDraft } from "../scoutReview/promptHandoff";
 
 // Settings tab for the ScoutAI prompt library. It saves on its own (its own record and revision,
 // separate from planning settings), and is read-only for anyone who is not an admin: the
@@ -23,6 +24,7 @@ export function ScoutPromptsSettings({ readOnly }: { readOnly: boolean }) {
   const [error, setError] = React.useState<string | null>(null);
   const [reasons, setReasons] = React.useState<string[]>([]);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [handedOff, setHandedOff] = React.useState(false);
 
   const load = React.useCallback(() => {
     setStatus("loading");
@@ -32,6 +34,20 @@ export function ScoutPromptsSettings({ readOnly }: { readOnly: boolean }) {
       .finally(() => setStatus("idle"));
   }, []);
   React.useEffect(load, [load]);
+
+  // A prompt drafted on the ScoutAI review page (src/scoutReview/promptHandoff.ts) arrives as a
+  // new, unsaved prompt, opened for editing. Saving it is still the admin's own Save.
+  React.useEffect(() => {
+    if (readOnly || !saved) return;
+    let incoming = null;
+    try { incoming = takePromptDraft(window.localStorage); } catch { /* storage may be blocked */ }
+    if (!incoming) return;
+    const prompt: ScoutPrompt = { id: newId(), ...incoming, needs: [], featured: false, enabled: true, builtIn: false };
+    setDraft((list) => [...list, prompt]);
+    setOpenId(prompt.id);
+    setHandedOff(true);
+    setTimeout(() => document.getElementById(`scout-prompt-${prompt.id}`)?.scrollIntoView({ block: "center" }), 200);
+  }, [readOnly, saved]);
 
   const dirty = saved !== null && JSON.stringify(saved.prompts) !== JSON.stringify(draft);
   const validation = React.useMemo(() => validatePromptLibrary(draft), [draft]);
@@ -93,13 +109,19 @@ export function ScoutPromptsSettings({ readOnly }: { readOnly: boolean }) {
         <p className="mt-2 text-[11px] text-slate-500">Keep each prompt to one area. A prompt that asks ScoutAI to review everything at once is slow and more likely to run out of time.</p>
       </div>
 
+      {handedOff && dirty && (
+        <p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-900">
+          A prompt drafted on the ScoutAI review page is added at the bottom, open for editing. Check it, then press Save to add it to the library.
+        </p>
+      )}
+
       <ul className="space-y-2">
         {draft.map((prompt, index) => {
           const open = openId === prompt.id;
           const original = DEFAULT_SCOUT_PROMPTS.find((d) => d.id === prompt.id);
           const edited = Boolean(original && !same(original, prompt));
           return (
-            <li key={prompt.id} className={`rounded-xl border bg-white ${prompt.enabled ? "border-slate-200" : "border-dashed border-slate-300 opacity-70"}`}>
+            <li key={prompt.id} id={`scout-prompt-${prompt.id}`} className={`rounded-xl border bg-white ${prompt.enabled ? "border-slate-200" : "border-dashed border-slate-300 opacity-70"}`}>
               <div className="flex items-center gap-2 px-3 py-2.5">
                 <button type="button" onClick={() => setOpenId(open ? null : prompt.id)} className="text-slate-400 hover:text-slate-700 cursor-pointer" aria-label={open ? "Collapse" : "Edit"}>
                   {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}

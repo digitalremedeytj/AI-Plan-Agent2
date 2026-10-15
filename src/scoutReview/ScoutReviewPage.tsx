@@ -1,16 +1,18 @@
 import React from "react";
 import Markdown from "react-markdown";
 import {
-  AlertTriangle, ArrowRight, CalendarDays, Check, Clock, Loader2, Lock, MessageSquare, RotateCcw, Search, ShieldCheck, ThumbsDown, ThumbsUp, X,
+  AlertTriangle, ArrowRight, CalendarDays, Check, Clock, Download, List, Loader2, Lock, MessageSquare, RotateCcw, Search, ShieldCheck, Sparkles, Tags, ThumbsDown, ThumbsUp, X,
 } from "lucide-react";
 import * as api from "../api/client";
 import { ApiError } from "../api/client";
 import type { ScoutLog } from "../storage/types";
 import drIconWhite from "../images/dr-icon-white.png";
 import { presetDays, RANGE_PRESETS, rangeFromDates, toDateInput, type RangePreset } from "../dashboard/dashboardFormat";
+import { SCOUT_TOPICS, topicLabel } from "../assistant/scoutTopics";
 import {
-  conversationOf, EMPTY_FILTERS, filterOptions, filterScoutLogs, formatDuration, KIND_LABELS, summarizeScoutLogs, type ReviewFilters,
+  conversationOf, EMPTY_FILTERS, filterOptions, filterScoutLogs, formatDuration, KIND_LABELS, scoutLogsCsv, summarizeScoutLogs, UNTAGGED, type ReviewFilters,
 } from "./scoutReviewData";
+import { AskPanel } from "./AskPanel";
 
 /**
  * The ScoutAI review page at /scout-review: every planner's ScoutAI questions and answers, for
@@ -176,7 +178,7 @@ function Turn({ log, selected, onSaved }: { log: ScoutLog; selected: boolean; on
     <article ref={ref} className={`space-y-3 rounded-2xl border p-4 ${selected ? "border-brand-purple-300 ring-2 ring-brand-purple-100" : "border-slate-200"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
         <span className="font-semibold text-slate-700">Turn {log.turn} · {log.actor} · {formatWhen(log.at)}</span>
-        <span>{log.promptLabel} · {KIND_LABELS[log.kind]}</span>
+        <span>{log.promptLabel} · {KIND_LABELS[log.kind]} · {topicLabel(log.topic?.id)}</span>
       </div>
       <div className="rounded-xl bg-brand-purple-600 px-3 py-2 text-sm text-white whitespace-pre-wrap">{log.question}</div>
 
@@ -258,6 +260,9 @@ export default function ScoutReviewPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [filters, setFilters] = React.useState<ReviewFilters>(EMPTY_FILTERS);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [tab, setTab] = React.useState<"browse" | "ask">("browse");
+  const [tagging, setTagging] = React.useState<{ running: boolean; error: string | null }>({ running: false, error: null });
+  const range = React.useMemo(() => rangeFromDates(days.fromDay, days.toDay), [days]);
 
   React.useEffect(() => { document.title = "ScoutAI Review · AI Plan Agent"; }, []);
 
@@ -265,7 +270,6 @@ export default function ScoutReviewPage() {
     setStatus((s) => (s === "ready" ? "ready" : "loading"));
     setError(null);
     try {
-      const range = rangeFromDates(days.fromDay, days.toDay);
       const span = Math.max(1, Math.ceil((Date.parse(range.to) - Date.parse(range.from)) / 86_400_000));
       const result = await api.listScoutLogs({ days: span, until: range.to, limit: PAGE_LIMIT });
       // The server counts whole days back from `until`; trim to the chosen first day.
@@ -279,7 +283,7 @@ export default function ScoutReviewPage() {
         setStatus("error");
       }
     }
-  }, [days]);
+  }, [range]);
   React.useEffect(() => { void load(); }, [load]);
 
   const visible = React.useMemo(() => filterScoutLogs(logs ?? [], filters), [logs, filters]);
@@ -292,6 +296,50 @@ export default function ScoutReviewPage() {
   const setFilter = <K extends keyof ReviewFilters>(key: K, value: ReviewFilters[K]) => setFilters((f) => ({ ...f, [key]: value }));
   const replaceLog = (updated: ScoutLog) => setLogs((current) => (current ?? []).map((l) => (l.id === updated.id ? updated : l)));
   const filtersActive = JSON.stringify(filters) !== JSON.stringify(EMPTY_FILTERS);
+  const logsById = React.useMemo(() => new Map((logs ?? []).map((l) => [l.id, l])), [logs]);
+  const untagged = React.useMemo(() => (logs ?? []).filter((l) => !l.topic).length, [logs]);
+
+  // How the admin sees the scope, for the AI and under each answer: "Oct 1 – Oct 14 · Ana · thumbs down".
+  const scopeText = React.useMemo(() => {
+    const day = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const parts = [preset === "custom" ? `${day(days.fromDay)} – ${day(days.toDay)}` : RANGE_PRESETS.find((p) => p.id === preset)?.label ?? ""];
+    if (filters.person) parts.push(filters.person);
+    if (filters.promptId) parts.push(options.prompts.find((p) => p.promptId === filters.promptId)?.label ?? filters.promptId);
+    if (filters.topic) parts.push(filters.topic === UNTAGGED ? "not tagged yet" : topicLabel(filters.topic));
+    if (filters.kind) parts.push(KIND_LABELS[filters.kind]);
+    if (filters.rating !== "all") parts.push(filters.rating === "unrated" ? "not rated" : `thumbs ${filters.rating}`);
+    if (filters.status !== "all") parts.push(filters.status === "reverted" ? "undone" : filters.status);
+    if (filters.reviewed !== "all") parts.push(filters.reviewed === "reviewed" ? "reviewed" : "not reviewed");
+    if (filters.search.trim()) parts.push(`matching "${filters.search.trim()}"`);
+    return parts.filter(Boolean).join(" · ");
+  }, [preset, days, filters, options.prompts]);
+
+  const openQuestion = (id: string) => { setSelectedId(id); setTab("browse"); };
+
+  // Older questions, saved before tagging existed, are tagged a batch per request until none remain.
+  const tagUntagged = async () => {
+    setTagging({ running: true, error: null });
+    try {
+      for (let round = 0; round < 10; round++) {
+        const { tagged, remaining } = await api.tagScoutTopics({ since: range.from, until: range.to });
+        if (remaining === 0 || tagged === 0) break;
+      }
+      await load();
+      setTagging({ running: false, error: null });
+    } catch (err: any) {
+      setTagging({ running: false, error: err?.message || "The questions could not be tagged." });
+    }
+  };
+
+  const exportCsv = () => {
+    const blob = new Blob([`\uFEFF${scoutLogsCsv(visible, topicLabel)}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `scoutai-questions-${days.fromDay}-to-${days.toDay}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   if (status === "signed-out" || status === "forbidden") {
     return (
@@ -397,7 +445,7 @@ export default function ScoutReviewPage() {
               </div>
             </div>
 
-            <section className="grid grid-cols-2 gap-3 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm sm:grid-cols-3 lg:grid-cols-8">
+            <section className="grid grid-cols-2 gap-3 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm sm:grid-cols-3 lg:grid-cols-5">
               <label className="col-span-2 flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 sm:col-span-3 lg:col-span-2">
                 Search
                 <span className="relative">
@@ -413,6 +461,17 @@ export default function ScoutReviewPage() {
               </label>
               <Select label="Person" value={filters.person} onChange={(v) => setFilter("person", v)} options={[{ value: "", label: "Everyone" }, ...options.people.map((p) => ({ value: p, label: p }))]} />
               <Select label="Prompt" value={filters.promptId} onChange={(v) => setFilter("promptId", v)} options={[{ value: "", label: "All prompts" }, ...options.prompts.map((p) => ({ value: p.promptId, label: p.label }))]} />
+              <Select
+                label="Topic"
+                value={filters.topic}
+                onChange={(v) => setFilter("topic", v)}
+                options={[
+                  { value: "", label: "All topics" },
+                  ...SCOUT_TOPICS.map((t) => ({ value: t.id, label: t.label })),
+                  ...options.topics.filter((id) => !SCOUT_TOPICS.some((t) => t.id === id)).map((id) => ({ value: id, label: id })),
+                  { value: UNTAGGED, label: "Not tagged yet" },
+                ]}
+              />
               <Select
                 label="Type"
                 value={filters.kind}
@@ -438,7 +497,7 @@ export default function ScoutReviewPage() {
                 options={[{ value: "all", label: "Any" }, { value: "unreviewed", label: "Not reviewed" }, { value: "reviewed", label: "Reviewed" }]}
               />
               {filtersActive ? (
-                <button type="button" onClick={() => setFilters(EMPTY_FILTERS)} className="col-span-2 inline-flex items-center gap-1 justify-self-start text-xs font-semibold text-brand-purple-700 hover:underline sm:col-span-3 lg:col-span-8">
+                <button type="button" onClick={() => setFilters(EMPTY_FILTERS)} className="col-span-2 inline-flex items-center gap-1 justify-self-start text-xs font-semibold text-brand-purple-700 hover:underline sm:col-span-3 lg:col-span-5">
                   <X className="h-3.5 w-3.5" /> Clear filters
                 </button>
               ) : null}
@@ -448,64 +507,111 @@ export default function ScoutReviewPage() {
               <p className="text-xs text-amber-700">Showing the newest {PAGE_LIMIT.toLocaleString("en-US")} questions in this range. Narrow the dates to see older ones.</p>
             ) : null}
 
-            <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-              <section aria-label="Questions" className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-                {visible.length === 0 ? (
-                  <p className="p-8 text-center text-sm text-slate-500">{logs.length ? "No questions match these filters." : "No ScoutAI questions in this date range."}</p>
-                ) : (
-                  <ul className="divide-y divide-slate-100 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto">
-                    {visible.map((log) => {
-                      const active = conversation?.turns.some((t) => t.id === log.id) ?? false;
-                      return (
-                        <li key={log.id}>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedId(log.id)}
-                            aria-current={selectedId === log.id}
-                            className={`block w-full space-y-1.5 px-4 py-3 text-left transition ${selectedId === log.id ? "bg-brand-purple-50" : active ? "bg-brand-purple-50/40" : "hover:bg-slate-50"}`}
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-x-2 text-xs text-slate-500">
-                              <span className="font-semibold text-slate-700">{log.actor}</span>
-                              <span>{formatWhen(log.at)}</span>
-                            </div>
-                            <p className="line-clamp-2 text-sm text-slate-900">{log.question}</p>
-                            <div className="flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500">
-                              {log.advertiserName ? <span className="font-semibold text-slate-600">{log.advertiserName}</span> : null}
-                              <span>{log.promptLabel}</span>
-                              <span>· {KIND_LABELS[log.kind]}</span>
-                              {log.turn > 1 ? <span>· turn {log.turn}</span> : null}
-                            </div>
-                            <Badges log={log} />
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-
-              <section aria-label="Conversation" className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
-                {!selected || !conversation ? (
-                  <div className="flex h-48 flex-col items-center justify-center gap-2 text-sm text-slate-500">
-                    <MessageSquare className="h-6 w-6 text-slate-300" />
-                    Pick a question to read the whole conversation.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <h2 className="font-display text-base font-bold text-slate-900">{selected.advertiserName || "Untitled plan"}</h2>
-                      <p className="text-xs text-slate-500">
-                        {conversation.turns.length} question{conversation.turns.length === 1 ? "" : "s"} · plan {selected.planId}
-                      </p>
-                    </div>
-                    {conversation.missingEarlier ? (
-                      <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">This chat started before the selected dates; widen the range to see its earlier questions.</p>
-                    ) : null}
-                    {conversation.turns.map((t) => <Turn key={t.id} log={t} selected={t.id === selected.id} onSaved={replaceLog} />)}
-                  </div>
-                )}
-              </section>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex gap-1 rounded-xl bg-white p-1 shadow-sm ring-1 ring-slate-200" role="tablist" aria-label="View">
+                {([["browse", "Browse", List], ["ask", "Ask", Sparkles]] as const).map(([id, label, Icon]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === id}
+                    onClick={() => setTab(id)}
+                    className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-sm font-semibold transition ${tab === id ? "bg-brand-purple-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    <Icon className="h-4 w-4" /> {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {untagged > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => void tagUntagged()}
+                    disabled={tagging.running}
+                    title="Topics are tagged as questions are asked; older questions need tagging once."
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    {tagging.running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Tags className="h-3.5 w-3.5" />}
+                    {tagging.running ? "Tagging topics…" : `Tag topics for ${untagged.toLocaleString("en-US")} question${untagged === 1 ? "" : "s"}`}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={exportCsv}
+                  disabled={visible.length === 0}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  <Download className="h-3.5 w-3.5" /> Export CSV ({visible.length.toLocaleString("en-US")})
+                </button>
+              </div>
             </div>
+            {tagging.error ? <p className="text-xs text-rose-700">{tagging.error}</p> : null}
+
+            {/* Kept mounted while hidden, so opening an example in Browse does not lose the chat. */}
+            <div hidden={tab !== "ask"}>
+              <AskPanel scope={{ since: range.from, until: range.to, filters, scope: scopeText }} inScope={visible.length} logsById={logsById} onOpenQuestion={openQuestion} />
+            </div>
+            {tab === "browse" ? (
+              <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+                <section aria-label="Questions" className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+                  {visible.length === 0 ? (
+                    <p className="p-8 text-center text-sm text-slate-500">{logs.length ? "No questions match these filters." : "No ScoutAI questions in this date range."}</p>
+                  ) : (
+                    <ul className="divide-y divide-slate-100 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto">
+                      {visible.map((log) => {
+                        const active = conversation?.turns.some((t) => t.id === log.id) ?? false;
+                        return (
+                          <li key={log.id}>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedId(log.id)}
+                              aria-current={selectedId === log.id}
+                              className={`block w-full space-y-1.5 px-4 py-3 text-left transition ${selectedId === log.id ? "bg-brand-purple-50" : active ? "bg-brand-purple-50/40" : "hover:bg-slate-50"}`}
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-x-2 text-xs text-slate-500">
+                                <span className="font-semibold text-slate-700">{log.actor}</span>
+                                <span>{formatWhen(log.at)}</span>
+                              </div>
+                              <p className="line-clamp-2 text-sm text-slate-900">{log.question}</p>
+                              <div className="flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500">
+                                {log.advertiserName ? <span className="font-semibold text-slate-600">{log.advertiserName}</span> : null}
+                                <span>{log.promptLabel}</span>
+                                <span>· {KIND_LABELS[log.kind]}</span>
+                                {log.topic ? <span>· {topicLabel(log.topic.id)}</span> : null}
+                                {log.turn > 1 ? <span>· turn {log.turn}</span> : null}
+                              </div>
+                              <Badges log={log} />
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </section>
+
+                <section aria-label="Conversation" className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+                  {!selected || !conversation ? (
+                    <div className="flex h-48 flex-col items-center justify-center gap-2 text-sm text-slate-500">
+                      <MessageSquare className="h-6 w-6 text-slate-300" />
+                      Pick a question to read the whole conversation.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <h2 className="font-display text-base font-bold text-slate-900">{selected.advertiserName || "Untitled plan"}</h2>
+                        <p className="text-xs text-slate-500">
+                          {conversation.turns.length} question{conversation.turns.length === 1 ? "" : "s"} · plan {selected.planId}
+                        </p>
+                      </div>
+                      {conversation.missingEarlier ? (
+                        <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">This chat started before the selected dates; widen the range to see its earlier questions.</p>
+                      ) : null}
+                      {conversation.turns.map((t) => <Turn key={t.id} log={t} selected={t.id === selected.id} onSaved={replaceLog} />)}
+                    </div>
+                  )}
+                </section>
+              </div>
+            ) : null}
           </>
         )}
       </main>

@@ -314,11 +314,13 @@ export interface ScoutLog {
   outcome?: { status: "applied" | "reverted"; changes: number; by: string; at: string };
   /** The asking planner's thumbs up or down. */
   feedback?: ScoutRating;
+  /** What the question is about (an id from SCOUT_TOPICS), tagged by Gemini after the answer is saved. */
+  topic?: { id: string; at: string };
   /** An admin's rating from the review page (/scout-review). Never touches `feedback`. */
   review?: ScoutRating & { notes?: string };
 }
 
-export type ScoutLogUpdate = Partial<Pick<ScoutLog, "outcome" | "feedback" | "review">>;
+export type ScoutLogUpdate = Partial<Pick<ScoutLog, "outcome" | "feedback" | "review" | "topic">>;
 
 // --- usage log -------------------------------------------------------------------
 
@@ -453,7 +455,7 @@ export interface StorageAdapter {
 
   recordScoutLog(log: ScoutLog): Promise<void>;
   getScoutLog(id: string): Promise<ScoutLog | null>;
-  /** Merges outcome, feedback or review into the record. Returns null if it is gone (expired). */
+  /** Merges outcome, feedback, review or topic into the record. Returns null if it is gone (expired). */
   updateScoutLog(id: string, update: ScoutLogUpdate): Promise<ScoutLog | null>;
   /** Newest first, between the two times, at most `limit`. */
   listScoutLogs(options: { sinceIso: string; untilIso?: string; limit?: number }): Promise<ScoutLog[]>;

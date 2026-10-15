@@ -94,7 +94,8 @@ src/usage/              Server-side usage log: the Settings -> Usage summary, th
 src/dashboard/          The leadership dashboard page (/dashboard), its own entry in main.tsx,
                         open to admins or a view-only #key= link.
 src/scoutReview/        The ScoutAI review page (/scout-review), admin-only: everyone's ScoutAI
-                        questions and answers, with the admin's own rating.
+                        questions and answers, the admin's own rating, and Ask (questions about
+                        the log; counts come from scoutAsk.ts, never from the model).
 src/components/         Extracted UI (SettingsDrawer, charts, tabs).
 documentation/          Technical guides. SHARED_PLANS_AND_SETTINGS.md is the
                         storage/auth reference.

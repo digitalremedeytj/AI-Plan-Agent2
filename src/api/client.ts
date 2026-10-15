@@ -13,6 +13,8 @@ import type { PerformanceCampaignSummary } from "../storage/types";
 import type { UsageSummary } from "../usage/usageSummary";
 import type { DashboardData } from "../usage/dashboard";
 import type { DashboardConfig, DashboardLink, ScoutLog } from "../storage/types";
+import type { AskBlock } from "../scoutReview/scoutAsk";
+import type { ReviewFilters } from "../scoutReview/scoutReviewData";
 
 /**
  * Client for the shared server store.
@@ -546,6 +548,35 @@ export async function rateScoutAnswer(logId: string, rating: "up" | "down" | nul
 export async function listScoutLogs(options: { days: number; until: string; limit?: number }): Promise<{ logs: ScoutLog[]; since: string; until: string }> {
   const params = new URLSearchParams({ days: String(options.days), until: options.until, limit: String(options.limit ?? 1000) });
   return request(`/api/scout-logs?${params}`);
+}
+
+/** The page's scope, sent with Ask and topic tagging so the server reads the same questions. */
+export interface ScoutReviewScope {
+  since: string;
+  until: string;
+  filters?: ReviewFilters;
+  /** How the admin sees the scope ("Last 30 days · Ana · thumbs down"), for the model. */
+  scope?: string;
+}
+
+export interface ScoutAskResponse {
+  blocks: AskBlock[];
+  /** The answer as plain text, sent back as history with the next question. */
+  text: string;
+  basedOn: { total: number; listed: number; capped: boolean };
+  model: string;
+  thinkingLevel: string;
+  durationMs: number;
+}
+
+/** Admin-only: a question about the ScoutAI questions in scope. Can take a minute or two. */
+export async function askScoutLogs(scope: ScoutReviewScope, messages: Array<{ role: "admin" | "assistant"; text: string }>): Promise<ScoutAskResponse> {
+  return longRequest(`/api/scout-logs/ask`, { method: "POST", body: JSON.stringify({ ...scope, messages }) });
+}
+
+/** Admin-only: tags the topic of up to a batch of untagged questions in the range. */
+export async function tagScoutTopics(scope: Pick<ScoutReviewScope, "since" | "until">): Promise<{ tagged: number; remaining: number }> {
+  return longRequest(`/api/scout-logs/tag-topics`, { method: "POST", body: JSON.stringify(scope) });
 }
 
 /** Admin-only: the reviewer's own rating of an answer (null clears it). Leaves the planner's thumbs alone. */

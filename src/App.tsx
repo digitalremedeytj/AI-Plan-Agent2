@@ -83,7 +83,7 @@ import { PerformanceLearningsSection } from "./components/PerformanceLearningsSe
 import { PastCampaignPicker } from "./components/PastCampaignPicker";
 import { PastPerformanceModal } from "./components/PastPerformanceModal";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
-import { SettingsDrawer } from "./components/SettingsDrawer";
+import { SettingsDrawer, type SettingsTab } from "./components/SettingsDrawer";
 import { SharePlanModal } from "./components/SharePlanModal";
 import { ClonePlanModal } from "./components/ClonePlanModal";
 import { DeletePlanModal } from "./components/DeletePlanModal";
@@ -1645,6 +1645,15 @@ export default function App() {
   React.useEffect(() => {
     if (isSettingsOpen) track("settings_open", { is_admin: canEditSettings });
   }, [isSettingsOpen]);
+  // /#settings=prompts opens the prompt library, where a prompt drafted on the ScoutAI review page
+  // is waiting (src/scoutReview/promptHandoff.ts). Admins only: anyone else has nothing to edit.
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | null>(null);
+  React.useEffect(() => {
+    if (!canEditSettings || window.location.hash !== "#settings=prompts") return;
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setSettingsInitialTab("prompts");
+    setIsSettingsOpen(true);
+  }, [canEditSettings]);
 
   // Share Management Modal State (for planners)
   const [shareModalPlan, setShareModalPlan] = useState<{
@@ -4591,11 +4600,12 @@ export default function App() {
         open={isSettingsOpen}
         settings={planningSettings}
         ctvPublishers={ctvPublishers}
-        onClose={() => { setIsSettingsOpen(false); setSettingsError(null); }}
+        onClose={() => { setIsSettingsOpen(false); setSettingsError(null); setSettingsInitialTab(null); }}
         onSave={handleSavePlanningSettings}
         readOnly={!canEditSettings}
         saveError={settingsError}
         userName={session?.name ?? ""}
+        initialTab={settingsInitialTab}
       />
 
       {/* Main Content Area */}

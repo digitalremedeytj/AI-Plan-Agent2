@@ -82,6 +82,7 @@ never the question's text:
 | --- | --- |
 | `scout_chat` | `detail`: library prompt id, `typed`, or `recap` (asked from a Campaign Recap recommendation); `label`: the prompt's title at the time; `kind`: `plan`, `past` or `live`; `count`: changes proposed (0 = answer only) |
 | `scout_apply` | Apply or Undo in the ScoutAI panel only (the plan view's recap buttons share the route but are not logged). `detail`: the prompt the proposal came from; `kind`: `applied` or `reverted`; `count`: changes saved |
+| `scout_review_ask` | An admin's question on the ScoutAI review page's Ask tab. `count`: questions in scope |
 
 ScoutAI questions recorded before these fields existed have no `detail`.
 
@@ -103,6 +104,9 @@ built by `src/assistant/scoutLog.ts`:
 - `outcome`: set when the planner applies or undoes that answer's proposal
 - `feedback`: the asking planner's thumbs up or down, with an optional note on a thumbs-down
   (`POST /api/scout-logs/{id}/feedback`, only the person who asked)
+- `topic`: what the question is about, one of a fixed list (`src/assistant/scoutTopics.ts`), tagged
+  by Gemini (low thinking) right after the record is saved. Older or failed tags are filled in
+  by the review page's "Tag topics" button (`POST /api/scout-logs/tag-topics`, admin-only)
 - `review`: an admin's own thumbs up or down with notes, from the review page
   (`POST /api/scout-logs/{id}/review`, admin-only). It never touches `feedback`, so the
   planner's rating and the reviewer's are always separate.
@@ -113,6 +117,17 @@ applied, undone) and whether it has been reviewed, with search over the question
 advertiser; the summary above it (questions, thumbs up/down among rated answers, failure
 rate, top prompts) follows the filters. Picking a question shows the whole conversation, every
 turn in order. It loads the newest 1,000 questions in the range; the filters work on those.
+Export CSV downloads the filtered questions.
+
+**Ask** (the page's second tab, `POST /api/scout-logs/ask`, admin-only) answers an admin's
+questions about the questions the dates and filters select, which the server reloads and
+filters itself. `src/scoutReview/scoutAsk.ts` counts everything (by topic, prompt, person, type,
+day or week, thumbs, reviews, outcome, error, advertiser) and gives the model those datasets plus
+the newest 300 questions word for word. Answers are blocks: prose, tables and charts that name
+a dataset (the server fills in the rows, so the model cannot miscount), word-only tables,
+example questions, and library-prompt drafts that open in Settings → ScoutAI Prompts, unsaved.
+Figures in the prose that the data does not contain are flagged. The chat stays in the browser
+tab; only that it happened is logged (`scout_review_ask`, `count`: questions in scope).
 
 **Size.** Texts are capped (question 4,000 characters, answer 20,000, the proposal 40,000 in
 all, shortened to fit), so a record is a few KB and never more than about 75 KB.

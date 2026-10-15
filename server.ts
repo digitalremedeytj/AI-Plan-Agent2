@@ -15,9 +15,12 @@ import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effe
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
-import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink } from "./src/storage";
+import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink, type ScoutLog } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
 import { buildScoutLog, sanitizeConversationId, scoutReviewUpdate, type ScoutLogInput } from "./src/assistant/scoutLog";
+import { buildTopicInput, normalizeTopicTags, TOPIC_BATCH, TOPIC_SYSTEM_INSTRUCTION, topicResponseSchema } from "./src/assistant/scoutTopics";
+import { ASK_SYSTEM_INSTRUCTION, askBlocksAsText, askKnownText, askResponseSchema, buildAskDatasets, buildAskInput, resolveAskBlocks, sanitizeAskTurns } from "./src/scoutReview/scoutAsk";
+import { filterScoutLogs, sanitizeReviewFilters } from "./src/scoutReview/scoutReviewData";
 import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest } from "./src/server/longRequest";
@@ -477,11 +480,41 @@ function logUsage(
 }
 
 // ScoutAI conversation log: fire-and-forget like logUsage, so a failed write never fails the answer.
+// The question's topic is tagged once it is saved, for the review page's counts.
 function recordScoutLog(input: ScoutLogInput): void {
   const log = buildScoutLog(input);
   getStorage()
-    .then((storage) => storage.recordScoutLog(log))
+    .then(async (storage) => {
+      await storage.recordScoutLog(log);
+      await tagScoutTopics(storage, [log]).catch((err) => console.error(`[SCOUTAI] Could not tag the question's topic:`, err?.message || err));
+    })
     .catch((err) => console.error(`[SCOUTAI] Could not record the conversation log:`, err?.message || err));
+}
+
+// Tagging is a short sort at low thinking; a slow call is retried rather than waited on.
+const TOPIC_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: number }> = [
+  { thinkingLevel: "low", timeoutMs: 45000 },
+  { thinkingLevel: "low", timeoutMs: 45000 },
+];
+
+/** Tags each question's topic (src/assistant/scoutTopics.ts), in batches. Returns how many were tagged. */
+async function tagScoutTopics(storage: StorageAdapter, logs: ScoutLog[]): Promise<number> {
+  const batches: ScoutLog[][] = [];
+  for (let i = 0; i < logs.length; i += TOPIC_BATCH) batches.push(logs.slice(i, i + TOPIC_BATCH));
+  const results = await Promise.allSettled(batches.map(async (batch) => {
+    const { data } = await generateStructuredJsonWithFallback(
+      getAiClient(),
+      { systemInstruction: TOPIC_SYSTEM_INSTRUCTION, input: buildTopicInput(batch), schema: topicResponseSchema },
+      TOPIC_ATTEMPTS,
+    );
+    const at = new Date().toISOString();
+    const saved = await Promise.all([...normalizeTopicTags(data, batch.map((l) => l.id))].map(([id, topic]) => storage.updateScoutLog(id, { topic: { id: topic, at } })));
+    return saved.filter(Boolean).length;
+  }));
+  const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  const tagged = results.reduce((n, r) => n + (r.status === "fulfilled" ? r.value : 0), 0);
+  if (failed && tagged === 0) throw failed.reason;
+  return tagged;
 }
 
 // Records the action once the response is sent, so it carries the outcome and how long it
@@ -2605,16 +2638,99 @@ app.post("/api/scout-logs/:id/feedback", async (req, res) => {
 
 // Every ScoutAI question and answer, newest first, for the review page (/scout-review).
 // Admin-only: questions can carry client details, and this names who asked.
+// The window a review-page request covers: `days` back from `until` (default now), or from
+// `since` when given, capped at the retention period.
+function scoutLogRange(source: Record<string, unknown>): { since: string; until: string } {
+  const until = typeof source.until === "string" && !Number.isNaN(Date.parse(source.until)) ? new Date(source.until).toISOString() : new Date().toISOString();
+  const earliest = Date.parse(until) - SCOUT_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  if (typeof source.since === "string" && !Number.isNaN(Date.parse(source.since))) {
+    return { since: new Date(Math.min(Date.parse(until), Math.max(earliest, Date.parse(source.since)))).toISOString(), until };
+  }
+  const days = Math.min(SCOUT_LOG_RETENTION_DAYS, Math.max(1, Math.round(Number(source.days) || 30)));
+  return { since: new Date(Date.parse(until) - days * 24 * 60 * 60 * 1000).toISOString(), until };
+}
+
+// The review page reads at most this many questions per range, newest first.
+const SCOUT_REVIEW_LIMIT = 1000;
+
 app.get("/api/scout-logs", requireAdmin, async (req, res) => {
   try {
-    const days = Math.min(SCOUT_LOG_RETENTION_DAYS, Math.max(1, Math.round(Number(req.query.days) || 30)));
-    const until = typeof req.query.until === "string" && !Number.isNaN(Date.parse(req.query.until)) ? new Date(req.query.until).toISOString() : new Date().toISOString();
-    const since = new Date(Date.parse(until) - days * 24 * 60 * 60 * 1000).toISOString();
-    const limit = Math.min(1000, Math.max(1, Math.round(Number(req.query.limit) || 200)));
+    const { since, until } = scoutLogRange(req.query as Record<string, unknown>);
+    const limit = Math.min(SCOUT_REVIEW_LIMIT, Math.max(1, Math.round(Number(req.query.limit) || 200)));
     const logs = await (await getStorage()).listScoutLogs({ sinceIso: since, untilIso: until, limit });
     res.json({ success: true, logs, since, until });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to load ScoutAI logs", details: err?.message || String(err) });
+  }
+});
+
+// Tags the topic of questions saved before tagging existed (or whose tagging failed), up to
+// TAG_PER_REQUEST at a time; the page calls again while any remain.
+const TAG_PER_REQUEST = 160;
+app.post("/api/scout-logs/tag-topics", requireAdmin, async (req, res) => {
+  holdOpenForLongRequest(req, res);
+  try {
+    const storage = await getStorage();
+    const { since, until } = scoutLogRange(req.body ?? {});
+    const untagged = (await storage.listScoutLogs({ sinceIso: since, untilIso: until, limit: SCOUT_REVIEW_LIMIT })).filter((l) => !l.topic);
+    const tagged = untagged.length ? await tagScoutTopics(storage, untagged.slice(0, TAG_PER_REQUEST)) : 0;
+    console.log(`[SCOUTAI] Tagged ${tagged} of ${untagged.length} untagged question(s) for ${actorName(req)}.`);
+    res.json({ success: true, tagged, remaining: Math.max(0, untagged.length - tagged) });
+  } catch (err: any) {
+    console.error("[SCOUTAI] Topic tagging failed:", err);
+    res.status(502).json({ error: "The questions could not be tagged just now. Try again in a minute.", details: err?.message || String(err) });
+  }
+});
+
+// Ask on the review page: an admin's question about the questions in scope (the page's date
+// range and filters, applied here again). Counts come from src/scoutReview/scoutAsk.ts, never
+// from the model. The exchange is not stored: only that it happened, in the usage log.
+const SCOUT_ASK_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: number }> = [
+  { thinkingLevel: "medium", timeoutMs: 120000 },
+  { thinkingLevel: "low", timeoutMs: 90000 },
+];
+app.post("/api/scout-logs/ask", requireAdmin, async (req, res) => {
+  holdOpenForLongRequest(req, res);
+  logUsageOnFinish(req, res, "scout_review_ask");
+  const startedAt = Date.now();
+  try {
+    const turns = sanitizeAskTurns(req.body?.messages);
+    if (turns.length === 0 || turns[turns.length - 1].role !== "admin") {
+      res.status(400).json({ error: "Ask a question first." });
+      return;
+    }
+    const { since, until } = scoutLogRange(req.body ?? {});
+    const filters = sanitizeReviewFilters(req.body?.filters);
+    const all = await (await getStorage()).listScoutLogs({ sinceIso: since, untilIso: until, limit: SCOUT_REVIEW_LIMIT });
+    const logs = filterScoutLogs(all, filters);
+    if (logs.length === 0) {
+      res.status(400).json({ error: "No questions match the dates and filters, so there is nothing to ask about." });
+      return;
+    }
+    const datasets = buildAskDatasets(logs);
+    const scope = typeof req.body?.scope === "string" && req.body.scope.trim() ? req.body.scope.trim().slice(0, 500) : `${since.slice(0, 10)} to ${until.slice(0, 10)}`;
+    const { input, listed } = buildAskInput({ scope, logs, datasets, turns });
+    const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+      getAiClient(),
+      { systemInstruction: ASK_SYSTEM_INSTRUCTION, input, schema: askResponseSchema(datasets.map((d) => d.id)) },
+      SCOUT_ASK_ATTEMPTS,
+    );
+    const blocks = resolveAskBlocks(data, datasets, logs, askKnownText(datasets, logs));
+    const durationMs = Date.now() - startedAt;
+    res.locals.usage = { count: logs.length };
+    console.log(`[SCOUTAI] Review ask by ${actorName(req)}: ${logs.length} question(s) in scope, ${listed} listed, ${blocks.length} block(s) via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking) in ${Math.round(durationMs / 1000)}s.`);
+    res.json({
+      success: true,
+      blocks,
+      text: askBlocksAsText(blocks),
+      basedOn: { total: logs.length, listed, capped: all.length >= SCOUT_REVIEW_LIMIT },
+      model: GEMINI_FLASH_MODEL,
+      thinkingLevel,
+      durationMs,
+    });
+  } catch (err: any) {
+    console.error("[SCOUTAI] Review ask failed:", err);
+    res.status(502).json({ error: "The question could not be answered just now. Try again, or narrow the dates.", details: err?.message || String(err) });
   }
 });
 

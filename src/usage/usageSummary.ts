@@ -25,6 +25,7 @@ export const SERVER_USAGE_ACTIONS = [
   "campaign_recap",
   "performance_upload",
   "settings_save",
+  "scout_review_ask",
 ] as const;
 
 /**
@@ -53,6 +54,7 @@ export const USAGE_ACTION_LABELS: Record<UsageAction, string> = {
   campaign_recap: "Campaign recaps",
   performance_upload: "Performance uploads",
   settings_save: "Settings saves",
+  scout_review_ask: "ScoutAI review questions",
   plan_open: "Plans opened",
   plan_save: "Plans saved",
   export: "Exports",

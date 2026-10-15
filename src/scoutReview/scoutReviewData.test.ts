@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ScoutLog } from "../storage/types";
-import { conversationOf, EMPTY_FILTERS, filterOptions, filterScoutLogs, formatDuration, summarizeScoutLogs } from "./scoutReviewData";
+import { conversationOf, EMPTY_FILTERS, filterOptions, filterScoutLogs, formatDuration, sanitizeReviewFilters, scoutLogsCsv, summarizeScoutLogs, UNTAGGED } from "./scoutReviewData";
 
 let seq = 0;
 function log(overrides: Partial<ScoutLog> = {}): ScoutLog {
@@ -124,4 +124,33 @@ test("a record from before conversation ids stands alone", () => {
 test("durations read as seconds, then minutes and seconds", () => {
   assert.equal(formatDuration(12_340), "12.3s");
   assert.equal(formatDuration(65_000), "1m 05s");
+});
+
+test("the CSV keeps commas, quotes and line breaks inside a question in one cell", () => {
+  const csv = scoutLogsCsv([log({ question: 'Compare "Hulu", ESPN\nand Roku', topic: { id: "publishers", at: "x" } })], (id) => (id === "publishers" ? "CTV publishers & inventory" : ""));
+  const [header, row] = csv.split("\r\n");
+  assert.match(header, /^Asked at \(UTC\),Person,/);
+  assert.ok(row.includes('"Compare ""Hulu"", ESPN\nand Roku"'));
+  assert.ok(row.includes("CTV publishers & inventory"));
+});
+
+test("a question that looks like a spreadsheet formula opens as text", () => {
+  const csv = scoutLogsCsv([log({ question: "=HYPERLINK(\"http://x\")" })], () => "");
+  assert.ok(csv.split("\r\n")[1].includes(`"'=HYPERLINK(""http://x"")"`));
+});
+
+test("the topic filter separates tagged questions from the ones not tagged yet", () => {
+  const tagged = log({ topic: { id: "how_to", at: "x" } });
+  const untagged = log();
+  assert.deepEqual(filterScoutLogs([tagged, untagged], { ...EMPTY_FILTERS, topic: "how_to" }), [tagged]);
+  assert.deepEqual(filterScoutLogs([tagged, untagged], { ...EMPTY_FILTERS, topic: UNTAGGED }), [untagged]);
+});
+
+test("filters from a request body keep only values the page can send", () => {
+  const f = sanitizeReviewFilters({ rating: "sideways", status: "failed", kind: "live", person: 42, search: "x".repeat(900) });
+  assert.equal(f.rating, "all");
+  assert.equal(f.status, "failed");
+  assert.equal(f.kind, "live");
+  assert.equal(f.person, "");
+  assert.equal(f.search.length, 500);
 });
