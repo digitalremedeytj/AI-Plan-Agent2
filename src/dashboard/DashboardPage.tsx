@@ -32,6 +32,7 @@ const COLORS = {
   grid: "#e2e8f0",
   axis: "#64748b",
 };
+const TOP_USERS_MAX = 50;
 // Brand purple from its deepest shade to its lightest tint, largest channel darkest.
 const CHANNEL_SHADES = ["#3836b8", "#4744e0", "#5856fd", "#8584fe", "#a9a8fe", "#c9c8fe"];
 
@@ -57,14 +58,15 @@ function Delta({ kpi, invert = false }: { kpi: Kpi; invert?: boolean }) {
   );
 }
 
-function KpiCard({ icon: Icon, label, value, kpi, footnote, accent, children }: {
+function KpiCard({ icon: Icon, label, value, kpi, footnote, accent, aside }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
   kpi?: Kpi;
   footnote?: React.ReactNode;
   accent: string;
-  children?: React.ReactNode;
+  /** A small control beside the value, kept on its row so every card stays the same height. */
+  aside?: React.ReactNode;
 }) {
   return (
     <div className="relative min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm break-inside-avoid sm:p-5">
@@ -72,12 +74,14 @@ function KpiCard({ icon: Icon, label, value, kpi, footnote, accent, children }: 
         <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 sm:text-xs">{label}</p>
         <span className={`rounded-lg p-1.5 ${accent}`}><Icon className="h-4 w-4" /></span>
       </div>
-      <p className="mt-2 font-display text-2xl font-bold tabular-nums tracking-tight text-slate-900 sm:text-3xl">{value}</p>
+      <div className="mt-2 flex flex-wrap items-end justify-between gap-x-3 gap-y-1">
+        <p className="font-display text-2xl font-bold tabular-nums tracking-tight text-slate-900 sm:text-3xl">{value}</p>
+        {aside}
+      </div>
       <div className="mt-2 flex min-h-6 flex-wrap items-center gap-2">
         {kpi ? <Delta kpi={kpi} /> : null}
         {footnote ? <span className="text-xs text-slate-500">{footnote}</span> : null}
       </div>
-      {children}
     </div>
   );
 }
@@ -154,8 +158,13 @@ function HoursEditor({ value, onChange, canSave }: { value: number; onChange: (v
     else setDraft(String(value));
   };
   return (
-    <label className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-3 text-xs text-slate-500 print:hidden">
-      <span>Hours per plan</span>
+    // Whether an edit is kept for everyone (admins) or only this viewer is in the tooltip, not on
+    // the card, so the card stays the height of the others.
+    <label
+      className="flex flex-col items-end gap-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 print:hidden"
+      title={canSave ? "Hours one plan replaces. Your change is saved for everyone." : "Hours one plan replaces. Changes apply to your view only."}
+    >
+      <span><span className="sm:hidden">Hrs</span><span className="hidden sm:inline">Hours</span> / plan</span>
       <input
         type="number"
         min={0.25}
@@ -165,10 +174,9 @@ function HoursEditor({ value, onChange, canSave }: { value: number; onChange: (v
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-        className="w-16 rounded-md border border-slate-200 px-1.5 py-0.5 text-right font-semibold text-slate-900 tabular-nums focus:border-brand-purple-400 focus:outline-none"
+        className="w-12 sm:w-14 rounded-md border border-slate-200 px-1.5 py-0.5 text-right text-xs font-semibold normal-case tracking-normal text-slate-900 tabular-nums focus:border-brand-purple-400 focus:outline-none"
         aria-label="Manual hours one plan replaces"
       />
-      <span className="text-[11px]">{canSave ? "saved for everyone" : "for your view only"}</span>
     </label>
   );
 }
@@ -510,9 +518,8 @@ export default function DashboardPage() {
                 value={`${formatHours(kpis!.plans.value * hours)} h`}
                 kpi={{ value: kpis!.plans.value * hours, previous: kpis!.plans.previous * hours }}
                 accent="bg-brand-purple-50 text-brand-purple-500"
-              >
-                <HoursEditor value={hours} onChange={changeHours} canSave={isAdmin} />
-              </KpiCard>
+                aside={<HoursEditor value={hours} onChange={changeHours} canSave={isAdmin} />}
+              />
               <KpiCard icon={Building2} label="Advertisers served" value={formatNumber(kpis!.advertisers.value)} kpi={kpis!.advertisers} accent="bg-brand-teal-50 text-brand-teal-500" />
               <KpiCard icon={Link2} label="Share links created" value={formatNumber(kpis!.shareLinks.value)} kpi={kpis!.shareLinks} accent="bg-brand-purple-50 text-brand-purple-500" />
               <KpiCard icon={Eye} label="Client views" value={formatNumber(kpis!.shareViews.value)} kpi={kpis!.shareViews} footnote="shared plans opened" accent="bg-brand-teal-50 text-brand-teal-500" />
@@ -604,29 +611,34 @@ export default function DashboardPage() {
             </div>
 
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-              <Card title="Top users" subtitle="Ranked by plans generated" className="lg:col-span-2">
+              <Card
+                title="Top users"
+                subtitle={`Ranked by plans generated${data.users.length > TOP_USERS_MAX ? ` · top ${TOP_USERS_MAX} of ${data.users.length}` : ""}`}
+                className="lg:col-span-2"
+              >
                 {data.users.length === 0 ? (
                   <Empty>No activity in this period.</Empty>
                 ) : (
-                  <div className="-mx-5 overflow-x-auto">
+                  // Scrolls past ~10 rows with the column headings pinned; printing shows every row.
+                  <div className="-mx-5 max-h-[500px] overflow-auto print:max-h-none print:overflow-visible">
                     <table className="w-full min-w-[560px] text-sm">
-                      <thead>
-                        <tr className="border-b border-slate-100 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                      <thead className="sticky top-0 z-10 bg-white">
+                        <tr className="border-b border-slate-100 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 shadow-[0_1px_0_#f1f5f9]">
                           <th className="w-10 px-5 py-2">#</th>
                           <th className="py-2">Name</th>
-                          <th className="w-48 py-2">Plans generated</th>
+                          <th className="w-40 py-2">Plans generated</th>
                           <th className="px-3 py-2 text-right">Share links</th>
                           <th className="px-3 py-2 text-right">Client views</th>
                           <th className="px-5 py-2 text-right">Budget planned</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {data.users.slice(0, 10).map((u, i) => (
+                        {data.users.slice(0, TOP_USERS_MAX).map((u, i) => (
                           <tr key={u.name.toLowerCase()} className="hover:bg-slate-50/60">
                             <td className="px-5 py-2.5">
                               <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${i === 0 ? "bg-amber-100 text-amber-800" : i === 1 ? "bg-slate-200 text-slate-700" : i === 2 ? "bg-orange-100 text-orange-800" : "text-slate-400"}`}>{i + 1}</span>
                             </td>
-                            <td className="py-2.5 font-medium text-slate-900">{u.name}</td>
+                            <td className="whitespace-nowrap py-2.5 pr-4 font-medium text-slate-900">{u.name}</td>
                             <td className="py-2.5">
                               <div className="flex items-center gap-2">
                                 <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
