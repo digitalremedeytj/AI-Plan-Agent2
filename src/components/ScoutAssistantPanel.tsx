@@ -44,6 +44,8 @@ interface Message {
   recapRecommendationId?: string;
   /** An analysis answered from the review summary rather than every campaign row. */
   fromSummary?: boolean;
+  /** The library prompt this answer came from, so applying it is credited to that prompt. */
+  promptId?: string;
   /** A failed answer the planner can ask for again; `failures` counts tries at the same question. */
   retry?: { recapRecommendationId?: string; promptId?: string; failures: number };
 }
@@ -504,7 +506,7 @@ export function ScoutAssistantPanel({
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const result = await api.askScout(planId, toTurns(history), (line) => setThought(line), controller.signal, tag.promptId);
+      const result = await api.askScout(planId, toTurns(history), (line) => setThought(line), controller.signal, tag.promptId, tag.recapRecommendationId ? "recap" : undefined);
       setMessages((prev) => [...prev, {
         id: newId(),
         role: "assistant",
@@ -513,6 +515,7 @@ export function ScoutAssistantPanel({
         ...(result.executiveSummaryInstructions ? { summaryRewrite: { instructions: result.executiveSummaryInstructions, status: "pending" as const } } : {}),
         ...(tag.recapRecommendationId && result.proposal ? { recapRecommendationId: tag.recapRecommendationId } : {}),
         ...(result.depth === "summary" ? { fromSummary: true } : {}),
+        ...(tag.promptId ? { promptId: tag.promptId } : tag.recapRecommendationId ? { promptId: "recap" } : {}),
       }]);
       if (!visibleRef.current) onUnread(true);
     } catch (err: any) {
@@ -569,7 +572,7 @@ export function ScoutAssistantPanel({
       // Applying a recap recommendation marks it "In this plan", whether or not ScoutAI said so.
       const recId = message.recapRecommendationId;
       if (recId && !ops.some((op) => op.type === "mark_recap_recommendation" && op.id === recId)) ops.push({ type: "mark_recap_recommendation", id: recId, applied: true });
-      const result = await api.applyScoutChange(planId, { ops, baseRevision: proposal.baseRevision });
+      const result = await api.applyScoutChange(planId, { ops, baseRevision: proposal.baseRevision, from: "scout", promptId: message.promptId });
       if (preview?.proposalId === message.id) onPreview(null);
       // The saved result is authoritative; show what the server applied.
       updateProposal(message.id, {
@@ -595,7 +598,7 @@ export function ScoutAssistantPanel({
     if (!proposal?.revertOps?.length || proposal.appliedRevision == null) return;
     updateProposal(message.id, { status: "reverting" });
     try {
-      const result = await api.applyScoutChange(planId, { ops: proposal.revertOps, baseRevision: proposal.appliedRevision, revert: true });
+      const result = await api.applyScoutChange(planId, { ops: proposal.revertOps, baseRevision: proposal.appliedRevision, revert: true, from: "scout", promptId: message.promptId });
       updateProposal(message.id, { status: "reverted", revertOps: undefined, followUps: [] });
       onApplied(result.plan);
     } catch (err: any) {

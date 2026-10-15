@@ -281,8 +281,14 @@ export interface UsageEvent {
   durationMs?: number;
   /** False when the action failed. Absent means it is not a pass/fail action. */
   ok?: boolean;
-  /** A short qualifier, e.g. the export format or which slide studio. */
+  /** A short qualifier, e.g. the export format, which slide, or which ScoutAI prompt. */
   detail?: string;
+  /** Display name for `detail` as it was at the time, e.g. a ScoutAI prompt's title (prompts can be renamed). */
+  label?: string;
+  /** A second qualifier. scout_chat: "plan" | "past" | "live"; scout_apply: "applied" | "reverted". */
+  kind?: string;
+  /** scout_chat: changes ScoutAI proposed (0 = answer only); scout_apply: changes saved. */
+  count?: number;
   /** plan_generate only: the plan's working media budget, in dollars. */
   budget?: number;
   /** plan_generate only: dollars allocated per media type, keyed by channel name. */

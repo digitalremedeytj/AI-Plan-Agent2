@@ -58,13 +58,76 @@ function exportTypeLabel(event: UsageEvent): string {
   return event.detail || "Other";
 }
 
+/** One line of a feature's breakdown: a count of uses and people, or a figure as text. */
+export interface BreakdownRow {
+  label: string;
+  uses?: number;
+  people?: number;
+  text?: string;
+}
+
 export interface AdoptionRow {
   action: string;
   label: string;
   uses: number;
   people: number;
-  /** Per-type counts, most used first; only on features that gather several kinds of use. */
-  breakdown?: Array<{ label: string; uses: number; people: number }>;
+  /** Shown when the row is expanded, in order; a group without a title is a plain list. */
+  breakdown?: Array<{ title?: string; rows: BreakdownRow[] }>;
+}
+
+/** ScoutAI questions logged before prompt and outcome were recorded have no `detail`. */
+const EARLIER_QUESTIONS = "Earlier questions (not broken out)";
+const SCOUT_KIND_LABELS: Record<string, string> = { plan: "Plan questions", past: "Past-campaign analysis", live: "Live-campaign check" };
+
+function formatSeconds(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  return seconds < 90 ? `${seconds} s` : `${Math.round(seconds / 6) / 10} min`;
+}
+
+const countUses = (uses: UsageEvent[]) => ({ uses: uses.length, people: new Set(uses.map((e) => toPersonKey(e.actor))).size });
+
+/** Groups events by label, most used first. */
+function countBy(events: UsageEvent[], labelOf: (e: UsageEvent) => string): BreakdownRow[] {
+  const groups = new Map<string, UsageEvent[]>();
+  for (const e of events) {
+    const label = labelOf(e);
+    groups.set(label, [...(groups.get(label) ?? []), e]);
+  }
+  return [...groups.entries()]
+    .map(([label, group]) => ({ label, ...countUses(group) }))
+    .sort((a, b) => b.uses! - a.uses! || a.label.localeCompare(b.label));
+}
+
+/**
+ * ScoutAI by prompt, by kind of question, how questions turned into saved changes, and how long
+ * answers take. Applies and undos are counted when they happened, like every other feature here.
+ */
+function scoutBreakdown(questions: UsageEvent[], applies: UsageEvent[]): AdoptionRow["breakdown"] {
+  const recorded = (e: UsageEvent) => Boolean(e.detail);
+  const answered = questions.filter((e) => e.ok !== false);
+  const failed = questions.filter((e) => e.ok === false);
+  const proposed = questions.filter((e) => (e.count ?? 0) > 0);
+  const applied = applies.filter((e) => e.kind !== "reverted");
+  const undone = applies.filter((e) => e.kind === "reverted");
+  const times = answered.map((e) => e.durationMs).filter((ms): ms is number => typeof ms === "number").sort((a, b) => a - b);
+  const mid = Math.floor(times.length / 2);
+  const median = times.length === 0 ? null : times.length % 2 ? times[mid] : (times[mid - 1] + times[mid]) / 2;
+  const timing: BreakdownRow[] = median === null ? [] : [{ label: "Median time to answer", text: formatSeconds(median) }];
+  return [
+    { title: "By prompt", rows: countBy(questions, (e) => (recorded(e) ? e.label || e.detail! : EARLIER_QUESTIONS)) },
+    { title: "By type", rows: countBy(questions, (e) => (e.kind ? SCOUT_KIND_LABELS[e.kind] || e.kind : EARLIER_QUESTIONS)) },
+    {
+      title: "Outcome",
+      rows: [
+        { label: "Answered", ...countUses(answered) },
+        ...(failed.length ? [{ label: "Failed or timed out", ...countUses(failed) }] : []),
+        { label: "Answers proposing changes", ...countUses(proposed) },
+        { label: "Proposals applied", ...countUses(applied) },
+        ...(undone.length ? [{ label: "Applied changes undone", ...countUses(undone) }] : []),
+      ],
+    },
+    ...(timing.length ? [{ title: "Response time", rows: timing }] : []),
+  ];
 }
 
 export interface Kpi {
@@ -323,19 +386,13 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
     }
   }
 
-  const countUses = (uses: UsageEvent[]) => ({ uses: uses.length, people: new Set(uses.map((e) => toPersonKey(e.actor))).size });
+  const staff = current.filter((e) => e.actor !== SHARE_VIEWER_ACTOR);
   const adoption = ADOPTION_FEATURES.map(({ action, label, actions = [action] }): AdoptionRow => {
-    const uses = current.filter((e) => actions.includes(e.action) && e.actor !== SHARE_VIEWER_ACTOR);
-    if (actions.length === 1) return { action, label, ...countUses(uses) };
-    const byType = new Map<string, UsageEvent[]>();
-    for (const e of uses) {
-      const type = exportTypeLabel(e);
-      byType.set(type, [...(byType.get(type) ?? []), e]);
-    }
-    const breakdown = [...byType.entries()]
-      .map(([type, events]) => ({ label: type, ...countUses(events) }))
-      .sort((a, b) => b.uses - a.uses || a.label.localeCompare(b.label));
-    return { action, label, ...countUses(uses), breakdown };
+    const uses = staff.filter((e) => actions.includes(e.action));
+    const row: AdoptionRow = { action, label, ...countUses(uses) };
+    if (action === "export") row.breakdown = [{ rows: countBy(uses, exportTypeLabel) }];
+    if (action === "scout_chat") row.breakdown = scoutBreakdown(uses, staff.filter((e) => e.action === "scout_apply" && e.ok !== false));
+    return row;
   });
 
   return {

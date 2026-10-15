@@ -439,6 +439,9 @@ type UsageExtra = {
   durationMs?: number;
   ok?: boolean;
   detail?: string;
+  label?: string;
+  kind?: string;
+  count?: number;
   budget?: number;
   channels?: Record<string, number>;
 };
@@ -461,6 +464,9 @@ function logUsage(
     durationMs: typeof extra.durationMs === "number" ? Math.round(extra.durationMs) : undefined,
     ok: extra.ok,
     detail: extra.detail?.slice(0, 60) || undefined,
+    label: extra.label?.slice(0, 80) || undefined,
+    kind: extra.kind?.slice(0, 20) || undefined,
+    count: typeof extra.count === "number" ? extra.count : undefined,
     budget: extra.budget,
     channels: extra.channels,
   };
@@ -2436,6 +2442,15 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     const promptId = typeof req.body?.promptId === "string" ? req.body.promptId : null;
     const libraryPrompt = promptId ? mergeWithDefaults((await storage.getScoutPrompts())?.prompts).find((p) => p.id === promptId && p.enabled) : undefined;
     analysisTurn = linked.length > 0 && (libraryPrompt ? libraryPrompt.mode !== "plan" : PERFORMANCE_QUESTION.test(question));
+    // For the dashboard: which prompt (never the question's text) and what kind of turn. A typed
+    // analysis with a live campaign linked reads it as live, since that is what the model is told.
+    const fromRecap = req.body?.from === "recap";
+    res.locals.usage = {
+      ...res.locals.usage,
+      detail: fromRecap ? "recap" : promptId ? promptId : "typed",
+      label: fromRecap ? "Campaign recap recommendation" : promptId ? libraryPrompt?.title || promptId : "Typed question",
+      kind: !analysisTurn ? "plan" : libraryPrompt ? (libraryPrompt.needs.includes("liveCampaign") ? "live" : "past") : hasLive ? "live" : "past",
+    };
     // Analysis starts from the reviews and the recap when every past campaign has a current
     // review, unless the question needs rows the summary leaves out (see wantsFullData). Any
     // other turn reads the full context, as it always has.
@@ -2502,6 +2517,7 @@ app.post("/api/plans/:id/assistant/chat", async (req, res) => {
     const replyUnverified = figures ? unverifiedFigures(response.reply, figures) : [];
     if (replyUnverified.length > 0) reply += `\n\n_Not found in the campaign data or the plan, so check before using: ${replyUnverified.join(", ")}._`;
     console.log(`[SCOUTAI] Plan ${plan.id} r${plan.revision}: ${turns.length} turn(s)${libraryPrompt ? `, library prompt "${libraryPrompt.id}"` : ""}, ${linked.length ? `${hasLive ? "live campaign + " : ""}${linked.length - (hasLive ? 1 : 0)} past campaign(s)${analysisTurn ? " (analysis)" : ""}, ` : ""}${proposal ? `${items.length} item(s), ${(proposal.changes as unknown[]).length} change(s)` : "no proposal"}${dropped.length ? `, ${dropped.length} dropped` : ""} via ${GEMINI_FLASH_MODEL} (${thinkingLevel} thinking${analysisTurn ? `, ${depth} data` : ""}).`);
+    res.locals.usage = { ...res.locals.usage, count: items.length };
     send({ type: "result", reply, proposal, executiveSummaryInstructions: response.executiveSummaryInstructions, revision: plan.revision, depth: analysisTurn ? depth : null });
     res.end();
   } catch (err: any) {
@@ -2630,6 +2646,12 @@ app.post("/api/plans/:id/assistant/preview", async (req, res) => {
 });
 
 app.post("/api/plans/:id/assistant/apply", async (req, res) => {
+  // Only the ScoutAI panel's Apply and Undo count as ScoutAI use; the plan view's recap buttons
+  // share this route but are not the assistant.
+  if (req.body?.from === "scout") {
+    const promptId = typeof req.body?.promptId === "string" ? req.body.promptId : "";
+    logUsageOnFinish(req, res, "scout_apply", { planId: req.params.id, detail: promptId || "typed", kind: req.body?.revert === true ? "reverted" : "applied" });
+  }
   try {
     const expectedRevision = Number(req.body?.baseRevision);
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
@@ -2666,6 +2688,7 @@ app.post("/api/plans/:id/assistant/apply", async (req, res) => {
       ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload: result.payload }),
       actor: actorName(req),
     }, expectedRevision);
+    res.locals.usage = { advertiserName: plan.advertiserName, count: result.changes.length };
     console.log(`[SCOUTAI] Plan ${plan.id}: ${req.body?.revert === true ? "reverted" : "applied"} ${result.changes.length} change(s) by ${actorName(req)}, r${expectedRevision} -> r${updated.revision}.`);
     res.json({ success: true, plan: updated, changes: result.changes, revertOps: result.revertOps, followUps: detectFollowUps(plan.payload, result.payload) });
   } catch (err: any) {

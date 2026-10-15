@@ -75,17 +75,28 @@ route that performs them. The browser reports only what the server cannot see (`
 A share-link view by a signed-in planner is recorded with `detail: "staff_preview"`;
 an unauthenticated view is attributed to `(client share link)`.
 
+`export` and `slide_generate` carry the format or slide in `detail`. ScoutAI events carry more,
+never the question's text:
+
+| Event | Fields |
+| --- | --- |
+| `scout_chat` | `detail`: library prompt id, `typed`, or `recap` (asked from a Campaign Recap recommendation); `label`: the prompt's title at the time; `kind`: `plan`, `past` or `live`; `count`: changes proposed (0 = answer only) |
+| `scout_apply` | Apply or Undo in the ScoutAI panel only (the plan view's recap buttons share the route but are not logged). `detail`: the prompt the proposal came from; `kind`: `applied` or `reverted`; `count`: changes saved |
+
+ScoutAI questions recorded before these fields existed have no `detail`.
+
 ## AI Plan Agent Dashboard (`/dashboard`)
 
-Headline numbers and charts for leadership, computed from the usage log
+Headline numbers and charts for executives, computed from the usage log
 (`src/usage/dashboard.ts`, page in `src/dashboard/`).
 
-**Access.** Signed-in admins open `/dashboard` directly. Everyone else needs a view-only
-link, created in Settings → Usage → AI Plan Agent Dashboard:
+**Access.** Any signed-in planner opens `/dashboard` directly (it is in the app menu). Anyone
+else needs a view-only link, which any planner can create in Settings → Dashboard:
 `/dashboard#key=dash_…`. The key sits after `#`, so browsers never send it to the server in
 the address (it travels in the `x-dashboard-key` header) and it stays out of Cloud Run request
 logs and referrers. The page removes it from the address bar once read. Links are named,
-never expire, and are turned off one at a time (`dashboard_links/{token}` in Firestore). Add
+never expire, and are turned off one at a time by their creator or an admin
+(`dashboard_links/{token}` in Firestore). Hours per plan and excluded names are admin-only. Add
 `&range=7d` (or `30d`, `90d`, `qtd`, `ytd`) to open on a given range; "Copy weekly summary"
 does this automatically.
 
@@ -101,13 +112,14 @@ does this automatically.
 | Client views | Unauthenticated opens of share links (a planner previewing their own link is not counted), credited to whoever created the link |
 | Funnel | Plans generated in the period → of those, shared → of those, opened by a client, whenever that happened |
 | Change % | Against the period of the same length immediately before |
+| Feature adoption | People and uses per feature. Exports (downloads, copies and AI slides) expands by type. ScoutAI expands by prompt, by type of question, outcome (answered, failed, answers proposing changes, proposals applied, undone; applies are counted when they happen) and median answer time |
 
 Charts are bucketed by day up to 35 days, by week beyond, in the viewer's timezone.
 
-**Excluded names.** Test accounts listed in Settings → Usage are dropped from every dashboard
+**Excluded names.** Test accounts listed in Settings → Dashboard are dropped from every dashboard
 number (`dashboard_config/current`). The Usage tab itself still shows them.
 
-**History.** "Import history from saved plans" (Settings → Usage) turns every saved plan into
+**History.** "Import history from saved plans" (Settings → Dashboard) turns every saved plan into
 a backfilled generation, dated and attributed as the plan was, and every plan with a share
 token into a share-link event dated by the plan's last update. Client views cannot be
 backfilled; they were not recorded before this feature. Running it again adds nothing.

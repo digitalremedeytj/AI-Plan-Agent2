@@ -166,7 +166,48 @@ test("exports gather downloads and AI slides, broken out by type with the most u
   const exports = data.adoption.find((a) => a.label === "Exports")!;
   assert.equal(exports.uses, 5);
   assert.equal(exports.people, 2);
-  assert.deepEqual(exports.breakdown?.[0], { label: "Plan PDF", uses: 2, people: 2 });
-  assert.deepEqual(exports.breakdown?.map((b) => b.label).sort(), ["AI slide: personas", "CTV publisher slide (basic)", "Plan PDF", "some_new_format"]);
+  const rows = exports.breakdown![0].rows;
+  assert.deepEqual(rows[0], { label: "Plan PDF", uses: 2, people: 2 });
+  assert.deepEqual(rows.map((b) => b.label).sort(), ["AI slide: personas", "CTV publisher slide (basic)", "Plan PDF", "some_new_format"]);
   assert.equal(data.adoption.some((a) => a.action === "slide_generate"), false, "AI slides are no longer a row of their own");
+});
+
+const scoutGroup = (data: ReturnType<typeof build>, title: string) =>
+  data.adoption.find((a) => a.action === "scout_chat")!.breakdown!.find((g) => g.title === title)?.rows ?? [];
+
+test("ScoutAI questions from before prompts were recorded still add up, as one earlier row", () => {
+  const data = build([
+    ev("2026-10-02T10:00:00.000Z", "Ana", "scout_chat", { ok: true }),
+    ev("2026-10-03T10:00:00.000Z", "Ben", "scout_chat", { ok: true, detail: "plan-health-check", label: "Plan health check", kind: "plan", count: 0 }),
+  ]);
+  const byPrompt = scoutGroup(data, "By prompt");
+  assert.equal(byPrompt.reduce((sum, r) => sum + (r.uses ?? 0), 0), data.adoption.find((a) => a.action === "scout_chat")!.uses);
+  assert.ok(byPrompt.some((r) => r.label === "Earlier questions (not broken out)" && r.uses === 1));
+});
+
+test("a library prompt and a typed question are counted on separate rows, by the title asked under", () => {
+  const data = build([
+    ev("2026-10-02T10:00:00.000Z", "Ana", "scout_chat", { ok: true, detail: "plan-health-check", label: "Plan health check", kind: "plan", count: 1 }),
+    ev("2026-10-02T11:00:00.000Z", "Ana", "scout_chat", { ok: true, detail: "plan-health-check", label: "Plan health check", kind: "plan", count: 0 }),
+    ev("2026-10-02T12:00:00.000Z", "Ben", "scout_chat", { ok: true, detail: "typed", label: "Typed question", kind: "live", count: 0 }),
+  ]);
+  assert.deepEqual(scoutGroup(data, "By prompt"), [
+    { label: "Plan health check", uses: 2, people: 1 },
+    { label: "Typed question", uses: 1, people: 1 },
+  ]);
+  assert.deepEqual(scoutGroup(data, "By type").map((r) => r.label), ["Plan questions", "Live-campaign check"]);
+});
+
+test("the ScoutAI outcome separates failures, proposals, applies and undos, and leaves out failed saves", () => {
+  const data = build([
+    ev("2026-10-02T10:00:00.000Z", "Ana", "scout_chat", { ok: true, detail: "typed", kind: "plan", count: 2, durationMs: 30_000 }),
+    ev("2026-10-02T10:05:00.000Z", "Ana", "scout_chat", { ok: true, detail: "typed", kind: "plan", count: 0, durationMs: 50_000 }),
+    ev("2026-10-02T10:10:00.000Z", "Ana", "scout_chat", { ok: false, detail: "typed", kind: "plan", durationMs: 200_000 }),
+    ev("2026-10-02T10:20:00.000Z", "Ana", "scout_apply", { ok: true, detail: "typed", kind: "applied", count: 2 }),
+    ev("2026-10-02T10:21:00.000Z", "Ana", "scout_apply", { ok: false, detail: "typed", kind: "applied" }),
+    ev("2026-10-02T10:30:00.000Z", "Ana", "scout_apply", { ok: true, detail: "typed", kind: "reverted", count: 2 }),
+  ]);
+  const outcome = Object.fromEntries(scoutGroup(data, "Outcome").map((r) => [r.label, r.uses]));
+  assert.deepEqual(outcome, { "Answered": 2, "Failed or timed out": 1, "Answers proposing changes": 1, "Proposals applied": 1, "Applied changes undone": 1 });
+  assert.deepEqual(scoutGroup(data, "Response time"), [{ label: "Median time to answer", text: "40 s" }], "failed answers do not count toward response time");
 });

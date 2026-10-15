@@ -484,11 +484,13 @@ export async function askScout(
   signal?: AbortSignal,
   /** The library prompt the planner started from, so the server knows what kind of turn it is. */
   promptId?: string,
+  /** "recap" when the plan view asked on the planner's behalf, for the usage log. */
+  from?: "recap",
 ): Promise<ScoutReply> {
   const res = await authFetch(`/api/plans/${encodeURIComponent(id)}/assistant/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, ...(promptId ? { promptId } : {}) }),
+    body: JSON.stringify({ messages, ...(promptId ? { promptId } : {}), ...(from ? { from } : {}) }),
     signal,
   });
   if (!res.ok || !res.body) {
@@ -541,7 +543,8 @@ export async function previewScoutChange(
 /** Applies a ScoutAI change (or reverts one) and saves the plan. */
 export async function applyScoutChange(
   id: string,
-  body: { ops: AssistantOp[]; baseRevision: number; revert?: boolean },
+  /** `from: "scout"` marks the ScoutAI panel's own Apply/Undo for the usage log, with the prompt that led to it. */
+  body: { ops: AssistantOp[]; baseRevision: number; revert?: boolean; from?: "scout"; promptId?: string },
 ): Promise<{ plan: StoredPlan; changes: ProposalChange[]; revertOps: AssistantOp[]; followUps: FollowUp[] }> {
   return request(`/api/plans/${encodeURIComponent(id)}/assistant/apply`, { method: "POST", body: JSON.stringify(body) });
 }

@@ -154,7 +154,7 @@ const peopleUses = (people: number, uses: number) => `${people} ${people === 1 ?
 
 function AdoptionItem({ row, max }: { row: AdoptionRow; max: number }) {
   const [open, setOpen] = React.useState(false);
-  const expandable = (row.breakdown?.length ?? 0) > 0;
+  const expandable = row.uses > 0 && (row.breakdown ?? []).some((group) => group.rows.length > 0);
   const heading = (
     <>
       <span className="flex items-center gap-1 font-medium text-slate-700">
@@ -179,14 +179,21 @@ function AdoptionItem({ row, max }: { row: AdoptionRow; max: number }) {
         <div className="h-full rounded-full bg-brand-teal-400" style={{ width: `${(row.people / max) * 100}%` }} />
       </div>
       {open && row.breakdown ? (
-        <ul className="mt-2 space-y-1 border-l-2 border-slate-100 pl-3">
-          {row.breakdown.map((b) => (
-            <li key={b.label} className="flex items-baseline justify-between gap-3 text-xs">
-              <span className="text-slate-600">{b.label}</span>
-              <span className="shrink-0 whitespace-nowrap tabular-nums text-slate-500">{peopleUses(b.people, b.uses)}</span>
-            </li>
+        <div className="mt-2 space-y-3 border-l-2 border-slate-100 pl-3">
+          {row.breakdown.map((group, i) => (
+            <div key={group.title ?? i}>
+              {group.title ? <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">{group.title}</p> : null}
+              <ul className="space-y-1">
+                {group.rows.map((b) => (
+                  <li key={b.label} className="flex items-baseline justify-between gap-3 text-xs">
+                    <span className="text-slate-600">{b.label}</span>
+                    <span className="shrink-0 whitespace-nowrap tabular-nums text-slate-500">{b.text ?? peopleUses(b.people ?? 0, b.uses ?? 0)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-        </ul>
+        </div>
       ) : null}
     </li>
   );
