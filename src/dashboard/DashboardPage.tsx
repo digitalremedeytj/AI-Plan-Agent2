@@ -258,9 +258,7 @@ function UserFilter({ allUsers, selected, onChange }: { allUsers: string[]; sele
     if (next.length === 0) return; // at least one person; "All users" is the way back to everyone
     onChange(next.length === allUsers.length ? null : next);
   };
-  const label = selected === null
-    ? `All users (${allUsers.length})`
-    : selected.length === 1 ? selected[0] : `${selected.length} of ${allUsers.length} users`;
+  const label = selected === null ? `All users (${allUsers.length})` : `${selected.length} of ${allUsers.length} users`;
   const visible = allUsers.filter((name) => name.toLowerCase().includes(query.trim().toLowerCase()));
 
   return (
@@ -274,8 +272,11 @@ function UserFilter({ allUsers, selected, onChange }: { allUsers: string[]; sele
         }}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className={`inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-semibold ring-1 transition ${selected === null ? "bg-white/10 text-white ring-white/15 hover:bg-white/15" : "bg-white text-brand-purple-900 ring-white"}`}
+        className="relative inline-flex items-center gap-2 rounded-xl bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/15 transition hover:bg-white/15"
       >
+        {selected !== null ? (
+          <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-brand-purple-900" title="Filter active" aria-label="Filter active" />
+        ) : null}
         <UserRound className="h-4 w-4" />
         <span className="max-w-48 truncate">{label}</span>
         <ChevronDown className={`h-3.5 w-3.5 transition ${open ? "rotate-180" : ""}`} />
@@ -322,6 +323,10 @@ function UserFilter({ allUsers, selected, onChange }: { allUsers: string[]; sele
   );
 }
 
+// TJ's account is used for testing, so the dashboard opens without it. It stays in the user filter,
+// one click away, rather than being hidden for good like Settings' excluded names.
+const DEFAULT_UNCHECKED_USERS = ["tj"];
+
 export default function DashboardPage() {
   const initial = React.useMemo(readHash, []);
   const [key] = React.useState<string | null>(initial.key);
@@ -336,6 +341,8 @@ export default function DashboardPage() {
   const [selectedUsers, setSelectedUsers] = React.useState<string[] | null>(null);
   const [shareLinkForSummary, setShareLinkForSummary] = React.useState<string | null>(null);
   const firstLoad = React.useRef(true);
+  // Applied once: after someone picks "All users" the test account must not be taken out again.
+  const defaultFilterApplied = React.useRef(false);
 
   // Take the key out of the visible address once read, so a screenshot or screen-share of the
   // page does not show it. A reload still works for the rest of the browser session.
@@ -357,6 +364,16 @@ export default function DashboardPage() {
     try {
       const range = rangeFromDates(days.fromDay, days.toDay);
       const result = await api.getDashboardData(range, { key: effectiveKey, firstLoad: firstLoad.current, users: selectedUsers });
+      if (!defaultFilterApplied.current) {
+        defaultFilterApplied.current = true;
+        const others = result.data.allUsers.filter((n) => !DEFAULT_UNCHECKED_USERS.includes(n.trim().toLowerCase()));
+        if (selectedUsers === null && others.length > 0 && others.length < result.data.allUsers.length) {
+          // Refetch without the test account instead of showing numbers that include it first.
+          // firstLoad stays set so the visit is still counted once, on the load that is shown.
+          setSelectedUsers(others);
+          return;
+        }
+      }
       if (firstLoad.current) {
         firstLoad.current = false;
         if (result.viewer.via === "link") identifyDashboardViewer();
@@ -532,7 +549,6 @@ export default function DashboardPage() {
             {data ? (
               <p className="text-sm text-brand-teal-100 print:text-slate-600">
                 {formatRange(data.from, data.to)} <span className="text-brand-teal-300 print:text-slate-400">· compared with the {Math.round((Date.parse(data.to) - Date.parse(data.from)) / 86_400_000)} days before</span>
-                {data.selectedUsers ? <span className="text-brand-teal-300 print:text-slate-400"> · {data.selectedUsers.join(", ")} only</span> : null}
               </p>
             ) : null}
             {status === "loading" && data ? <Loader2 className="h-4 w-4 animate-spin text-brand-teal-200" /> : null}
@@ -710,6 +726,9 @@ export default function DashboardPage() {
               </Card>
 
               <Card title="Feature adoption" subtitle="People who used each feature">
+                <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Note: data for this panel doesn't start until 10/15/26
+                </p>
                 {data.adoption.every((a) => a.uses === 0) ? (
                   <Empty>No feature use recorded yet.</Empty>
                 ) : (
