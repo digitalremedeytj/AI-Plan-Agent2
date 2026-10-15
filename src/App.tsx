@@ -4542,6 +4542,16 @@ export default function App() {
                         <span>Feedback</span>
                         <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
                       </a>
+                      <a
+                        href="/dashboard"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setIsHeaderMenuOpen(false)}
+                        className="flex items-center justify-between w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
+                      >
+                        <span>Dashboard</span>
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                      </a>
                       <button
                         type="button"
                         onClick={() => { setIsHeaderMenuOpen(false); setIsSettingsOpen(true); }}
@@ -4573,6 +4583,7 @@ export default function App() {
         onSave={handleSavePlanningSettings}
         readOnly={!canEditSettings}
         saveError={settingsError}
+        userName={session?.name ?? ""}
       />
 
       {/* Main Content Area */}

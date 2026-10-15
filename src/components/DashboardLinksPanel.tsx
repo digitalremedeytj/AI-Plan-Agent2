@@ -3,13 +3,13 @@ import { Check, Copy, ExternalLink, History, Link2, Loader2, Plus, Save, XCircle
 import * as api from "../api/client";
 import type { DashboardConfig, DashboardLink } from "../storage/types";
 
-// Settings -> Usage: the admin side of the leadership dashboard. View-only links (named, never
-// expiring, turned off one at a time), the test accounts every dashboard number leaves out,
-// and the one-time import of history from saved plans.
+// Settings -> Dashboard: view-only links to the executive dashboard (named, never expiring, turned
+// off one at a time), which any planner may create and turn off their own. Admins also get the
+// test accounts every dashboard number leaves out, and the one-time import of history from saved plans.
 
 const fmt = (iso?: string) => (iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "never");
 
-export function DashboardLinksPanel() {
+export function DashboardLinksPanel({ isAdmin, userName }: { isAdmin: boolean; userName: string }) {
   const [links, setLinks] = React.useState<DashboardLink[]>([]);
   const [config, setConfig] = React.useState<DashboardConfig | null>(null);
   const [excludedDraft, setExcludedDraft] = React.useState("");
@@ -96,7 +96,7 @@ export function DashboardLinksPanel() {
         <div>
           <h3 className="flex items-center gap-2 text-base font-bold text-slate-900"><Link2 className="h-4 w-4 text-indigo-600" /> AI Plan Agent Dashboard</h3>
           <p className="mt-0.5 max-w-xl text-xs text-slate-500">
-            Headline numbers and charts for leadership. Share a view-only link: it needs no sign-in, never expires, and can be
+            Headline numbers and charts for executives. Share a view-only link: it needs no sign-in, never expires, and can be
             turned off at any time. It shows people's and advertisers' names.
           </p>
         </div>
@@ -118,7 +118,7 @@ export function DashboardLinksPanel() {
           value={label}
           onChange={(e) => setLabel(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") void create(); }}
-          placeholder="Link name, e.g. Leadership weekly"
+          placeholder="Link name, e.g. Executive weekly"
           maxLength={60}
           className="min-w-56 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none"
         />
@@ -150,14 +150,14 @@ export function DashboardLinksPanel() {
                 <button type="button" onClick={() => void copy(link.token)} className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">
                   {copiedToken === link.token ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {copiedToken === link.token ? "Copied" : "Copy link"}
                 </button>
-                <button
+                {isAdmin || link.createdBy.trim().toLowerCase() === userName.trim().toLowerCase() ? <button
                   type="button"
                   onClick={() => revoke(link)}
                   disabled={busy !== null}
                   className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50"
                 >
                   <XCircle className="h-3.5 w-3.5" /> Turn off
-                </button>
+                </button> : null}
               </div>
             </li>
           ))
@@ -169,7 +169,7 @@ export function DashboardLinksPanel() {
         </p>
       ) : null}
 
-      <div className="mt-5 grid gap-4 md:grid-cols-2">
+      {isAdmin ? <div className="mt-5 grid gap-4 md:grid-cols-2">
         <div>
           <label htmlFor="dashboard-excluded" className="text-xs font-bold text-slate-700">Leave out of the dashboard</label>
           <p className="text-xs text-slate-500">Test or internal accounts, one name per line. Matched however they are capitalised.</p>
@@ -204,7 +204,7 @@ export function DashboardLinksPanel() {
             {busy === "backfill" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <History className="h-3.5 w-3.5" />} Import history from saved plans
           </button>
         </div>
-      </div>
+      </div> : null}
     </div>
   );
 }

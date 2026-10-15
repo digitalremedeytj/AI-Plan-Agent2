@@ -154,3 +154,19 @@ test("no selection means everyone", () => {
   assert.equal(data.kpis.plans.value, 2);
   assert.equal(data.selectedUsers, null);
 });
+
+test("exports gather downloads and AI slides, broken out by type with the most used first", () => {
+  const data = build([
+    ev("2026-10-02T10:00:00.000Z", "Ana", "export", { detail: "pdf" }),
+    ev("2026-10-02T11:00:00.000Z", "Ben", "export", { detail: "pdf" }),
+    ev("2026-10-03T10:00:00.000Z", "Ana", "export", { detail: "ctv_slide_basic" }),
+    ev("2026-10-03T11:00:00.000Z", "Ana", "slide_generate", { detail: "personas" }),
+    ev("2026-10-03T12:00:00.000Z", "Ana", "export", { detail: "some_new_format" }),
+  ]);
+  const exports = data.adoption.find((a) => a.label === "Exports")!;
+  assert.equal(exports.uses, 5);
+  assert.equal(exports.people, 2);
+  assert.deepEqual(exports.breakdown?.[0], { label: "Plan PDF", uses: 2, people: 2 });
+  assert.deepEqual(exports.breakdown?.map((b) => b.label).sort(), ["AI slide: personas", "CTV publisher slide (basic)", "Plan PDF", "some_new_format"]);
+  assert.equal(data.adoption.some((a) => a.action === "slide_generate"), false, "AI slides are no longer a row of their own");
+});

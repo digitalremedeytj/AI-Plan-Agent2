@@ -17,16 +17,55 @@ import { toPersonKey } from "./usageSummary";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BRIEF_REPEAT_WINDOW_MS = DAY_MS;
 
-/** Usage actions shown as feature adoption, in display order. */
-export const ADOPTION_FEATURES: Array<{ action: string; label: string }> = [
-  { action: "export", label: "Exports" },
+/**
+ * Usage actions shown as feature adoption, in display order. A feature may gather several
+ * actions: "Exports" includes the AI-generated slides, which the server logs separately.
+ */
+export const ADOPTION_FEATURES: Array<{ action: string; label: string; actions?: string[] }> = [
+  { action: "export", label: "Exports", actions: ["export", "slide_generate"] },
   { action: "scout_chat", label: "ScoutAI" },
-  { action: "slide_generate", label: "Slide studio" },
   { action: "qa_audit", label: "QA audit" },
   { action: "exec_brief", label: "Executive brief" },
   { action: "segments_generate", label: "Segments" },
   { action: "campaign_recap", label: "Campaign recap" },
 ];
+
+/**
+ * Names for each kind of export, keyed by action and the event's detail (the format the
+ * browser reports, or which slide the server generated). Unlisted details still show, raw.
+ */
+const EXPORT_TYPE_LABELS: Record<string, string> = {
+  "export:pdf": "Plan PDF",
+  "export:markdown": "Plan Markdown",
+  "export:txt": "Plan text file",
+  "export:copy_plan": "Copy plan",
+  "export:copy_sources": "Copy sources",
+  "export:segments_csv": "Segments CSV",
+  "export:recap_pdf": "Campaign recap PDF",
+  "export:recap_slide": "Campaign recap slide",
+  "export:ctv_slide_detailed": "CTV publisher slide (detailed)",
+  "export:ctv_slide_basic": "CTV publisher slide (basic)",
+  "slide_generate:personas": "AI slide: personas",
+  "slide_generate:channels": "AI slide: channels",
+  "slide_generate:segments": "AI slide: segments",
+  "slide_generate:executive_brief": "AI slide: executive brief",
+};
+
+function exportTypeLabel(event: UsageEvent): string {
+  const key = `${event.action}:${event.detail || ""}`;
+  if (EXPORT_TYPE_LABELS[key]) return EXPORT_TYPE_LABELS[key];
+  if (event.action === "slide_generate") return event.detail ? `AI slide: ${event.detail}` : "AI slide";
+  return event.detail || "Other";
+}
+
+export interface AdoptionRow {
+  action: string;
+  label: string;
+  uses: number;
+  people: number;
+  /** Per-type counts, most used first; only on features that gather several kinds of use. */
+  breakdown?: Array<{ label: string; uses: number; people: number }>;
+}
 
 export interface Kpi {
   value: number;
@@ -77,7 +116,7 @@ export interface DashboardData {
   users: DashboardUser[];
   advertisers: Array<{ name: string; plans: number; budget: number }>;
   channels: Array<{ name: string; budget: number; plans: number }>;
-  adoption: Array<{ action: string; label: string; uses: number; people: number }>;
+  adoption: AdoptionRow[];
   /** True when part of the data was imported from saved plans rather than recorded live. */
   includesBackfill: boolean;
 }
@@ -284,9 +323,19 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
     }
   }
 
-  const adoption = ADOPTION_FEATURES.map(({ action, label }) => {
-    const uses = current.filter((e) => e.action === action && e.actor !== SHARE_VIEWER_ACTOR);
-    return { action, label, uses: uses.length, people: new Set(uses.map((e) => toPersonKey(e.actor))).size };
+  const countUses = (uses: UsageEvent[]) => ({ uses: uses.length, people: new Set(uses.map((e) => toPersonKey(e.actor))).size });
+  const adoption = ADOPTION_FEATURES.map(({ action, label, actions = [action] }): AdoptionRow => {
+    const uses = current.filter((e) => actions.includes(e.action) && e.actor !== SHARE_VIEWER_ACTOR);
+    if (actions.length === 1) return { action, label, ...countUses(uses) };
+    const byType = new Map<string, UsageEvent[]>();
+    for (const e of uses) {
+      const type = exportTypeLabel(e);
+      byType.set(type, [...(byType.get(type) ?? []), e]);
+    }
+    const breakdown = [...byType.entries()]
+      .map(([type, events]) => ({ label: type, ...countUses(events) }))
+      .sort((a, b) => b.uses - a.uses || a.label.localeCompare(b.label));
+    return { action, label, ...countUses(uses), breakdown };
   });
 
   return {

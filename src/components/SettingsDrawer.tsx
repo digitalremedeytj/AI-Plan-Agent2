@@ -59,6 +59,7 @@ import { DMA_MARKETS, DMA_SOURCE_LABEL } from "../planning/knowledge/dmaMarkets"
 import { NATIONAL_TV_HOUSEHOLDS, STATE_HOUSEHOLDS, STATE_HOUSEHOLDS_SOURCE_LABEL } from "../planning/knowledge/stateHouseholds";
 import { ScoutPromptsSettings } from "./ScoutPromptsSettings";
 import { UsageReport } from "./UsageReport";
+import { DashboardLinksPanel } from "./DashboardLinksPanel";
 import { planningKnowledgeBase } from "../planning/knowledge/normalizeWorkbook";
 
 interface SettingsDrawerProps {
@@ -73,11 +74,13 @@ interface SettingsDrawerProps {
    * whose changes would be rejected on save.
    */
   readOnly?: boolean;
+  /** The signed-in planner, so they can turn off the dashboard links they created. */
+  userName?: string;
   /** Error text from the last rejected save attempt, surfaced above the footer. */
   saveError?: string | null;
 }
 
-type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "measurement" | "prompts" | "usage";
+type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "measurement" | "prompts" | "dashboard" | "usage";
 
 const MEASUREMENT_AVAILABILITY_OPTIONS: Array<{ id: MeasurementAvailability; label: string; hint: string }> = [
   { id: "recommend", label: "Recommend", hint: "ScoutAI attaches it when the campaign fits." },
@@ -120,7 +123,7 @@ function ShowToggle({ checked, onChange, label }: { checked: boolean; onChange: 
   );
 }
 
-export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave, readOnly = false, saveError = null }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave, readOnly = false, saveError = null, userName = "" }: SettingsDrawerProps) {
   const [draftSettings, setDraftSettings] = React.useState<PlanningSettings>(() => clonePlanningSettings(settings));
   const [draftPublishers, setDraftPublishers] = React.useState<CtvPublisherSetting[]>(() =>
     Array.isArray(ctvPublishers) && ctvPublishers.length > 0
@@ -713,6 +716,8 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     { id: "measurement", label: "Measurement", count: safeMeasurement.length },
     { id: "visibility", label: "Visibility", count: safeOverviewMetrics.length + safeInternalOnly.length },
     { id: "prompts", label: "ScoutAI Prompts" },
+    // Every planner may share the dashboard; only admins see its counting rules.
+    { id: "dashboard", label: "Dashboard" },
     // Names people, so it is shown to the same admins who may edit settings.
     ...(readOnly ? [] : [{ id: "usage" as const, label: "Usage" }]),
   ];
@@ -778,7 +783,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
 
         {/* Tab Content Body */}
         <div className="flex-1 overflow-y-auto px-5 py-5 md:px-7 bg-slate-50/30">
-          {readOnly && (
+          {readOnly && activeTab !== "dashboard" && (
             <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-900">
               <Lock className="mt-0.5 h-4 w-4 shrink-0" />
               <div>
@@ -792,6 +797,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
           )}
           {/* A report, not a setting: outside the fieldset, so its range buttons are never disabled. */}
           {activeTab === "usage" && <UsageReport />}
+          {activeTab === "dashboard" && <DashboardLinksPanel isAdmin={!readOnly} userName={userName} />}
           {/* min-w-0: a fieldset defaults to min-content width, which lets a wide table stretch the drawer instead of scrolling in its own box. */}
           <fieldset disabled={readOnly} className={`min-w-0 ${readOnly ? "opacity-90" : ""}`}>
           
@@ -2656,7 +2662,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
             <button
               type="button"
               disabled={readOnly}
-              hidden={activeTab === "prompts" || activeTab === "usage"}
+              hidden={activeTab === "prompts" || activeTab === "dashboard" || activeTab === "usage"}
               onClick={() => {
                 if (confirm("Reset planning settings to defaults?")) {
                   setDraftSettings(clonePlanningSettings(DEFAULT_PLANNING_SETTINGS));
@@ -2680,7 +2686,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                 type="button"
                 onClick={handleSave}
                 disabled={readOnly}
-                hidden={activeTab === "prompts" || activeTab === "usage"}
+                hidden={activeTab === "prompts" || activeTab === "dashboard" || activeTab === "usage"}
                 title={readOnly ? "Only administrators can change global settings." : undefined}
                 className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-bold text-white hover:bg-indigo-700 shadow-sm sm:flex-none disabled:cursor-not-allowed disabled:bg-slate-300"
               >

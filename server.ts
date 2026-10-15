@@ -16,7 +16,7 @@ import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink } from "./src/storage";
-import { isClientUsageAction, summarizeUsage, type UsageAction } from "./src/usage/usageSummary";
+import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
 import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest } from "./src/server/longRequest";
@@ -398,7 +398,7 @@ const PUBLIC_API_PATHS = new Set([
   // Answers only when the shared username and password are right.
   "/api/auth/name-suggestions",
   "/api/share/plan",
-  // Authorizes itself: an admin session or a dashboard link key.
+  // Authorizes itself: a session or a dashboard link key.
   "/api/dashboard/data",
   "/api/summarize-publisher-insights",
   "/api/personas/generate-slide",
@@ -507,14 +507,15 @@ app.get("/api/usage/summary", requireAdmin, async (req, res) => {
   }
 });
 
-// ---- Leadership dashboard ----
-// One page (/dashboard), two ways in: an admin session, or a view-only link whose key travels
-// in the x-dashboard-key header. The browser keeps the key after "#" in the address, so it
+// ---- Executive dashboard ----
+// One page (/dashboard), two ways in: any signed-in session, or a view-only link whose key
+// travels in the x-dashboard-key header. The browser keeps the key after "#" in the address, so it
 // never reaches request logs or referrers.
 
-async function dashboardAccess(req: express.Request): Promise<{ via: "admin"; name: string } | { via: "link"; link: DashboardLink } | null> {
+async function dashboardAccess(req: express.Request): Promise<{ via: "admin" | "member"; name: string } | { via: "link"; link: DashboardLink } | null> {
   const user = getSession(req);
-  if (user && isAdminRequestAllowed(user)) return { via: "admin", name: user.name };
+  // Every planner may see it; only admins may change what it counts (hours per plan, excluded names).
+  if (user) return { via: isAdminRequestAllowed(user) ? "admin" : "member", name: user.name };
   const key = String(req.get("x-dashboard-key") || "").trim();
   if (!key.startsWith("dash_") || key.length < 30) return null;
   const link = await (await getStorage()).getDashboardLink(key);
@@ -555,7 +556,7 @@ app.get("/api/dashboard/data", async (req, res) => {
     res.json({
       success: true,
       data,
-      viewer: access.via === "admin" ? { via: "admin", name: access.name } : { via: "link", label: access.link.label, sharedBy: access.link.createdBy },
+      viewer: access.via === "link" ? { via: "link", label: access.link.label, sharedBy: access.link.createdBy } : { via: access.via, name: access.name },
     });
   } catch (err: any) {
     console.error("[DASHBOARD] Could not build the dashboard:", err);
@@ -563,7 +564,8 @@ app.get("/api/dashboard/data", async (req, res) => {
   }
 });
 
-app.get("/api/dashboard/links", requireAdmin, async (_req, res) => {
+// Any signed-in planner may list and create view-only links (the /api guard requires a session).
+app.get("/api/dashboard/links", async (_req, res) => {
   try {
     const storage = await getStorage();
     const [links, config] = await Promise.all([storage.listDashboardLinks(), storage.getDashboardConfig()]);
@@ -574,7 +576,7 @@ app.get("/api/dashboard/links", requireAdmin, async (_req, res) => {
   }
 });
 
-app.post("/api/dashboard/links", requireAdmin, async (req, res) => {
+app.post("/api/dashboard/links", async (req, res) => {
   try {
     const label = sanitizeDisplayName(req.body?.label) || "AI Plan Agent Dashboard";
     const link: DashboardLink = {
@@ -593,13 +595,18 @@ app.post("/api/dashboard/links", requireAdmin, async (req, res) => {
   }
 });
 
-// The token travels in the body, not the path, to keep it out of request logs.
-app.post("/api/dashboard/links/revoke", requireAdmin, async (req, res) => {
+// The token travels in the body, not the path, to keep it out of request logs. Planners may turn
+// off links they created; admins may turn off any.
+app.post("/api/dashboard/links/revoke", async (req, res) => {
   try {
     const storage = await getStorage();
     const link = await storage.getDashboardLink(String(req.body?.token || ""));
     if (!link) {
       res.status(404).json({ error: "That dashboard link was not found.", code: "NOT_FOUND" });
+      return;
+    }
+    if (!isAdminRequestAllowed(getSession(req)) && toPersonKey(link.createdBy) !== toPersonKey(actorName(req))) {
+      res.status(403).json({ error: "Only the person who created this link, or an administrator, can turn it off.", code: "FORBIDDEN" });
       return;
     }
     const revoked = { ...link, revoked: true, revokedAt: new Date().toISOString(), revokedBy: actorName(req) };

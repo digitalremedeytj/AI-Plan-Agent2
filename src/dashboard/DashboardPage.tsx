@@ -3,13 +3,13 @@ import {
   Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  ArrowDownRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, Clock, ClipboardCopy, DollarSign, Eye, FileText,
+  ArrowDownRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, ChevronRight, Clock, ClipboardCopy, DollarSign, Eye, FileText,
   Link2, Loader2, Lock, Minus, Printer, Search, Sparkles, UserRound, Users,
 } from "lucide-react";
 import * as api from "../api/client";
 import { ApiError } from "../api/client";
 import { identifyDashboardViewer, identifyUser, track, trackScreen } from "../analytics";
-import type { DashboardData, Kpi } from "../usage/dashboard";
+import type { AdoptionRow, DashboardData, Kpi } from "../usage/dashboard";
 import drIconWhite from "../images/dr-icon-white.png";
 import {
   formatHours, formatMoney, formatNumber, formatRange, isPreset, kpiChange, presetDays, RANGE_PRESETS, rangeFromDates,
@@ -19,7 +19,7 @@ import {
 /**
  * The leadership dashboard at /dashboard.
  *
- * Two ways in: an admin session, or a view-only link (/dashboard#key=dash_...). The key lives
+ * Two ways in: any signed-in session, or a view-only link (/dashboard#key=dash_...). The key lives
  * after "#" so the browser never sends it to the server in the address, and GA never sees it
  * (src/analytics.ts reports a synthetic location). An optional "range" in the same fragment
  * (#key=...&range=7d) picks the opening date range, for links in a weekly email.
@@ -146,6 +146,49 @@ function Funnel({ funnel }: { funnel: DashboardData["funnel"] }) {
       })}
       <p className="text-xs text-slate-500">Follows the plans generated in this period, whenever they were shared or opened.</p>
     </div>
+  );
+}
+
+const usesLabel = (uses: number) => `${formatNumber(uses)} ${uses === 1 ? "use" : "uses"}`;
+const peopleUses = (people: number, uses: number) => `${people} ${people === 1 ? "person" : "people"} · ${usesLabel(uses)}`;
+
+function AdoptionItem({ row, max }: { row: AdoptionRow; max: number }) {
+  const [open, setOpen] = React.useState(false);
+  const expandable = (row.breakdown?.length ?? 0) > 0;
+  const heading = (
+    <>
+      <span className="flex items-center gap-1 font-medium text-slate-700">
+        {expandable ? <ChevronRight className={`h-3.5 w-3.5 text-slate-400 transition-transform ${open ? "rotate-90" : ""}`} /> : null}
+        {row.label}
+      </span>
+      <span className="tabular-nums text-xs text-slate-500">
+        <span className="text-sm font-semibold text-slate-900">{row.people}</span> {row.people === 1 ? "person" : "people"} · {usesLabel(row.uses)}
+      </span>
+    </>
+  );
+  return (
+    <li>
+      {expandable ? (
+        <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="mb-1 flex w-full items-baseline justify-between text-left text-sm">
+          {heading}
+        </button>
+      ) : (
+        <div className="mb-1 flex items-baseline justify-between text-sm">{heading}</div>
+      )}
+      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+        <div className="h-full rounded-full bg-brand-teal-400" style={{ width: `${(row.people / max) * 100}%` }} />
+      </div>
+      {open && row.breakdown ? (
+        <ul className="mt-2 space-y-1 border-l-2 border-slate-100 pl-3">
+          {row.breakdown.map((b) => (
+            <li key={b.label} className="flex items-baseline justify-between gap-3 text-xs">
+              <span className="text-slate-600">{b.label}</span>
+              <span className="shrink-0 whitespace-nowrap tabular-nums text-slate-500">{peopleUses(b.people, b.uses)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </li>
   );
 }
 
@@ -327,9 +370,10 @@ export default function DashboardPage() {
   }, [days, effectiveKey, selectedUsers]);
   React.useEffect(() => { void load(); }, [load]);
 
-  // Signed-in admins: attribute GA hits to them, and offer their newest active link in the summary.
+  // Signed-in planners: attribute GA hits to them, and offer the newest active link in the summary.
+  const signedIn = viewer?.via === "admin" || viewer?.via === "member";
   React.useEffect(() => {
-    if (viewer?.via !== "admin") return;
+    if (!signedIn) return;
     api.fetchSession().then((session) => identifyUser(session)).catch(() => undefined);
     api.listDashboardLinks()
       .then(({ links }) => {
@@ -337,7 +381,7 @@ export default function DashboardPage() {
         setShareLinkForSummary(active ? active.token : null);
       })
       .catch(() => undefined);
-  }, [viewer?.via]);
+  }, [signedIn]);
 
   const choosePreset = (id: Exclude<RangePreset, "custom">) => {
     setPreset(id);
@@ -379,7 +423,7 @@ export default function DashboardPage() {
           <p className="text-sm text-slate-500">
             {effectiveKey
               ? "This dashboard link is not valid or has been turned off. Ask the person who sent it for a new one."
-              : "Sign in to AI Plan Agent with the administrator password to see the dashboard, or open the dashboard link you were sent."}
+              : "Sign in to AI Plan Agent to see the dashboard, or open the dashboard link you were sent."}
           </p>
           {!effectiveKey ? (
             <a href="/" className="inline-block rounded-xl bg-brand-purple-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-purple-700">Go to sign in</a>
@@ -504,6 +548,7 @@ export default function DashboardPage() {
           <>
             <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
               <KpiCard icon={FileText} label="Plans generated" value={formatNumber(kpis!.plans.value)} kpi={kpis!.plans} accent="bg-brand-purple-50 text-brand-purple-500" />
+              <KpiCard icon={Users} label="Active users" value={formatNumber(kpis!.activeUsers.value)} kpi={kpis!.activeUsers} footnote={`of ${formatNumber(data.totalUsers)} total`} accent="bg-brand-teal-50 text-brand-teal-500" />
               <KpiCard
                 icon={DollarSign}
                 label="Media budget planned"
@@ -511,7 +556,6 @@ export default function DashboardPage() {
                 kpi={kpis!.budget}
                 accent="bg-brand-teal-50 text-brand-teal-500"
               />
-              <KpiCard icon={Users} label="Active users" value={formatNumber(kpis!.activeUsers.value)} kpi={kpis!.activeUsers} footnote={`of ${formatNumber(data.totalUsers)} total`} accent="bg-brand-teal-50 text-brand-teal-500" />
               <KpiCard
                 icon={Clock}
                 label="Time saved (est.)"
@@ -520,7 +564,7 @@ export default function DashboardPage() {
                 accent="bg-brand-purple-50 text-brand-purple-500"
                 aside={<HoursEditor value={hours} onChange={changeHours} canSave={isAdmin} />}
               />
-              <KpiCard icon={Building2} label="Advertisers served" value={formatNumber(kpis!.advertisers.value)} kpi={kpis!.advertisers} accent="bg-brand-teal-50 text-brand-teal-500" />
+              <KpiCard icon={Building2} label="Advertisers" value={formatNumber(kpis!.advertisers.value)} kpi={kpis!.advertisers} accent="bg-brand-teal-50 text-brand-teal-500" />
               <KpiCard icon={Link2} label="Share links created" value={formatNumber(kpis!.shareLinks.value)} kpi={kpis!.shareLinks} accent="bg-brand-purple-50 text-brand-purple-500" />
               <KpiCard icon={Eye} label="Client views" value={formatNumber(kpis!.shareViews.value)} kpi={kpis!.shareViews} footnote="shared plans opened" accent="bg-brand-teal-50 text-brand-teal-500" />
               <KpiCard
@@ -664,17 +708,7 @@ export default function DashboardPage() {
                 ) : (
                   <ul className="space-y-3">
                     {data.adoption.map((a) => (
-                      <li key={a.action}>
-                        <div className="mb-1 flex items-baseline justify-between text-sm">
-                          <span className="font-medium text-slate-700">{a.label}</span>
-                          <span className="tabular-nums text-xs text-slate-500">
-                            <span className="text-sm font-semibold text-slate-900">{a.people}</span> {a.people === 1 ? "person" : "people"} · {formatNumber(a.uses)} uses
-                          </span>
-                        </div>
-                        <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                          <div className="h-full rounded-full bg-brand-teal-400" style={{ width: `${(a.people / adoptionMax) * 100}%` }} />
-                        </div>
-                      </li>
+                      <AdoptionItem key={a.action} row={a} max={adoptionMax} />
                     ))}
                   </ul>
                 )}
@@ -690,7 +724,7 @@ export default function DashboardPage() {
                 <p>Includes history imported from saved plans. Share-link dates for that history are approximate, and client views were not recorded before October 2026.</p>
               ) : null}
               <p className="pt-1 text-slate-400">
-                {viewer?.via === "link" ? `View-only link "${viewer.label}" shared by ${viewer.sharedBy}.` : viewer?.via === "admin" ? `Signed in as ${viewer.name}.` : null}
+                {viewer?.via === "link" ? `View-only link "${viewer.label}" shared by ${viewer.sharedBy}.` : viewer ? `Signed in as ${viewer.name}.` : null}
               </p>
             </footer>
           </>

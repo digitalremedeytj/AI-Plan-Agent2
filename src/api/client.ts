@@ -316,9 +316,9 @@ export async function getUsageSummary(days: number): Promise<UsageSummary> {
 
 // --- leadership dashboard -----------------------------------------------------
 
-export type DashboardViewer = { via: "admin"; name: string } | { via: "link"; label: string; sharedBy: string };
+export type DashboardViewer = { via: "admin" | "member"; name: string } | { via: "link"; label: string; sharedBy: string };
 
-/** `key` is a view-only dashboard link's key; without one the admin session is used. */
+/** `key` is a view-only dashboard link's key; without one the signed-in session is used. */
 export async function getDashboardData(range: { from: string; to: string }, options: { key?: string | null; firstLoad?: boolean; users?: string[] | null } = {}): Promise<{ data: DashboardData; viewer: DashboardViewer }> {
   const headers: Record<string, string> = {};
   if (options.key) headers["x-dashboard-key"] = options.key;
