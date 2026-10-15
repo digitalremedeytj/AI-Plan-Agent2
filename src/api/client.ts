@@ -270,6 +270,22 @@ export async function login(input: {
   return body.user;
 }
 
+/**
+ * Names already in use that match what is being typed at sign-in. The server answers only when
+ * the team's username and password are right, so it returns nothing until those are filled in.
+ */
+export async function suggestNames(input: { username: string; password: string; query: string }): Promise<Array<{ name: string; plans: number }>> {
+  try {
+    const body = await request<{ names: Array<{ name: string; plans: number }> }>("/api/auth/name-suggestions", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return Array.isArray(body.names) ? body.names : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function logout(): Promise<void> {
   try {
     await request("/api/auth/logout", { method: "POST" });

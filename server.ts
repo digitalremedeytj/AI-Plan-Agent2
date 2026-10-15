@@ -20,6 +20,7 @@ import { isClientUsageAction, summarizeUsage, type UsageAction } from "./src/usa
 import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest } from "./src/server/longRequest";
+import { knownPeople, suggestNames, type KnownPerson } from "./src/usage/knownPeople";
 import {
   actorName,
   analyticsIdFor,
@@ -394,6 +395,8 @@ const PUBLIC_API_PATHS = new Set([
   "/api/auth/login",
   "/api/auth/me",
   "/api/auth/logout",
+  // Answers only when the shared username and password are right.
+  "/api/auth/name-suggestions",
   "/api/share/plan",
   // Authorizes itself: an admin session or a dashboard link key.
   "/api/dashboard/data",
@@ -2020,6 +2023,46 @@ app.post("/api/ctv-publishers/upload-logo", requireAdmin, upload.single("logo"),
 // API: Login. The app is still behind one shared credential, but each person supplies
 // a display name so plan writes can be attributed. The name is returned to the client
 // inside a signed, HTTP-only cookie - never trusted from a request body.
+function sharedCredentialsMatch(username: unknown, password: unknown): boolean {
+  const configuredUser = (process.env.TEST_USER || "").trim();
+  const configuredPassword = (process.env.TEST_PASSWORD || "").trim();
+  if (!configuredUser || !configuredPassword || typeof username !== "string" || typeof password !== "string") return false;
+  return username.trim() === configuredUser && password.trim() === configuredPassword;
+}
+
+// Names already in use, suggested as someone types theirs at sign-in so the same person does not
+// end up as "TJ" on some plans and "T.J. Pascal" on others. The service is public, so names are
+// only suggested to someone who has already typed the team's username and password; that is why
+// the form asks for those first. Rebuilt at most once a minute: it reads every plan summary and
+// the usage log, and it is called as people type.
+let knownPeopleCache: { at: number; people: KnownPerson[] } | null = null;
+const KNOWN_PEOPLE_TTL_MS = 60_000;
+
+app.post("/api/auth/name-suggestions", async (req, res) => {
+  const { username, password, query } = req.body || {};
+  if (!sharedCredentialsMatch(username, password)) {
+    res.json({ names: [] });
+    return;
+  }
+  try {
+    if (!knownPeopleCache || Date.now() - knownPeopleCache.at > KNOWN_PEOPLE_TTL_MS) {
+      const storage = await getStorage();
+      const [plans, events, config] = await Promise.all([
+        storage.listPlans({ includeArchived: true }),
+        storage.listUsageEvents(""),
+        storage.getDashboardConfig(),
+      ]);
+      knownPeopleCache = { at: Date.now(), people: knownPeople(plans, events.filter((e) => e.action === "login"), config.excludedNames) };
+    }
+    const names = suggestNames(knownPeopleCache.people, typeof query === "string" ? query.slice(0, 60) : "");
+    res.json({ names: names.map(({ name, plans }) => ({ name, plans })) });
+  } catch (err: any) {
+    // Suggestions are a convenience; sign-in still works without them.
+    console.error("[AUTH] Name suggestions failed:", err?.message || err);
+    res.json({ names: [] });
+  }
+});
+
 app.post("/api/auth/login", (req, res) => {
   try {
     const { username, password, displayName, adminPassword } = req.body || {};
@@ -2038,7 +2081,7 @@ app.post("/api/auth/login", (req, res) => {
       return;
     }
 
-    if (!username || !password || username.trim() !== configuredUser || password.trim() !== configuredPassword) {
+    if (!sharedCredentialsMatch(username, password)) {
       res.status(401).json({ success: false, error: "Invalid username or password." });
       return;
     }

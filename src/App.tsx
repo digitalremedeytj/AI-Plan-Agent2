@@ -134,6 +134,8 @@ import {
 import * as api from "./api/client";
 import { ApiError, type PlanSummary, type SessionUser } from "./api/client";
 import { identifyShareViewer, identifyUser, track, trackClientAction, trackScreen } from "./analytics";
+import { DisplayNameField } from "./components/DisplayNameField";
+import { filterSavedPlans, isSearching, MIN_SEARCH_CHARS, planCreators, type SavedOwnerFilter } from "./components/savedPlanFilter";
 import { migrateLocalPlans } from "./api/migrateLocalPlans";
 import { BriefOfRecordCard } from "./components/BriefOfRecordCard";
 import { ExecutiveBriefSection, type ExecutiveBriefStatus } from "./components/ExecutiveBriefSection";
@@ -518,6 +520,8 @@ async function compressAvatarUrl(url?: string, maxDim = 120, quality = 0.65): Pr
   });
 }
 
+const LAST_DISPLAY_NAME_KEY = "apa_last_display_name";
+
 export default function App() {
   // --- AUTHENTICATION -------------------------------------------------------
   // The session lives in a signed, HTTP-only cookie the server issues. The client
@@ -530,7 +534,15 @@ export default function App() {
 
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
-  const [displayNameInput, setDisplayNameInput] = useState("");
+  // Prefilled with the name last used in this browser, so people keep signing in as the same
+  // person. A convenience only: the server never reads it.
+  const [displayNameInput, setDisplayNameInput] = useState(() => {
+    try {
+      return localStorage.getItem(LAST_DISPLAY_NAME_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
   const [adminPasswordInput, setAdminPasswordInput] = useState("");
   const [showAdminField, setShowAdminField] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -568,6 +580,11 @@ export default function App() {
         adminPassword: adminPasswordInput || undefined,
       });
       setSession(user);
+      try {
+        localStorage.setItem(LAST_DISPLAY_NAME_KEY, user.name);
+      } catch {
+        // Storage may be blocked; the name is only a prefill.
+      }
       track("login", { method: user.isAdmin ? "admin" : "password" });
       setLoginError(null);
       setPasswordInput("");
@@ -1575,49 +1592,22 @@ export default function App() {
 
   // Saved plans search and filter state
   const [savedSearchQuery, setSavedSearchQuery] = useState("");
-  const [savedUserFilter, setSavedUserFilter] = useState<string>("ALL");
+  // Opens on the signed-in person's own plans; a search looks across everyone's (savedPlanFilter.ts).
+  const [savedOwnerFilter, setSavedOwnerFilter] = useState<SavedOwnerFilter>("MINE");
+  const savedSearchActive = isSearching(savedSearchQuery);
 
-  const savedPlanUsers = React.useMemo(() => {
-    const userSet = new Set<string>();
-    planSummaries.forEach((p) => {
-      if (p.createdBy?.trim()) userSet.add(p.createdBy.trim());
-      if (p.updatedBy?.trim()) userSet.add(p.updatedBy.trim());
-    });
-    return Array.from(userSet).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-  }, [planSummaries]);
+  const savedPlanUsers = React.useMemo(() => planCreators(planSummaries), [planSummaries]);
 
-  const filteredPlanSummaries = React.useMemo(() => {
-    let result = planSummaries;
-
-    // Filter by user's name
-    if (savedUserFilter && savedUserFilter !== "ALL") {
-      const targetUser = savedUserFilter.toLowerCase();
-      result = result.filter(
-        (p) =>
-          p.createdBy?.trim().toLowerCase() === targetUser ||
-          p.updatedBy?.trim().toLowerCase() === targetUser
-      );
-    }
-
-    // Search query filter: once more than 2 characters start filtering by what is entered
-    const trimmedQuery = savedSearchQuery.trim().toLowerCase();
-    if (trimmedQuery.length > 2) {
-      result = result.filter((p) => {
-        return Boolean(
-          p.title?.toLowerCase().includes(trimmedQuery) ||
-          p.audienceDescription?.toLowerCase().includes(trimmedQuery) ||
-          p.advertiserName?.toLowerCase().includes(trimmedQuery) ||
-          p.geography?.toLowerCase().includes(trimmedQuery) ||
-          p.campaignFocus?.toLowerCase().includes(trimmedQuery) ||
-          p.url?.toLowerCase().includes(trimmedQuery) ||
-          p.createdBy?.toLowerCase().includes(trimmedQuery) ||
-          p.updatedBy?.toLowerCase().includes(trimmedQuery)
-        );
-      });
-    }
-
-    return result;
-  }, [planSummaries, savedUserFilter, savedSearchQuery]);
+  const filteredPlanSummaries = React.useMemo(
+    () => filterSavedPlans(planSummaries, savedOwnerFilter, session?.name ?? null, savedSearchQuery),
+    [planSummaries, savedOwnerFilter, session?.name, savedSearchQuery],
+  );
+  const ownerFilterValue = savedOwnerFilter === "MINE" || savedOwnerFilter === "ALL" ? savedOwnerFilter : `person:${savedOwnerFilter.person}`;
+  const ownerFilterLabel = savedOwnerFilter === "MINE" ? "your plans" : savedOwnerFilter === "ALL" ? "all plans" : `${savedOwnerFilter.person}'s plans`;
+  const resetSavedFilters = () => {
+    setSavedSearchQuery("");
+    setSavedOwnerFilter("MINE");
+  };
 
   // Share Token & Public View State
   const [shareToken, setShareToken] = useState<string | null>(() => {
@@ -4273,29 +4263,6 @@ export default function App() {
             )}
 
             <div className="space-y-1.5">
-              <label htmlFor="displayName" className="text-xs font-bold text-slate-700 block">
-                Your Name
-              </label>
-              <div className="relative">
-                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 pointer-events-none text-slate-400">
-                  <UserCheck className="w-4 h-4" />
-                </span>
-                <input
-                  id="displayName"
-                  type="text"
-                  required
-                  value={displayNameInput}
-                  onChange={(e) => setDisplayNameInput(e.target.value)}
-                  placeholder="e.g. TJ Pascal"
-                  className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-indigo-600/10 focus:border-indigo-600 transition-all text-slate-800"
-                />
-              </div>
-              <p className="text-[10px] text-slate-400 leading-snug">
-                Shown on the plans you save, so the team knows who created them.
-              </p>
-            </div>
-
-            <div className="space-y-1.5">
               <label htmlFor="username" className="text-xs font-bold text-slate-700 block">
                 Username
               </label>
@@ -4345,6 +4312,13 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            <DisplayNameField
+              value={displayNameInput}
+              onChange={setDisplayNameInput}
+              username={usernameInput}
+              password={passwordInput}
+            />
 
             {showAdminField ? (
               <div className="space-y-1.5">
@@ -5759,14 +5733,19 @@ export default function App() {
                       <div className="relative flex-1">
                         <User className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                         <select
-                          value={savedUserFilter}
-                          onChange={(e) => setSavedUserFilter(e.target.value)}
-                          className="w-full text-xs pl-7 pr-6 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-hidden focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500/20 transition-all appearance-none cursor-pointer"
-                          title="Filter plans by creator or editor"
+                          value={ownerFilterValue}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setSavedOwnerFilter(v === "MINE" || v === "ALL" ? v : { person: v.slice("person:".length) });
+                          }}
+                          disabled={savedSearchActive}
+                          className="w-full text-xs pl-7 pr-6 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-hidden focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500/20 transition-all appearance-none cursor-pointer disabled:cursor-default disabled:opacity-50"
+                          title={savedSearchActive ? "Searching everyone's plans" : "Show plans by who created them"}
                         >
-                          <option value="ALL">All Users</option>
+                          <option value="MINE">My plans</option>
+                          <option value="ALL">All users</option>
                           {savedPlanUsers.map((userName) => (
-                            <option key={userName} value={userName}>
+                            <option key={userName} value={`person:${userName}`}>
                               {userName}
                             </option>
                           ))}
@@ -5774,13 +5753,10 @@ export default function App() {
                         <ChevronDown className="w-3 h-3 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
 
-                      {(savedUserFilter !== "ALL" || savedSearchQuery.trim().length > 2) && (
+                      {(savedOwnerFilter !== "MINE" || savedSearchActive) && (
                         <button
                           type="button"
-                          onClick={() => {
-                            setSavedSearchQuery("");
-                            setSavedUserFilter("ALL");
-                          }}
+                          onClick={resetSavedFilters}
                           className="text-[10px] text-slate-500 hover:text-indigo-600 font-medium px-2 py-1.5 rounded-lg bg-slate-100 hover:bg-indigo-50 transition-colors shrink-0 cursor-pointer"
                           title="Reset all filters"
                         >
@@ -5793,10 +5769,11 @@ export default function App() {
                     <div className="flex items-center justify-between text-[10px] text-slate-400 px-0.5">
                       <span>
                         {filteredPlanSummaries.length} of {planSummaries.length} {planSummaries.length === 1 ? "plan" : "plans"}
+                        {savedSearchActive ? " · searching all users" : ""}
                       </span>
-                      {savedSearchQuery.trim().length > 0 && savedSearchQuery.trim().length <= 2 && (
+                      {savedSearchQuery.trim().length > 0 && !savedSearchActive && (
                         <span className="text-amber-500/90 text-[10px] font-medium">
-                          Type {3 - savedSearchQuery.trim().length} more char{savedSearchQuery.trim().length === 2 ? "" : "s"} to search
+                          Type {MIN_SEARCH_CHARS - savedSearchQuery.trim().length} more char{MIN_SEARCH_CHARS - savedSearchQuery.trim().length === 1 ? "" : "s"} to search all plans
                         </span>
                       )}
                     </div>
@@ -5807,17 +5784,17 @@ export default function App() {
                       <Search className="w-6 h-6 text-slate-300 mx-auto mb-1.5" />
                       <p className="text-xs font-semibold text-slate-600">No matching plans</p>
                       <p className="text-[10px] text-slate-400 mt-0.5 max-w-[200px] mx-auto leading-normal">
-                        {savedUserFilter !== "ALL" && savedSearchQuery.trim().length > 2
-                          ? `No plans matching "${savedSearchQuery.trim()}" for user "${savedUserFilter}".`
-                          : savedUserFilter !== "ALL"
-                          ? `No plans found for user "${savedUserFilter}".`
-                          : `No plans matching "${savedSearchQuery.trim()}".`}
+                        {savedSearchActive
+                          ? `No plans by anyone match "${savedSearchQuery.trim()}".`
+                          : savedOwnerFilter === "MINE"
+                          ? "You haven't created any plans yet. Pick All users to see the team's, or search."
+                          : `No ${ownerFilterLabel} yet.`}
                       </p>
                       <button
                         type="button"
                         onClick={() => {
                           setSavedSearchQuery("");
-                          setSavedUserFilter("ALL");
+                          setSavedOwnerFilter(savedOwnerFilter === "MINE" ? "ALL" : "MINE");
                         }}
                         className="mt-2.5 inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 cursor-pointer"
                       >
@@ -5971,10 +5948,13 @@ export default function App() {
 
                       {/* Saved Timestamp */}
                       <div className="mt-2 pt-2 border-t border-slate-50 flex items-center justify-between gap-2 text-[8px] text-slate-400 font-mono">
-                        <span className="flex items-center gap-1 truncate" title={`Created by ${saved.createdBy} - last saved by ${saved.updatedBy}`}>
+                        <span
+                          className="flex items-center gap-1 truncate"
+                          title={`Created by ${saved.createdBy} on ${new Date(saved.createdAt).toLocaleString()}. Last saved by ${saved.updatedBy} on ${new Date(saved.updatedAt).toLocaleString()}.`}
+                        >
                           <Calendar className="w-2.5 h-2.5 shrink-0" />
                           <span className="truncate">
-                            {new Date(saved.updatedAt).toLocaleString()} &middot; {saved.updatedBy}
+                            {saved.createdBy} &middot; {new Date(saved.updatedAt).toLocaleString()}
                           </span>
                         </span>
                         {loadingPlanId === saved.id ? (
