@@ -3,7 +3,8 @@ import { ThoughtHeadlines, streamDeadline } from "./thoughtProgress";
 
 /**
  * Gemini 3.8 calls through the Interactions API. Every Gemini text call in the app goes
- * through this module; only image generation (a different model) still uses `generateContent`.
+ * through this module. Image generation (a different model) and the 2.5 search-grounding
+ * fallback still use `generateContent`.
  *
  * 3.8 differs from 2.5: `generateContent` is legacy, `temperature`/`top_p`/`top_k` are removed,
  * and `thinking_level` replaces `thinking_budget` (`minimal` is rejected). See
@@ -11,6 +12,75 @@ import { ThoughtHeadlines, streamDeadline } from "./thoughtProgress";
  */
 
 export const GEMINI_FLASH_MODEL = "gemini-3.8-flash";
+
+/**
+ * Where a grounded call goes when 3.8's search grounding is out of quota. Google meters search
+ * grounding per model generation: "Gemini 3 and newer" has a 1.5K/day cap, counted per search
+ * query, which a busy day of research dossiers exhausted (2026-10-15). 2.5's grounding is a
+ * separate, larger bucket (5K/day, counted per prompt), so a dossier that cannot search on 3.8
+ * can still search on 2.5 instead of shipping the topic empty. 2.5 is on the legacy
+ * `generateContent` API.
+ */
+export const GEMINI_GROUNDING_FALLBACK_MODEL = "gemini-2.5-flash";
+
+/** Thinking budgets for the 2.5 fallback, which takes tokens rather than 3.8's levels. */
+const FALLBACK_THINKING_BUDGET: Record<GeminiThinkingLevel, number> = { low: 1024, medium: 4096, high: 8192 };
+
+/** A quota (429 / RESOURCE_EXHAUSTED) error from either the Interactions or the legacy API. */
+export function isQuotaError(err: unknown): boolean {
+  const e = err as { status?: unknown; statusCode?: unknown; message?: unknown } | null;
+  if (!e || typeof e !== "object") return false;
+  if (e.status === 429 || e.statusCode === 429) return true;
+  const message = typeof e.message === "string" ? e.message : "";
+  return /^429\b|RESOURCE_EXHAUSTED/.test(message);
+}
+
+/**
+ * Which quota a 429 hit, from the QuotaFailure detail Google attaches, e.g.
+ * "generativelanguage.googleapis.com/search_grounding_request_count (model gemini-3.8-flash)".
+ * The message alone ("You exceeded your current quota") does not say, and the per-model,
+ * per-tool and per-day buckets call for different fixes. Empty when no detail came back.
+ */
+export function describeQuota(err: unknown): string {
+  const e = err as { error?: unknown; body?: unknown; message?: unknown } | null;
+  if (!e || typeof e !== "object") return "";
+  const parsed: unknown[] = [e.error];
+  for (const text of [e.body, e.message]) {
+    if (typeof text !== "string") continue;
+    const start = text.indexOf("{");
+    if (start < 0) continue;
+    try { parsed.push(JSON.parse(text.slice(start))); } catch { /* not JSON; nothing to read */ }
+  }
+  const found: string[] = [];
+  let retry = "";
+  const walk = (node: unknown, depth: number) => {
+    if (!node || typeof node !== "object" || depth > 6) return;
+    if (Array.isArray(node)) { for (const item of node) walk(item, depth + 1); return; }
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.retryDelay === "string" && !retry) retry = obj.retryDelay;
+    if (Array.isArray(obj.violations)) {
+      for (const v of obj.violations as Array<Record<string, unknown>>) {
+        const dims = (v?.quotaDimensions ?? {}) as Record<string, unknown>;
+        const metric = String(v?.quotaMetric || v?.quotaId || "").trim();
+        if (!metric) continue;
+        const extra = [dims.model && `model ${dims.model}`, v?.quotaValue && `limit ${v.quotaValue}`].filter(Boolean).join(", ");
+        const line = extra ? `${metric} (${extra})` : metric;
+        if (!found.includes(line)) found.push(line);
+      }
+    }
+    for (const value of Object.values(obj)) walk(value, depth + 1);
+  };
+  for (const node of parsed) walk(node, 0);
+  if (!found.length) return "";
+  return `${found.join("; ")}${retry ? `; retry after ${retry}` : ""}`;
+}
+
+/** One log line per 429, naming the quota, so the next one is diagnosed from the logs alone. */
+function logQuota(err: unknown, model: string, what: string): void {
+  if (!isQuotaError(err)) return;
+  const detail = describeQuota(err);
+  console.warn(`[GEMINI QUOTA] ${model} ${what} hit a quota limit: ${detail || "no quota detail in the response"}.`);
+}
 
 export type GeminiThinkingLevel = "low" | "medium" | "high";
 
@@ -56,8 +126,9 @@ async function createInteraction(
   request: InteractionRequest,
   extra: Record<string, unknown>,
 ): Promise<InteractionLike> {
+  const params = interactionParams(request, extra);
   const interaction = await client.interactions.create(
-    interactionParams(request, extra) as any,
+    params as any,
     // Retries are the caller's decision: a silent SDK retry would double a timeout budget. A
     // fetch signal takes precedence over the SDK's own timeout, so the timeout rides on it too.
     {
@@ -65,7 +136,10 @@ async function createInteraction(
       maxRetries: 0,
       ...(request.signal ? { fetchOptions: { signal: AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs)]) } } : {}),
     },
-  );
+  ).catch((err: unknown) => {
+    logQuota(err, String(params.model), extra.tools ? "call with tools" : "call");
+    throw err;
+  });
   return interaction as InteractionLike;
 }
 
@@ -115,6 +189,7 @@ async function streamInteractionText(
   } catch (err) {
     // The SDK reports an abort generically; the deadline's own error says what happened.
     if (deadline.signal.aborted) throw deadline.signal.reason;
+    logQuota(err, request.model ?? GEMINI_FLASH_MODEL, "streamed call");
     throw err;
   } finally {
     deadline.clear();
@@ -207,12 +282,68 @@ export function extractUrlCitations(interaction: InteractionLike): UrlCitation[]
   return [...byUrl.values()];
 }
 
+/** Below this, a 2.5 retry would only be cut off by the caller's deadline. */
+const MIN_FALLBACK_MS = 10_000;
+
+/**
+ * A search-grounded answer on 3.8, or on 2.5 when 3.8's grounding quota is spent (see
+ * GEMINI_GROUNDING_FALLBACK_MODEL). `model` says which one answered. Any other failure, and a
+ * 429 from 2.5 as well, is thrown as is.
+ */
 export async function generateGroundedText(
   client: GoogleGenAI,
   request: Omit<TextRequest, "tools">,
-): Promise<{ text: string; sources: UrlCitation[] }> {
-  const { text, interaction } = await generateText(client, { ...request, tools: [{ type: "google_search" }] });
-  return { text, sources: extractUrlCitations(interaction) };
+): Promise<{ text: string; sources: UrlCitation[]; model: string }> {
+  const startedAt = Date.now();
+  try {
+    const { text, interaction } = await generateText(client, { ...request, tools: [{ type: "google_search" }] });
+    return { text, sources: extractUrlCitations(interaction), model: request.model ?? GEMINI_FLASH_MODEL };
+  } catch (err) {
+    const remainingMs = request.timeoutMs - (Date.now() - startedAt);
+    if (!isQuotaError(err) || request.signal?.aborted || remainingMs < MIN_FALLBACK_MS) throw err;
+    console.warn(`[GEMINI GROUNDING] Retrying on ${GEMINI_GROUNDING_FALLBACK_MODEL} search grounding after a 429 from ${request.model ?? GEMINI_FLASH_MODEL}.`);
+    return generateLegacyGroundedText(client, { ...request, timeoutMs: remainingMs });
+  }
+}
+
+interface LegacyGroundingResponse {
+  text?: string;
+  candidates?: Array<{ groundingMetadata?: { groundingChunks?: Array<{ web?: { uri?: string; title?: string } }> } }>;
+}
+
+async function generateLegacyGroundedText(
+  client: GoogleGenAI,
+  request: Omit<TextRequest, "tools">,
+): Promise<{ text: string; sources: UrlCitation[]; model: string }> {
+  const model = GEMINI_GROUNDING_FALLBACK_MODEL;
+  const signal = request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs)]) : AbortSignal.timeout(request.timeoutMs);
+  let response: LegacyGroundingResponse;
+  try {
+    response = await client.models.generateContent({
+      model,
+      contents: request.input,
+      config: {
+        ...(request.systemInstruction ? { systemInstruction: request.systemInstruction } : {}),
+        tools: [{ googleSearch: {} }],
+        thinkingConfig: { thinkingBudget: FALLBACK_THINKING_BUDGET[request.thinkingLevel] },
+        abortSignal: signal,
+        httpOptions: { timeout: request.timeoutMs },
+      },
+    }) as LegacyGroundingResponse;
+  } catch (err) {
+    logQuota(err, model, "grounded fallback");
+    throw err;
+  }
+  const text = response.text ?? "";
+  if (!text) throw new Error(`${model} returned no output text.`);
+  // The same one-entry-per-URL shape extractUrlCitations gives for 3.8, so callers see no difference.
+  const byUrl = new Map<string, UrlCitation>();
+  for (const chunk of response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? []) {
+    const uri = chunk.web?.uri?.trim();
+    if (!uri || byUrl.has(uri)) continue;
+    byUrl.set(uri, { title: chunk.web?.title?.trim() || uri, uri });
+  }
+  return { text, sources: [...byUrl.values()], model };
 }
 
 const SCHEMA_TYPES = new Set(["string", "number", "integer", "boolean", "object", "array"]);

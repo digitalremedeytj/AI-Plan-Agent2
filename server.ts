@@ -175,6 +175,7 @@ import {
 import {
   generateStructuredJson,
   generateGroundedText,
+  isQuotaError,
   generateStructuredJsonWithFallback,
   generateText,
   GEMINI_FLASH_MODEL,
@@ -5019,7 +5020,7 @@ INSTRUCTIONS:
             timeoutMs,
             signal,
           }),
-          { backupAfterMs: RESEARCH_BACKUP_AFTER_MS, totalMs: TIMEOUT_PARALLEL_RESEARCH_MS },
+          { backupAfterMs: RESEARCH_BACKUP_AFTER_MS, totalMs: TIMEOUT_PARALLEL_RESEARCH_MS, backupOnFailure: (err) => !isQuotaError(err) },
           (why) => {
             console.log(`[RESEARCH] ${label}: ${why === "slow" ? `no answer after ${RESEARCH_BACKUP_AFTER_MS / 1000}s` : "first request failed"}; starting a ${RESEARCH_BACKUP_THINKING_LEVEL}-thinking backup.`);
             sendEvent("status", { message: `${label} research is ${why === "slow" ? "running slow" : "having trouble"}; starting a faster backup search alongside it...` });
@@ -5029,7 +5030,10 @@ INSTRUCTIONS:
         const text = research.text || `[Failed to retrieve detailed ${label} research text]`;
         const sources = research.sources;
 
-        console.log(`Completed parallel research query for: ${label} via the ${winner} request in ${Math.round((Date.now() - startedAt) / 1000)}s. Found ${sources.length} sources.`);
+        console.log(`Completed parallel research query for: ${label} via the ${winner} request on ${research.model} in ${Math.round((Date.now() - startedAt) / 1000)}s. Found ${sources.length} sources.`);
+        if (research.model !== GEMINI_FLASH_MODEL) {
+          pushAlert(generationAlerts, { section: "research", severity: "flagged", message: `The ${label} research ran on ${research.model} because today's Gemini 3 search-grounding quota is used up. It is usually less thorough; check that topic's figures before presenting.` });
+        }
         if (winner === "backup") {
           pushAlert(generationAlerts, { section: "research", severity: "flagged", message: `The ${label} research was slow, so it came from the faster backup search (${RESEARCH_BACKUP_THINKING_LEVEL} thinking), which usually finds fewer sources. Check that topic's figures before presenting.` });
         }

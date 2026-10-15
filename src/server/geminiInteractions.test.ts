@@ -6,6 +6,8 @@ import {
   generateGroundedText,
   generateStructuredJsonWithFallback,
   generateText,
+  describeQuota,
+  isQuotaError,
   toGeminiJsonSchema,
   type InteractionLike,
 } from "./geminiInteractions";
@@ -196,4 +198,82 @@ test("when every attempt fails, the error carries each attempt's level and outco
       return true;
     },
   );
+});
+
+/** A 429 shaped like the SDK's RateLimitError: status plus the parsed Google error body. */
+function quotaError(model = "gemini-3.8-flash"): Error {
+  const err = new Error("429 You exceeded your current quota, please check your plan and billing details.") as any;
+  err.status = 429;
+  err.error = {
+    code: 429,
+    status: "RESOURCE_EXHAUSTED",
+    details: [
+      {
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+        violations: [{ quotaMetric: "generativelanguage.googleapis.com/search_grounding_request_count", quotaId: "SearchGroundingRequestsPerDay", quotaDimensions: { model }, quotaValue: "1500" }],
+      },
+      { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "3600s" },
+    ],
+  };
+  return err;
+}
+
+/** An Interactions stub that also answers the legacy generateContent call the 2.5 fallback makes. */
+const stubWithLegacy = (results: Array<InteractionLike | Error>, legacy: unknown | Error, legacyCalls: any[] = []) => {
+  const client = stubClient(results) as any;
+  client.models = {
+    generateContent: async (params: any) => {
+      legacyCalls.push(params);
+      if (legacy instanceof Error) throw legacy;
+      return legacy;
+    },
+  };
+  return client as GoogleGenAI;
+};
+
+test("a 429 names the quota it hit, so the logs say which limit to raise", () => {
+  assert.equal(isQuotaError(quotaError()), true);
+  assert.equal(isQuotaError(new Error("Request timed out.")), false);
+  assert.equal(
+    describeQuota(quotaError()),
+    "generativelanguage.googleapis.com/search_grounding_request_count (model gemini-3.8-flash, limit 1500); retry after 3600s",
+  );
+  // The legacy API only puts the body in the message.
+  const legacy = new Error(`got status: 429 . ${JSON.stringify({ error: quotaError().error })}`);
+  assert.equal(isQuotaError(legacy), true);
+  assert.match(describeQuota(legacy), /search_grounding_request_count/);
+  assert.equal(describeQuota(new Error("429 quota")), "");
+});
+
+test("when 3.8's search grounding is out of quota, the research still runs on 2.5 grounding", async () => {
+  const legacyCalls: any[] = [];
+  const client = stubWithLegacy([quotaError()], {
+    text: "Spain won Euro 2024.",
+    candidates: [{ groundingMetadata: { groundingChunks: [
+      { web: { uri: "https://www.uefa.com/euro2024", title: "uefa.com" } },
+      { web: { uri: "https://www.uefa.com/euro2024", title: "uefa.com" } },
+      { retrievedContext: {} },
+    ] } }],
+  }, legacyCalls);
+
+  const result = await generateGroundedText(client, { systemInstruction: "You are a research analyst.", input: "Who won Euro 2024?", thinkingLevel: "high", timeoutMs: 90000 });
+
+  assert.equal(result.model, "gemini-2.5-flash");
+  assert.equal(result.text, "Spain won Euro 2024.");
+  assert.deepEqual(result.sources, [{ title: "uefa.com", uri: "https://www.uefa.com/euro2024" }]);
+  assert.deepEqual(legacyCalls[0].config.tools, [{ googleSearch: {} }]);
+  assert.equal(legacyCalls[0].config.systemInstruction, "You are a research analyst.");
+  assert.equal(legacyCalls[0].config.thinkingConfig.thinkingBudget, 8192);
+});
+
+test("a grounded call that fails for any reason other than quota is not retried on 2.5", async () => {
+  const legacyCalls: any[] = [];
+  const client = stubWithLegacy([new Error("Request timed out.")], { text: "unused" }, legacyCalls);
+  await assert.rejects(generateGroundedText(client, { input: "q", thinkingLevel: "high", timeoutMs: 90000 }), /timed out/);
+  assert.equal(legacyCalls.length, 0);
+});
+
+test("if 2.5 grounding is out of quota too, that 429 is what the caller sees", async () => {
+  const client = stubWithLegacy([quotaError()], quotaError("gemini-2.5-flash"));
+  await assert.rejects(generateGroundedText(client, { input: "q", thinkingLevel: "high", timeoutMs: 90000 }), (err) => isQuotaError(err) && /gemini-2\.5-flash/.test(describeQuota(err)));
 });

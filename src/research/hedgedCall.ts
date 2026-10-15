@@ -12,6 +12,11 @@ export interface HedgeOptions {
   backupAfterMs: number;
   /** Nothing runs past this, counted from the start. */
   totalMs: number;
+  /**
+   * Whether a primary that failed early is worth a backup. Defaults to yes. A quota error is not:
+   * the backup would draw on the same exhausted quota and fail the same way, using it up faster.
+   */
+  backupOnFailure?: (error: unknown) => boolean;
 }
 
 export interface HedgeResult<T> {
@@ -28,7 +33,7 @@ export interface HedgeResult<T> {
  */
 export function hedge<T>(
   run: (attempt: HedgeAttempt, signal: AbortSignal, timeoutMs: number) => Promise<T>,
-  { backupAfterMs, totalMs }: HedgeOptions,
+  { backupAfterMs, totalMs, backupOnFailure }: HedgeOptions,
   onBackup?: (reason: "slow" | "failed") => void,
 ): Promise<HedgeResult<T>> {
   return new Promise((resolve, reject) => {
@@ -60,7 +65,7 @@ export function hedge<T>(
           errors[attempt] = error;
           if (attempt === "primary" && !backupStarted) {
             // A quick failure (a 5xx, a dropped connection) goes straight to the backup.
-            if (startBackup("failed")) return;
+            if ((backupOnFailure?.(error) ?? true) && startBackup("failed")) return;
             finish({ error });
           } else if ((attempt === "primary" ? errors.backup : errors.primary) !== undefined) {
             // Both have failed.

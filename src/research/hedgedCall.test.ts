@@ -47,6 +47,17 @@ test("a primary that fails quickly goes straight to the backup", async () => {
   assert.deepEqual(reasons, ["failed"]);
 });
 
+test("a failure the caller marks as not worth retrying gets no backup", async () => {
+  const log: string[] = [];
+  const reasons: string[] = [];
+  await assert.rejects(
+    hedge(fake({ primary: { ms: 10, fail: true }, backup: { ms: 10 } }, log), { backupAfterMs: 1000, totalMs: 3000, backupOnFailure: () => false }, (why) => reasons.push(why)),
+    /primary failed/,
+  );
+  assert.deepEqual(reasons, []);
+  assert.ok(!log.some((l) => l.startsWith("backup")), log.join("; "));
+});
+
 test("when both fail, the primary's error is reported", async () => {
   const log: string[] = [];
   await assert.rejects(hedge(fake({ primary: { ms: 40, fail: true }, backup: { ms: 10, fail: true } }, log), { backupAfterMs: 20, totalMs: 300 }), /primary failed/);
