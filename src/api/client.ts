@@ -167,15 +167,73 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   } catch {
     // A non-JSON body (proxy error page, empty 204) is fine; status still drives control flow.
   }
+  return settle<T>(path, res.status, body);
+}
 
-  if (res.status === 401) {
+function settle<T>(path: string, status: number, body: any): T {
+  if (status === 401) {
     setAuthToken(null);
   }
 
-  if (!res.ok) {
-    throw new ApiError(res.status, body?.error || `Request to ${path} failed (${res.status}).`, body);
+  if (status < 200 || status >= 300) {
+    throw new ApiError(status, body?.error || `Request to ${path} failed (${status}).`, body);
   }
   return body as T;
+}
+
+/** The last line of a held-open response: the route's real status and body. */
+export function readHeldOpenResult(text: string): { status: number; body: any } | null {
+  for (const line of text.split("\n").reverse()) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event?.type === "result" && typeof event.status === "number") return { status: event.status, body: event.body };
+    } catch {
+      // A line cut short by a dropped connection; keep looking.
+    }
+  }
+  return null;
+}
+
+/**
+ * For requests that can take minutes (a campaign recap, a QA audit). The production domain is
+ * behind Cloudflare, which fails a request with a 524 when the server sends nothing for 100
+ * seconds. Asking for application/x-ndjson makes the server hold the response open with a
+ * heartbeat line every 15 seconds and send the real status and body last (holdOpenForLongRequest
+ * in server.ts). A server that does not do this answers with plain JSON, handled as before.
+ */
+async function longRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = getAuthHeaders(init.headers);
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  headers.set("Accept", "application/x-ndjson, application/json");
+
+  const res = await fetch(path, { credentials: "include", ...init, headers });
+  if (!(res.headers.get("Content-Type") || "").includes("application/x-ndjson")) {
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      // As in request(): the status still decides.
+    }
+    return settle<T>(path, res.status, body);
+  }
+
+  let text = "";
+  try {
+    text = await res.text();
+  } catch {
+    // The connection dropped mid-response; handled below as a missing result.
+  }
+  const result = readHeldOpenResult(text);
+  if (!result) {
+    throw new ApiError(
+      502,
+      "The connection closed before the server finished. The work may still have completed: reload the plan before trying again.",
+    );
+  }
+  return settle<T>(path, result.status, result.body);
 }
 
 // --- session ---------------------------------------------------------------
@@ -348,7 +406,7 @@ export interface PlanAuditResponse {
 
 /** Audits the saved plan and proposes fixes. Changes nothing. Takes a few minutes. */
 export async function auditPlan(id: string): Promise<PlanAuditResponse> {
-  return request<PlanAuditResponse>(`/api/plans/${encodeURIComponent(id)}/audit`, { method: "POST" });
+  return longRequest<PlanAuditResponse>(`/api/plans/${encodeURIComponent(id)}/audit`, { method: "POST" });
 }
 
 /** Applies the approved fixes, re-verifies and saves the plan with the new audit. */
@@ -356,7 +414,7 @@ export async function applyPlanAudit(
   id: string,
   body: { expectedRevision: number; audit: PlanAuditResponse["audit"]; accepted: AuditProposal[]; notes: unknown },
 ): Promise<{ plan: StoredPlan; applied: number; stale: number; verifyError: string | null }> {
-  return request(`/api/plans/${encodeURIComponent(id)}/audit/apply`, { method: "POST", body: JSON.stringify(body) });
+  return longRequest(`/api/plans/${encodeURIComponent(id)}/audit/apply`, { method: "POST", body: JSON.stringify(body) });
 }
 
 // --- ScoutAI plan assistant ---------------------------------------------------
@@ -494,7 +552,7 @@ export function resetScoutPrompts(baseRevision: number): Promise<ScoutPromptLibr
 
 /** Builds (or rebuilds) the plan's Campaign Recap from its linked past campaigns and saves it. */
 export async function buildCampaignRecap(id: string, baseRevision: number): Promise<{ plan: StoredPlan; dropped: string[] }> {
-  return request(`/api/plans/${encodeURIComponent(id)}/campaign-recap`, { method: "POST", body: JSON.stringify({ baseRevision }) });
+  return longRequest(`/api/plans/${encodeURIComponent(id)}/campaign-recap`, { method: "POST", body: JSON.stringify({ baseRevision }) });
 }
 
 export async function archivePlan(id: string): Promise<void> {
@@ -642,7 +700,7 @@ export async function archivePerformanceCampaign(id: string): Promise<void> {
 
 /** Writes (or rewrites) the campaign's saved review. Takes up to a couple of minutes. */
 export function reviewPerformanceCampaign(id: string, expectedRevision: number): Promise<CampaignResponse> {
-  return request<CampaignResponse>(`/api/performance/campaigns/${encodeURIComponent(id)}/review`, {
+  return longRequest<CampaignResponse>(`/api/performance/campaigns/${encodeURIComponent(id)}/review`, {
     method: "POST",
     headers: { "If-Match": String(expectedRevision) },
   });

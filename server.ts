@@ -19,6 +19,7 @@ import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFou
 import { isClientUsageAction, summarizeUsage, type UsageAction } from "./src/usage/usageSummary";
 import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
+import { holdOpenForLongRequest } from "./src/server/longRequest";
 import {
   actorName,
   analyticsIdFor,
@@ -471,7 +472,9 @@ function logUsage(
 function logUsageOnFinish(req: express.Request, res: express.Response, action: UsageAction, extra: UsageExtra = {}): void {
   const startedAt = Date.now();
   res.on("finish", () => {
-    logUsage(req, action, { ...extra, ...(res.locals.usage || {}), durationMs: Date.now() - startedAt, ok: res.statusCode < 400 });
+    // A held-open response is always a 200 on the wire; its real status is in res.locals.
+    const status = res.locals.finalStatus ?? res.statusCode;
+    logUsage(req, action, { ...extra, ...(res.locals.usage || {}), durationMs: Date.now() - startedAt, ok: status < 400 });
   });
 }
 
@@ -2238,6 +2241,7 @@ const manualAuditOptions = (effort: OpenAiEffort, timeoutMs: number) => ({
 
 app.post("/api/plans/:id/audit", async (req, res) => {
   req.socket.setTimeout(0);
+  holdOpenForLongRequest(req, res);
   logUsageOnFinish(req, res, "qa_audit", { planId: req.params.id });
   try {
     const plan = await (await getStorage()).getPlan(req.params.id);
@@ -2272,6 +2276,7 @@ app.post("/api/plans/:id/audit", async (req, res) => {
 
 app.post("/api/plans/:id/audit/apply", async (req, res) => {
   req.socket.setTimeout(0);
+  holdOpenForLongRequest(req, res);
   try {
     const expectedRevision = Number(req.body?.expectedRevision);
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
@@ -2827,6 +2832,7 @@ async function writeCampaignReview(storage: StorageAdapter, campaign: Performanc
 
 app.post("/api/performance/campaigns/:id/review", async (req, res) => {
   req.socket.setTimeout(0);
+  holdOpenForLongRequest(req, res);
   try {
     const expectedRevision = Number(req.get("If-Match"));
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
@@ -2849,6 +2855,7 @@ app.post("/api/performance/campaigns/:id/review", async (req, res) => {
 // one first. Written onto the saved plan with the usual revision check.
 app.post("/api/plans/:id/campaign-recap", async (req, res) => {
   req.socket.setTimeout(0);
+  holdOpenForLongRequest(req, res);
   logUsageOnFinish(req, res, "campaign_recap", { planId: req.params.id });
   let writingPlan = false;
   try {
