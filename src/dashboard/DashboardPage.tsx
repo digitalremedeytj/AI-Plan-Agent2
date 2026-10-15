@@ -26,13 +26,14 @@ import {
  */
 
 const COLORS = {
-  plans: "#4f46e5",
-  users: "#0d9488",
-  views: "#f59e0b",
+  plans: "#5856fd",
+  users: "#006987",
+  views: "#006987",
   grid: "#e2e8f0",
   axis: "#64748b",
 };
-const CHANNEL_SHADES = ["#4338ca", "#4f46e5", "#6366f1", "#818cf8", "#a5b4fc", "#c7d2fe"];
+// Brand purple from its deepest shade to its lightest tint, largest channel darkest.
+const CHANNEL_SHADES = ["#3836b8", "#4744e0", "#5856fd", "#8584fe", "#a9a8fe", "#c9c8fe"];
 
 function readHash(): { key: string | null; range: Exclude<RangePreset, "custom"> | null } {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -112,9 +113,9 @@ function ChartTooltip({ active, payload, label, money }: any) {
 
 function Funnel({ funnel }: { funnel: DashboardData["funnel"] }) {
   const steps = [
-    { label: "Plans generated", value: funnel.generated, color: "bg-indigo-600" },
-    { label: "Shared with a client", value: funnel.shared, color: "bg-indigo-400" },
-    { label: "Opened by the client", value: funnel.viewed, color: "bg-amber-400" },
+    { label: "Plans generated", value: funnel.generated, color: "bg-brand-purple-600" },
+    { label: "Shared with a client", value: funnel.shared, color: "bg-brand-purple-400" },
+    { label: "Opened by the client", value: funnel.viewed, color: "bg-brand-teal-500" },
   ];
   if (funnel.generated === 0) return <Empty>No plans generated in this period.</Empty>;
   return (
@@ -164,7 +165,7 @@ function HoursEditor({ value, onChange, canSave }: { value: number; onChange: (v
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-        className="w-16 rounded-md border border-slate-200 px-1.5 py-0.5 text-right font-semibold text-slate-900 tabular-nums focus:border-indigo-400 focus:outline-none"
+        className="w-16 rounded-md border border-slate-200 px-1.5 py-0.5 text-right font-semibold text-slate-900 tabular-nums focus:border-brand-purple-400 focus:outline-none"
         aria-label="Manual hours one plan replaces"
       />
       <span className="text-[11px]">{canSave ? "saved for everyone" : "for your view only"}</span>
@@ -215,7 +216,7 @@ function UserFilter({ allUsers, selected, onChange }: { allUsers: string[]; sele
         }}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className={`inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-semibold ring-1 transition ${selected === null ? "bg-white/10 text-white ring-white/15 hover:bg-white/15" : "bg-white text-indigo-900 ring-white"}`}
+        className={`inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-semibold ring-1 transition ${selected === null ? "bg-white/10 text-white ring-white/15 hover:bg-white/15" : "bg-white text-brand-purple-900 ring-white"}`}
       >
         <UserRound className="h-4 w-4" />
         <span className="max-w-48 truncate">{label}</span>
@@ -236,19 +237,19 @@ function UserFilter({ allUsers, selected, onChange }: { allUsers: string[]; sele
             </div>
           ) : null}
           <label className="flex cursor-pointer items-center gap-2.5 border-b border-slate-100 px-3 py-2.5 text-sm font-semibold hover:bg-slate-50">
-            <input type="checkbox" checked={selected === null} onChange={() => onChange(null)} className="h-4 w-4 accent-indigo-600" />
+            <input type="checkbox" checked={selected === null} onChange={() => onChange(null)} className="h-4 w-4 accent-brand-purple-600" />
             All users
           </label>
           <ul className="max-h-64 overflow-y-auto py-1" role="listbox" aria-multiselectable="true">
             {visible.map((name) => (
               <li key={name} className="group">
                 <label className="flex cursor-pointer items-center gap-2.5 px-3 py-1.5 text-sm hover:bg-slate-50">
-                  <input type="checkbox" checked={isChecked(name)} onChange={() => toggle(name)} className="h-4 w-4 accent-indigo-600" />
+                  <input type="checkbox" checked={isChecked(name)} onChange={() => toggle(name)} className="h-4 w-4 accent-brand-purple-600" />
                   <span className="flex-1 truncate">{name}</span>
                   <button
                     type="button"
                     onClick={(e) => { e.preventDefault(); onChange([name]); }}
-                    className="rounded px-1.5 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
+                    className="rounded px-1.5 text-[11px] font-semibold text-brand-purple-600 hover:bg-brand-purple-50 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
                   >
                     Only
                   </button>
@@ -365,7 +366,7 @@ export default function DashboardPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6 font-sans">
         <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-xl">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600"><Lock className="h-6 w-6" /></div>
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-brand-purple-50 text-brand-purple-600"><Lock className="h-6 w-6" /></div>
           <h1 className="font-display text-xl font-bold text-slate-900">Dashboard access needed</h1>
           <p className="text-sm text-slate-500">
             {effectiveKey
@@ -373,7 +374,7 @@ export default function DashboardPage() {
               : "Sign in to AI Plan Agent with the administrator password to see the dashboard, or open the dashboard link you were sent."}
           </p>
           {!effectiveKey ? (
-            <a href="/" className="inline-block rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700">Go to sign in</a>
+            <a href="/" className="inline-block rounded-xl bg-brand-purple-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-purple-700">Go to sign in</a>
           ) : null}
         </div>
       </div>
@@ -388,15 +389,23 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 print:bg-white">
-      <header className="bg-gradient-to-br from-slate-950 via-indigo-950 to-indigo-800 text-white print:bg-none print:text-slate-900">
+      {/* Brand teal at its brightest in the bottom-right corner, falling to near-black. The point sits
+          at the header's visible bottom edge: the cards overlap the last stretch of it. */}
+      <header
+        className="text-white print:!bg-none print:text-slate-900"
+        style={{
+          background:
+            "radial-gradient(115% 160% at 100% 75%, #006987 0%, #005c76 18%, #00455a 40%, #002b38 66%, #071820 100%)",
+        }}
+      >
         <div className="mx-auto max-w-7xl px-4 pb-24 pt-6 sm:px-6 lg:px-8 print:pb-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-xl bg-white/10 p-2 ring-1 ring-white/20 print:bg-indigo-600">
+              <div className="h-10 w-10 rounded-xl bg-white/10 p-2 ring-1 ring-white/20 print:bg-brand-teal-500">
                 <img src={drIconWhite} alt="Digital Remedy" className="h-full w-full object-contain" />
               </div>
               <div>
-                <p className="text-xs font-semibold uppercase tracking-widest text-indigo-200 print:text-indigo-700">Digital Remedy</p>
+                <p className="text-xs font-semibold uppercase tracking-widest text-brand-teal-200 print:text-brand-teal-700">Digital Remedy</p>
                 <h1 className="font-display text-xl font-bold sm:text-2xl">AI Plan Agent Dashboard</h1>
               </div>
             </div>
@@ -405,7 +414,7 @@ export default function DashboardPage() {
                 type="button"
                 onClick={copySummary}
                 disabled={!data}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3.5 py-2 text-sm font-semibold text-indigo-900 shadow-sm hover:bg-indigo-50 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3.5 py-2 text-sm font-semibold text-brand-purple-900 shadow-sm hover:bg-brand-purple-50 disabled:opacity-50"
               >
                 {copied ? <Check className="h-4 w-4 text-emerald-600" /> : <ClipboardCopy className="h-4 w-4" />}
                 {copied ? "Copied" : "Copy weekly summary"}
@@ -427,14 +436,14 @@ export default function DashboardPage() {
                   key={p.id}
                   type="button"
                   onClick={() => choosePreset(p.id)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${preset === p.id ? "bg-white text-indigo-900 shadow-sm" : "text-indigo-100 hover:bg-white/10"}`}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${preset === p.id ? "bg-white text-brand-purple-900 shadow-sm" : "text-brand-teal-100 hover:bg-white/10"}`}
                 >
                   {p.label}
                 </button>
               ))}
             </div>
             <div className="flex items-center gap-2 rounded-xl bg-white/10 px-3 py-1.5 text-xs ring-1 ring-white/15 print:hidden">
-              <CalendarDays className="h-4 w-4 text-indigo-200" />
+              <CalendarDays className="h-4 w-4 text-brand-teal-200" />
               <input
                 type="date"
                 value={days.fromDay}
@@ -443,7 +452,7 @@ export default function DashboardPage() {
                 className="bg-transparent font-semibold text-white [color-scheme:dark] focus:outline-none"
                 aria-label="Start date"
               />
-              <span className="text-indigo-200">to</span>
+              <span className="text-brand-teal-200">to</span>
               <input
                 type="date"
                 value={days.toDay}
@@ -462,12 +471,12 @@ export default function DashboardPage() {
               />
             ) : null}
             {data ? (
-              <p className="text-sm text-indigo-100 print:text-slate-600">
-                {formatRange(data.from, data.to)} <span className="text-indigo-300 print:text-slate-400">· compared with the {Math.round((Date.parse(data.to) - Date.parse(data.from)) / 86_400_000)} days before</span>
-                {data.selectedUsers ? <span className="text-indigo-300 print:text-slate-400"> · {data.selectedUsers.join(", ")} only</span> : null}
+              <p className="text-sm text-brand-teal-100 print:text-slate-600">
+                {formatRange(data.from, data.to)} <span className="text-brand-teal-300 print:text-slate-400">· compared with the {Math.round((Date.parse(data.to) - Date.parse(data.from)) / 86_400_000)} days before</span>
+                {data.selectedUsers ? <span className="text-brand-teal-300 print:text-slate-400"> · {data.selectedUsers.join(", ")} only</span> : null}
               </p>
             ) : null}
-            {status === "loading" && data ? <Loader2 className="h-4 w-4 animate-spin text-indigo-200" /> : null}
+            {status === "loading" && data ? <Loader2 className="h-4 w-4 animate-spin text-brand-teal-200" /> : null}
           </div>
         </div>
       </header>
@@ -478,41 +487,41 @@ export default function DashboardPage() {
         {!data ? (
           <div className="flex h-64 items-center justify-center rounded-2xl bg-white shadow-sm">
             {status === "error" ? (
-              <button type="button" onClick={() => void load()} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white">Try again</button>
+              <button type="button" onClick={() => void load()} className="rounded-xl bg-brand-purple-600 px-4 py-2 text-sm font-semibold text-white">Try again</button>
             ) : (
-              <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+              <Loader2 className="h-6 w-6 animate-spin text-brand-purple-600" />
             )}
           </div>
         ) : (
           <>
             <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-              <KpiCard icon={FileText} label="Plans generated" value={formatNumber(kpis!.plans.value)} kpi={kpis!.plans} accent="bg-indigo-50 text-indigo-600" />
+              <KpiCard icon={FileText} label="Plans generated" value={formatNumber(kpis!.plans.value)} kpi={kpis!.plans} accent="bg-brand-purple-50 text-brand-purple-500" />
               <KpiCard
                 icon={DollarSign}
                 label="Media budget planned"
                 value={formatMoney(kpis!.budget.value)}
                 kpi={kpis!.budget}
-                accent="bg-emerald-50 text-emerald-600"
+                accent="bg-brand-teal-50 text-brand-teal-500"
               />
-              <KpiCard icon={Users} label="Active users" value={formatNumber(kpis!.activeUsers.value)} kpi={kpis!.activeUsers} footnote={`of ${formatNumber(data.totalUsers)} total`} accent="bg-teal-50 text-teal-600" />
+              <KpiCard icon={Users} label="Active users" value={formatNumber(kpis!.activeUsers.value)} kpi={kpis!.activeUsers} footnote={`of ${formatNumber(data.totalUsers)} total`} accent="bg-brand-teal-50 text-brand-teal-500" />
               <KpiCard
                 icon={Clock}
                 label="Time saved (est.)"
                 value={`${formatHours(kpis!.plans.value * hours)} h`}
                 kpi={{ value: kpis!.plans.value * hours, previous: kpis!.plans.previous * hours }}
-                accent="bg-violet-50 text-violet-600"
+                accent="bg-brand-purple-50 text-brand-purple-500"
               >
                 <HoursEditor value={hours} onChange={changeHours} canSave={isAdmin} />
               </KpiCard>
-              <KpiCard icon={Building2} label="Advertisers served" value={formatNumber(kpis!.advertisers.value)} kpi={kpis!.advertisers} accent="bg-sky-50 text-sky-600" />
-              <KpiCard icon={Link2} label="Share links created" value={formatNumber(kpis!.shareLinks.value)} kpi={kpis!.shareLinks} accent="bg-indigo-50 text-indigo-600" />
-              <KpiCard icon={Eye} label="Client views" value={formatNumber(kpis!.shareViews.value)} kpi={kpis!.shareViews} footnote="shared plans opened" accent="bg-amber-50 text-amber-600" />
+              <KpiCard icon={Building2} label="Advertisers served" value={formatNumber(kpis!.advertisers.value)} kpi={kpis!.advertisers} accent="bg-brand-teal-50 text-brand-teal-500" />
+              <KpiCard icon={Link2} label="Share links created" value={formatNumber(kpis!.shareLinks.value)} kpi={kpis!.shareLinks} accent="bg-brand-purple-50 text-brand-purple-500" />
+              <KpiCard icon={Eye} label="Client views" value={formatNumber(kpis!.shareViews.value)} kpi={kpis!.shareViews} footnote="shared plans opened" accent="bg-brand-teal-50 text-brand-teal-500" />
               <KpiCard
                 icon={Sparkles}
                 label="Generation success"
                 value={data.reliability.successRate === null ? "–" : `${Math.round(data.reliability.successRate * 100)}%`}
                 footnote={data.reliability.medianMinutes !== null ? `median ${data.reliability.medianMinutes} min per plan` : undefined}
-                accent="bg-rose-50 text-rose-600"
+                accent="bg-brand-purple-50 text-brand-purple-500"
               />
             </div>
 
@@ -527,7 +536,7 @@ export default function DashboardPage() {
                         <CartesianGrid stroke={COLORS.grid} vertical={false} />
                         <XAxis dataKey="label" tick={{ fontSize: 11, fill: COLORS.axis }} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={16} />
                         <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: COLORS.axis }} tickLine={false} axisLine={false} />
-                        <Tooltip content={<ChartTooltip />} cursor={{ fill: "#eef2ff" }} />
+                        <Tooltip content={<ChartTooltip />} cursor={{ fill: "#f0f0ff" }} />
                         <Bar dataKey="plans" name="Plans" fill={COLORS.plans} radius={[4, 4, 0, 0]} maxBarSize={28} />
                         <Line dataKey="activeUsers" name="Active users" stroke={COLORS.users} strokeWidth={2.5} dot={false} type="monotone" />
                       </ComposedChart>
@@ -585,7 +594,7 @@ export default function DashboardPage() {
                           </span>
                         </div>
                         <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                          <div className="h-full rounded-full bg-sky-500" style={{ width: `${(a.plans / data.advertisers[0].plans) * 100}%` }} />
+                          <div className="h-full rounded-full bg-brand-teal-500" style={{ width: `${(a.plans / data.advertisers[0].plans) * 100}%` }} />
                         </div>
                       </li>
                     ))}
@@ -621,7 +630,7 @@ export default function DashboardPage() {
                             <td className="py-2.5">
                               <div className="flex items-center gap-2">
                                 <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
-                                  <div className="h-full rounded-full bg-indigo-500" style={{ width: `${(u.plans / maxUserPlans) * 100}%` }} />
+                                  <div className="h-full rounded-full bg-brand-purple-500" style={{ width: `${(u.plans / maxUserPlans) * 100}%` }} />
                                 </div>
                                 <span className="w-8 text-right font-semibold tabular-nums">{u.plans}</span>
                               </div>
@@ -651,7 +660,7 @@ export default function DashboardPage() {
                           </span>
                         </div>
                         <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                          <div className="h-full rounded-full bg-teal-500" style={{ width: `${(a.people / adoptionMax) * 100}%` }} />
+                          <div className="h-full rounded-full bg-brand-teal-400" style={{ width: `${(a.people / adoptionMax) * 100}%` }} />
                         </div>
                       </li>
                     ))}

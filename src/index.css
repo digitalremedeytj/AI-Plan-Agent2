@@ -5,6 +5,29 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Space Grotesk", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Brand accents. 500 is the brand value; the other steps are tints and shades of it. */
+  --color-brand-purple-50: #f0f0ff;
+  --color-brand-purple-100: #e3e2ff;
+  --color-brand-purple-200: #c9c8fe;
+  --color-brand-purple-300: #a9a8fe;
+  --color-brand-purple-400: #8584fe;
+  --color-brand-purple-500: #5856fd;
+  --color-brand-purple-600: #4744e0;
+  --color-brand-purple-700: #3836b8;
+  --color-brand-purple-900: #22216e;
+
+  --color-brand-teal-50: #e6f4f7;
+  --color-brand-teal-100: #cce8ef;
+  --color-brand-teal-200: #99d1df;
+  --color-brand-teal-300: #5fb3c9;
+  --color-brand-teal-400: #2b8ea9;
+  --color-brand-teal-500: #006987;
+  --color-brand-teal-600: #005a73;
+  --color-brand-teal-700: #004a5f;
+  --color-brand-teal-800: #00394a;
+  --color-brand-teal-900: #002733;
+  --color-brand-teal-950: #00161d;
 }
 
 /* Custom visual helpers */
