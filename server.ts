@@ -15,8 +15,10 @@ import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effe
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
-import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent } from "./src/storage";
+import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, type UsageAction } from "./src/usage/usageSummary";
+import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
+import { backfillUsageFromPlans } from "./src/usage/backfill";
 import {
   actorName,
   analyticsIdFor,
@@ -392,6 +394,8 @@ const PUBLIC_API_PATHS = new Set([
   "/api/auth/me",
   "/api/auth/logout",
   "/api/share/plan",
+  // Authorizes itself: an admin session or a dashboard link key.
+  "/api/dashboard/data",
   "/api/summarize-publisher-insights",
   "/api/personas/generate-slide",
   "/api/channels/generate-slide",
@@ -424,7 +428,16 @@ app.get("/api/health", async (_req, res) => {
 });
 
 // ---- Usage log ----
-type UsageExtra = { actor?: string; planId?: string; advertiserName?: string; durationMs?: number; ok?: boolean; detail?: string };
+type UsageExtra = {
+  actor?: string;
+  planId?: string;
+  advertiserName?: string;
+  durationMs?: number;
+  ok?: boolean;
+  detail?: string;
+  budget?: number;
+  channels?: Record<string, number>;
+};
 
 // Who did what, for the admin Usage report (src/usage/usageSummary.ts). Fire-and-forget: a
 // failed write is logged and never fails or slows the action it records. The actor always
@@ -444,6 +457,8 @@ function logUsage(
     durationMs: typeof extra.durationMs === "number" ? Math.round(extra.durationMs) : undefined,
     ok: extra.ok,
     detail: extra.detail?.slice(0, 60) || undefined,
+    budget: extra.budget,
+    channels: extra.channels,
   };
   getStorage()
     .then((storage) => storage.recordUsageEvent(event))
@@ -483,6 +498,142 @@ app.get("/api/usage/summary", requireAdmin, async (req, res) => {
   } catch (err: any) {
     console.error("[USAGE] Could not build the usage summary:", err);
     res.status(500).json({ error: "Failed to load usage", details: err?.message || String(err) });
+  }
+});
+
+// ---- Leadership dashboard ----
+// One page (/dashboard), two ways in: an admin session, or a view-only link whose key travels
+// in the x-dashboard-key header. The browser keeps the key after "#" in the address, so it
+// never reaches request logs or referrers.
+
+async function dashboardAccess(req: express.Request): Promise<{ via: "admin"; name: string } | { via: "link"; link: DashboardLink } | null> {
+  const user = getSession(req);
+  if (user && isAdminRequestAllowed(user)) return { via: "admin", name: user.name };
+  const key = String(req.get("x-dashboard-key") || "").trim();
+  if (!key.startsWith("dash_") || key.length < 30) return null;
+  const link = await (await getStorage()).getDashboardLink(key);
+  return link && !link.revoked ? { via: "link", link } : null;
+}
+
+const DASHBOARD_MAX_DAYS = 731;
+
+app.get("/api/dashboard/data", async (req, res) => {
+  res.set("X-Robots-Tag", "noindex, nofollow");
+  res.set("Cache-Control", "no-store");
+  try {
+    const access = await dashboardAccess(req);
+    if (!access) {
+      res.status(401).json({ error: "This dashboard link is not valid or has been turned off.", code: "UNAUTHENTICATED" });
+      return;
+    }
+    const to = new Date(String(req.query.to || "")).getTime() || Date.now();
+    let from = new Date(String(req.query.from || "")).getTime() || to - 30 * 24 * 60 * 60 * 1000;
+    from = Math.max(from, to - DASHBOARD_MAX_DAYS * 24 * 60 * 60 * 1000);
+    if (from >= to) {
+      res.status(400).json({ error: "The start date must be before the end date." });
+      return;
+    }
+    const storage = await getStorage();
+    const [events, config] = await Promise.all([storage.listUsageEvents(""), storage.getDashboardConfig()]);
+    const tz = Math.max(-840, Math.min(840, Math.round(Number(req.query.tz) || 0)));
+    const data = buildDashboard(events, new Date(from).toISOString(), new Date(to).toISOString(), config, tz);
+
+    // A link's first load in a browser session counts as a visit; changing the dates does not.
+    if (access.via === "link" && req.get("x-dashboard-visit") === "1") {
+      storage
+        .saveDashboardLink({ ...access.link, lastViewedAt: new Date().toISOString(), viewCount: (access.link.viewCount || 0) + 1 })
+        .catch((err) => console.error("[DASHBOARD] Could not record a link view:", err?.message || err));
+    }
+    res.json({
+      success: true,
+      data,
+      viewer: access.via === "admin" ? { via: "admin", name: access.name } : { via: "link", label: access.link.label, sharedBy: access.link.createdBy },
+    });
+  } catch (err: any) {
+    console.error("[DASHBOARD] Could not build the dashboard:", err);
+    res.status(500).json({ error: "The dashboard could not be loaded.", details: err?.message || String(err) });
+  }
+});
+
+app.get("/api/dashboard/links", requireAdmin, async (_req, res) => {
+  try {
+    const storage = await getStorage();
+    const [links, config] = await Promise.all([storage.listDashboardLinks(), storage.getDashboardConfig()]);
+    links.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    res.json({ success: true, links, config });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to load dashboard links", details: err?.message || String(err) });
+  }
+});
+
+app.post("/api/dashboard/links", requireAdmin, async (req, res) => {
+  try {
+    const label = sanitizeDisplayName(req.body?.label) || "Leadership dashboard";
+    const link: DashboardLink = {
+      // 256 bits, like plan share links.
+      token: `dash_${crypto.randomBytes(32).toString("base64url")}`,
+      label,
+      createdAt: new Date().toISOString(),
+      createdBy: actorName(req),
+      revoked: false,
+      viewCount: 0,
+    };
+    await (await getStorage()).saveDashboardLink(link);
+    res.status(201).json({ success: true, link });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to create the dashboard link", details: err?.message || String(err) });
+  }
+});
+
+// The token travels in the body, not the path, to keep it out of request logs.
+app.post("/api/dashboard/links/revoke", requireAdmin, async (req, res) => {
+  try {
+    const storage = await getStorage();
+    const link = await storage.getDashboardLink(String(req.body?.token || ""));
+    if (!link) {
+      res.status(404).json({ error: "That dashboard link was not found.", code: "NOT_FOUND" });
+      return;
+    }
+    const revoked = { ...link, revoked: true, revokedAt: new Date().toISOString(), revokedBy: actorName(req) };
+    await storage.saveDashboardLink(revoked);
+    res.json({ success: true, link: revoked });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to turn off the dashboard link", details: err?.message || String(err) });
+  }
+});
+
+app.put("/api/dashboard/config", requireAdmin, async (req, res) => {
+  const hoursPerPlan = Number(req.body?.hoursPerPlan);
+  if (!Number.isFinite(hoursPerPlan) || hoursPerPlan <= 0 || hoursPerPlan > 200) {
+    res.status(400).json({ error: "Hours per plan must be a number between 0 and 200." });
+    return;
+  }
+  const excludedNames: string[] = Array.isArray(req.body?.excludedNames)
+    ? [...new Set<string>(req.body.excludedNames.map(sanitizeDisplayName).filter(Boolean))].slice(0, 100)
+    : [];
+  try {
+    const config = await (await getStorage()).saveDashboardConfig({
+      hoursPerPlan: Math.round(hoursPerPlan * 100) / 100,
+      excludedNames,
+      updatedAt: new Date().toISOString(),
+      updatedBy: actorName(req),
+    });
+    res.json({ success: true, config });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to save dashboard settings", details: err?.message || String(err) });
+  }
+});
+
+// One-time import of history from saved plans (src/usage/backfill.ts). Safe to run again.
+app.post("/api/dashboard/backfill", requireAdmin, async (req, res) => {
+  req.socket.setTimeout(0);
+  try {
+    const { plansScanned, generations, shares, skipped } = await backfillUsageFromPlans(await getStorage());
+    console.log(`[DASHBOARD] Backfill by '${actorName(req)}': ${generations} generation(s), ${shares} share link(s), ${skipped} already present.`);
+    res.json({ success: true, plansScanned, generations, shares, skipped });
+  } catch (err: any) {
+    console.error("[DASHBOARD] Backfill failed:", err);
+    res.status(500).json({ error: "The history import failed.", details: err?.message || String(err) });
   }
 });
 
@@ -4296,10 +4447,11 @@ app.post("/api/generate-profile", async (req, res) => {
 
   // One usage record per run, whichever way it ends (the stream is a 200 even when it fails).
   let generationLogged = false;
-  const logGeneration = (ok: boolean, detail?: string) => {
+  const logGeneration = (ok: boolean, detail?: string, plan: { planId?: string; budget?: number; channels?: Record<string, number> } = {}) => {
     if (generationLogged) return;
     generationLogged = true;
     logUsage(req, "plan_generate", {
+      ...plan,
       advertiserName: typeof advertiserName === "string" ? advertiserName : undefined,
       durationMs: Date.now() - runStartedAt,
       ok,
@@ -5406,7 +5558,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     }
 
     // Return structured profile and citations
-    logGeneration(true);
+    logGeneration(true, undefined, { planId: savedPlanId || undefined, ...planBudgetFields(finalProfile) });
     sendEvent("complete", {
       savedPlanId,
       profile: finalProfile,

@@ -74,3 +74,40 @@ route that performs them. The browser reports only what the server cannot see (`
 
 A share-link view by a signed-in planner is recorded with `detail: "staff_preview"`;
 an unauthenticated view is attributed to `(client share link)`.
+
+## Leadership dashboard (`/dashboard`)
+
+Headline numbers and charts for leadership, computed from the usage log
+(`src/usage/dashboard.ts`, page in `src/dashboard/`).
+
+**Access.** Signed-in admins open `/dashboard` directly. Everyone else needs a view-only
+link, created in Settings → Usage → Leadership dashboard:
+`/dashboard#key=dash_…`. The key sits after `#`, so browsers never send it to the server in
+the address (it travels in the `x-dashboard-key` header) and it stays out of Cloud Run request
+logs and referrers. The page removes it from the address bar once read. Links are named,
+never expire, and are turned off one at a time (`dashboard_links/{token}` in Firestore). Add
+`&range=7d` (or `30d`, `90d`, `qtd`, `ytd`) to open on a given range; "Copy weekly summary"
+does this automatically.
+
+**Definitions.**
+
+| Number | Meaning |
+| --- | --- |
+| Plans generated | Successful generation runs, regenerations included |
+| Media budget planned | Working media budget of each brief, counted once: the same person re-running the same advertiser at the same budget within 24 hours adds no budget |
+| Media budget by channel | The counted briefs' allocations, by media type name |
+| Active users / total users | Distinct people active in the period / ever, up to the period's end |
+| Time saved | Plans generated × hours per plan (default 1; admins' edits are saved for everyone, link viewers' edits are theirs alone) |
+| Client views | Unauthenticated opens of share links (a planner previewing their own link is not counted), credited to whoever created the link |
+| Funnel | Plans generated in the period → of those, shared → of those, opened by a client, whenever that happened |
+| Change % | Against the period of the same length immediately before |
+
+Charts are bucketed by day up to 35 days, by week beyond, in the viewer's timezone.
+
+**Excluded names.** Test accounts listed in Settings → Usage are dropped from every dashboard
+number (`dashboard_config/current`). The Usage tab itself still shows them.
+
+**History.** "Import history from saved plans" (Settings → Usage) turns every saved plan into
+a backfilled generation, dated and attributed as the plan was, and every plan with a share
+token into a share-link event dated by the plan's last update. Client views cannot be
+backfilled; they were not recorded before this feature. Running it again adds nothing.

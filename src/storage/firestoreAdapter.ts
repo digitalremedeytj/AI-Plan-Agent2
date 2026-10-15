@@ -25,6 +25,9 @@ import {
   type PerformanceCampaignInput,
   type PerformanceCampaignSummary,
   type UsageEvent,
+  DEFAULT_DASHBOARD_CONFIG,
+  type DashboardConfig,
+  type DashboardLink,
 } from "./types";
 
 /**
@@ -37,6 +40,8 @@ import {
  *   publishers/current          live CTV publisher list
  *   performance_campaigns/{id}  past campaign report sets: metadata fields + filesJson
  *   usage_events/{id}           append-only usage log for the admin Usage report
+ *   dashboard_links/{token}     view-only links to the leadership dashboard
+ *   dashboard_config/current    hours-per-plan and excluded test accounts
  *
  * Concurrency is compare-and-swap: every write carries a currentDocument precondition
  * on the updateTime we read, so two people saving the same plan cannot silently clobber
@@ -52,6 +57,8 @@ const SCOUT_PROMPTS = "scout_prompts";
 const CURRENT_DOC = "current";
 const PERFORMANCE = "performance_campaigns";
 const USAGE_EVENTS = "usage_events";
+const DASHBOARD_LINKS = "dashboard_links";
+const DASHBOARD_CONFIG = "dashboard_config";
 
 const CAMPAIGN_SUMMARY_FIELDS = [
   "id", "revision", "kind", "snapshotsJson", "advertiserName", "advertiserKey", "name", "flightStart", "flightEnd", "conversionLabel", "campaignGoal", "notes",
@@ -588,6 +595,40 @@ export class FirestoreAdapter implements StorageAdapter {
     return (Array.isArray(rows) ? rows : [])
       .filter((row: any) => row?.document?.fields)
       .map((row: any) => decodeFields(row.document.fields) as unknown as UsageEvent);
+  }
+
+  // --- leadership dashboard ----------------------------------------------------
+
+  async listDashboardLinks(): Promise<DashboardLink[]> {
+    const docs = await this.listDocuments(DASHBOARD_LINKS);
+    return docs.map((doc) => decodeFields(doc.fields || {}) as unknown as DashboardLink).filter((link) => Boolean(link?.token));
+  }
+
+  async getDashboardLink(token: string): Promise<DashboardLink | null> {
+    const doc = await this.getDocument(DASHBOARD_LINKS, token);
+    return doc?.fields ? (decodeFields(doc.fields) as unknown as DashboardLink) : null;
+  }
+
+  async saveDashboardLink(link: DashboardLink): Promise<void> {
+    const fields = Object.fromEntries(Object.entries(link).filter(([, v]) => v !== undefined));
+    await this.putDocument(DASHBOARD_LINKS, link.token, fields);
+  }
+
+  async getDashboardConfig(): Promise<DashboardConfig> {
+    const doc = await this.getDocument(DASHBOARD_CONFIG, CURRENT_DOC);
+    if (!doc?.fields) return { ...DEFAULT_DASHBOARD_CONFIG };
+    const fields = decodeFields(doc.fields) as Record<string, any>;
+    return {
+      hoursPerPlan: Number(fields.hoursPerPlan) > 0 ? Number(fields.hoursPerPlan) : DEFAULT_DASHBOARD_CONFIG.hoursPerPlan,
+      excludedNames: Array.isArray(fields.excludedNames) ? fields.excludedNames.map(String) : [],
+      updatedAt: fields.updatedAt,
+      updatedBy: fields.updatedBy,
+    };
+  }
+
+  async saveDashboardConfig(config: DashboardConfig): Promise<DashboardConfig> {
+    await this.putDocument(DASHBOARD_CONFIG, CURRENT_DOC, { ...config });
+    return config;
   }
 
   // Lists and files are JSON strings for the same reason plan payloads are: Firestore refuses

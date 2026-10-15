@@ -24,6 +24,9 @@ import {
   type PerformanceCampaignInput,
   type PerformanceCampaignSummary,
   type UsageEvent,
+  DEFAULT_DASHBOARD_CONFIG,
+  type DashboardConfig,
+  type DashboardLink,
 } from "./types";
 
 /**
@@ -42,6 +45,7 @@ export class LocalFileAdapter implements StorageAdapter {
   private readonly performanceDir: string;
   private readonly promptsDir: string;
   private readonly usageDir: string;
+  private readonly dashboardDir: string;
 
   constructor(rootDir: string = path.join(process.cwd(), "data", "store")) {
     this.rootDir = rootDir;
@@ -51,10 +55,11 @@ export class LocalFileAdapter implements StorageAdapter {
     this.performanceDir = path.join(rootDir, "performance");
     this.promptsDir = path.join(rootDir, "scout-prompts");
     this.usageDir = path.join(rootDir, "usage");
+    this.dashboardDir = path.join(rootDir, "dashboard");
   }
 
   async init(): Promise<void> {
-    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir]) {
+    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir, this.dashboardDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
@@ -337,6 +342,10 @@ export class LocalFileAdapter implements StorageAdapter {
   // One JSON line per event, one file per UTC day, so a report only reads the days it covers.
   async recordUsageEvent(event: UsageEvent): Promise<void> {
     await this.init();
+    // Matches Firestore's create-only write. Only backfills reuse ids, so the scan stays rare.
+    if (event.id.startsWith("backfill-") && (await this.listUsageEvents("")).some((e) => e.id === event.id)) {
+      throw new Error(`Usage event '${event.id}' already exists.`);
+    }
     fs.appendFileSync(path.join(this.usageDir, `${event.at.slice(0, 10)}.jsonl`), `${JSON.stringify(event)}\n`, "utf-8");
   }
 
@@ -356,6 +365,33 @@ export class LocalFileAdapter implements StorageAdapter {
       }
     }
     return events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  }
+
+  // --- leadership dashboard ----------------------------------------------------
+
+  async listDashboardLinks(): Promise<DashboardLink[]> {
+    await this.init();
+    return readJson<DashboardLink[]>(path.join(this.dashboardDir, "links.json")) ?? [];
+  }
+
+  async getDashboardLink(token: string): Promise<DashboardLink | null> {
+    return (await this.listDashboardLinks()).find((link) => link.token === token) ?? null;
+  }
+
+  async saveDashboardLink(link: DashboardLink): Promise<void> {
+    const links = (await this.listDashboardLinks()).filter((l) => l.token !== link.token);
+    writeJsonAtomic(path.join(this.dashboardDir, "links.json"), [...links, link]);
+  }
+
+  async getDashboardConfig(): Promise<DashboardConfig> {
+    await this.init();
+    return { ...DEFAULT_DASHBOARD_CONFIG, ...(readJson<DashboardConfig>(path.join(this.dashboardDir, "config.json")) ?? {}) };
+  }
+
+  async saveDashboardConfig(config: DashboardConfig): Promise<DashboardConfig> {
+    await this.init();
+    writeJsonAtomic(path.join(this.dashboardDir, "config.json"), config);
+    return config;
   }
 
   private campaignPath(id: string): string {

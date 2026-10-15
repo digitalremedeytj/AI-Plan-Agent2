@@ -11,6 +11,8 @@ import type { PlanVsActual } from "../performance/planVsActual";
 import type { PreparedFile } from "../performance/browserFiles";
 import type { PerformanceCampaignSummary } from "../storage/types";
 import type { UsageSummary } from "../usage/usageSummary";
+import type { DashboardData } from "../usage/dashboard";
+import type { DashboardConfig, DashboardLink } from "../storage/types";
 
 /**
  * Client for the shared server store.
@@ -237,6 +239,47 @@ export async function getUsageSummary(days: number): Promise<UsageSummary> {
   const body = await request<{ summary: UsageSummary }>(`/api/usage/summary?days=${encodeURIComponent(String(days))}`);
   return body.summary;
 }
+
+// --- leadership dashboard -----------------------------------------------------
+
+export type DashboardViewer = { via: "admin"; name: string } | { via: "link"; label: string; sharedBy: string };
+
+/** `key` is a view-only dashboard link's key; without one the admin session is used. */
+export async function getDashboardData(range: { from: string; to: string }, options: { key?: string | null; firstLoad?: boolean } = {}): Promise<{ data: DashboardData; viewer: DashboardViewer }> {
+  const headers: Record<string, string> = {};
+  if (options.key) headers["x-dashboard-key"] = options.key;
+  if (options.firstLoad) headers["x-dashboard-visit"] = "1";
+  // The viewer's timezone, so the charts' days are the viewer's days.
+  const query = new URLSearchParams({ from: range.from, to: range.to, tz: String(new Date().getTimezoneOffset()) });
+  return request(`/api/dashboard/data?${query.toString()}`, { headers });
+}
+
+export async function listDashboardLinks(): Promise<{ links: DashboardLink[]; config: DashboardConfig }> {
+  return request("/api/dashboard/links");
+}
+
+export async function createDashboardLink(label: string): Promise<DashboardLink> {
+  const body = await request<{ link: DashboardLink }>("/api/dashboard/links", { method: "POST", body: JSON.stringify({ label }) });
+  return body.link;
+}
+
+export async function revokeDashboardLink(token: string): Promise<DashboardLink> {
+  const body = await request<{ link: DashboardLink }>("/api/dashboard/links/revoke", { method: "POST", body: JSON.stringify({ token }) });
+  return body.link;
+}
+
+export async function saveDashboardConfig(config: Pick<DashboardConfig, "hoursPerPlan" | "excludedNames">): Promise<DashboardConfig> {
+  const body = await request<{ config: DashboardConfig }>("/api/dashboard/config", { method: "PUT", body: JSON.stringify(config) });
+  return body.config;
+}
+
+export async function backfillDashboardHistory(): Promise<{ plansScanned: number; generations: number; shares: number; skipped: number }> {
+  return request("/api/dashboard/backfill", { method: "POST" });
+}
+
+/** The address leadership opens. The key sits after "#", so it never reaches a server log. */
+export const dashboardLinkUrl = (token: string, range?: string) =>
+  `${window.location.origin}/dashboard#key=${encodeURIComponent(token)}${range ? `&range=${encodeURIComponent(range)}` : ""}`;
 
 // --- plans -----------------------------------------------------------------
 

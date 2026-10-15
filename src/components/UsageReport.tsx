@@ -2,6 +2,7 @@ import React from "react";
 import { Download, Loader2, RefreshCw } from "lucide-react";
 import * as api from "../api/client";
 import type { UsageSummary } from "../usage/usageSummary";
+import { DashboardLinksPanel } from "./DashboardLinksPanel";
 
 // Settings tab: who is using the app and how, read from the server-side usage log. Admin-only,
 // like the rest of Settings' writable tabs, because it names people. Google Analytics carries
@@ -67,6 +68,7 @@ export function UsageReport() {
 
   return (
     <section className="space-y-5">
+      <DashboardLinksPanel />
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-base font-bold text-slate-900">Usage</h3>

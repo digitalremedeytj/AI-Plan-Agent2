@@ -283,9 +283,41 @@ export interface UsageEvent {
   ok?: boolean;
   /** A short qualifier, e.g. the export format or which slide studio. */
   detail?: string;
+  /** plan_generate only: the plan's working media budget, in dollars. */
+  budget?: number;
+  /** plan_generate only: dollars allocated per media type, keyed by channel name. */
+  channels?: Record<string, number>;
 }
 
 export const SHARE_VIEWER_ACTOR = "(client share link)";
+
+/**
+ * A view-only link to the leadership dashboard, for people without the team login. The token
+ * is the secret (256 bits, like plan share links). Links never expire; they are revoked.
+ */
+export interface DashboardLink {
+  token: string;
+  label: string;
+  createdAt: string;
+  createdBy: string;
+  revoked: boolean;
+  revokedAt?: string;
+  revokedBy?: string;
+  lastViewedAt?: string;
+  viewCount: number;
+}
+
+/** Shared dashboard settings, edited by admins. */
+export interface DashboardConfig {
+  /** The manual hours one plan replaces, for the "time saved" estimate. */
+  hoursPerPlan: number;
+  /** Test or internal accounts left out of every dashboard number (matched case-insensitively). */
+  excludedNames: string[];
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = { hoursPerPlan: 1, excludedNames: [] };
 
 /** Raised when a caller's If-Match revision no longer matches the stored plan. */
 export class RevisionConflictError extends Error {
@@ -348,7 +380,15 @@ export interface StorageAdapter {
   /** Soft delete, like plans. */
   archivePerformanceCampaign(id: string, actor: string): Promise<void>;
 
+  /** Throws (from the driver) if an event with this id already exists, so backfills cannot double up. */
   recordUsageEvent(event: UsageEvent): Promise<void>;
   /** Every event at or after `sinceIso`, oldest first. */
   listUsageEvents(sinceIso: string): Promise<UsageEvent[]>;
+
+  listDashboardLinks(): Promise<DashboardLink[]>;
+  getDashboardLink(token: string): Promise<DashboardLink | null>;
+  /** Creates or replaces the link stored under link.token. */
+  saveDashboardLink(link: DashboardLink): Promise<void>;
+  getDashboardConfig(): Promise<DashboardConfig>;
+  saveDashboardConfig(config: DashboardConfig): Promise<DashboardConfig>;
 }

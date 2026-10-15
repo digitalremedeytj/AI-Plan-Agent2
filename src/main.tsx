@@ -1,6 +1,7 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import DashboardPage from './dashboard/DashboardPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 import { initAnalytics } from './analytics';
@@ -22,7 +23,8 @@ createRoot(document.getElementById('root')!).render(
         </div>
       )}
     >
-      <App />
+      {/* The leadership dashboard is its own page, reachable without the team login. */}
+      {window.location.pathname.replace(/\/+$/, '') === '/dashboard' ? <DashboardPage /> : <App />}
     </ErrorBoundary>
   </StrictMode>,
 );

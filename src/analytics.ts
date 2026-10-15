@@ -33,7 +33,7 @@ declare global {
 }
 
 /** The screens a page_view can name. Each becomes the page path GA reports, e.g. "/saved". */
-export type AnalyticsScreen = "brief" | "saved" | "overview" | "scout" | "plan" | "share" | "login" | "settings";
+export type AnalyticsScreen = "brief" | "saved" | "overview" | "scout" | "plan" | "share" | "login" | "settings" | "dashboard";
 
 export type AnalyticsParams = Record<string, string | number | boolean | null | undefined>;
 
@@ -118,6 +118,13 @@ export function identifyShareViewer(): void {
   if (!gtag) return;
   gtag("set", { user_id: null });
   gtag("set", "user_properties", { user_type: "client_share" });
+}
+
+/** Someone opening the leadership dashboard through a view-only link. */
+export function identifyDashboardViewer(): void {
+  if (!gtag) return;
+  gtag("set", { user_id: null });
+  gtag("set", "user_properties", { user_type: "dashboard_link" });
 }
 
 export function trackScreen(screen: AnalyticsScreen): void {
