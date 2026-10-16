@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { Sparkles, Copy, Check, Info, ArrowLeftRight, TrendingUp, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2, Download } from 'lucide-react';
+import { Sparkles, Copy, Check, Info, ArrowLeftRight, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2, Download } from 'lucide-react';
 import { ChannelStrategyData, CtvPublisherRecommendation, ChannelPanelOverride, ChannelOverridesMap } from '../types';
 import { EditableDetailCard } from './EditableDetailCard';
 import { SectionVisibilityButton } from './SectionVisibilityButton';
 import type { AttachedPlanningRecord, CandidateScoreComponents } from '../planning/types';
-import { isNonMediaItem } from '../utils/mediaTaxonomy';
 import type { ProposalChange } from '../assistant/operations';
 import {
   allocationBasisPoints,
@@ -16,6 +15,10 @@ import {
 
 export { isCtvOrPerformanceTvChannel } from '../planning/ctvChannel';
 import { isCtvOrPerformanceTvChannel } from '../planning/ctvChannel';
+import { buildAllocationView, type AllocationRow, type ChannelSource } from '../planning/allocationRows';
+import { BUDGET_STRATEGY_LABELS, modeNeedsAdditionalBudget, normalizeBudgetStrategyMode, type BudgetStrategyMode } from '../planning/budgetStrategy';
+import { parseCurrencyInput } from '../planning/settings';
+import { BudgetStrategyControl } from './BudgetStrategyControl';
 
 export interface ChannelStrategySectionProps {
   data: ChannelStrategyData;
@@ -27,7 +30,10 @@ export interface ChannelStrategySectionProps {
    * read from the same saved plan.
    */
   internalOnly?: InternalOnlyVisibility;
-  onToggleBudgetMode?: (mode: 'reallocation' | 'incremental') => void;
+  /** Re-plans with a new budget approach; rejects with a message the section shows. */
+  onChangeBudgetStrategy?: (mode: BudgetStrategyMode, additionalBudget: number) => Promise<void>;
+  /** The settings' budget tiers: most media types a budget allows over this plan's flight. */
+  mediaTypeCapFor?: (budget: number) => number;
   onManualMediaTypeChange?: (channelId: string, action: 'add' | 'remove') => Promise<void>;
   onSaveAllocations?: (basisPoints: AllocationBasisPoints, lockedChannelIds: string[], newBudget?: number) => Promise<void>;
   onResetAllocations?: () => Promise<void>;
@@ -46,6 +52,9 @@ export interface InternalOnlyVisibility {
   channelAllocationColumn: boolean;
   channelDollarsColumn: boolean;
   channelScoreColumn: boolean;
+  channelFitScores?: boolean;
+  channelEvidence?: boolean;
+  channelRecommendationsNotInPlan?: boolean;
   channelConfidenceBadge: boolean;
   channelStatusTag: boolean;
   planningAssumptions?: boolean;
@@ -57,6 +66,9 @@ export const ALL_INTERNAL_VISIBLE: InternalOnlyVisibility = {
   channelAllocationColumn: true,
   channelDollarsColumn: true,
   channelScoreColumn: true,
+  channelFitScores: true,
+  channelEvidence: true,
+  channelRecommendationsNotInPlan: true,
   channelConfidenceBadge: true,
   channelStatusTag: true,
   planningAssumptions: true,
@@ -451,7 +463,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   ctvPublishers,
   initialExpandedChannels,
   internalOnly = ALL_INTERNAL_VISIBLE,
-  onToggleBudgetMode,
+  onChangeBudgetStrategy,
+  mediaTypeCapFor,
   onManualMediaTypeChange,
   onSaveAllocations,
   onResetAllocations,
@@ -527,6 +540,13 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   const [draftLockedChannelIds, setDraftLockedChannelIds] = useState<string[]>([]);
   const [allocationEditorError, setAllocationEditorError] = useState('');
   const [isSavingAllocations, setIsSavingAllocations] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<'all' | ChannelSource>('all');
+  const savedBudgetMode = normalizeBudgetStrategyMode(data?.budgetStrategyMode);
+  const savedAdditionalInput = data?.additionalBudget ? Math.round(data.additionalBudget).toLocaleString() : '';
+  const [budgetDraftMode, setBudgetDraftMode] = useState<BudgetStrategyMode>(savedBudgetMode);
+  const [budgetDraftInput, setBudgetDraftInput] = useState(savedAdditionalInput);
+  const [isApplyingBudget, setIsApplyingBudget] = useState(false);
+  const [budgetError, setBudgetError] = useState('');
 
   React.useEffect(() => {
     setExpandedChannels(new Set());
@@ -535,20 +555,38 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     setDraftBudget(0);
     setDraftBudgetInput('');
     setAllocationEditorError('');
+    setBudgetDraftMode(savedBudgetMode);
+    setBudgetDraftInput(savedAdditionalInput);
+    setBudgetError('');
   }, [data?.generatedAt]);
 
   if (!data) return null;
   if (readOnly && isInactive) return null;
   const mediaPlan = data.mediaPlan;
+  const view = buildAllocationView(data);
+  const rowById = new Map([...view.rfpRows, ...view.addedRows, ...view.rfpNotFunded, ...view.recommendedAdditions].map((row) => [row.channelId, row]));
+  const rfpNotFundedIds = new Set(view.rfpNotFunded.map((row) => row.channelId));
+  const keptRfpIds = new Set(view.rfpRows.filter((row) => row.keptAtRfp).map((row) => row.channelId));
   const manualIncludedIds = new Set(data.manualIncludedChannelIds || []);
   const selectedChannelIds = new Set(mediaPlan?.channels.map((channel) => channel.channelId) || []);
+  // RFP media types the plan does not fund get their own group at the top, and ones kept at
+  // their RFP dollars are already rows in the allocation, so neither repeats in the groups below.
   const unselectedCandidates = (mediaPlan?.evaluatedCandidates || [])
-    .filter((candidate) => !selectedChannelIds.has(candidate.product.id))
+    .filter((candidate) => !selectedChannelIds.has(candidate.product.id) && !rfpNotFundedIds.has(candidate.product.id) && !keptRfpIds.has(candidate.product.id))
     .sort((a, b) => {
       const rank = (status: string) => status === 'ADD' ? 0 : displayRecommendationStatus(status) === 'TEST' ? 1 : 2;
       return rank(a.status) - rank(b.status) || b.recommendationScore - a.recommendationScore || a.product.displayName.localeCompare(b.product.displayName);
     });
+  const rfpNotFundedCandidates = view.rfpNotFunded
+    .map((row) => (mediaPlan?.evaluatedCandidates || []).find((candidate) => candidate.product.id === row.channelId))
+    .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
   const candidateGroups = [
+    {
+      id: 'rfp-not-funded',
+      title: 'From your RFP, not funded',
+      description: 'RFP media types this plan does not fund, and why. Add one back to fund it again.',
+      candidates: rfpNotFundedCandidates,
+    },
     {
       id: 'recommended',
       title: 'ScoutAI recommended alternatives',
@@ -716,46 +754,286 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     }
   };
 
-  const getScoreColor = (score: number) => {
-    if (score >= 8.0) return 'text-emerald-500 font-bold';
-    if (score >= 6.5) return 'text-amber-500 font-bold';
-    return 'text-rose-500 font-bold';
-  };
-
-  const getScoreBg = (score: number) => {
-    if (score >= 8.0) return 'bg-emerald-50 text-emerald-700 border-emerald-200';
-    if (score >= 6.5) return 'bg-amber-50 text-amber-700 border-amber-200';
-    return 'bg-rose-50 text-rose-700 border-rose-200';
-  };
-
   const getRecommendationScoreBg = (score: number) => {
     if (score >= 72) return 'bg-emerald-50 text-emerald-700 border-emerald-200';
     if (score >= 55) return 'bg-amber-50 text-amber-700 border-amber-200';
     return 'bg-rose-50 text-rose-700 border-rose-200';
   };
 
+  const money = (value: number) => `$${Math.round(value).toLocaleString()}`;
+  const signedMoney = (value: number) => `${value > 0 ? '+' : value < 0 ? '−' : ''}${money(Math.abs(value))}`;
+  const budgetModeLabel = mediaPlan?.planningMode === 'greenfield' || !view.hasRfp ? 'New Plan' : BUDGET_STRATEGY_LABELS[savedBudgetMode];
+  const SOURCE_LABELS: Record<ChannelSource, string> = { rfp: 'RFP baseline', scoutai: 'ScoutAI added', planner: 'Added by you' };
+
   const handleCopyText = () => {
-    const allocationText = mediaPlan
-      ? `\n\nDETERMINISTIC MEDIA ALLOCATION\n${mediaPlan.channels.map((channel) => `- ${channel.channelName}: ${channel.allocationPercent.toFixed(0)}% / $${channel.allocationDollars.toLocaleString()} (${displayRecommendationStatus(channel.status)}, score ${channel.recommendationScore})`).join('\n')}`
-      : '';
-    const text = `CHANNEL STRATEGY ANALYSIS${allocationText}\n\nRFP Channels:\n${(data.rfpChannels || [])
-      .map(
-        c =>
-          `- ${c.channelName} (Score: ${c.score.toFixed(1)} | Audience Fit: ${c.audienceFit}/10 | Goal Match: ${c.goalMatch}/10)\n  Evidence: ${c.mediaConsumptionEvidence}\n  Why: ${c.whyItEarnsASpot}`
-      )
-      .join('\n')}\n\nScoutAI Recommended Channels:\n${(data.scoutAiRecommendedChannels || [])
-      .map(
-        c =>
-          `- ${c.channelName} (Score: ${c.score.toFixed(1)} | Audience Fit: ${c.audienceFit}/10 | Goal Match: ${c.goalMatch}/10)\n  Evidence: ${c.mediaConsumptionEvidence}\n  Why: ${c.whyItEarnsASpot}`
-      )
-      .join('\n')}\n\nExecutive Insight:\n${data.executiveInsight || ''}`;
+    const rowLine = (row: AllocationRow) => {
+      const money$ = row.dollars !== null ? ` ${money(row.dollars)}` : '';
+      const pct = row.percentOfTotal !== null ? ` (${row.percentOfTotal.toFixed(0)}%)` : '';
+      const rfp = row.rfpDollars !== null ? ` | RFP ${money(row.rfpDollars)}${row.changeDollars ? `, ${signedMoney(row.changeDollars)}` : ''}` : '';
+      const scores = row.score !== null ? ` | Score ${row.score}/100, Audience Fit ${row.audienceFit}/100, Goal Match ${row.goalMatch}/100` : '';
+      return `- ${row.channelName} [${row.keptAtRfp ? 'RFP, kept at RFP budget' : SOURCE_LABELS[row.source]}]${money$}${pct}${rfp}${scores}`
+        + `${row.evidence ? `\n  Evidence: ${row.evidence}` : ''}${row.why ? `\n  ${row.whyLabel}: ${row.why}` : ''}`;
+    };
+    const section = (title: string, rows: AllocationRow[]) => rows.length > 0 ? `\n\n${title}\n${rows.map(rowLine).join('\n')}` : '';
+    const text = `CHANNEL ALLOCATION — ${budgetModeLabel}, plan total ${money(view.planTotal)}`
+      + (view.hasRfp ? section('From your RFP', view.rfpRows) + section('Added to your plan', view.addedRows) : section('Media types', view.addedRows))
+      + section('From your RFP, not funded', view.rfpNotFunded)
+      + section('Recommended additions', view.recommendedAdditions)
+      + `\n\nScoutAI Insight:\n${data.executiveInsight || ''}`;
 
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const rfpChannelNames = (data.rfpChannels || []).map(c => c.channelName).join(', ');
+  const sourceBadge = (row: AllocationRow) => {
+    if (row.source === 'rfp') return <span className="rounded-full border border-slate-800 bg-slate-900 px-2 py-0.5 text-[10px] font-bold text-white">RFP</span>;
+    if (row.source === 'planner') return <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Added by you</span>;
+    // On a plan without an RFP every media type is ScoutAI's, so the badge would say nothing.
+    if (!view.hasRfp) return null;
+    return <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-gradient-to-r from-indigo-600 to-indigo-700 px-2 py-0.5 text-[10px] font-bold text-white"><Sparkles className="h-3 w-3" />ScoutAI added</span>;
+  };
+
+  const fitScores = (row: AllocationRow) => internalOnly.channelFitScores !== false && row.audienceFit !== null && (
+    <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10px] font-bold">
+      <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-slate-700">Audience fit {row.audienceFit}/100</span>
+      <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-slate-700">Goal match {row.goalMatch}/100</span>
+    </div>
+  );
+
+  // Clamped to two lines in the list; the full text shows once the row is expanded.
+  const rowReasons = (row: AllocationRow, expanded: boolean) => internalOnly.channelEvidence !== false && (row.evidence || row.why) && (
+    <dl className="mt-2 space-y-1 text-xs leading-5 text-slate-600">
+      {row.evidence && (
+        <div className={expanded ? '' : 'line-clamp-2'}>
+          <dt className="inline font-bold text-slate-800">Media consumption evidence: </dt>
+          <dd className="inline">{row.evidence}</dd>
+        </div>
+      )}
+      {row.why && (
+        <div className={expanded ? '' : 'line-clamp-2'}>
+          <dt className="inline font-bold text-slate-800">{row.whyLabel}: </dt>
+          <dd className="inline">{row.why}</dd>
+        </div>
+      )}
+    </dl>
+  );
+
+  const rfpComparison = (row: AllocationRow) => row.rfpDollars !== null && (
+    <div className="mt-0.5 whitespace-nowrap text-[10px] font-semibold text-slate-500">
+      RFP {money(row.rfpDollars)}
+      {row.changeDollars !== null && row.changeDollars !== 0 && (
+        <span className={row.changeDollars > 0 ? 'text-emerald-700' : 'text-rose-700'}> · {signedMoney(row.changeDollars)}</span>
+      )}
+    </div>
+  );
+
+  const rowMetrics = (row: AllocationRow, dollarsLabel?: string) => channelColumnCount > 0 && (
+    <div className={`grid gap-3 text-right ${channelColumnGridClass}`}>
+      {internalOnly.channelAllocationColumn && (
+        <div><div className="text-[10px] font-bold uppercase text-slate-400">Allocation</div><div className="font-extrabold text-indigo-700">{row.percentOfTotal !== null ? `${row.percentOfTotal.toFixed(0)}%` : '—'}</div></div>
+      )}
+      {internalOnly.channelDollarsColumn && (
+        <div>
+          <div className="text-[10px] font-bold uppercase text-slate-400">Dollars</div>
+          <div className="font-extrabold text-slate-900">{row.dollars !== null ? money(row.dollars) : (dollarsLabel || '—')}</div>
+          {rfpComparison(row)}
+        </div>
+      )}
+      {internalOnly.channelScoreColumn && (
+        <div><div className="text-[10px] font-bold uppercase text-slate-400">Score</div><div className="font-extrabold text-slate-900">{row.score !== null ? `${row.score}/100` : '—'}</div></div>
+      )}
+    </div>
+  );
+
+  const rowsMatchingFilter = (rows: AllocationRow[]) => sourceFilter === 'all' ? rows : rows.filter((row) => row.source === sourceFilter);
+  const allocationGroups = (view.hasRfp
+    ? [
+        { id: 'rfp', title: 'From your RFP', rows: rowsMatchingFilter(view.rfpRows) },
+        { id: 'added', title: 'Added to your plan', rows: rowsMatchingFilter(view.addedRows) },
+      ]
+    : [{ id: 'all', title: '', rows: rowsMatchingFilter(view.addedRows) }]
+  ).filter((group) => group.rows.length > 0);
+
+  const budgetDraftAdditional = parseCurrencyInput(budgetDraftInput);
+  const budgetDraftChanged = budgetDraftMode !== savedBudgetMode
+    || (modeNeedsAdditionalBudget(budgetDraftMode) && Math.round(budgetDraftAdditional) !== Math.round(data.additionalBudget || 0));
+  const applyBudgetStrategy = async () => {
+    if (!onChangeBudgetStrategy || isApplyingBudget) return;
+    if (modeNeedsAdditionalBudget(budgetDraftMode) && !(budgetDraftAdditional > 0)) {
+      setBudgetError('Enter the additional budget first.');
+      return;
+    }
+    setIsApplyingBudget(true);
+    setBudgetError('');
+    try {
+      await onChangeBudgetStrategy(budgetDraftMode, modeNeedsAdditionalBudget(budgetDraftMode) ? budgetDraftAdditional : 0);
+    } catch (error) {
+      setBudgetError(error instanceof Error ? error.message : 'The plan could not be re-planned with that budget.');
+    } finally {
+      setIsApplyingBudget(false);
+    }
+  };
+
+  const renderAllocatedRow = (channel: NonNullable<typeof mediaPlan>['channels'][number], row: AllocationRow) => {
+    const evaluatedCandidate = mediaPlan?.evaluatedCandidates.find((candidate) => candidate.product.id === channel.channelId);
+    const detailsId = `media-type-details-${channel.channelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    const preview = previewByChannel.get(channel.channelId);
+    return (
+    <article key={channel.channelId} className={`p-4 md:p-5 transition-colors ${preview ? (preview.kind === 'channel_removed' ? 'bg-rose-50/60 ring-1 ring-inset ring-rose-200' : 'bg-indigo-50/50 ring-1 ring-inset ring-indigo-200') : ''}`}>
+      {preview && (
+        <div className={`mb-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${preview.kind === 'channel_removed' ? 'bg-rose-100 text-rose-800' : 'bg-indigo-100 text-indigo-800'}`}>
+          <Sparkles className="h-3 w-3" />
+          {preview.kind === 'channel_removed'
+            ? 'ScoutAI would remove this media type'
+            : preview.kind === 'channel_detail'
+              ? `ScoutAI would change: ${(scoutPreview || []).filter((c) => c.channelId === channel.channelId && c.kind === 'channel_detail').map((c) => c.label.split(' – ').slice(1).join(' – ')).join(', ')}`
+            : preview.kind === 'lock'
+              ? `ScoutAI: ${preview.before} → ${preview.after}`
+              : <>ScoutAI: <span className="font-semibold line-through opacity-60">{preview.before}</span> → {preview.after}</>}
+        </div>
+      )}
+      <div className="flex items-start gap-2">
+        <button
+          type="button"
+          onClick={() => toggleChannelDetails(channel.channelId)}
+          aria-expanded={expandedChannels.has(channel.channelId)}
+          aria-controls={detailsId}
+          className="flex min-w-0 flex-1 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 md:flex-row md:items-start md:justify-between"
+        >
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-extrabold text-slate-900">{channel.channelName}</h3>
+              {sourceBadge(row)}
+              {internalOnly.channelStatusTag && (
+                <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${channel.status === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>{displayRecommendationStatus(channel.status)}</span>
+              )}
+              {internalOnly.channelConfidenceBadge && (
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{channel.confidence} confidence</span>
+              )}
+            </div>
+            <p className="mt-1 text-sm text-slate-600">{channel.role}</p>
+            {fitScores(row)}
+            {rowReasons(row, expandedChannels.has(channel.channelId))}
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            {rowMetrics(row)}
+            <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expandedChannels.has(channel.channelId) ? 'rotate-180' : ''}`} />
+          </div>
+        </button>
+        {!readOnly && (
+          <button
+            type="button"
+            onClick={() => updateManualMediaType(channel.channelId, 'remove')}
+            disabled={!onManualMediaTypeChange || pendingChannelId !== null}
+            className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label={`Remove ${channel.channelName} from plan`}
+            title="Remove media type from this plan"
+          >
+            {pendingChannelId === channel.channelId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Minus className="h-4 w-4" />}
+          </button>
+        )}
+      </div>
+
+      {expandedChannels.has(channel.channelId) && (
+        <MediaTypeDetails
+          channelId={channel.channelId}
+          overrides={data.channelOverrides?.[channel.channelId]}
+          onUpdateOverride={handleUpdateChannelOverride}
+          readOnly={readOnly}
+          detailsId={detailsId}
+          gapAddressed={channel.gapAddressed}
+          planningRationale={channel.allocationRationale}
+          activationGuidance={evaluatedCandidate?.activationGuidance || ''}
+          measurementApproach={evaluatedCandidate?.measurementApproach || ''}
+          targetingTactics={channel.targetingTactics}
+          publishers={resolvePublishers(channel.channelId, channel.channelName, evaluatedCandidate?.product.legacyCanonicalId, channel.publishers)}
+          creativeEnhancements={channel.creativeEnhancements}
+          inventoryControls={channel.inventoryControls}
+          measurementCapabilities={channel.measurementCapabilities}
+          evidence={channel.evidence}
+          scoreComponents={evaluatedCandidate?.components}
+          decisionRule={channel.decisionRule}
+          prerequisites={channel.prerequisites}
+          tradeoffs={channel.tradeoffs}
+          minimumAllocationPercent={channel.minimumAllocationPercent}
+          maximumAllocationPercent={channel.maximumAllocationPercent}
+          minimumTotalSpend={channel.minimumTotalSpend}
+          minimumFlightDays={evaluatedCandidate?.product.minimumFlightDays}
+          typicalCpmLow={channel.typicalCpmLow}
+          typicalCpmHigh={channel.typicalCpmHigh}
+          monthlyEquivalentSpend={channel.monthlyEquivalentSpend}
+          fundingSource={channel.fundingSource}
+        />
+      )}
+    </article>
+    );
+  };
+
+  // "Add on top of RFP": an RFP media type held at its RFP dollars. It sits outside the allocated
+  // budget, so it has no editor, lock or remove control; changing the budget approach moves it.
+  const renderKeptRow = (row: AllocationRow) => {
+    const candidate = mediaPlan?.evaluatedCandidates.find((item) => item.product.id === row.channelId);
+    const detailsId = `media-type-details-${row.channelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    const expanded = expandedChannels.has(row.channelId);
+    return (
+      <article key={row.channelId} className="bg-slate-50/50 p-4 md:p-5">
+        <button
+          type="button"
+          onClick={() => toggleChannelDetails(row.channelId)}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          disabled={!candidate}
+          className="flex w-full min-w-0 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 disabled:cursor-default md:flex-row md:items-start md:justify-between"
+        >
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-extrabold text-slate-900">{row.channelName}</h3>
+              {sourceBadge(row)}
+              <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600"><Lock className="h-3 w-3" />Kept at RFP budget</span>
+            </div>
+            {candidate && <p className="mt-1 text-sm text-slate-600">{candidate.product.funnelRoles.join(' / ')}</p>}
+            {fitScores(row)}
+            {rowReasons(row, expanded)}
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            {rowMetrics(row, 'RFP budget')}
+            {candidate && <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />}
+          </div>
+        </button>
+        {expanded && candidate && (
+          <MediaTypeDetails
+            channelId={candidate.product.id}
+            overrides={data.channelOverrides?.[candidate.product.id]}
+            onUpdateOverride={handleUpdateChannelOverride}
+            readOnly={readOnly}
+            detailsId={detailsId}
+            gapAddressed={candidate.gapAddressed}
+            planningRationale={candidate.allocationRationale}
+            activationGuidance={candidate.activationGuidance}
+            measurementApproach={candidate.measurementApproach}
+            targetingTactics={candidate.targetingTactics || []}
+            publishers={resolvePublishers(candidate.product.id, candidate.product.displayName, candidate.product.legacyCanonicalId, candidate.publishers)}
+            creativeEnhancements={candidate.creativeEnhancements || []}
+            inventoryControls={candidate.inventoryControls || []}
+            measurementCapabilities={candidate.measurementCapabilities || []}
+            evidence={candidate.evidence}
+            scoreComponents={candidate.components}
+            aiAssessed={candidate.aiAssessed !== false}
+            decisionRule={candidate.decisionRule}
+            prerequisites={candidate.prerequisites}
+            tradeoffs={candidate.tradeoffs}
+            minimumAllocationPercent={candidate.product.minimumAllocationPercent}
+            maximumAllocationPercent={candidate.product.maximumAllocationPercent}
+            minimumTotalSpend={candidate.product.minimumTotalSpend}
+            minimumFlightDays={candidate.product.minimumFlightDays}
+            typicalCpmLow={candidate.product.typicalCpmLow}
+            typicalCpmHigh={candidate.product.typicalCpmHigh}
+          />
+        )}
+      </article>
+    );
+  };
 
   return (
     <div
@@ -796,32 +1074,6 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             />
           )}
 
-          {/* Budget Strategy Mode Toggle */}
-          {mediaPlan?.planningMode !== 'greenfield' && <div className="inline-flex rounded-lg p-1 bg-slate-100 border border-slate-200 text-xs font-medium">
-            <button
-              onClick={() => onToggleBudgetMode && onToggleBudgetMode('reallocation')}
-              className={`px-3 py-1.5 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
-                data.budgetStrategyMode === 'reallocation'
-                  ? 'bg-white text-indigo-900 font-bold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <ArrowLeftRight className="w-3.5 h-3.5 text-indigo-600" />
-              Reallocation
-            </button>
-            <button
-              onClick={() => onToggleBudgetMode && onToggleBudgetMode('incremental')}
-              className={`px-3 py-1.5 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
-                data.budgetStrategyMode === 'incremental'
-                  ? 'bg-white text-emerald-900 font-bold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
-              Incremental Spend
-            </button>
-          </div>}
-
           {onOpenSlideStudio && (
             <button
               type="button"
@@ -849,14 +1101,15 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
         <div className="mt-6 space-y-5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
-              { label: 'Budget', value: `$${mediaPlan.workingMediaBudget.toLocaleString()}`, icon: DollarSign },
+              { label: 'Budget', value: money(view.planTotal), icon: DollarSign },
               { label: 'Flight', value: mediaPlan.flightDays ? `${mediaPlan.flightDays} days` : 'Not supplied', icon: CalendarDays },
-              { label: '30-day normalized', value: `$${mediaPlan.normalized30DayBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: Gauge },
-              { label: 'Mode', value: mediaPlan.planningMode === 'greenfield' ? 'New Plan' : mediaPlan.planningMode, icon: ArrowLeftRight },
+              // The plan total, so "Add on top of RFP" normalizes the RFP dollars too, not just the additional budget.
+              { label: '30-day normalized', value: money(mediaPlan.flightDays ? (view.planTotal / mediaPlan.flightDays) * 30 : view.planTotal), icon: Gauge },
+              { label: 'Budget approach', value: budgetModeLabel, icon: ArrowLeftRight },
             ].map(({ label, value, icon: Icon }) => (
               <div key={label} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
                 <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500"><Icon className="h-3.5 w-3.5" />{label}</div>
-                <div className="mt-1 text-sm font-extrabold capitalize text-slate-900">{value}</div>
+                <div className="mt-1 text-sm font-extrabold text-slate-900">{value}</div>
               </div>
             ))}
           </div>
@@ -868,10 +1121,78 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             </div>
           )}
 
+          {!readOnly && view.hasRfp && mediaPlan.planningMode !== 'greenfield' && onChangeBudgetStrategy && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 md:p-5">
+              <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">Budget approach</h3>
+                  <p className="mt-0.5 text-xs text-slate-600">Starting from the RFP's {money(data.rfpMediaBudget ?? view.planTotal)} media budget. Changing it re-plans the allocation; your added and removed media types carry over.</p>
+                </div>
+                {budgetDraftChanged && (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setBudgetDraftMode(savedBudgetMode); setBudgetDraftInput(savedAdditionalInput); setBudgetError(''); }}
+                      disabled={isApplyingBudget}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      <X className="h-3.5 w-3.5" /> Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={applyBudgetStrategy}
+                      disabled={isApplyingBudget}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      {isApplyingBudget ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />} Re-plan
+                    </button>
+                  </div>
+                )}
+              </div>
+              <BudgetStrategyControl
+                idPrefix="plan-budget"
+                mode={budgetDraftMode}
+                additionalBudgetInput={budgetDraftInput}
+                onModeChange={(mode) => { setBudgetDraftMode(mode); setBudgetError(''); }}
+                onAdditionalBudgetChange={(value) => { setBudgetDraftInput(value); setBudgetError(''); }}
+                rfpBudget={data.rfpMediaBudget ?? view.planTotal}
+                capFor={mediaTypeCapFor}
+                disabled={isApplyingBudget}
+              />
+              {budgetError && <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">{budgetError}</div>}
+            </div>
+          )}
+
           <div className="overflow-hidden rounded-2xl border-2 border-indigo-500 bg-white shadow-md">
             <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-800 px-4 py-2 text-xs font-bold uppercase tracking-widest text-white">
               <ShieldCheck className="h-4 w-4 text-indigo-200" /> Channel Allocation
             </div>
+            {view.hasRfp && (
+              <div className="flex flex-wrap items-center gap-2 border-b border-indigo-100 bg-white px-4 py-2.5 md:px-5" role="group" aria-label="Filter media types by source">
+                {([
+                  { id: 'all', label: `All ${view.rfpRows.length + view.addedRows.length}` },
+                  { id: 'rfp', label: `RFP: ${view.summary.rfpFunded} of ${view.summary.rfpCount} in plan` },
+                  { id: 'scoutai', label: `ScoutAI added ${view.summary.scoutAdded}` },
+                  ...(view.summary.plannerAdded > 0 ? [{ id: 'planner', label: `You added ${view.summary.plannerAdded}` }] : []),
+                ] as Array<{ id: 'all' | ChannelSource; label: string }>).map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    aria-pressed={sourceFilter === chip.id}
+                    onClick={() => setSourceFilter(chip.id)}
+                    className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition-colors ${sourceFilter === chip.id ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {!readOnly && view.unmatchedLines.length > 0 && (
+              <div className="border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900 md:px-5">
+                <span className="font-bold">{view.unmatchedLines.length} RFP line{view.unmatchedLines.length === 1 ? '' : 's'} ({money(view.unmatchedLines.reduce((sum, line) => sum + line.budget, 0))}) matched no media type</span>
+                {' '}and are not compared against this plan: {view.unmatchedLines.map((line) => line.label).join('; ')}.
+              </div>
+            )}
             {mediaPlan.channels.length > 0 && (
               <div className="border-b border-indigo-100 bg-indigo-50/60 px-4 py-3 md:px-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -903,13 +1224,16 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                     ) : (
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs font-extrabold text-indigo-800">
-                          <Lock className="h-3.5 w-3.5" /> Fixed budget: ${mediaPlan.workingMediaBudget.toLocaleString()}
+                          <Lock className="h-3.5 w-3.5" /> {savedBudgetMode === 'incremental' && view.hasRfp ? 'Additional budget' : 'Fixed budget'}: ${mediaPlan.workingMediaBudget.toLocaleString()}
                         </span>
                         <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700"><Check className="h-3.5 w-3.5" /> 100% allocated</span>
                       </div>
                     )}
                     {!readOnly && (
-                      <p className="mt-1 text-[11px] text-slate-600">Edit budget, dollars, or whole-number percentages. Every change is balanced across unlocked media types.</p>
+                      <p className="mt-1 text-[11px] text-slate-600">
+                        Edit budget, dollars, or whole-number percentages. Every change is balanced across unlocked media types.
+                        {savedBudgetMode === 'incremental' && view.hasRfp && ' This edits the additional budget only; RFP media types stay at their RFP dollars.'}
+                      </p>
                     )}
                   </div>
                   {!readOnly && (
@@ -1077,114 +1401,28 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                 )}
               </div>
             )}
-            {mediaPlan.channels.length === 0 ? (
+            {mediaPlan.channels.length === 0 && view.rfpRows.length === 0 ? (
               <div className="p-5 text-sm text-slate-700">No product cleared every hard constraint. Review the excluded candidate reasons before allocating budget.</div>
             ) : (
-              <div className="divide-y divide-slate-100">
-                {mediaPlan.channels.map((channel) => {
-                  const evaluatedCandidate = mediaPlan.evaluatedCandidates.find((candidate) => candidate.product.id === channel.channelId);
-                  const detailsId = `media-type-details-${channel.channelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
-                  const preview = previewByChannel.get(channel.channelId);
-                  return (
-                  <article key={channel.channelId} className={`p-4 md:p-5 transition-colors ${preview ? (preview.kind === 'channel_removed' ? 'bg-rose-50/60 ring-1 ring-inset ring-rose-200' : 'bg-indigo-50/50 ring-1 ring-inset ring-indigo-200') : ''}`}>
-                    {preview && (
-                      <div className={`mb-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${preview.kind === 'channel_removed' ? 'bg-rose-100 text-rose-800' : 'bg-indigo-100 text-indigo-800'}`}>
-                        <Sparkles className="h-3 w-3" />
-                        {preview.kind === 'channel_removed'
-                          ? 'ScoutAI would remove this media type'
-                          : preview.kind === 'channel_detail'
-                            ? `ScoutAI would change: ${(scoutPreview || []).filter((c) => c.channelId === channel.channelId && c.kind === 'channel_detail').map((c) => c.label.split(' – ').slice(1).join(' – ')).join(', ')}`
-                          : preview.kind === 'lock'
-                            ? `ScoutAI: ${preview.before} → ${preview.after}`
-                            : <>ScoutAI: <span className="font-semibold line-through opacity-60">{preview.before}</span> → {preview.after}</>}
+              <div>
+                {allocationGroups.map((group) => (
+                  <section key={group.id} aria-labelledby={group.title ? `allocation-group-${group.id}` : undefined}>
+                    {group.title && (
+                      <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2 md:px-5">
+                        <h4 id={`allocation-group-${group.id}`} className="text-[11px] font-extrabold uppercase tracking-wide text-slate-700">{group.title}</h4>
+                        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">{group.rows.length}</span>
                       </div>
                     )}
-                    <div className="flex items-start gap-2">
-                      <button
-                        type="button"
-                        onClick={() => toggleChannelDetails(channel.channelId)}
-                        aria-expanded={expandedChannels.has(channel.channelId)}
-                        aria-controls={detailsId}
-                        className="flex min-w-0 flex-1 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 md:flex-row md:items-start md:justify-between"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="text-base font-extrabold text-slate-900">{channel.channelName}</h3>
-                            {internalOnly.channelStatusTag && (
-                              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${channel.status === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>{displayRecommendationStatus(channel.status)}</span>
-                            )}
-                            {internalOnly.channelConfidenceBadge && (
-                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{channel.confidence} confidence</span>
-                            )}
-                            {manualIncludedIds.has(channel.channelId) && <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Manual</span>}
-                          </div>
-                          <p className="mt-1 text-sm text-slate-600">{channel.role}</p>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          {channelColumnCount > 0 && (
-                            <div className={`grid gap-3 text-right ${channelColumnGridClass}`}>
-                              {internalOnly.channelAllocationColumn && (
-                                <div><div className="text-[10px] font-bold uppercase text-slate-400">Allocation</div><div className="font-extrabold text-indigo-700">{channel.allocationPercent.toFixed(0)}%</div></div>
-                              )}
-                              {internalOnly.channelDollarsColumn && (
-                                <div><div className="text-[10px] font-bold uppercase text-slate-400">Dollars</div><div className="font-extrabold text-slate-900">${channel.allocationDollars.toLocaleString()}</div></div>
-                              )}
-                              {internalOnly.channelScoreColumn && (
-                                <div><div className="text-[10px] font-bold uppercase text-slate-400">Score</div><div className="font-extrabold text-slate-900">{channel.recommendationScore}/100</div></div>
-                              )}
-                            </div>
-                          )}
-                          <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expandedChannels.has(channel.channelId) ? 'rotate-180' : ''}`} />
-                        </div>
-                      </button>
-                      {!readOnly && (
-                        <button
-                          type="button"
-                          onClick={() => updateManualMediaType(channel.channelId, 'remove')}
-                          disabled={!onManualMediaTypeChange || pendingChannelId !== null}
-                          className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
-                          aria-label={`Remove ${channel.channelName} from plan`}
-                          title="Remove media type from this plan"
-                        >
-                          {pendingChannelId === channel.channelId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Minus className="h-4 w-4" />}
-                        </button>
-                      )}
+                    <div className="divide-y divide-slate-100">
+                      {group.rows.map((row) => {
+                        if (row.keptAtRfp) return renderKeptRow(row);
+                        const channel = mediaPlan.channels.find((item) => item.channelId === row.channelId);
+                        return channel ? renderAllocatedRow(channel, row) : null;
+                      })}
                     </div>
-
-                    {expandedChannels.has(channel.channelId) && (
-                      <MediaTypeDetails
-                        channelId={channel.channelId}
-                        overrides={data.channelOverrides?.[channel.channelId]}
-                        onUpdateOverride={handleUpdateChannelOverride}
-                        readOnly={readOnly}
-                        detailsId={detailsId}
-                        gapAddressed={channel.gapAddressed}
-                        planningRationale={channel.allocationRationale}
-                        activationGuidance={evaluatedCandidate?.activationGuidance || ''}
-                        measurementApproach={evaluatedCandidate?.measurementApproach || ''}
-                        targetingTactics={channel.targetingTactics}
-                        publishers={resolvePublishers(channel.channelId, channel.channelName, evaluatedCandidate?.product.legacyCanonicalId, channel.publishers)}
-                        creativeEnhancements={channel.creativeEnhancements}
-                        inventoryControls={channel.inventoryControls}
-                        measurementCapabilities={channel.measurementCapabilities}
-                        evidence={channel.evidence}
-                        scoreComponents={evaluatedCandidate?.components}
-                        decisionRule={channel.decisionRule}
-                        prerequisites={channel.prerequisites}
-                        tradeoffs={channel.tradeoffs}
-                        minimumAllocationPercent={channel.minimumAllocationPercent}
-                        maximumAllocationPercent={channel.maximumAllocationPercent}
-                        minimumTotalSpend={channel.minimumTotalSpend}
-                        minimumFlightDays={evaluatedCandidate?.product.minimumFlightDays}
-                        typicalCpmLow={channel.typicalCpmLow}
-                        typicalCpmHigh={channel.typicalCpmHigh}
-                        monthlyEquivalentSpend={channel.monthlyEquivalentSpend}
-                        fundingSource={channel.fundingSource}
-                      />
-                    )}
-                  </article>
-                  );
-                })}
+                  </section>
+                ))}
+                {allocationGroups.length === 0 && <div className="px-5 py-6 text-sm text-slate-600">No media types match this filter.</div>}
               </div>
             )}
           </div>
@@ -1228,8 +1466,12 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                         const displayedStatus = displayRecommendationStatus(candidate.status);
                         const detailsId = `media-type-details-${candidate.product.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
                         const constraintReason = [...candidate.eligibilityFailures, ...candidate.prerequisites].join(' • ');
+                        const recommendationRow = rowById.get(candidate.product.id);
+                        const isRfpNotFunded = rfpNotFundedIds.has(candidate.product.id);
                         const reason = manuallyRequested
                           ? 'Manual inclusion is requested; the plan is being recalculated to fund it.'
+                          : isRfpNotFunded && recommendationRow
+                            ? recommendationRow.why
                           : constraintReason
                               ? constraintReason
                               : displayedStatus === 'ADD'
@@ -1250,6 +1492,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                                 <div className="min-w-0">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <h5 className="font-extrabold text-slate-900">{candidate.product.displayName}</h5>
+                                    {isRfpNotFunded && recommendationRow && sourceBadge(recommendationRow)}
                                     {internalOnly.channelStatusTag && (
                                       <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${displayedStatus === 'ADD' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : displayedStatus === 'TEST' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{displayedStatus}</span>
                                     )}
@@ -1266,6 +1509,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                                   </div>
                                   <p className="mt-1 text-xs font-semibold text-slate-500">Role: {candidate.product.funnelRoles.join(' / ')}</p>
                                   <p className="mt-1 text-xs leading-5 text-slate-600">{reason}</p>
+                                  {recommendationRow && fitScores(recommendationRow)}
                                 </div>
                                 <div className="flex shrink-0 items-center gap-3">
                                   {candidate.aiAssessed === false ? (
@@ -1348,136 +1592,47 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
         </div>
       )}
 
-      {/* Intro Context Callout (Shown when RFP channels exist) */}
-      {data.rfpChannels && data.rfpChannels.length > 0 && (
-        <div className="mt-6 text-slate-700 text-sm md:text-base font-medium leading-relaxed bg-slate-50/80 p-4 rounded-xl border border-slate-200/60">
-          Your brief includes <span className="font-semibold text-slate-900">{rfpChannelNames || 'existing RFP channels'}</span>.{' '}
-          <span className="text-indigo-700 font-bold">ScoutAI</span> identified{' '}
-          <span className="font-semibold text-slate-900">{data.scoutAiRecommendedChannels?.length || 0} additional programmatic channel(s)</span>{' '}
-          that complement your plan based on total budget tier (${data.totalRfpBudget?.toLocaleString() || 0}).
-        </div>
-      )}
-
-      {/* SECTION 1: RFP CHANNELS CARD */}
-      {data.rfpChannels && data.rfpChannels.length > 0 && (
-        <div className="mt-8 relative border-2 border-slate-800 rounded-2xl overflow-hidden bg-white shadow-sm">
-          {/* RFP Badge Header */}
-          <div className="bg-slate-900 text-white text-xs font-bold font-mono tracking-widest uppercase py-1.5 px-4 text-center flex items-center justify-center gap-2">
-            <span className="bg-slate-800 px-2 py-0.5 rounded border border-slate-700">RFP</span>
-            <span>Baseline RFP Channels</span>
+      {/* What the plan leaves out, for the client: RFP media types it does not fund and the media
+          types ScoutAI would add. Planners see the full candidate list above instead. */}
+      {readOnly && mediaPlan && internalOnly.channelRecommendationsNotInPlan !== false && (view.rfpNotFunded.length > 0 || view.recommendedAdditions.length > 0) && (
+        <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 md:px-5">
+            <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-900"><Sparkles className="h-4 w-4 text-indigo-600" /> ScoutAI recommendations not in this plan</h3>
+            <p className="mt-1 text-xs text-slate-600">Where ScoutAI moved RFP budget, and media types that would add the most for this audience and goal.</p>
           </div>
-
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs md:text-sm border-collapse">
-              <thead>
-                <tr className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
-                  <th className="py-3 px-4 w-[18%]">Channel</th>
-                  <th className="py-3 px-3 w-[10%] text-center">Score</th>
-                  <th className="py-3 px-3 w-[10%] text-center">Audience Fit</th>
-                  <th className="py-3 px-3 w-[10%] text-center">Goal Match</th>
-                  <th className="py-3 px-4 w-[28%]">Media Consumption Evidence</th>
-                  <th className="py-3 px-4 w-[24%]">Why It Earns A Spot</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-sans">
-                {data.rfpChannels.map((item, idx) => {
-                  const nonMedia = isNonMediaItem(item.canonicalId) || isNonMediaItem(item.channelName) || item.score === 0;
-                  return (
-                    <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="py-3.5 px-4 font-semibold text-slate-900">
-                        <div>{item.channelName}</div>
-                        {nonMedia && (
-                          <div className="inline-block text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 mt-1">
-                            Added Value / Non-Media
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3.5 px-3 text-center">
-                        {nonMedia ? (
-                          <span className="inline-block text-xs font-semibold text-slate-600 bg-slate-100 px-2 py-1 rounded border border-slate-200">
-                            N/A
-                          </span>
-                        ) : (
-                          <span className={`text-base font-extrabold ${getScoreColor(item.score)}`}>
-                            {item.score.toFixed(1)}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
-                        {nonMedia ? <span className="text-slate-400 font-normal">N/A</span> : `${item.audienceFit}/10`}
-                      </td>
-                      <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
-                        {nonMedia ? <span className="text-slate-400 font-normal">N/A</span> : `${item.goalMatch}/10`}
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
-                        {item.mediaConsumptionEvidence}
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
-                        {item.whyItEarnsASpot}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* SECTION 2: SCOUTAI RECOMMENDED CHANNELS CARD (Shown when RFP channels baseline exists) */}
-      {data.rfpChannels && data.rfpChannels.length > 0 && data.scoutAiRecommendedChannels && data.scoutAiRecommendedChannels.length > 0 && (
-        <div className="mt-8 relative border-2 border-indigo-500 rounded-2xl overflow-hidden bg-white shadow-md">
-          {/* ScoutAI Badge Header */}
-          <div className="bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-800 text-white text-xs font-bold font-mono tracking-widest uppercase py-1.5 px-4 text-center flex items-center justify-center gap-2">
-            <Sparkles className="w-4 h-4 text-indigo-200" />
-            <span>ScoutAI Recommended Additional Channels</span>
-          </div>
-
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs md:text-sm border-collapse">
-              <thead>
-                <tr className="bg-indigo-50/60 text-indigo-950 font-semibold border-b border-indigo-100">
-                  <th className="py-3 px-4 w-[18%]">Channel</th>
-                  <th className="py-3 px-3 w-[10%] text-center">Score</th>
-                  <th className="py-3 px-3 w-[10%] text-center">Audience Fit</th>
-                  <th className="py-3 px-3 w-[10%] text-center">Goal Match</th>
-                  <th className="py-3 px-4 w-[28%]">Media Consumption Evidence</th>
-                  <th className="py-3 px-4 w-[24%]">Why It Earns A Spot</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-indigo-50 font-sans">
-                {data.scoutAiRecommendedChannels.map((item, idx) => (
-                  <tr key={idx} className="hover:bg-indigo-50/30 transition-colors">
-                    <td className="py-3.5 px-4">
-                      <div className="font-bold text-slate-900 text-sm">{item.channelName}</div>
-                      <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mt-1">
-                        + Recommended
+          {[
+            { id: 'rfp', title: 'From your RFP, not carried forward', rows: view.rfpNotFunded },
+            { id: 'add', title: 'Recommended additions', rows: view.recommendedAdditions.slice(0, 5) },
+          ].filter((group) => group.rows.length > 0).map((group) => (
+            <section key={group.id} aria-labelledby={`share-recs-${group.id}`}>
+              <div className="border-b border-slate-200 bg-white px-4 py-2 md:px-5">
+                <h4 id={`share-recs-${group.id}`} className="text-[11px] font-extrabold uppercase tracking-wide text-slate-700">{group.title}</h4>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {group.rows.map((row) => (
+                  <article key={row.channelId} className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-start md:justify-between md:px-5 md:py-4">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h5 className="font-extrabold text-slate-900">{row.channelName}</h5>
+                        {row.source === 'rfp' && sourceBadge(row)}
                       </div>
-                    </td>
-                    <td className="py-3.5 px-3 text-center">
-                      <span className={`text-base font-extrabold ${getScoreColor(item.score)}`}>
-                        {item.score.toFixed(1)}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
-                      {item.audienceFit}/10
-                    </td>
-                    <td className="py-3.5 px-3 text-center text-slate-600 font-medium">
-                      {item.goalMatch}/10
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
-                      {item.mediaConsumptionEvidence}
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-700 leading-normal text-xs md:text-sm">
-                      {item.whyItEarnsASpot}
-                    </td>
-                  </tr>
+                      {fitScores(row)}
+                      {rowReasons(row, true)}
+                      {internalOnly.channelDollarsColumn && row.source !== 'rfp' && row.minimumSpend > 0 && (
+                        <p className="mt-1.5 text-[11px] font-semibold text-slate-500">Minimum spend to add: {money(row.minimumSpend)}</p>
+                      )}
+                    </div>
+                    {internalOnly.channelScoreColumn && row.score !== null && (
+                      <div className={`min-w-[72px] shrink-0 self-start rounded-lg border px-2.5 py-1.5 text-center ${getRecommendationScoreBg(row.score)}`}>
+                        <div className="text-[10px] font-bold uppercase tracking-wider opacity-75">Score</div>
+                        <div className="font-extrabold leading-tight">{row.score}<span className="text-[10px] font-semibold opacity-90">/100</span></div>
+                      </div>
+                    )}
+                  </article>
                 ))}
-              </tbody>
-            </table>
-          </div>
+              </div>
+            </section>
+          ))}
         </div>
       )}
 

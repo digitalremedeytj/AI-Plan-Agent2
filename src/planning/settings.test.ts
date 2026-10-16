@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   clonePlanningSettings,
+  DEFAULT_INTERNAL_ONLY_SETTINGS,
   DEFAULT_PLANNING_SETTINGS,
   findBudgetChannelTier,
   loadPlanningSettings,
@@ -82,6 +83,9 @@ test("internal-only defaults hide dollars, confidence, assumptions, and qa audit
     channelAllocationColumn: true,
     channelDollarsColumn: false,
     channelScoreColumn: true,
+    channelFitScores: true,
+    channelEvidence: true,
+    channelRecommendationsNotInPlan: true,
     channelConfidenceBadge: false,
     channelStatusTag: false,
     planningAssumptions: false,
@@ -186,7 +190,7 @@ test("migrating and cloning backfills missing internalOnly and overviewMetrics t
 
   const cloned = clonePlanningSettings(legacy);
   assert.equal(cloned.ctvPublisherTargetCount, 12);
-  assert.equal(cloned.internalOnly.length, 8);
+  assert.equal(cloned.internalOnly.length, DEFAULT_INTERNAL_ONLY_SETTINGS.length);
   assert.equal(cloned.overviewMetrics.length, 7);
 
   const validation = validatePlanningSettings(cloned);
@@ -202,7 +206,7 @@ test("partial internalOnly settings are cleanly merged with defaults without dup
     ],
   };
   const cloned = clonePlanningSettings(partial);
-  assert.equal(cloned.internalOnly.length, 8);
+  assert.equal(cloned.internalOnly.length, DEFAULT_INTERNAL_ONLY_SETTINGS.length);
   const allocToggle = cloned.internalOnly.find((s) => s.id === "channelAllocationColumn");
   assert.equal(allocToggle?.show, false);
   const dollarsToggle = cloned.internalOnly.find((s) => s.id === "channelDollarsColumn");

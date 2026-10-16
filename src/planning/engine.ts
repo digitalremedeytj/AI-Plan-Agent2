@@ -1,4 +1,4 @@
-import type { AudienceProfile, CanonicalMediaType } from "../types";
+import type { AudienceProfile, CanonicalMediaType, ExtractedPlacement } from "../types";
 import { isNonMediaItem, normalizeRawChannel } from "../utils/mediaTaxonomy";
 import {
   DIGITAL_REMEDY_PRODUCT_REGISTRY,
@@ -24,6 +24,9 @@ import type {
   MediaProductRecord,
   MediaRecommendationPlan,
   RecommendationStatus,
+  RfpBaseline,
+  RfpBaselineChannel,
+  RfpBaselineLine,
   TriState,
 } from "./types";
 
@@ -175,6 +178,32 @@ function resolveChannelId(raw: string, products?: MediaProductRecord[]): string 
   return canonicalToProductId(mapping.canonicalId);
 }
 
+/**
+ * The media type an uploaded line belongs to. RFPs split one line across fields ("Video" /
+ * "OTT", "Display" / "DSP"), and the first field is not always the specific one: "Video" maps to
+ * a blend with no product while "OTT" is CTV. So an exact catalog match on any field wins, then
+ * the most confident taxonomy match. The taxonomy's 0.5 catch-all (anything unknown reads as
+ * display) does not count, so an unrecognised line stays unmatched instead of inflating Display.
+ */
+function resolvePlacementChannelId(placement: ExtractedPlacement, products: MediaProductRecord[]): string | null {
+  const fields = [placement.mediaType, placement.productType, placement.publisher].filter((value): value is string => Boolean(value && value.trim()));
+  for (const field of fields) {
+    const exact = findEffectiveProduct(products, field);
+    if (exact) return exact.id;
+  }
+  let best: string | null = null;
+  let bestConfidence = 0.5;
+  fields.forEach((field) => {
+    const mapping = normalizeRawChannel(field);
+    const id = canonicalToProductId(mapping.canonicalId);
+    if (id && mapping.confidence > bestConfidence) {
+      best = id;
+      bestConfidence = mapping.confidence;
+    }
+  });
+  return best;
+}
+
 function inclusiveDays(start: string | null | undefined, end: string | null | undefined): number | null {
   if (!start || !end) return null;
   const startDate = new Date(start);
@@ -209,7 +238,8 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
   const effectiveProducts = resolveEffectiveProducts(input.planningSettings);
   const existingChannelIds = Array.from(new Set(
     existingPlacements
-      .map((placement) => resolveChannelId(placement.mediaType || placement.productType || placement.publisher || "", effectiveProducts))
+      .filter((placement) => !isNonMediaItem(placementRaw(placement)) && !isNonMediaItem(normalizeRawChannel(placementRaw(placement)).canonicalId))
+      .map((placement) => resolvePlacementChannelId(placement, effectiveProducts))
       .filter((value): value is string => Boolean(value)),
   ));
 
@@ -252,7 +282,8 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     brandSafetyConstraints: input.brandSafetyConstraints || [],
     assumptions: [
       ...normalization.assumptions,
-      ...(input.planningMode === "incremental" ? ["Existing plan allocations are fixed; only the supplied incremental working media budget is allocated."] : []),
+      ...(input.planningMode === "incremental" ? ["RFP media types keep their RFP budgets; only the additional working media budget is allocated, to new media types."] : []),
+      ...(input.planningMode === "grow" ? ["The RFP budget plus the additional budget is allocated as one total across RFP and new media types."] : []),
     ],
     settings: input.planningSettings,
     appliedBudgetTier,
@@ -333,7 +364,7 @@ function eligibility(product: MediaProductRecord, facts: CampaignFacts): { failu
   if (!product.supportedGeographies.some((geography) => canonicalGeography(geography) === canonicalGeography(facts.geography))) failures.push(`Product is not currently verified for ${facts.geography}.`);
   if (facts.excludedChannelIds.includes(product.id)) failures.push("Product was explicitly excluded by the planner.");
   if (facts.planningMode === "incremental" && facts.existingChannelIds.includes(product.id)) {
-    failures.push("Channel is already in the fixed baseline and is excluded from incremental-budget allocation.");
+    failures.push("Kept at its RFP budget; the additional budget goes to new media types.");
   }
   if (product.verticalExclusions.some((vertical) => facts.vertical.toLowerCase().includes(vertical.toLowerCase()))) {
     failures.push(`Product is excluded for the ${facts.vertical} vertical.`);
@@ -963,6 +994,7 @@ export function buildMediaRecommendationPlan(
       amount: Number(placement.budget) || 0,
       pricing: placement.pricingStructureDetails || placement.pricingStructureType || "Uploaded plan line item",
     }));
+  const rfpBaseline = facts.existingPlacements.length > 0 ? buildRfpBaseline(facts) : undefined;
   const evaluatedCandidates = evaluateCandidates(facts, aiSignals);
   const selected = selectPortfolio(evaluatedCandidates, facts, allocationAudit);
   const requiredIds = new Set(facts.requiredChannelIds);
@@ -997,6 +1029,7 @@ export function buildMediaRecommendationPlan(
       evaluatedCandidates,
       nonMediaCosts,
       allocationAudit,
+      ...(rfpBaseline ? { rfpBaseline } : {}),
     };
   }
 
@@ -1040,10 +1073,12 @@ export function buildMediaRecommendationPlan(
       typicalCpmLow: candidate.product.typicalCpmLow,
       typicalCpmHigh: candidate.product.typicalCpmHigh,
       fundingSource: facts.planningMode === "incremental"
-        ? "Incremental working media budget"
+        ? "Additional working media budget"
         : facts.planningMode === "reallocation"
           ? "Reallocated uploaded-plan working media"
-          : "New plan working media budget",
+          : facts.planningMode === "grow"
+            ? "Uploaded-plan plus additional working media"
+            : "New plan working media budget",
     };
   });
 
@@ -1062,6 +1097,58 @@ export function buildMediaRecommendationPlan(
     evaluatedCandidates,
     nonMediaCosts,
     allocationAudit,
+    ...(rfpBaseline ? { rfpBaseline } : {}),
+  };
+}
+
+function placementRaw(placement: ExtractedPlacement): string {
+  return placement.mediaType || placement.productType || placement.placementName || placement.publisher || "";
+}
+
+/**
+ * The uploaded plan's media dollars per media type, resolved the same way existingChannelIds is
+ * so the two always agree. Non-media lines are left to nonMediaCosts; media lines that resolve to
+ * no media type are kept as unmatched so a planner can see budget the plan could not place.
+ */
+function buildRfpBaseline(facts: CampaignFacts): RfpBaseline {
+  const products = effectiveProductRegistry(facts);
+  const byId = new Map<string, RfpBaselineChannel>();
+  const unmatchedLines: RfpBaselineLine[] = [];
+  let mediaTotal = 0;
+  facts.existingPlacements.forEach((placement) => {
+    const raw = placementRaw(placement);
+    if (isNonMediaItem(raw) || isNonMediaItem(normalizeRawChannel(raw).canonicalId)) return;
+    const line: RfpBaselineLine = {
+      label: [placement.mediaType, placement.productType].filter(Boolean).join(" · ") || placement.placementName || "Line item",
+      publisher: placement.publisher || "",
+      audience: placement.audience || "",
+      pricing: [placement.pricingStructureType, placement.pricingStructureDetails].filter(Boolean).join(" "),
+      budget: Number(placement.budget) || 0,
+      impressions: Number(placement.impressions) || 0,
+    };
+    mediaTotal += line.budget;
+    const channelId = resolvePlacementChannelId(placement, products);
+    if (!channelId) {
+      unmatchedLines.push(line);
+      return;
+    }
+    const entry = byId.get(channelId) || {
+      channelId,
+      channelName: products.find((product) => product.id === channelId)?.displayName || channelId,
+      dollars: 0,
+      impressions: 0,
+      lines: [],
+    };
+    entry.dollars += line.budget;
+    entry.impressions += line.impressions;
+    entry.lines.push(line);
+    byId.set(channelId, entry);
+  });
+  const round = (value: number) => Math.round(value * 100) / 100;
+  return {
+    mediaTotal: round(mediaTotal),
+    channels: Array.from(byId.values()).map((entry) => ({ ...entry, dollars: round(entry.dollars), impressions: Math.round(entry.impressions) })),
+    unmatchedLines,
   };
 }
 

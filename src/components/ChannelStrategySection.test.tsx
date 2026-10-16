@@ -18,6 +18,8 @@ test("media types render collapsed with manual add and remove controls", () => {
   }));
   assert.ok(mediaPlan.channels.length > 0);
   assert.ok(mediaPlan.evaluatedCandidates.length > mediaPlan.channels.length);
+  // A real plan's candidates all carry AI reasoning; without it the section hides their scores.
+  mediaPlan.evaluatedCandidates = mediaPlan.evaluatedCandidates.map((candidate) => ({ ...candidate, aiAssessed: true }));
   const data: ChannelStrategyData = {
     rfpChannels: [],
     scoutAiRecommendedChannels: [],
@@ -263,4 +265,80 @@ test("a product ScoutAI did not assess shows no score, breakdown or stock ration
 
   assert.match(markup, /Not assessed by ScoutAI - not eligible: Product status is beta/);
   assert.doesNotMatch(markup, /Score breakdown|Stock gap text|Stock rationale|Stock activation|Stock measurement|Stock rule/);
+});
+
+function rfpStrategy(mode: "reallocation" | "incremental", additional = 0): ChannelStrategyData {
+  const mediaPlan = buildMediaRecommendationPlan(buildCampaignFacts({
+    kpis: ["awareness", "reach"],
+    audienceDescriptions: ["Streaming and out-of-home audiences"],
+    workingMediaBudget: mode === "incremental" ? additional : 50_000,
+    campaignFlightDays: 30,
+    geography: "United States",
+    planningMode: mode,
+    selectedPlanOptions: [{
+      id: "rfp", name: "RFP", selected: true, budget: 50_000, rawChannels: [], lineItemsCount: 2,
+      placements: [
+        { mediaType: "Video", productType: "OTT", budget: 30_000 },
+        { mediaType: "Digital Out of Home", productType: "DOOH", budget: 20_000 },
+      ],
+    }],
+    planningSettings: clonePlanningSettings(DEFAULT_PLANNING_SETTINGS),
+  }));
+  mediaPlan.evaluatedCandidates = mediaPlan.evaluatedCandidates.map((candidate) => ({ ...candidate, aiAssessed: true }));
+  return {
+    rfpChannels: [],
+    scoutAiRecommendedChannels: [],
+    executiveInsight: "Test plan",
+    budgetStrategyMode: mode,
+    additionalBudget: additional,
+    rfpMediaBudget: 50_000,
+    totalRfpBudget: mediaPlan.workingMediaBudget,
+    analyzedPlanNames: ["RFP"],
+    generatedAt: "2026-10-15T00:00:00.000Z",
+    mediaPlan,
+  };
+}
+
+test("an RFP plan shows one Channel Allocation table split into RFP and added media types, without the old RFP tables", () => {
+  const markup = renderToStaticMarkup(
+    <ChannelStrategySection data={rfpStrategy("reallocation")} onManualMediaTypeChange={async () => undefined} onSaveAllocations={async () => undefined} onChangeBudgetStrategy={async () => undefined} />,
+  );
+  assert.match(markup, />From your RFP</);
+  assert.match(markup, />RFP</);
+  assert.match(markup, /RFP: \d of 2 in plan/);
+  assert.match(markup, /Audience fit \d+\/100/);
+  assert.match(markup, /Goal match \d+\/100/);
+  assert.match(markup, /Media consumption evidence: /);
+  assert.match(markup, /RFP \$30,000|RFP \$20,000/);
+  assert.match(markup, /Budget approach/);
+  assert.match(markup, /Optimize RFP budget/);
+  assert.doesNotMatch(markup, /Baseline RFP Channels/);
+  assert.doesNotMatch(markup, /ScoutAI Recommended Additional Channels/);
+});
+
+test("add on top of RFP lists RFP media types at their RFP dollars with no remove control", () => {
+  const markup = renderToStaticMarkup(
+    <ChannelStrategySection data={rfpStrategy("incremental", 25_000)} onManualMediaTypeChange={async () => undefined} onSaveAllocations={async () => undefined} />,
+  );
+  assert.match(markup, /Kept at RFP budget/);
+  assert.match(markup, /\$75,000/);
+  assert.match(markup, /Additional budget: \$25,000/);
+  assert.doesNotMatch(markup, /aria-label="Remove CTV[^"]*from plan"/);
+  assert.match(markup, /Added to your plan/);
+});
+
+test("the share link shows what the plan leaves out, with why, but no planner controls", () => {
+  const markup = renderToStaticMarkup(<ChannelStrategySection data={rfpStrategy("reallocation")} readOnly />);
+  assert.match(markup, /ScoutAI recommendations not in this plan/);
+  assert.match(markup, /Recommended additions/);
+  assert.match(markup, /Why add it: /);
+  assert.doesNotMatch(markup, /Media types not in plan/);
+  assert.doesNotMatch(markup, /Budget approach<\/h3>/);
+  assert.doesNotMatch(markup, /Add &amp; rebalance/);
+  const hidden = renderToStaticMarkup(
+    <ChannelStrategySection data={rfpStrategy("reallocation")} readOnly internalOnly={{ channelAllocationColumn: true, channelDollarsColumn: false, channelScoreColumn: true, channelConfidenceBadge: false, channelStatusTag: false, channelRecommendationsNotInPlan: false, channelEvidence: false, channelFitScores: false }} />,
+  );
+  assert.doesNotMatch(hidden, /ScoutAI recommendations not in this plan/);
+  assert.doesNotMatch(hidden, /Media consumption evidence: /);
+  assert.doesNotMatch(hidden, /Audience fit/);
 });

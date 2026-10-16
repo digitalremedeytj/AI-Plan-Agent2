@@ -1,5 +1,7 @@
 import { AudienceProfile, GeoTargeting } from "../types";
 import { geoCoverage } from "../planning/geoTargeting";
+import { buildAllocationView, type AllocationRow } from "../planning/allocationRows";
+import { BUDGET_STRATEGY_LABELS, normalizeBudgetStrategyMode } from "../planning/budgetStrategy";
 import { effectiveBriefSections } from "../research/executiveBriefSlides";
 
 export function exportProfileToMarkdown(
@@ -226,19 +228,34 @@ export function exportProfileToMarkdown(
       markdown += `${profile.channelStrategy.executiveInsight}\n\n`;
     }
     const mediaPlan = profile.channelStrategy.mediaPlan;
+    const allocationView = buildAllocationView(profile.channelStrategy);
+    const money = (value: number) => `$${Math.round(value).toLocaleString()}`;
+    const rowFacts = (row: AllocationRow) => [
+      row.source === 'rfp' ? (row.keptAtRfp ? 'RFP baseline, kept at RFP budget' : 'RFP baseline') : row.source === 'planner' ? 'Added by planner' : allocationView.hasRfp ? 'ScoutAI added' : '',
+      row.rfpDollars !== null ? `RFP ${money(row.rfpDollars)}${row.changeDollars ? ` (${row.changeDollars > 0 ? '+' : '−'}${money(Math.abs(row.changeDollars))})` : ''}` : '',
+      row.audienceFit !== null ? `Audience Fit ${row.audienceFit}/100, Goal Match ${row.goalMatch}/100` : '',
+    ].filter(Boolean).join('; ');
+    const rowReasons = (row: AllocationRow) => `${row.evidence ? `  - **Media Consumption Evidence**: ${row.evidence}\n` : ''}${row.why ? `  - **${row.whyLabel}**: ${row.why}\n` : ''}`;
     if (mediaPlan) {
       markdown += `### Planning Summary\n`;
-      markdown += `- **Working Media Budget**: $${mediaPlan.workingMediaBudget.toLocaleString()}\n`;
+      markdown += `- **Working Media Budget**: ${money(allocationView.planTotal)}\n`;
       markdown += `- **Flight Length**: ${mediaPlan.flightDays ? `${mediaPlan.flightDays} days` : 'Not supplied'}\n`;
       markdown += `- **Normalized 30-Day Budget**: $${mediaPlan.normalized30DayBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}\n`;
       markdown += `- **Media-Type Cap / Selected**: ${mediaPlan.maxMediaTypes} / ${mediaPlan.selectedMediaTypeCount}\n`;
-      markdown += `- **Planning Mode**: ${mediaPlan.planningMode}\n`;
+      markdown += `- **Budget Approach**: ${mediaPlan.planningMode === 'greenfield' || !allocationView.hasRfp ? 'New plan' : BUDGET_STRATEGY_LABELS[normalizeBudgetStrategyMode(profile.channelStrategy.budgetStrategyMode)]}\n`;
       markdown += `- **Catalog / Settings Version**: ${mediaPlan.catalogVersion} / ${mediaPlan.settingsVersion}\n\n`;
-      markdown += `### Validated Channel Allocations\n`;
+      markdown += `### Channel Allocation\n`;
       const channelOverrides = profile.channelStrategy.channelOverrides;
+      allocationView.rfpRows.filter((row) => row.keptAtRfp).forEach((row) => {
+        markdown += `- **${row.channelName}** — ${row.percentOfTotal !== null ? `${row.percentOfTotal.toFixed(0)}% ` : ''}(${row.dollars !== null ? money(row.dollars) : 'RFP budget'})${row.score !== null ? `; score ${row.score}/100` : ''}; ${rowFacts(row)}\n`;
+        markdown += rowReasons(row);
+      });
       mediaPlan.channels.forEach(channel => {
         const displayedStatus = String(channel.status) === 'CONDITIONAL' ? 'TEST' : channel.status;
-        markdown += `- **${channel.channelName}** — ${channel.allocationPercent.toFixed(0)}% ($${channel.allocationDollars.toLocaleString()}); ${displayedStatus}, score ${channel.recommendationScore}/100, ${channel.confidence} confidence\n`;
+        const row = [...allocationView.rfpRows, ...allocationView.addedRows].find((item) => item.channelId === channel.channelId);
+        const percent = row?.percentOfTotal ?? channel.allocationPercent;
+        markdown += `- **${channel.channelName}** — ${percent.toFixed(0)}% ($${channel.allocationDollars.toLocaleString()}); ${displayedStatus}, score ${channel.recommendationScore}/100, ${channel.confidence} confidence${row && rowFacts(row) ? `; ${rowFacts(row)}` : ''}\n`;
+        if (row?.evidence) markdown += `  - **Media Consumption Evidence**: ${row.evidence}\n`;
 
         const overrides = channelOverrides?.[channel.channelId];
         const hidden = overrides?.hiddenPanels || [];
@@ -284,21 +301,19 @@ export function exportProfileToMarkdown(
       });
       markdown += `\n`;
     }
-    if (profile.channelStrategy.rfpChannels?.length > 0) {
-      markdown += `### RFP & Evaluation Media Channels\n`;
-      profile.channelStrategy.rfpChannels.forEach(c => {
-        markdown += `- **${c.channelName}** (Score: ${c.score.toFixed(1)}/10 | Audience Fit: ${c.audienceFit}/10 | Goal Match: ${c.goalMatch}/10)\n`;
-        markdown += `  - **Evidence**: ${c.mediaConsumptionEvidence}\n`;
-        markdown += `  - **Strategic Value**: ${c.whyItEarnsASpot}\n`;
+    if (allocationView.rfpNotFunded.length > 0) {
+      markdown += `### From Your RFP, Not Funded\n`;
+      allocationView.rfpNotFunded.forEach((row) => {
+        markdown += `- **${row.channelName}**${row.score !== null ? ` (Score ${row.score}/100)` : ''}${rowFacts(row) ? `; ${rowFacts(row)}` : ''}\n`;
+        markdown += rowReasons(row);
       });
       markdown += `\n`;
     }
-    if (profile.channelStrategy.scoutAiRecommendedChannels?.length > 0) {
-      markdown += `### ScoutAI Channel Expansion Recommendations\n`;
-      profile.channelStrategy.scoutAiRecommendedChannels.forEach(c => {
-        markdown += `- **${c.channelName}** (Score: ${c.score.toFixed(1)}/10 | Audience Fit: ${c.audienceFit}/10 | Goal Match: ${c.goalMatch}/10)\n`;
-        markdown += `  - **Evidence**: ${c.mediaConsumptionEvidence}\n`;
-        markdown += `  - **Strategic Value**: ${c.whyItEarnsASpot}\n`;
+    if (allocationView.recommendedAdditions.length > 0) {
+      markdown += `### ScoutAI Recommended Additions\n`;
+      allocationView.recommendedAdditions.slice(0, 5).forEach((row) => {
+        markdown += `- **${row.channelName}**${row.score !== null ? ` (Score ${row.score}/100)` : ''}${rowFacts(row) ? `; ${rowFacts(row)}` : ''}\n`;
+        markdown += rowReasons(row);
       });
       markdown += `\n`;
     }

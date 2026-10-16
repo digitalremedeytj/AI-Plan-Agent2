@@ -4,7 +4,13 @@ import type { BudgetChannelTier, PlanningSettings } from "./settings";
 export type TriState = true | false | "unknown";
 export type ProductStatus = "live" | "beta" | "future" | "retired";
 export type RecommendationStatus = "ADD" | "TEST" | "DO_NOT_ADD";
-export type PlanningMode = "greenfield" | "reallocation" | "incremental";
+/**
+ * How an uploaded plan's budget is treated. "reallocation" re-spreads the RFP's own media
+ * budget; "incremental" keeps every RFP media type at its RFP dollars and allocates only an
+ * additional budget to new media types; "grow" re-spreads the RFP budget plus an additional
+ * budget across everything. "greenfield" has no uploaded plan.
+ */
+export type PlanningMode = "greenfield" | "reallocation" | "incremental" | "grow";
 export type ConfidenceLevel = "high" | "medium" | "low";
 
 export interface DataReadinessFacts {
@@ -222,6 +228,36 @@ export interface AllocationAuditEntry {
   detail: string;
 }
 
+/** One uploaded RFP line item, kept so a plan can show what fed each media type. */
+export interface RfpBaselineLine {
+  label: string;
+  publisher: string;
+  audience: string;
+  pricing: string;
+  budget: number;
+  impressions: number;
+}
+
+export interface RfpBaselineChannel {
+  channelId: string;
+  channelName: string;
+  dollars: number;
+  impressions: number;
+  lines: RfpBaselineLine[];
+}
+
+/**
+ * What the uploaded RFP spent, per media type. Absent on new plans without an upload and on
+ * plans saved before it existed, so every reader treats it as optional.
+ */
+export interface RfpBaseline {
+  /** The RFP's working media: every line except non-media items such as measurement studies. */
+  mediaTotal: number;
+  channels: RfpBaselineChannel[];
+  /** Media lines that matched no media type, so they are in mediaTotal but no channel. */
+  unmatchedLines: RfpBaselineLine[];
+}
+
 export interface MediaRecommendationPlan {
   catalogVersion: string;
   settingsVersion: number;
@@ -237,6 +273,7 @@ export interface MediaRecommendationPlan {
   evaluatedCandidates: EvaluatedMediaCandidate[];
   nonMediaCosts: Array<{ id: string; displayName: string; amount: number; pricing: string }>;
   allocationAudit: AllocationAuditEntry[];
+  rfpBaseline?: RfpBaseline;
 }
 
 export interface CampaignFactsInput {

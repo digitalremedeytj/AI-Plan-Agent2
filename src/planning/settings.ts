@@ -47,6 +47,9 @@ export type InternalOnlySettingId =
   | "channelAllocationColumn"
   | "channelDollarsColumn"
   | "channelScoreColumn"
+  | "channelFitScores"
+  | "channelEvidence"
+  | "channelRecommendationsNotInPlan"
   | "channelConfidenceBadge"
   | "channelStatusTag"
   | "planningAssumptions"
@@ -77,6 +80,24 @@ export const DEFAULT_INTERNAL_ONLY_SETTINGS: InternalOnlySetting[] = [
     id: "channelScoreColumn",
     label: "Channel > Score Column",
     description: "The 0-100 recommendation score ScoutAI assigned to each media type.",
+    show: true,
+  },
+  {
+    id: "channelFitScores",
+    label: "Channel > Audience Fit & Goal Match",
+    description: "The 0-100 audience fit and goal match scores behind each media type's recommendation score.",
+    show: true,
+  },
+  {
+    id: "channelEvidence",
+    label: "Channel > Evidence & Why",
+    description: "The media consumption evidence and the reason each media type earns its spot, under its name.",
+    show: true,
+  },
+  {
+    id: "channelRecommendationsNotInPlan",
+    label: "Channel > Recommendations Not In Plan (Share Link)",
+    description: "On the share link: RFP media types this plan does not fund and the media types ScoutAI recommends adding, each with why.",
     show: true,
   },
   {

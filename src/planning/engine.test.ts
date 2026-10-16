@@ -170,8 +170,38 @@ test("planning mode changes the funding source and audit assumption", () => {
   const greenfield = buildMediaRecommendationPlan(buildCampaignFacts({ ...base, planningMode: "greenfield" }));
   const incremental = buildMediaRecommendationPlan(buildCampaignFacts({ ...base, planningMode: "incremental" }));
   assert.equal(greenfield.channels[0].fundingSource, "New plan working media budget");
-  assert.equal(incremental.channels[0].fundingSource, "Incremental working media budget");
-  assert.ok(incremental.assumptions.some((item) => item.includes("Existing plan allocations are fixed")));
+  const grow = buildMediaRecommendationPlan(buildCampaignFacts({ ...base, planningMode: "grow" }));
+  assert.equal(incremental.channels[0].fundingSource, "Additional working media budget");
+  assert.ok(incremental.assumptions.some((item) => item.includes("RFP media types keep their RFP budgets")));
+  assert.equal(grow.channels[0].fundingSource, "Uploaded-plan plus additional working media");
+  assert.ok(grow.assumptions.some((item) => item.includes("allocated as one total")));
+});
+
+test("an RFP line is placed by its most specific field, and an unrecognised line is not counted as display", () => {
+  const facts = buildCampaignFacts({
+    kpis: ["awareness"],
+    workingMediaBudget: 38_500,
+    campaignFlightDays: 30,
+    geography: "United States",
+    planningSettings: settings(),
+    selectedPlanOptions: [{
+      id: "rfp", name: "RFP", selected: true, budget: 38_500, rawChannels: [], lineItemsCount: 5,
+      placements: [
+        { mediaType: "Video", productType: "OTT", budget: 7_500 },
+        { mediaType: "Video", productType: "OTT", budget: 7_500 },
+        { mediaType: "Display", productType: "DSP", budget: 2_500 },
+        { mediaType: "Advanced Measurement", productType: "Halo Effect Study", budget: 0 },
+        { mediaType: "Telepathy", productType: "Mind Ads", budget: 21_000 },
+      ],
+    }],
+  });
+  const baseline = buildMediaRecommendationPlan(facts).rfpBaseline!;
+  assert.deepEqual(facts.existingChannelIds.sort(), ["channel.ctv", "channel.display"]);
+  assert.deepEqual(baseline.channels.map((channel) => [channel.channelId, channel.dollars, channel.lines.length]).sort(), [["channel.ctv", 15_000, 2], ["channel.display", 2_500, 1]]);
+  assert.equal(baseline.unmatchedLines.length, 1);
+  assert.equal(baseline.unmatchedLines[0].budget, 21_000);
+  // The measurement study is non-media: it is neither a channel nor an unmatched media line.
+  assert.equal(baseline.mediaTotal, 38_500);
 });
 
 test("incremental mode keeps baseline channels fixed while reallocation can fund them", () => {

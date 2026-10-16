@@ -13,6 +13,7 @@ import { buildCampaignFacts, buildMediaRecommendationPlan, profileSignals } from
 import { validateProductRegistry } from "./src/planning/knowledge/registry";
 import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
+import { normalizeBudgetStrategyMode, resolveStrategyBudget, type BudgetStrategyMode } from "./src/planning/budgetStrategy";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
@@ -1134,7 +1135,7 @@ Return one signal object per allowed candidate and no other products.`;
 async function buildChannelStrategy(
   audienceProfile: any,
   selectedPlanOptions: any[] = [],
-  budgetStrategyMode: 'reallocation' | 'incremental' = 'reallocation',
+  budgetStrategyMode: BudgetStrategyMode = 'reallocation',
   advertiserName?: string,
   kpis?: string[],
   options?: {
@@ -1143,6 +1144,8 @@ async function buildChannelStrategy(
     additionalContext?: string;
     geography?: string;
     workingMediaBudget?: number;
+    /** The additional budget for "Add on top of RFP" and "Optimize total increased budget". */
+    additionalBudget?: number;
     campaignFlightDays?: number | null;
     planningSettings?: unknown;
     requiredChannelIds?: string[];
@@ -1163,7 +1166,8 @@ async function buildChannelStrategy(
   const planningSettings = validatedSettings.valid && validatedSettings.settings
     ? validatedSettings.settings
     : DEFAULT_PLANNING_SETTINGS;
-  const mode: PlanningMode = selectedPlanOptions.length === 0 ? "greenfield" : budgetStrategyMode;
+  const strategyMode = normalizeBudgetStrategyMode(budgetStrategyMode);
+  const mode: PlanningMode = selectedPlanOptions.length === 0 ? "greenfield" : strategyMode;
   const signals = profileSignals(audienceProfile);
   const uploadedWorkingMediaBudget = selectedPlanOptions
     .flatMap((option) => option.placements || [])
@@ -1173,11 +1177,17 @@ async function buildChannelStrategy(
       return !isNonMediaItem(raw) && !isNonMediaItem(canonical);
     })
     .reduce((sum, placement) => sum + (Number(placement.budget) || 0), 0);
-  const resolvedBudget = mode === "reallocation" && uploadedWorkingMediaBudget > 0
+  // The RFP's own media budget, which every budget choice starts from. Uploads whose lines carry
+  // no dollars fall back to the brief's budget, then to the plan options' stated totals.
+  const rfpMediaBudget = uploadedWorkingMediaBudget > 0
     ? uploadedWorkingMediaBudget
     : Number(options?.workingMediaBudget) > 0
       ? Number(options?.workingMediaBudget)
       : totalRfpBudget;
+  const strategyBudget = mode === "greenfield"
+    ? { allocatedBudget: rfpMediaBudget, additionalBudget: 0 }
+    : resolveStrategyBudget(strategyMode, rfpMediaBudget, options?.additionalBudget);
+  const resolvedBudget = strategyBudget.allocatedBudget;
   const facts = buildCampaignFacts({
     advertiserName,
     advertiserUrl: options?.advertiserUrl,
@@ -1248,9 +1258,14 @@ async function buildChannelStrategy(
     rfpChannels,
     scoutAiRecommendedChannels,
     executiveInsight: mediaPlan.channels.length > 0
-      ? `ScoutAI allocated the full $${mediaPlan.workingMediaBudget.toLocaleString()} working media budget across ${mediaPlan.selectedMediaTypeCount} media type(s). The normalized 30-day budget permits ${mediaPlan.maxMediaTypes} automatic selection(s)${facts.requiredChannelIds.length > 0 ? `, with ${facts.requiredChannelIds.length} planner-required override(s) allowed beyond that cap` : ""}.`
+      ? `${mode === "incremental"
+          ? `ScoutAI kept ${rfpChannels.length} RFP media type(s) at their RFP budgets and allocated the additional $${mediaPlan.workingMediaBudget.toLocaleString()} across ${mediaPlan.selectedMediaTypeCount} new media type(s).`
+          : mode === "grow"
+            ? `ScoutAI allocated the combined $${mediaPlan.workingMediaBudget.toLocaleString()} ($${rfpMediaBudget.toLocaleString()} RFP + $${strategyBudget.additionalBudget.toLocaleString()} additional) across ${mediaPlan.selectedMediaTypeCount} media type(s).`
+            : `ScoutAI allocated the full $${mediaPlan.workingMediaBudget.toLocaleString()} working media budget across ${mediaPlan.selectedMediaTypeCount} media type(s).`} The normalized 30-day budget permits ${mediaPlan.maxMediaTypes} automatic selection(s)${facts.requiredChannelIds.length > 0 ? `, with ${facts.requiredChannelIds.length} planner-required override(s) allowed beyond that cap` : ""}.`
       : "No channel cleared all deterministic availability, prerequisite, budget, and portfolio constraints; resolve the listed conditions before allocation.",
-    budgetStrategyMode,
+    budgetStrategyMode: strategyMode,
+    ...(mode === "greenfield" ? {} : { additionalBudget: strategyBudget.additionalBudget, rfpMediaBudget }),
     totalRfpBudget: mediaPlan.workingMediaBudget,
     analyzedPlanNames: selectedPlanOptions.map(p => p.name),
     generatedAt: new Date().toISOString(),
@@ -1921,6 +1936,7 @@ app.post("/api/analyze-media-plan", async (req, res) => {
       additionalContext,
       geography,
       workingMediaBudget,
+      additionalBudget,
       campaignFlightDays,
       planningSettings,
       requiredChannelIds,
@@ -1937,10 +1953,10 @@ app.post("/api/analyze-media-plan", async (req, res) => {
     const channelStrategy = await buildChannelStrategy(
       audienceProfile,
       selectedOptions,
-      budgetStrategyMode || 'reallocation',
+      normalizeBudgetStrategyMode(budgetStrategyMode),
       advertiserName,
       kpis,
-      { advertiserUrl, campaignFocus, additionalContext: typeof additionalContext === "string" ? additionalContext.slice(0, 500) : undefined, geography, workingMediaBudget, campaignFlightDays, planningSettings, requiredChannelIds, requiredChannelsOnly: requiredChannelsOnly === true, excludedChannelIds, candidateSignals },
+      { advertiserUrl, campaignFocus, additionalContext: typeof additionalContext === "string" ? additionalContext.slice(0, 500) : undefined, geography, workingMediaBudget, additionalBudget: Number(additionalBudget) || 0, campaignFlightDays, planningSettings, requiredChannelIds, requiredChannelsOnly: requiredChannelsOnly === true, excludedChannelIds, candidateSignals },
     );
     res.json({ success: true, channelStrategy });
   } catch (err: any) {
@@ -4826,6 +4842,7 @@ app.post("/api/generate-profile", async (req, res) => {
     budgetStrategyMode,
     rfpAnalysis,
     workingMediaBudget,
+    additionalBudget,
     campaignFlightDays,
     planningSettings,
     ctvPublishers,
@@ -5582,7 +5599,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         const channelStrategy = await buildChannelStrategy(
           originalData,
           selectedPlanOptions || [],
-          budgetStrategyMode || 'reallocation',
+          normalizeBudgetStrategyMode(budgetStrategyMode),
           cleanAdvertiserName,
           cleanKpis,
           {
@@ -5591,6 +5608,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             additionalContext: cleanAdditionalContext,
             geography,
             workingMediaBudget: Number(workingMediaBudget) || 0,
+            additionalBudget: Number(additionalBudget) || 0,
             campaignFlightDays: Number(campaignFlightDays) || null,
             planningSettings,
             requiredChannelIds: briefMediaTypeIds,

@@ -577,7 +577,12 @@ export interface ChannelStrategyData {
   rfpChannels: ChannelEvaluation[];
   scoutAiRecommendedChannels: ChannelEvaluation[];
   executiveInsight: string;
-  budgetStrategyMode: 'reallocation' | 'incremental';
+  /** See src/planning/budgetStrategy.ts for what each mode allocates. */
+  budgetStrategyMode: 'reallocation' | 'incremental' | 'grow';
+  /** The additional budget for "Add on top of RFP" and "Optimize total increased budget". */
+  additionalBudget?: number;
+  /** The RFP's media budget the choice started from. Absent on plans saved before budget choices. */
+  rfpMediaBudget?: number;
   totalRfpBudget: number;
   analyzedPlanNames: string[];
   generatedAt: string;

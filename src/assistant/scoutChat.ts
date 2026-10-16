@@ -14,6 +14,7 @@ import { channelRecordOptions } from "../planning/engine";
 import type { PlanningSettings } from "../planning/settings";
 import { MAX_BRIEF_INSTRUCTIONS } from "../research/executiveBrief";
 import type { MediaRecommendationPlan } from "../planning/types";
+import { BUDGET_STRATEGY_LABELS, normalizeBudgetStrategyMode } from "../planning/budgetStrategy";
 import { hasPublisherHighlights, publisherHighlightFields } from "../planning/publisherHighlights";
 import { RECAP_BLOCKS } from "../performance/recap";
 import { KPI_METRICS } from "../performance/recapKpi";
@@ -120,7 +121,7 @@ export function buildPlanContext(
       ].filter(Boolean).join("\n");
     });
     out.push([
-      `MEDIA PLAN (working media budget ${money(plan.workingMediaBudget)}${plan.flightDays ? ` over ${plan.flightDays} days` : ""}; ${plan.channels.length} of at most ${plan.maxMediaTypes} media types; budget mode: ${strategy.budgetStrategyMode || "reallocation"}${strategy.hasManualAllocationChanges ? "; allocations hand-edited" : ""}):`,
+      `MEDIA PLAN (working media budget ${money(plan.workingMediaBudget)}${plan.flightDays ? ` over ${plan.flightDays} days` : ""}; ${plan.channels.length} of at most ${plan.maxMediaTypes} media types; budget approach: ${BUDGET_STRATEGY_LABELS[normalizeBudgetStrategyMode(strategy.budgetStrategyMode)]}${strategy.additionalBudget ? ` (additional ${money(strategy.additionalBudget)})` : ""}${strategy.hasManualAllocationChanges ? "; allocations hand-edited" : ""}):`,
       ...channelLines,
     ].join("\n"));
 

@@ -109,7 +109,7 @@ import type { SegmentRecommendation } from "./types";
 import { captureElementToCanvas } from "./utils/html2canvasPolyfill";
 import { CtvPublisherRecommendation } from "./types";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
-import { normalizeRawChannel } from "./utils/mediaTaxonomy";
+import { isNonMediaItem, normalizeRawChannel } from "./utils/mediaTaxonomy";
 import {
   findBudgetChannelTier,
   normalizeCampaignBudget,
@@ -155,6 +155,8 @@ import { syncCtvChannelPublishers } from "./planning/ctvChannel";
 import { briefMediaTypeOptions } from "./planning/briefMediaTypes";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
+import { mediaTypeCapFor, modeNeedsAdditionalBudget, normalizeBudgetStrategyMode, BUDGET_STRATEGY_LABELS, type BudgetStrategyMode } from "./planning/budgetStrategy";
+import { BudgetStrategyControl } from "./components/BudgetStrategyControl";
 
 const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
   return resolvePublisherLogo(name, customPublishers);
@@ -988,7 +990,21 @@ export default function App() {
   const [planOptions, setPlanOptions] = useState<ParsedPlanOption[]>([]);
   const [taxonomyMappings, setTaxonomyMappings] = useState<TaxonomyMapping[]>([]);
   const [isTaxonomyModalOpen, setIsTaxonomyModalOpen] = useState<boolean>(false);
-  const [budgetStrategyMode, setBudgetStrategyMode] = useState<'reallocation' | 'incremental'>('reallocation');
+  const [budgetStrategyMode, setBudgetStrategyMode] = useState<BudgetStrategyMode>('reallocation');
+  const [additionalBudgetInput, setAdditionalBudgetInput] = useState("");
+  // The selected RFP options' media dollars, matching what the server plans from: non-media
+  // lines such as measurement studies are not working media.
+  const selectedRfpMediaBudget = React.useMemo(() => planOptions
+    .filter((option) => option.selected)
+    .flatMap((option) => option.placements || [])
+    .filter((placement) => {
+      const raw = placement.mediaType || placement.productType || placement.placementName || placement.publisher || "";
+      return !isNonMediaItem(raw) && !isNonMediaItem(normalizeRawChannel(raw).canonicalId);
+    })
+    .reduce((sum, placement) => sum + (Number(placement.budget) || 0), 0), [planOptions]);
+  const hasSelectedRfpPlan = planOptions.some((option) => option.selected);
+  // Same fallback as the server: an upload whose lines carry no dollars plans from the brief's budget.
+  const briefRfpBudget = selectedRfpMediaBudget > 0 ? selectedRfpMediaBudget : budgetNormalization.workingMediaBudget;
   const [channelStrategyUndo, setChannelStrategyUndo] = useState<ChannelStrategyData | null>(null);
 
   // Sync planOptions & taxonomyMappings whenever extractedPlacements update
@@ -2375,6 +2391,9 @@ export default function App() {
     setFailedAvatarIndices([]);
     setActionError(null);
     setProfileData(body.profile);
+    // The plan's own budget approach, so a regenerate keeps it rather than the last one used.
+    setBudgetStrategyMode(normalizeBudgetStrategyMode(body.profile?.channelStrategy?.budgetStrategyMode));
+    setAdditionalBudgetInput(body.profile?.channelStrategy?.additionalBudget ? Math.round(body.profile.channelStrategy.additionalBudget).toLocaleString() : "");
     setGroundingSources(body.groundingSources || null);
     if (body.extractedPlacements) setExtractedPlacements(body.extractedPlacements);
     if (body.planOptions) setPlanOptions(body.planOptions);
@@ -2923,6 +2942,10 @@ export default function App() {
         setError("Advertiser Website URL is required when a media plan file is uploaded.");
         return;
       }
+      if (hasSelectedRfpPlan && modeNeedsAdditionalBudget(budgetStrategyMode) && !(parseCurrencyInput(additionalBudgetInput) > 0)) {
+        setError(`Enter the additional budget for "${BUDGET_STRATEGY_LABELS[budgetStrategyMode]}", or choose "${BUDGET_STRATEGY_LABELS.reallocation}".`);
+        return;
+      }
     } else {
       if (!audienceDescription && !url) {
         setError("Please provide at least an Audience Description or a Website URL.");
@@ -3002,6 +3025,7 @@ export default function App() {
           pinnedBriefOfRecord,
           selectedPlanOptions: selectedOpts,
           budgetStrategyMode,
+          additionalBudget: modeNeedsAdditionalBudget(budgetStrategyMode) ? parseCurrencyInput(additionalBudgetInput) : 0,
           rfpAnalysis,
           workingMediaBudget: budgetNormalization.workingMediaBudget,
           campaignFlightDays: budgetNormalization.campaignFlightDays,
@@ -3509,6 +3533,7 @@ export default function App() {
     setPlanOptions([]);
     setTaxonomyMappings([]);
     setBudgetStrategyMode("reallocation");
+    setAdditionalBudgetInput("");
     setChannelStrategyUndo(null);
     if (lastUploadedFileRef.current) lastUploadedFileRef.current = null;
     if (geoFileInputRef.current) geoFileInputRef.current.value = "";
@@ -3579,12 +3604,13 @@ export default function App() {
     setTimeout(() => setCopySourcesCopied(false), 2000);
   };
 
-  const handleToggleBudgetMode = async (mode: 'reallocation' | 'incremental') => {
-    setBudgetStrategyMode(mode);
-    if (!profileData || !planOptions || planOptions.length === 0) return;
+  // Re-plans the open plan with a new budget approach. It throws instead of reporting, so the
+  // section that asked can show the message beside its own control.
+  const handleChangeBudgetStrategy = async (mode: BudgetStrategyMode, additionalBudget: number) => {
+    if (!profileData || !planOptions || planOptions.length === 0) throw new Error("This plan has no uploaded RFP to re-plan.");
 
     const selectedOpts = planOptions.filter(p => p.selected);
-    if (selectedOpts.length === 0) return;
+    if (selectedOpts.length === 0) throw new Error("Select at least one RFP plan option in the brief first.");
     const currentStrategy = profileData.channelStrategy;
     const candidateSignals = currentStrategy?.mediaPlan?.evaluatedCandidates.map((candidate) => ({
       channelId: candidate.product.id,
@@ -3606,6 +3632,7 @@ export default function App() {
           audienceProfile: profileData,
           selectedPlanOptions: selectedOpts,
           budgetStrategyMode: mode,
+          additionalBudget,
           advertiserName,
           advertiserUrl: url,
           kpis: kpis.filter((k) => k.trim().length > 0),
@@ -3626,17 +3653,24 @@ export default function App() {
         // to the media type rather than its numbers; they carry over for every media type kept.
         setProfileData(prev => {
           if (!prev) return null;
-          const kept = new Set((data.channelStrategy.mediaPlan?.channels || []).map((c: any) => c.channelId));
+          // RFP media types kept at their RFP dollars are rows too, so their edits carry over as well.
+          const kept = new Set([
+            ...(data.channelStrategy.mediaPlan?.channels || []).map((c: any) => c.channelId),
+            ...(data.channelStrategy.mediaPlan?.rfpBaseline?.channels || []).map((c: any) => c.channelId),
+          ]);
           const overrides = Object.fromEntries(Object.entries(prev.channelStrategy?.channelOverrides || {}).filter(([id]) => kept.has(id)));
           return { ...prev, channelStrategy: { ...data.channelStrategy, ...(Object.keys(overrides).length ? { channelOverrides: overrides } : {}) } };
         });
+        setChannelStrategyUndo(currentStrategy || null);
+        setBudgetStrategyMode(mode);
+        setAdditionalBudgetInput(additionalBudget > 0 ? Math.round(additionalBudget).toLocaleString() : "");
         setActionError(null);
       } else {
-        throw new Error(data.details || data.error || "The media plan could not be re-analyzed.");
+        throw new Error(data.details || data.error || "The media plan could not be re-planned.");
       }
     } catch (err: any) {
-      console.error("Failed to re-analyze channel strategy for budget mode toggle:", err);
-      setActionError(`The budget mode changed, but the media plan could not be re-analyzed, so the channel strategy shown is still the previous one: ${err?.message || err}`);
+      console.error("Failed to re-plan the channel strategy with a new budget approach:", err);
+      throw new Error(`The plan was not changed: ${err?.message || err}`);
     }
   };
 
@@ -3685,8 +3719,19 @@ export default function App() {
       budgetToApply,
     );
     const budgetChanged = budgetToApply !== currentStrategy.mediaPlan.workingMediaBudget;
+    // The editor's budget is what the plan allocates. With an RFP that is the additional budget
+    // ("Add on top of RFP") or the RFP budget plus it ("Optimize total increased budget"), so a
+    // change there is a change to the additional budget, not to the brief's budget.
+    const strategyMode = normalizeBudgetStrategyMode(currentStrategy.budgetStrategyMode);
+    const tracksAdditional = budgetChanged && modeNeedsAdditionalBudget(strategyMode) && currentStrategy.rfpMediaBudget !== undefined;
+    const nextAdditional = !tracksAdditional
+      ? currentStrategy.additionalBudget
+      : strategyMode === "incremental"
+        ? budgetToApply
+        : Math.max(0, budgetToApply - (currentStrategy.rfpMediaBudget || 0));
     const nextStrategy: ChannelStrategyData = {
       ...currentStrategy,
+      ...(nextAdditional !== undefined ? { additionalBudget: nextAdditional } : {}),
       generatedAt: new Date().toISOString(),
       allocationBaselineBasisPoints: baseline,
       lockedAllocationChannelIds: lockedChannelIds.filter((id) => nextPlan.channels.some((channel) => channel.channelId === id)),
@@ -3695,7 +3740,9 @@ export default function App() {
     };
     setChannelStrategyUndo(currentStrategy);
     setProfileData((previous) => previous ? { ...previous, channelStrategy: nextStrategy } : null);
-    if (budgetChanged) {
+    if (tracksAdditional) {
+      setAdditionalBudgetInput(nextAdditional ? Math.round(nextAdditional).toLocaleString() : "");
+    } else if (budgetChanged) {
       setBudget(`$${budgetToApply.toLocaleString()}`);
     }
   };
@@ -4819,6 +4866,26 @@ export default function App() {
                           onToggleAll={handleToggleAllPlanOptions}
                           onOpenTaxonomyModal={() => setIsTaxonomyModalOpen(true)}
                         />
+                        {hasSelectedRfpPlan && (
+                          <div className="rounded-xl border border-slate-200 bg-white p-3">
+                            <div className="mb-2">
+                              <h4 className="text-xs font-extrabold text-slate-900">Budget approach</h4>
+                              <p className="mt-0.5 text-[11px] text-slate-500">
+                                The selected RFP has ${Math.round(briefRfpBudget).toLocaleString()} in media. You can change this after the plan is built.
+                              </p>
+                            </div>
+                            <BudgetStrategyControl
+                              idPrefix="brief-budget"
+                              mode={budgetStrategyMode}
+                              additionalBudgetInput={additionalBudgetInput}
+                              onModeChange={setBudgetStrategyMode}
+                              onAdditionalBudgetChange={setAdditionalBudgetInput}
+                              rfpBudget={briefRfpBudget}
+                              capFor={(amount) => mediaTypeCapFor(amount, budgetNormalization.campaignFlightDays, planningSettings)}
+                              disabled={loading}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -7579,7 +7646,8 @@ export default function App() {
                     data={profileData.channelStrategy}
                     ctvPublishers={profileData.ctvPublishers ?? []}
                     internalOnly={internalOnlyVisibility}
-                    onToggleBudgetMode={handleToggleBudgetMode}
+                    onChangeBudgetStrategy={handleChangeBudgetStrategy}
+                    mediaTypeCapFor={(amount) => mediaTypeCapFor(amount, profileData.channelStrategy?.mediaPlan?.flightDays, planningSettings)}
                     onManualMediaTypeChange={handleManualMediaTypeChange}
                     onSaveAllocations={handleSaveManualAllocations}
                     onResetAllocations={handleResetManualAllocations}
