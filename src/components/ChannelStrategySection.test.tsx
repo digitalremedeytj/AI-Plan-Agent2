@@ -308,7 +308,7 @@ test("an RFP plan shows one Channel Allocation table split into RFP and added me
   assert.match(markup, /RFP: \d of 2 in plan/);
   assert.match(markup, /Audience fit \d+\/100/);
   assert.match(markup, /Goal match \d+\/100/);
-  assert.match(markup, /Media consumption evidence: /);
+  assert.match(markup, /<dt[^>]*>Media consumption evidence<\/dt>/);
   assert.match(markup, /RFP \$30,000|RFP \$20,000/);
   assert.match(markup, /Budget approach/);
   assert.match(markup, /Optimize RFP budget/);
@@ -331,7 +331,7 @@ test("the share link shows what the plan leaves out, with why, but no planner co
   const markup = renderToStaticMarkup(<ChannelStrategySection data={rfpStrategy("reallocation")} readOnly />);
   assert.match(markup, /ScoutAI recommendations not in this plan/);
   assert.match(markup, /Recommended additions/);
-  assert.match(markup, /Why add it: /);
+  assert.match(markup, /<dt[^>]*>Why add it<\/dt>/);
   assert.doesNotMatch(markup, /Media types not in plan/);
   assert.doesNotMatch(markup, /Budget approach<\/h3>/);
   assert.doesNotMatch(markup, /Add &amp; rebalance/);
@@ -339,6 +339,6 @@ test("the share link shows what the plan leaves out, with why, but no planner co
     <ChannelStrategySection data={rfpStrategy("reallocation")} readOnly internalOnly={{ channelAllocationColumn: true, channelDollarsColumn: false, channelScoreColumn: true, channelConfidenceBadge: false, channelStatusTag: false, channelRecommendationsNotInPlan: false, channelEvidence: false, channelFitScores: false }} />,
   );
   assert.doesNotMatch(hidden, /ScoutAI recommendations not in this plan/);
-  assert.doesNotMatch(hidden, /Media consumption evidence: /);
+  assert.doesNotMatch(hidden, /<dt[^>]*>Media consumption evidence<\/dt>/);
   assert.doesNotMatch(hidden, /Audience fit/);
 });

@@ -801,19 +801,20 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     </div>
   );
 
-  // Clamped to two lines in the list; the full text shows once the row is expanded.
+  // Side by side under the row's header, full width, so each reads as two short lines instead of
+  // four stacked ones. Clamped in the list; the full text shows once the row is expanded.
   const rowReasons = (row: AllocationRow, expanded: boolean) => internalOnly.channelEvidence !== false && (row.evidence || row.why) && (
-    <dl className="mt-2 space-y-1 text-xs leading-5 text-slate-600">
+    <dl className="grid gap-x-6 gap-y-2 text-xs leading-5 text-slate-600 md:grid-cols-2">
       {row.evidence && (
-        <div className={expanded ? '' : 'line-clamp-2'}>
-          <dt className="inline font-bold text-slate-800">Media consumption evidence: </dt>
-          <dd className="inline">{row.evidence}</dd>
+        <div className="min-w-0">
+          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Media consumption evidence</dt>
+          <dd className={expanded ? '' : 'line-clamp-2'}>{row.evidence}</dd>
         </div>
       )}
       {row.why && (
-        <div className={expanded ? '' : 'line-clamp-2'}>
-          <dt className="inline font-bold text-slate-800">{row.whyLabel}: </dt>
-          <dd className="inline">{row.why}</dd>
+        <div className={`min-w-0 ${row.evidence ? '' : 'md:col-start-2'}`}>
+          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{row.whyLabel}</dt>
+          <dd className={expanded ? '' : 'line-clamp-2'}>{row.why}</dd>
         </div>
       )}
     </dl>
@@ -899,8 +900,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
           onClick={() => toggleChannelDetails(channel.channelId)}
           aria-expanded={expandedChannels.has(channel.channelId)}
           aria-controls={detailsId}
-          className="flex min-w-0 flex-1 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 md:flex-row md:items-start md:justify-between"
+          className="flex min-w-0 flex-1 flex-col gap-2 rounded-xl p-1 text-left hover:bg-slate-50"
         >
+          <div className="flex w-full flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-base font-extrabold text-slate-900">{channel.channelName}</h3>
@@ -914,12 +916,13 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             </div>
             <p className="mt-1 text-sm text-slate-600">{channel.role}</p>
             {fitScores(row)}
-            {rowReasons(row, expandedChannels.has(channel.channelId))}
           </div>
           <div className="flex shrink-0 items-center gap-3">
             {rowMetrics(row)}
             <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expandedChannels.has(channel.channelId) ? 'rotate-180' : ''}`} />
           </div>
+          </div>
+          {rowReasons(row, expandedChannels.has(channel.channelId))}
         </button>
         {!readOnly && (
           <button
@@ -984,8 +987,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
           aria-expanded={expanded}
           aria-controls={detailsId}
           disabled={!candidate}
-          className="flex w-full min-w-0 flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 disabled:cursor-default md:flex-row md:items-start md:justify-between"
+          className="flex w-full min-w-0 flex-col gap-2 rounded-xl p-1 text-left hover:bg-slate-50 disabled:cursor-default"
         >
+          <div className="flex w-full flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-base font-extrabold text-slate-900">{row.channelName}</h3>
@@ -994,12 +998,13 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             </div>
             {candidate && <p className="mt-1 text-sm text-slate-600">{candidate.product.funnelRoles.join(' / ')}</p>}
             {fitScores(row)}
-            {rowReasons(row, expanded)}
           </div>
           <div className="flex shrink-0 items-center gap-3">
             {rowMetrics(row, 'RFP budget')}
             {candidate && <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />}
           </div>
+          </div>
+          {rowReasons(row, expanded)}
         </button>
         {expanded && candidate && (
           <MediaTypeDetails
@@ -1617,7 +1622,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                         {row.source === 'rfp' && sourceBadge(row)}
                       </div>
                       {fitScores(row)}
-                      {rowReasons(row, true)}
+                      <div className="mt-2">{rowReasons(row, true)}</div>
                       {internalOnly.channelDollarsColumn && row.source !== 'rfp' && row.minimumSpend > 0 && (
                         <p className="mt-1.5 text-[11px] font-semibold text-slate-500">Minimum spend to add: {money(row.minimumSpend)}</p>
                       )}
