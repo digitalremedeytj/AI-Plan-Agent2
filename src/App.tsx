@@ -6557,17 +6557,19 @@ export default function App() {
                                           <div className="flex flex-col items-center justify-center text-slate-400 p-2 text-center">
                                             <User className="w-8 h-8 mb-0.5 text-slate-300" />
                                             {avatarFailed && <span className="text-[8px] font-bold text-rose-600 leading-tight">Photo failed</span>}
-                                            <button
-                                              onClick={() => handleOpenAvatarModal(globalIndex)}
-                                              className="text-[9px] font-bold text-indigo-600 hover:underline cursor-pointer"
-                                            >
-                                              {avatarFailed ? "Retry" : "+ Photo"}
-                                            </button>
+                                            {!isShareView && (
+                                              <button
+                                                onClick={() => handleOpenAvatarModal(globalIndex)}
+                                                className="text-[9px] font-bold text-indigo-600 hover:underline cursor-pointer"
+                                              >
+                                                {avatarFailed ? "Retry" : "+ Photo"}
+                                              </button>
+                                            )}
                                           </div>
                                         )}
                                       </div>
 
-                                      {!isGeneratingThis && hasValidAvatar && (
+                                      {!isShareView && !isGeneratingThis && hasValidAvatar && (
                                         <button
                                           onClick={() => handleOpenAvatarModal(globalIndex)}
                                           title="Customize persona headshot"
