@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Sparkles, Copy, Check, Info, ArrowLeftRight, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2, Download } from 'lucide-react';
+import { Sparkles, Copy, Check, Info, ArrowLeftRight, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, SlidersHorizontal, Trash2, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2, Download } from 'lucide-react';
+import { RowActionsMenu } from './RowActionsMenu';
 import { ChannelStrategyData, CtvPublisherRecommendation, ChannelPanelOverride, ChannelOverridesMap } from '../types';
 import { EditableDetailCard } from './EditableDetailCard';
 import { SectionVisibilityButton } from './SectionVisibilityButton';
@@ -90,6 +91,8 @@ const allocationInputs = (basisPoints: AllocationBasisPoints, totalBudget: numbe
 const parseAllocationNumber = (value: string): number => Number(value.replace(/[$,%\s,]/g, ''));
 
 const displayRecommendationStatus = (status: string) => status === 'CONDITIONAL' ? 'TEST' : status;
+
+const allocationPercentInputId = (channelId: string) => `allocation-percent-${channelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 
 interface MediaTypeDetailsProps {
   channelId?: string;
@@ -541,6 +544,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   const [allocationEditorError, setAllocationEditorError] = useState('');
   const [isSavingAllocations, setIsSavingAllocations] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<'all' | ChannelSource>('all');
+  // "Edit allocation" from a row's menu opens the editor on that row's percent field.
+  const [editorFocusChannelId, setEditorFocusChannelId] = useState<string | null>(null);
   const savedBudgetMode = normalizeBudgetStrategyMode(data?.budgetStrategyMode);
   const savedAdditionalInput = data?.additionalBudget ? Math.round(data.additionalBudget).toLocaleString() : '';
   const [budgetDraftMode, setBudgetDraftMode] = useState<BudgetStrategyMode>(savedBudgetMode);
@@ -644,6 +649,45 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     setDraftLockedChannelIds((data.lockedAllocationChannelIds || []).filter((id) => current[id] !== undefined));
     setAllocationEditorError('');
     setIsEditingAllocations(true);
+  };
+
+  React.useEffect(() => {
+    if (!isEditingAllocations || !editorFocusChannelId) return;
+    const input = document.getElementById(allocationPercentInputId(editorFocusChannelId)) as HTMLInputElement | null;
+    input?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    input?.focus({ preventScroll: true });
+    setEditorFocusChannelId(null);
+  }, [isEditingAllocations, editorFocusChannelId]);
+
+  const editChannelAllocation = (channelId: string) => {
+    if (!isEditingAllocations) startAllocationEditor();
+    setEditorFocusChannelId(channelId);
+  };
+
+  // A lock from the row menu saves straight away with the allocations unchanged, so it reads the
+  // same as locking in the editor and saving; inside the editor it toggles the draft lock instead.
+  const toggleChannelLock = async (channelId: string, channelName: string) => {
+    if (isEditingAllocations) {
+      toggleDraftLock(channelId);
+      return;
+    }
+    if (!onSaveAllocations || !mediaPlan || isSavingAllocations) return;
+    const locked = (data.lockedAllocationChannelIds || []).includes(channelId);
+    const nextLocked = locked
+      ? (data.lockedAllocationChannelIds || []).filter((id) => id !== channelId)
+      : [...(data.lockedAllocationChannelIds || []), channelId];
+    setIsSavingAllocations(true);
+    setManualUpdateError('');
+    try {
+      await onSaveAllocations(allocationBasisPoints(mediaPlan), nextLocked, mediaPlan.workingMediaBudget);
+      setManualUpdateMessage(locked
+        ? `${channelName} is unlocked and will rebalance with the other media types.`
+        : `${channelName} is locked: rebalancing leaves its allocation as it is.`);
+    } catch (error) {
+      setManualUpdateError(error instanceof Error ? error.message : 'The lock could not be saved.');
+    } finally {
+      setIsSavingAllocations(false);
+    }
   };
 
   const cancelAllocationEditor = () => {
@@ -880,6 +924,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     const evaluatedCandidate = mediaPlan?.evaluatedCandidates.find((candidate) => candidate.product.id === channel.channelId);
     const detailsId = `media-type-details-${channel.channelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
     const preview = previewByChannel.get(channel.channelId);
+    const locked = isEditingAllocations
+      ? draftLockedChannelIds.includes(channel.channelId)
+      : (data.lockedAllocationChannelIds || []).includes(channel.channelId);
     return (
     <article key={channel.channelId} className={`p-4 md:p-5 transition-colors ${preview ? (preview.kind === 'channel_removed' ? 'bg-rose-50/60 ring-1 ring-inset ring-rose-200' : 'bg-indigo-50/50 ring-1 ring-inset ring-indigo-200') : ''}`}>
       {preview && (
@@ -913,6 +960,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
               {internalOnly.channelConfidenceBadge && (
                 <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-600">{channel.confidence} confidence</span>
               )}
+              {!readOnly && locked && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700"><Lock className="h-3 w-3" />Locked</span>
+              )}
             </div>
             <p className="mt-1 text-sm text-slate-600">{channel.role}</p>
             {fitScores(row)}
@@ -925,16 +975,37 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
           {rowReasons(row, expandedChannels.has(channel.channelId))}
         </button>
         {!readOnly && (
-          <button
-            type="button"
-            onClick={() => updateManualMediaType(channel.channelId, 'remove')}
-            disabled={!onManualMediaTypeChange || pendingChannelId !== null}
-            className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label={`Remove ${channel.channelName} from plan`}
-            title="Remove media type from this plan"
-          >
-            {pendingChannelId === channel.channelId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Minus className="h-4 w-4" />}
-          </button>
+          <div className="mt-2 shrink-0">
+            <RowActionsMenu
+              label={`Actions for ${channel.channelName}`}
+              busy={pendingChannelId === channel.channelId}
+              actions={[
+                {
+                  id: 'lock',
+                  label: locked ? 'Unlock allocation' : 'Lock allocation',
+                  icon: locked ? <Unlock className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />,
+                  onSelect: () => { void toggleChannelLock(channel.channelId, channel.channelName); },
+                  disabled: !onSaveAllocations || isSavingAllocations,
+                },
+                {
+                  id: 'edit',
+                  label: 'Edit allocation',
+                  icon: <SlidersHorizontal className="h-3.5 w-3.5" />,
+                  onSelect: () => editChannelAllocation(channel.channelId),
+                  disabled: !onSaveAllocations,
+                },
+                {
+                  id: 'remove',
+                  label: 'Remove from plan',
+                  icon: <Trash2 className="h-3.5 w-3.5" />,
+                  danger: true,
+                  onSelect: () => { void updateManualMediaType(channel.channelId, 'remove'); },
+                  disabled: !onManualMediaTypeChange || pendingChannelId !== null || isEditingAllocations,
+                  disabledReason: isEditingAllocations ? 'Save or cancel your allocation edits first.' : undefined,
+                },
+              ]}
+            />
+          </div>
         )}
       </div>
 
@@ -1300,6 +1371,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                                 <span className="mb-1 block text-[10px] font-extrabold uppercase tracking-wide text-slate-400 sm:hidden">Percent (whole)</span>
                                 <span className="relative block">
                                   <input
+                                    id={allocationPercentInputId(channel.channelId)}
                                     type="text"
                                     inputMode="numeric"
                                     pattern="[0-9]*"

@@ -41,7 +41,7 @@ test("media types render collapsed with manual add and remove controls", () => {
   );
   assert.match(markup, /aria-expanded="false"/);
   assert.match(markup, /aria-controls="media-type-details-/);
-  assert.match(markup, /aria-label="Remove [^"]+ from plan"/);
+  assert.match(markup, /aria-haspopup="menu" aria-expanded="false" aria-label="Actions for [^"]+"/);
   assert.match(markup, /aria-label="Add [^"]+ to plan"/);
   assert.match(markup, /ScoutAI (Recommended Alternative|Test Opportunity)/);
   assert.match(markup, /ScoutAI recommended alternatives|ScoutAI test opportunities/);
@@ -50,6 +50,16 @@ test("media types render collapsed with manual add and remove controls", () => {
   assert.match(markup, /Add &amp; rebalance/);
   assert.match(markup, /\/100/);
   assert.doesNotMatch(markup, /Gap addressed:/);
+  assert.doesNotMatch(markup, />Locked</);
+  // A lock is visible on the row itself now that it is set from the row's menu.
+  const lockedMarkup = renderToStaticMarkup(
+    <ChannelStrategySection
+      data={{ ...data, lockedAllocationChannelIds: [mediaPlan.channels[0].channelId] }}
+      onManualMediaTypeChange={async () => undefined}
+      onSaveAllocations={async () => undefined}
+    />,
+  );
+  assert.equal(lockedMarkup.match(/>Locked</g)?.length, 1);
 });
 
 test("legacy conditional candidates render as advisory tests", () => {
@@ -112,14 +122,14 @@ test("ChannelStrategySection hides Edit allocations, [-] buttons, and candidate 
   );
   assert.match(interactiveMarkup, /Edit allocations/);
   assert.match(interactiveMarkup, /Media types not in plan/);
-  assert.match(interactiveMarkup, /Remove .* from plan/);
+  assert.match(interactiveMarkup, /aria-label="Actions for [^"]+"/);
 
   const readOnlyMarkup = renderToStaticMarkup(
     <ChannelStrategySection data={data} readOnly={true} onSaveAllocations={async () => {}} onManualMediaTypeChange={async () => {}} />
   );
   assert.doesNotMatch(readOnlyMarkup, /Edit allocations/);
   assert.doesNotMatch(readOnlyMarkup, /Media types not in plan/);
-  assert.doesNotMatch(readOnlyMarkup, /Remove .* from plan/);
+  assert.doesNotMatch(readOnlyMarkup, /aria-label="Actions for [^"]+"/);
 });
 
 test("isCtvOrPerformanceTvChannel correctly identifies CTV and Performance TV", () => {
@@ -323,7 +333,7 @@ test("add on top of RFP lists RFP media types at their RFP dollars with no remov
   assert.match(markup, /Kept at RFP budget/);
   assert.match(markup, /\$75,000/);
   assert.match(markup, /Additional budget: \$25,000/);
-  assert.doesNotMatch(markup, /aria-label="Remove CTV[^"]*from plan"/);
+  assert.doesNotMatch(markup, /aria-label="Actions for CTV[^"]*"/);
   assert.match(markup, /Added to your plan/);
 });
 
