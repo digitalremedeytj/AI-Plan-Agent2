@@ -8,3 +8,9 @@ coverage/
 .env*
 !.env.example
 data/
+
+# The server's on-disk media plan parse cache (server.ts CACHE_FILE_PATH); local state, not source.
+.media_plan_cache.json
+# Local dev-server launch configs (they hold test credentials) and Claude Code session worktrees.
+.claude/launch.json
+.claude/worktrees/

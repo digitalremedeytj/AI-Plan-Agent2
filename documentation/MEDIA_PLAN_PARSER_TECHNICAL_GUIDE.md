@@ -73,7 +73,7 @@ The parser operates via a synchronous, state-aware processing pipeline that span
    This disables the idle socket timeout, allowing the connection to stay open as long as the Code Interpreter is running.
 
 ### Phase 2: SHA-256 Server Caching & Fast Lookup
-1. The server calculates the binary SHA-256 hash of the uploaded file buffer.
+1. The server calculates the SHA-256 hash of `MEDIA_PLAN_PARSER_VERSION` plus the uploaded file buffer. Bump that constant whenever the parse instructions change what a file parses to, so files parsed before the change are parsed again. The browser's localStorage cache key (`media_plan_parsed_cache_v2_*` in `App.tsx`) carries a matching version.
 2. **Cache Lookup**: If `ignoreCache` is NOT requested, the server checks its in-memory `mediaPlanParseCache` map (backed by disk persistence in `.media_plan_cache.json`).
 3. If a match exists:
    - The server instantly returns the cached placements and RFP brief analysis without calling the OpenAI API.
@@ -96,8 +96,9 @@ Inside the Python sandbox and client-side ingestion pipeline:
 - Excludes heavy reference sheets by checking keywords and row counts.
 - **Campaign Metadata Extraction**: Automatically scans header/preamble cells for `Advertiser Name`, `Website URL`, and `KPI (Goals)` to pre-populate open form input fields.
 - **RFP Brief Analysis**: When an RFP document or brief specification is uploaded, extracts submission due dates, flight dates, target audiences, geographic requirements, payment terms, reporting asks, and maps grounded Digital Remedy capabilities.
-- Propagates merged cells downwards to make sure every row has its respective publisher and site data.
-- Dynamically resolves parent-child stacked column headers (e.g. "Location" merged over a "Type" column and a blank details column).
+- Reads merged cells with openpyxl and fills each merge down its first column, so every line item in a merged CPM, budget, impression or publisher block gets the value; merged budget and impression totals are split evenly across the lines they cover.
+- Dynamically resolves stacked column headers: a parent above the header row, or a "TYPE / Value" sub-header row below it (e.g. "Location" and "Pricing Structure" merged over TYPE and Value).
+- Skips unlabeled totals rows (rows with numbers but no media type, product, publisher, placement or audience).
 - Detects multi-plan section boundaries ("Option A", "Tier 2", "High Budget Scenario") and maps them into `planName`.
 - Maps column labels dynamically to the standard schema.
 - Cleans and casts numeric properties (strips symbols, parses CPM units).
@@ -116,7 +117,7 @@ Inside the Python sandbox and client-side ingestion pipeline:
 
 ## 3. High-Performance Python Script Design & Mechanics
 
-Below is the structured, optimized Python execution template used by the model inside the sandbox. This code is optimized to run with high efficiency, preventing memory exhaustion and timeout errors:
+Below is the Python template the model is given, exactly as it receives it (the source is the `parseInstructions` template literal in `server.ts`; keep this copy in step when changing it). Two traps when editing that template literal: `${` must be written `\${`, and a regex backslash must be doubled (`\\d`), or JavaScript drops it and the model sees `[^d.]`, which strips every digit from a budget.
 
 ```python
 import pandas as pd
@@ -132,7 +133,7 @@ def parse_media_plan(file_path):
             df = pd.read_csv(file_path)
             return parse_dataframe(df, sheet_name="Main Plan")
         except Exception as e:
-            print(f"Error reading CSV: {e}")
+            print(f"Error reading CSV: ${e}")
             return []
 
     # 1. Use openpyxl in read_only mode to quickly inspect sheets without loading data
@@ -141,7 +142,7 @@ def parse_media_plan(file_path):
         all_sheets = wb.sheetnames
         wb.close()
     except Exception as e:
-        print(f"Error reading workbook sheets: {e}")
+        print(f"Error reading workbook sheets: ${e}")
         return []
     
     # 2. Filter sheets by name first to avoid loading huge reference/spec sheets
@@ -161,19 +162,30 @@ def parse_media_plan(file_path):
         candidate_sheets = all_sheets
         
     all_placements = []
+
+    # pandas drops merged cells, so the workbook is opened once in full mode to see them.
+    # .xls (which openpyxl cannot open) falls back to pandas without merge handling.
+    try:
+        full_wb = openpyxl.load_workbook(file_path, data_only=True)
+    except Exception as e:
+        print(f"Merged-cell read unavailable, using pandas only: ${e}")
+        full_wb = None
     
     # 3. Process candidate sheets
     for sheet in candidate_sheets:
         try:
-            sample_df = pd.read_excel(file_path, sheet_name=sheet, nrows=5)
-            if sample_df.empty:
+            if full_wb is not None:
+                df, row_span = load_sheet_with_merges(full_wb[sheet])
+            else:
+                df = pd.read_excel(file_path, sheet_name=sheet, header=None)
+                row_span = {}
+            if df.dropna(how='all').empty:
                 continue
-            df = pd.read_excel(file_path, sheet_name=sheet, header=None)
         except Exception as e:
-            print(f"Error loading sheet {sheet}: {e}")
+            print(f"Error loading sheet ${sheet}: ${e}")
             continue
             
-        placements = parse_dataframe(df, sheet_name=sheet)
+        placements = parse_dataframe(df, sheet_name=sheet, row_span=row_span)
         all_placements.extend(placements)
         
         # Safeguard overall output size to avoid token truncation
@@ -183,7 +195,31 @@ def parse_media_plan(file_path):
             
     return all_placements
 
-def parse_dataframe(df, sheet_name="Main Plan"):
+def load_sheet_with_merges(ws):
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    width = max((len(r) for r in rows), default=0)
+    rows = [r + [None] * (width - len(r)) for r in rows]
+    # Excel keeps a merged cell's value only in its top-left cell. A plan that merges one CPM,
+    # budget and impression total down several line items would otherwise give the first line
+    # everything and the rest nothing. Fill each merge down its first column (filling across
+    # would turn a one-cell section header like "Option A" into a full row) and record how many
+    # rows it covers, so a shared budget or impression total is split rather than repeated.
+    row_span = {}
+    for rng in ws.merged_cells.ranges:
+        r0, c0 = rng.min_row - 1, rng.min_col - 1
+        if r0 >= len(rows) or c0 >= width:
+            continue
+        top = rows[r0][c0]
+        last = min(rng.max_row, len(rows))
+        n = last - r0
+        for r in range(r0, last):
+            rows[r][c0] = top
+            if n > 1:
+                row_span[(r, c0)] = n
+    return pd.DataFrame(rows), row_span
+
+def parse_dataframe(df, sheet_name="Main Plan", row_span=None):
+    row_span = row_span or {}
     if df.empty:
         return []
 
@@ -207,9 +243,26 @@ def parse_dataframe(df, sheet_name="Main Plan"):
         df.columns = cols
         data_df = df
     else:
-        # Resolve parent-child stacked column headers (e.g. "Location" merged over a "Type" column and a blank details column)
+        # A sub-header row under the header (e.g. "TYPE" / "Value" under a merged "Location" or
+        # "Pricing Structure") names the real columns. Read as data, it leaves the rate under the
+        # wrong column, so it is joined to its parent instead.
         header_cols = []
-        if header_idx > 0:
+        sub_row = df.iloc[header_idx + 1].values if header_idx + 1 < len(df) else []
+        sub_vals = [str(v).strip().lower() for v in sub_row if pd.notna(v) and str(v).strip() != ""]
+        is_sub_header = len(sub_vals) >= 2 and all(len(v) <= 20 and not re.match(r'^[\d$.,%\s-]+$', v) for v in sub_vals) and any(v in ['type', 'value', 'details', 'detail', 'name', 'rate', 'start', 'end'] for v in sub_vals)
+        if is_sub_header:
+            own_row = df.iloc[header_idx].values
+            parent_row = df.iloc[header_idx].ffill().values
+            for c_idx in range(len(own_row)):
+                own = str(own_row[c_idx]).strip() if pd.notna(own_row[c_idx]) else ""
+                child = str(sub_row[c_idx]).strip() if pd.notna(sub_row[c_idx]) else ""
+                parent = str(parent_row[c_idx]).strip() if pd.notna(parent_row[c_idx]) else ""
+                if child and (own or parent):
+                    header_cols.append(f"${own or parent} ${child}")
+                else:
+                    header_cols.append(own or child or f"Col_${c_idx}")
+            header_idx += 1
+        elif header_idx > 0:
             parent_row = df.iloc[header_idx - 1].ffill().values
             child_row = df.iloc[header_idx].values
             for c_idx in range(len(child_row)):
@@ -217,13 +270,13 @@ def parse_dataframe(df, sheet_name="Main Plan"):
                 c_val = str(child_row[c_idx]).strip() if pd.notna(child_row[c_idx]) else ""
                 if p_val and p_val.lower() not in ['nan', 'unnamed:']:
                     if c_val and c_val.lower() not in ['nan', 'unnamed:'] and c_val.lower() != p_val.lower():
-                        header_cols.append(f"{p_val} {c_val}")
+                        header_cols.append(f"${p_val} ${c_val}")
                     else:
                         header_cols.append(p_val)
                 else:
-                    header_cols.append(c_val if c_val and c_val.lower() not in ['nan', 'unnamed:'] else f"Col_{c_idx}")
+                    header_cols.append(c_val if c_val and c_val.lower() not in ['nan', 'unnamed:'] else f"Col_${c_idx}")
         else:
-            header_cols = [str(val).strip() if pd.notna(val) else f"Col_{c_idx}" for c_idx, val in enumerate(df.iloc[header_idx].values)]
+            header_cols = [str(val).strip() if pd.notna(val) else f"Col_${c_idx}" for c_idx, val in enumerate(df.iloc[header_idx].values)]
             
         df.columns = header_cols
         data_df = df.iloc[header_idx + 1:].copy()
@@ -308,14 +361,15 @@ def parse_dataframe(df, sheet_name="Main Plan"):
             col_mapping['impressions'] = col
         if 'locationType' not in col_mapping and ('geography' in col_lower):
             col_mapping['locationType'] = col
-        if 'flightDates' not in col_mapping and ('dates' in col_lower or 'flight' in col_lower):
+        if 'startDate' not in col_mapping and 'flightDates' not in col_mapping and ('date' in col_lower or 'flight' in col_lower or 'duration' in col_lower):
             col_mapping['flightDates'] = col
+
+    col_positions = {k: list(data_df.columns).index(v) for k, v in col_mapping.items()}
 
     placements = []
     current_section = ""
 
-    for _, row in data_df.iterrows():
-        # Detect in-sheet plan option or section headers
+    for row_idx, row in data_df.iterrows():
         non_nulls = [str(v).strip() for v in row.values if pd.notna(v) and str(v).strip() != ""]
         if len(non_nulls) == 1 or (len(non_nulls) == 2 and not any(k in col_mapping for k in ['budget', 'publisher'])):
             cell_text = non_nulls[0]
@@ -330,8 +384,10 @@ def parse_dataframe(df, sheet_name="Main Plan"):
         place = p_val('placementName')
         budget_str = p_val('budget')
         
-        # Skip total, summary or disclaimer rows
         if not pub and not place and not budget_str:
+            continue
+        # An unlabeled totals row carries only numbers; it is a sum of the lines above, not a line.
+        if not any(p_val(k) for k in ['mediaType', 'productType', 'publisher', 'placementName', 'audience']):
             continue
         if any(kw in pub.lower() for kw in ['total', 'summary', 'disclaimer', 'notes', 'grand total']):
             continue
@@ -346,11 +402,17 @@ def parse_dataframe(df, sheet_name="Main Plan"):
             except ValueError:
                 return 0.0
                 
+        # A budget or impression total merged across N line items belongs to the group, so each
+        # line carries an even share and the plan total still matches the spreadsheet.
+        span = lambda k: row_span.get((row_idx, col_positions[k]), 1) if k in col_positions else 1
         budget = clean_numeric(budget_str)
         impressions = clean_numeric(p_val('impressions'))
+        if span('budget') > 1:
+            budget = round(budget / span('budget'), 2)
+        if span('impressions') > 1:
+            impressions = round(impressions / span('impressions'))
         rate_val = p_val('pricingStructureDetails')
         
-        # Format Adv. Performance as Yes/No
         perf_val = p_val('advPerformance').lower()
         adv_perf = "No"
         if any(kw in perf_val for kw in ['yes', 'y', 'true', '1', 'active']):
@@ -371,9 +433,9 @@ def parse_dataframe(df, sheet_name="Main Plan"):
             elif len(parts) == 1 and parts[0]:
                 if not start_date: start_date = parts[0].strip()
 
-        # Build composite plan / option name label
+        # Build plan/option label
         if current_section and sheet_name and sheet_name.lower() not in ['sheet1', 'main plan', 'media plan']:
-            full_plan_name = f"{sheet_name} - {current_section}"
+            full_plan_name = f"${sheet_name} - ${current_section}"
         elif current_section:
             full_plan_name = current_section
         else:
@@ -425,6 +487,18 @@ def parse_dataframe(df, sheet_name="Main Plan"):
             'notes': p_val('notes')
         })
     return placements
+
+# Find the uploaded file in the environment
+files = [f for f in os.listdir('.') if os.path.isfile(f) and f != 'main.py']
+if not files:
+    files = [f for f in os.listdir('/mnt/data') if os.path.isfile(f)] if os.path.exists('/mnt/data') else []
+
+if files:
+    target_file = files[0]
+    results = parse_media_plan(target_file)
+    print(json.dumps(results, indent=2))
+else:
+    print("[]")
 ```
 
 ---
@@ -441,21 +515,17 @@ ScoutAI isolates these options cleanly into a `planName` property:
 3. **Composite Naming**: If both a custom tab name and section header exist, they combine into `Sheet Name - Section Name`.
 
 ### Parent-Child & Merged Header Column Resolution
-Planners frequently merge a top-level category header (e.g. "Location") across two sub-columns where row 1 has "Type" and row 2 has an unlabeled/blank column for specific market names.
-The parser inspecting parent rows automatically joins parent and child column names:
-```python
-if p_val and c_val and c_val.lower() != p_val.lower():
-    header_cols.append(f"{p_val} {c_val}") # Results in "Location Type" and "Location Details"
-```
-If a secondary column remains unlabeled directly to the right of `locationType`, the index offset logic automatically assigns it as `locationDetails`.
+Planners merge a category header across sub-columns: "Location" over "TYPE" and "Value", "Pricing Structure" over "TYPE" and "Value". Two layouts are handled:
+1. **Sub-header row below the header** (the common RFP template): if the row after the matched header has short, non-numeric labels such as `type`, `value`, `details`, `rate`, `start` or `end`, it is joined to its parent ("Location TYPE", "Pricing Structure Value") and the data starts one row lower. Without this the sub-header row was read as data and "Pricing Structure" mapped to the TYPE column, so the rate came out as "CPM" instead of the CPM value.
+2. **Parent row above the header**: the parent row is forward-filled and joined to the child row.
+
+If a secondary column remains unlabeled directly to the right of `locationType`, the index offset logic assigns it as `locationDetails`.
 
 ### Merged Cell Propagation
-Planners frequently merge cell blocks for visual cleanliness (e.g., grouping ten rows under a single merged "NBC" cell). Standard parsers treat cells after the first row in a merge as null, throwing away critical publisher assignments.
-ScoutAI solves this using front-loaded forward-fill propagation:
-```python
-df = df.ffill(axis=0)
-```
-This forces pandas to carry down the merged category label to every corresponding sub-row before any schema extraction begins.
+Excel keeps a merged cell's value only in its top-left cell, and `pd.read_excel` does the same, so a CPM, budget and impression total merged down four line items used to land on the first line while the other three read 0. The script now opens the workbook once with openpyxl (`data_only=True`, full mode, because read-only mode has no merge information) and builds each sheet's DataFrame itself (`load_sheet_with_merges`):
+- Each merge is filled **down its first column only**. Filling across would turn a one-cell section banner like "Option A" into a full row and break section detection.
+- For every vertically merged cell it records how many rows the merge covers (`row_span`). A merged **budget or impression total is split evenly** across those rows (`$30,000` over four lines is `$7,500` each, impressions rounded to whole numbers), so the plan total still matches the sheet. Rates, publishers and other text are repeated on each line.
+- `.xls` files, which openpyxl cannot open, fall back to `pd.read_excel` without merge handling.
 
 ### Dynamic Header Matching
 Rather than assuming headers sit on row 1, the script scans the first 25 rows looking for keywords matching a typical media plan schema. The row containing the highest keyword match index is promoted to the column header row, and all rows above it (preambles, planner contacts, dates) are sliced away.
