@@ -31,6 +31,7 @@ import { estimateReach, type ReachChannelInput, type ReachEstimate } from "../pl
 import { resolveHouseholdUniverse } from "../planning/reach/universe";
 import { geoTargetingFromBrief } from "../planning/reach/briefGeography";
 import { normalizeRawChannel } from "../utils/mediaTaxonomy";
+import { combinedPlan } from "../planning/planChannels";
 
 interface OverviewMetricsTabProps {
   extractedPlacements: ExtractedPlacement[];
@@ -106,12 +107,19 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
       ? selectedOptions.flatMap((o) => o.placements || [])
       : safeExtractedPlacements;
 
+  // "Add on top of RFP" keeps the RFP media types outside mediaPlan.channels; read the combined
+  // plan so the sidebar totals what Channel Allocation shows. Other plans come back as stored.
+  const scoutPlan = combinedPlan(profileData?.channelStrategy);
+  const keepsRfpMedia = scoutPlan.keptChannels.length > 0;
+
   // 1. Calculate Base Planned Budget
   let plannedBudget = 0;
   if (selectedOptions.length > 0) {
     plannedBudget = selectedOptions.reduce((acc, o) => acc + (o.budget || 0), 0);
   } else if (activePlacements.length > 0) {
     plannedBudget = activePlacements.reduce((acc, p) => acc + (p.budget || 0), 0);
+  } else if (keepsRfpMedia) {
+    plannedBudget = scoutPlan.total;
   } else if (profileData?.channelStrategy?.totalRfpBudget) {
     plannedBudget = profileData.channelStrategy.totalRfpBudget;
   } else if (profileData?.channelStrategy?.mediaPlan?.workingMediaBudget) {
@@ -147,7 +155,8 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
   });
 
   // Calculate typical CPM blended from recommended media plan channels if available
-  const recommendedChannels = profileData?.channelStrategy?.mediaPlan?.channels || [];
+  // Kept RFP media types carry their catalog CPMs, so they are estimated exactly like allocated ones.
+  const recommendedChannels = scoutPlan.channels;
   let weightedCpmSum = 0;
   let weightedDollars = 0;
   recommendedChannels.forEach((ch) => {
@@ -183,7 +192,8 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
   const hasUploadedContent = selectedOptions.length > 0 || safeExtractedPlacements.length > 0 || Boolean(rfpAnalysis);
 
   // --- AI SCOUT RECOMMENDED METRICS (SPO, Frequency Capping & Inventory Optimization) ---
-  const aiBudget = plannedBudget;
+  // The uploaded RFP is the "plan" side; ScoutAI's plan adds the additional budget on top of it.
+  const aiBudget = keepsRfpMedia ? scoutPlan.total : plannedBudget;
   const aiEcpm = hasUploadedContent
     ? plannedEcpm * 0.83 // 17% SPO efficiency gain against unoptimized uploaded plan
     : (blendedChannelCpm > 0 ? blendedChannelCpm : plannedEcpm * 0.83);
@@ -363,7 +373,7 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
     return m.aiFormatted !== null;
   });
 
-  const scoutAllocation = profileData?.channelStrategy?.mediaPlan?.channels || [];
+  const scoutAllocation = scoutPlan.channels;
   const uploadedAllocationGroups = new Map<string, number>();
   activePlacements.forEach((placement: ExtractedPlacement) => {
     const name = placement.mediaType || placement.productType || placement.placementName || placement.publisher || "Other";
@@ -378,6 +388,8 @@ export const OverviewMetricsTab: React.FC<OverviewMetricsTabProps> = ({
           value: channel.allocationPercent,
           dollars: channel.allocationDollars,
         }))
+        // Kept RFP media types come after the allocated ones; order the combined donut by share.
+        .sort((a, b) => (keepsRfpMedia ? b.value - a.value : 0))
     : Array.from(uploadedAllocationGroups.entries())
         .filter(([, dollars]) => dollars > 0 && uploadedAllocationTotal > 0)
         .map(([name, dollars]) => ({ name, dollars, value: (dollars / uploadedAllocationTotal) * 100 }))

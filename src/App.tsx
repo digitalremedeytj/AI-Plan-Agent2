@@ -156,6 +156,7 @@ import { briefMediaTypeOptions } from "./planning/briefMediaTypes";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 import { mediaTypeCapFor, modeNeedsAdditionalBudget, normalizeBudgetStrategyMode, BUDGET_STRATEGY_LABELS, type BudgetStrategyMode } from "./planning/budgetStrategy";
+import { combinedPlan } from "./planning/planChannels";
 import { BudgetStrategyControl } from "./components/BudgetStrategyControl";
 
 const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
@@ -1855,22 +1856,24 @@ export default function App() {
     [profileData],
   );
   const isBriefStale = Boolean(profileData?.executiveBrief && profileData.executiveBrief.inputFingerprint !== liveBriefFingerprint);
+  // "Add on top of RFP" keeps RFP media types outside mediaPlan.channels; the brief shows the whole plan.
+  const briefPlan = React.useMemo(() => combinedPlan(profileData?.channelStrategy), [profileData?.channelStrategy]);
   const briefLivePercents = React.useMemo(
-    () => Object.fromEntries((profileData?.channelStrategy?.mediaPlan?.channels || []).map((c) => [c.channelId, Math.round(c.allocationPercent * 10) / 10])),
-    [profileData?.channelStrategy?.mediaPlan?.channels],
+    () => Object.fromEntries(briefPlan.channels.map((c) => [c.channelId, Math.round(c.allocationPercent * 10) / 10])),
+    [briefPlan],
   );
   const briefGlance = React.useMemo(() => {
     const plan = profileData?.channelStrategy?.mediaPlan;
     const facts: Array<{ label: string; value: string }> = [];
-    if (plan?.workingMediaBudget) facts.push({ label: "Media budget", value: `$${Math.round(plan.workingMediaBudget).toLocaleString()}` });
+    if (briefPlan.total) facts.push({ label: "Media budget", value: `$${Math.round(briefPlan.total).toLocaleString()}` });
     if (plan?.flightDays) facts.push({ label: "Flight", value: `${plan.flightDays} days` });
     const primaryKpi = kpis.find((k) => k.trim());
     if (primaryKpi) facts.push({ label: "Primary KPI", value: primaryKpi.trim() });
-    if (plan?.channels?.length) facts.push({ label: "Channels", value: String(plan.channels.length) });
+    if (briefPlan.channels.length) facts.push({ label: "Channels", value: String(briefPlan.channels.length) });
     const geo = geography || profileData?.briefOfRecord?.geography;
     if (geo) facts.push({ label: "Geography", value: geo });
     return facts;
-  }, [profileData?.channelStrategy?.mediaPlan, profileData?.briefOfRecord, kpis, geography]);
+  }, [profileData?.channelStrategy?.mediaPlan, briefPlan, profileData?.briefOfRecord, kpis, geography]);
   const isSourcesHidden = hiddenSections.has("sources");
 
   const markPlanPersisted = (plan: api.StoredPlan) => {

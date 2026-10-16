@@ -15,6 +15,7 @@ import type { PlanningSettings } from "../planning/settings";
 import { MAX_BRIEF_INSTRUCTIONS } from "../research/executiveBrief";
 import type { MediaRecommendationPlan } from "../planning/types";
 import { BUDGET_STRATEGY_LABELS, normalizeBudgetStrategyMode } from "../planning/budgetStrategy";
+import { combinedPlan } from "../planning/planChannels";
 import { hasPublisherHighlights, publisherHighlightFields } from "../planning/publisherHighlights";
 import { RECAP_BLOCKS } from "../performance/recap";
 import { KPI_METRICS } from "../performance/recapKpi";
@@ -120,19 +121,30 @@ export function buildPlanContext(
         ...channelDetailLines(c, plan, strategy, planningSettings),
       ].filter(Boolean).join("\n");
     });
+    // "Add on top of RFP": the RFP media types keep their RFP dollars outside plan.channels, so
+    // the plan's total is more than the working media budget the channels below split.
+    const combined = combinedPlan(strategy);
+    const keptIds = new Set(combined.keptChannels.map((c) => c.channelId));
+    if (combined.keptChannels.length) {
+      out.push([
+        `PLAN TOTAL ${money(combined.total)}: the RFP's media types kept at their RFP budgets (${money(combined.keptAtRfpBudget)}) plus the additional working media budget (${money(combined.allocatedBudget)}) allocated in the MEDIA PLAN below. Quote this total, and these shares, when asked what the plan spends.`,
+        "RFP MEDIA TYPES KEPT AT THEIR RFP BUDGETS (in the plan, outside the allocation; their dollars are the RFP's and are not edited here):",
+        ...combined.keptChannels.map((c) => `* ${c.channelName} (channelId: ${c.channelId}) - ${money(c.allocationDollars)}, ${c.allocationPercent}% of the plan total`),
+      ].join("\n"));
+    }
     out.push([
-      `MEDIA PLAN (working media budget ${money(plan.workingMediaBudget)}${plan.flightDays ? ` over ${plan.flightDays} days` : ""}; ${plan.channels.length} of at most ${plan.maxMediaTypes} media types; budget approach: ${BUDGET_STRATEGY_LABELS[normalizeBudgetStrategyMode(strategy.budgetStrategyMode)]}${strategy.additionalBudget ? ` (additional ${money(strategy.additionalBudget)})` : ""}${strategy.hasManualAllocationChanges ? "; allocations hand-edited" : ""}):`,
+      `MEDIA PLAN (${combined.keptChannels.length ? "additional " : ""}working media budget ${money(plan.workingMediaBudget)}${plan.flightDays ? ` over ${plan.flightDays} days` : ""}; ${plan.channels.length} of at most ${plan.maxMediaTypes} media types; budget approach: ${BUDGET_STRATEGY_LABELS[normalizeBudgetStrategyMode(strategy.budgetStrategyMode)]}${strategy.additionalBudget ? ` (additional ${money(strategy.additionalBudget)})` : ""}${strategy.hasManualAllocationChanges ? "; allocations hand-edited" : ""}):`,
       ...channelLines,
     ].join("\n"));
 
-    const addable = addableChannels(plan);
+    const addable = addableChannels(plan).filter((c) => !keptIds.has(c.product.id));
     if (addable.length) {
       out.push([
         "MEDIA TYPES THAT CAN BE ADDED (use add_channel with the channelId):",
         ...addable.map((c) => `* ${c.product.displayName} (channelId: ${c.product.id}) - ${c.status}, score ${c.recommendationScore}${c.eligibilityFailures.length ? `; engine concerns: ${c.eligibilityFailures.slice(0, 3).join("; ")}` : ""}${c.aiAssessed && c.gapAddressed ? `; ${clip(c.gapAddressed, 300)}` : ""}`),
       ].join("\n"));
     }
-    const unavailable = plan.evaluatedCandidates.filter((c) => !plan.channels.some((ch) => ch.channelId === c.product.id) && !addable.includes(c));
+    const unavailable = plan.evaluatedCandidates.filter((c) => !plan.channels.some((ch) => ch.channelId === c.product.id) && !keptIds.has(c.product.id) && !addable.includes(c));
     if (unavailable.length) {
       out.push(`NOT AVAILABLE TO ADD (not sellable in the Digital Remedy catalog right now): ${unavailable.map((c) => c.product.displayName).join(", ")}`);
     }

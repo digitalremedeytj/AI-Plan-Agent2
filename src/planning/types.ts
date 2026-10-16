@@ -220,6 +220,11 @@ export interface ChannelPlanRecommendation {
    * of budget. The product minimums remain on the record for display and execution warnings.
    */
   manuallyForced?: boolean;
+  /**
+   * "Add on top of RFP": an RFP media type held at its RFP dollars. Only on the read-only view
+   * combinedPlan() builds (src/planning/planChannels.ts); never stored in mediaPlan.channels.
+   */
+  keptAtRfp?: boolean;
 }
 
 export interface AllocationAuditEntry {

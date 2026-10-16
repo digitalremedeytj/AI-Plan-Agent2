@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { AudienceProfile } from "../types";
+import type { AudienceProfile, ChannelStrategyData } from "../types";
+import { RFP_OPTIONS, rfpStrategy } from "../planning/testing/rfpPlans";
 import { DEFAULT_OVERVIEW_METRICS } from "../planning/settings";
 import { OverviewMetricsTab } from "./OverviewMetricsTab";
 
@@ -186,4 +187,41 @@ test("reach is sized to the DMA picked in the brief", () => {
   );
   assert.match(markup, /% of Washington, Dc \(Hagrstwn\) DMA TV HH/);
   assert.doesNotMatch(markup, /United States TV HH/);
+});
+
+test("add on top of RFP: the working media budget and donut include the RFP media types kept at their RFP dollars", () => {
+  const strategy = rfpStrategy("incremental", 25_000);
+  const render = (channelStrategy: ChannelStrategyData) => renderToStaticMarkup(
+    <OverviewMetricsTab extractedPlacements={[]} planOptions={[]} rfpAnalysis={null} profileData={{ channelStrategy } as unknown as AudienceProfile} />,
+  );
+  const markup = render(strategy);
+  assert.match(markup, /Working Media Budget/);
+  assert.match(markup, /\$75,000/);
+  assert.doesNotMatch(markup, /\$25,000/);
+  // CTV $30,000 and DOOH $20,000 of $75,000, beside the allocated media types.
+  assert.match(markup, /CTV \/ OTT<\/span><\/span><span[^>]*>40\.0%/);
+  assert.match(markup, /Digital Out-of-Home \(DOOH\)<\/span><\/span><span[^>]*>26\.7%/);
+  // Kept media types are estimated like allocated ones, so impressions grow with them.
+  const impressions = (html: string) => Number(html.match(/Estimated Impressions.*?>([\d,]+)</)?.[1].replace(/,/g, ""));
+  const additionalOnly = render({ ...strategy, budgetStrategyMode: "reallocation" });
+  assert.ok(impressions(markup) > impressions(additionalOnly) * 2, `${impressions(markup)} vs ${impressions(additionalOnly)}`);
+});
+
+test("add on top of RFP compares the uploaded RFP against ScoutAI's RFP-plus-additional total", () => {
+  const markup = renderToStaticMarkup(
+    <OverviewMetricsTab extractedPlacements={[]} planOptions={RFP_OPTIONS} rfpAnalysis={null} profileData={{ channelStrategy: rfpStrategy("incremental", 25_000) } as unknown as AudienceProfile} />,
+  );
+  assert.match(markup, /Plan vs\. AI Scout/);
+  assert.match(markup, /Planned Budget.*\$75,000.*Planned:.*\$50,000/s);
+});
+
+test("plans in the other budget approaches keep the budget and allocation they always showed", () => {
+  const strategy = rfpStrategy("grow", 25_000);
+  const markup = renderToStaticMarkup(
+    <OverviewMetricsTab extractedPlacements={[]} planOptions={[]} rfpAnalysis={null} profileData={{ channelStrategy: strategy } as unknown as AudienceProfile} />,
+  );
+  assert.match(markup, /\$75,000/);
+  for (const channel of strategy.mediaPlan!.channels) {
+    assert.ok(markup.includes(`>${channel.allocationPercent.toFixed(1)}%<`), channel.channelName);
+  }
 });

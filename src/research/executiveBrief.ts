@@ -15,6 +15,7 @@
 // Shared by the server (prompt, normalization) and the client (snapshot, fingerprint, editing).
 
 import type { AudienceProfile, ChannelPanelOverride } from "../types";
+import { combinedPlan } from "../planning/planChannels";
 
 // --- types ------------------------------------------------------------------------------
 
@@ -118,6 +119,11 @@ export interface BriefSnapshotChannel {
   publishers: string[];
   measurementApproach: string;
   measurement: string[];
+  /**
+   * "Add on top of RFP": held at its RFP dollars outside the allocated budget. Present only when
+   * true, so the fingerprint of every other plan's brief is unchanged.
+   */
+  keptAtRfp?: true;
 }
 
 export interface BriefSnapshotMeasurement {
@@ -231,7 +237,10 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
   const mediaPlan = strategy.mediaPlan || {};
   const overrides: Record<string, ChannelPanelOverride> = strategy.channelOverrides || {};
   const candidates: any[] = Array.isArray(mediaPlan.evaluatedCandidates) ? mediaPlan.evaluatedCandidates : [];
-  const planChannels: any[] = Array.isArray(mediaPlan.channels) ? mediaPlan.channels : [];
+  // "Add on top of RFP" keeps RFP media types outside mediaPlan.channels; the brief describes the
+  // whole plan, so it reads the combined view. Every other plan reads exactly as stored.
+  const combined = combinedPlan(strategy.mediaPlan ? strategy : null);
+  const planChannels: any[] = combined.channels;
 
   const channels: BriefSnapshotChannel[] = planChannels.map((channel) => {
     const override = overrides[channel.channelId];
@@ -249,6 +258,7 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
       publishers: channelList(override, "publishers", channel.publishers).map((t) => clip(t, 80)).slice(0, 10),
       measurementApproach: clip(channelField(override, "measurementApproach", candidate?.measurementApproach || ""), 400),
       measurement: channelList(override, "measurementCapabilities", channel.measurementCapabilities).map((t) => clip(t, 100)).slice(0, 8),
+      ...(channel.keptAtRfp ? { keptAtRfp: true as const } : {}),
     };
   }).filter((channel) => channel.channelId && channel.name);
 
@@ -319,7 +329,7 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
       kpis: clipList((inputs.kpis || []).filter((k) => k && k.trim()), 8, 120),
     },
     plan: {
-      workingMediaBudget: Number(mediaPlan.workingMediaBudget) || 0,
+      workingMediaBudget: combined.total,
       flightDays: Number(mediaPlan.flightDays) || null,
       planningMode: clip(mediaPlan.planningMode, 20),
     },
@@ -543,7 +553,7 @@ export function buildBriefPrompt(snapshot: BriefSnapshot, instructions?: string)
   lines.push("", "CHANNEL PLAN (every channel in the plan; allocations are shown to the reader separately)");
   if (!snapshot.channels.length) lines.push("- No channels.");
   for (const ch of snapshot.channels) {
-    lines.push(`- [${ch.channelId}] ${ch.name} (${ch.status}, ${ch.allocationPercent}% of budget)`);
+    lines.push(`- [${ch.channelId}] ${ch.name} (${ch.status}, ${ch.allocationPercent}% of budget${ch.keptAtRfp ? ", kept at the RFP's budget for it" : ""})`);
     if (ch.role) lines.push(`  Role: ${ch.role}`);
     if (ch.gapAddressed) lines.push(`  Gap addressed: ${ch.gapAddressed}`);
     if (ch.rationale) lines.push(`  Rationale: ${ch.rationale}`);
@@ -781,6 +791,7 @@ export function sanitizeBriefSnapshot(body: any): BriefSnapshot {
       allocationPercent: Number(c?.allocationPercent) || 0, role: clip(c?.role, 200), gapAddressed: clip(c?.gapAddressed, 400),
       rationale: clip(c?.rationale, 400), activation: clip(c?.activation, 400), targeting: clipList(c?.targeting, 10, 100),
       publishers: clipList(c?.publishers, 10, 80), measurementApproach: clip(c?.measurementApproach, 400), measurement: clipList(c?.measurement, 8, 100),
+      ...(c?.keptAtRfp === true ? { keptAtRfp: true as const } : {}),
     })).filter((c) => c.channelId && c.name),
     measurement: list(s.measurement, 10, (m) => ({
       name: clip(m?.name, 100), advanced: isAdvancedMeasurement(clip(m?.name, 100)), channels: clipList(m?.channels, 20, 80), rationale: clip(m?.rationale, 300),

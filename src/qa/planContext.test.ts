@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanDossierText, researchForPrompt } from "./planContext";
+import { cleanDossierText, describeChannelPlan, researchForPrompt } from "./planContext";
+import { rfpStrategy } from "../planning/testing/rfpPlans";
 
 const dossier = `# Audience Research Brief: CTV
 
@@ -41,4 +42,19 @@ test("a long dossier reaches the prompt whole, where the old 12k cut hid its end
 
 test("a failed dossier says so instead of sending nothing", () => {
   assert.match(researchForPrompt([{ label: "Demographics", text: "", failed: true }]), /did not complete/);
+});
+
+test("add on top of RFP: the auditor checks against the plan total, kept RFP media types included", () => {
+  const text = describeChannelPlan({ channelStrategy: rfpStrategy("incremental", 25_000) });
+  assert.match(text, /\$75,000 total: the RFP's media types kept at their RFP dollars \(\$50,000\) plus an additional \$25,000/);
+  assert.match(text, /- CTV \/ OTT: 40% of the total \(\$30,000\)\./);
+  // Patchable paths still index the stored channels.
+  assert.match(text, /\[channels\[0\]\]/);
+});
+
+test("plans in the other budget approaches describe the channel plan as before", () => {
+  const strategy = rfpStrategy("grow", 25_000);
+  const text = describeChannelPlan({ channelStrategy: strategy });
+  assert.match(text, /it owns budget, channel selection, tactics and measurement\. \$75,000 over 30 days\):/);
+  assert.doesNotMatch(text, /kept at their RFP/);
 });

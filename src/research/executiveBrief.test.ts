@@ -11,6 +11,7 @@ import {
   sectionToEditText,
   unsupportedMention,
 } from "./executiveBrief";
+import { rfpStrategy } from "../planning/testing/rfpPlans";
 
 const record = (displayName: string, rationale = "") => ({ id: displayName.toLowerCase().replace(/\W+/g, "_"), displayName, rationale });
 
@@ -213,4 +214,31 @@ test("instructions asking for measurement the plan lacks always get a planner no
   }, snapshot, { instructions: "Really highlight our advanced attribution" });
   assert.ok(brief.plannerNotes.some((n) => n.includes("no incrementality, halo or consumer-journey study")));
   assert.equal(brief.sections.find((s) => s.key === "measurement")!.measurement![0].proves, "Exposure → lead → sale", "the catalog shorthand is tidied when the model skips a capability");
+});
+
+test("add on top of RFP: the brief is written from the whole plan, RFP media types kept at RFP dollars included", () => {
+  const strategy = rfpStrategy("incremental", 25_000);
+  const snapshot = buildBriefSnapshot(profile({ channelStrategy: strategy }));
+  assert.equal(snapshot.plan.workingMediaBudget, 75_000);
+  const kept = snapshot.channels.filter((c) => c.keptAtRfp);
+  assert.deepEqual(kept.map((c) => [c.channelId, c.allocationPercent]).sort(), [["channel.ctv", 40], ["channel.dooh", 26.7]]);
+  assert.equal(snapshot.channels.length, strategy.mediaPlan!.channels.length + 2);
+  assert.ok(Math.abs(snapshot.channels.reduce((sum, c) => sum + c.allocationPercent, 0) - 100) < 0.5);
+  // A kept media type is in the plan, so the guard must not strip lines that mention it.
+  assert.ok(!snapshot.notInPlanChannels.some((name) => kept.some((c) => c.name === name)));
+  assert.match(buildBriefPrompt(snapshot).input, /CTV \/ OTT \(\w+, 40% of budget, kept at the RFP's budget for it\)/);
+  // The server's copy of the snapshot must fingerprint the same, or every new brief reads stale.
+  assert.equal(briefFingerprint(sanitizeBriefSnapshot(JSON.parse(JSON.stringify(snapshot)))), briefFingerprint(snapshot));
+});
+
+test("briefs for plans in the other budget approaches keep their fingerprint", () => {
+  for (const [mode, additional] of [["reallocation", 0], ["grow", 25_000]] as const) {
+    const strategy = rfpStrategy(mode, additional);
+    const snapshot = buildBriefSnapshot(profile({ channelStrategy: strategy }));
+    // The same plan read without any budget approach is how every brief was fingerprinted before.
+    const before = buildBriefSnapshot(profile({ channelStrategy: { ...strategy, budgetStrategyMode: undefined } }));
+    assert.equal(briefFingerprint(snapshot), briefFingerprint(before), mode);
+    assert.equal(snapshot.plan.workingMediaBudget, strategy.mediaPlan!.workingMediaBudget, mode);
+    assert.ok(snapshot.channels.every((c) => !("keptAtRfp" in c)), mode);
+  }
 });

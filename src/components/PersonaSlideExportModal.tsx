@@ -26,6 +26,7 @@ import {
 import type { ChannelStrategyData, SegmentRecommendation } from "../types";
 import type { MediaRecommendationPlan, ChannelPlanRecommendation } from "../planning/types";
 import { isNonMediaItem } from "../utils/mediaTaxonomy";
+import { combinedPlan } from "../planning/planChannels";
 
 export type SlideAspectRatio = "21:9" | "2:1" | "16:9" | "3:2" | "4:3" | "1:1" | "3:4" | "2:3" | "9:16";
 
@@ -216,7 +217,11 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
 
   // Active Channels in Plan ONLY (strictly excluding "Media types not in plan")
   const effectiveMediaPlan = mediaPlan || channelStrategy?.mediaPlan;
-  const rawChannels = (effectiveMediaPlan?.channels || []) as ChannelPlanRecommendation[];
+  // "Add on top of RFP" keeps RFP media types outside mediaPlan.channels; slides present the whole
+  // plan, so read the combined view. Other plans come back exactly as stored.
+  const planView = channelStrategy && effectiveMediaPlan ? combinedPlan({ ...channelStrategy, mediaPlan: effectiveMediaPlan }) : null;
+  const planBudget = (planView ? planView.total : effectiveMediaPlan?.workingMediaBudget) || channelStrategy?.totalRfpBudget || 0;
+  const rawChannels = (planView ? planView.channels : effectiveMediaPlan?.channels || []) as ChannelPlanRecommendation[];
   const fundedChannels: ChannelPlanRecommendation[] = rawChannels.filter((c) => {
     if (c.canonicalId && isNonMediaItem(c.canonicalId)) return false;
     if (typeof c.allocationPercent === "number" && c.allocationPercent <= 0) return false;
@@ -407,7 +412,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             mode: "overview",
             channelIndex: 0,
             channels: fundedChannels,
-            workingMediaBudget: effectiveMediaPlan?.workingMediaBudget || channelStrategy?.totalRfpBudget || 0,
+            workingMediaBudget: planBudget,
             flightDays: effectiveMediaPlan?.flightDays ?? null,
             appliedBudgetTier: effectiveMediaPlan?.appliedBudgetTier || "",
             advertiserName,
@@ -469,7 +474,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
               mode: "spotlight",
               channelIndex: cIdx,
               channels: fundedChannels,
-              workingMediaBudget: effectiveMediaPlan?.workingMediaBudget || channelStrategy?.totalRfpBudget || 0,
+              workingMediaBudget: planBudget,
               flightDays: effectiveMediaPlan?.flightDays ?? null,
               appliedBudgetTier: effectiveMediaPlan?.appliedBudgetTier || "",
               advertiserName,
@@ -961,7 +966,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                 </div>
                 {effectiveMediaPlan && (
                   <span className="hidden sm:inline-flex px-2 py-0.5 rounded-md bg-white border border-teal-200 text-[11px] font-semibold text-[#0e8f86]">
-                    Budget: ${Math.round(effectiveMediaPlan.workingMediaBudget || 0).toLocaleString()} • {effectiveMediaPlan.flightDays ? `${effectiveMediaPlan.flightDays} Days` : "Flight not set"}
+                    Budget: ${Math.round(planBudget).toLocaleString()} • {effectiveMediaPlan.flightDays ? `${effectiveMediaPlan.flightDays} Days` : "Flight not set"}
                   </span>
                 )}
               </div>

@@ -4,6 +4,7 @@ import { buildCampaignFacts, buildMediaRecommendationPlan } from "../planning/en
 import { clonePlanningSettings, DEFAULT_PLANNING_SETTINGS } from "../planning/settings";
 import { buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./scoutChat";
 import { MODEL_OP_TYPES } from "./operations";
+import { rfpStrategy } from "../planning/testing/rfpPlans";
 
 function storedPlan() {
   const mediaPlan = buildMediaRecommendationPlan(buildCampaignFacts({
@@ -98,4 +99,13 @@ test("every operation the model may propose has its own shape in the response sc
   const expected = [...MODEL_OP_TYPES].filter((type) => type !== "set_section_visibility");
   assert.deepEqual(expected.filter((type) => !offered.has(type)), []);
   for (const shape of shapes) assert.ok(shape.required.includes("type"));
+});
+
+test("add on top of RFP: ScoutAI sees the plan total and the RFP media types kept at their RFP budgets", () => {
+  const context = buildPlanContext({ title: "RFP", payload: { profile: { channelStrategy: rfpStrategy("incremental", 25_000) } } });
+  assert.match(context, /PLAN TOTAL \$75,000/);
+  assert.match(context, /RFP MEDIA TYPES KEPT AT THEIR RFP BUDGETS[^]*channel\.ctv\) - \$30,000, 40% of the plan total/);
+  assert.match(context, /MEDIA PLAN \(additional working media budget \$25,000/);
+  // A kept media type is already in the plan, so it is not offered as one to add.
+  assert.doesNotMatch(context.split("MEDIA TYPES THAT CAN BE ADDED")[1] || "", /channelId: channel\.ctv\)/);
 });

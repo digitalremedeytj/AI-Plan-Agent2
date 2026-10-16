@@ -8,6 +8,7 @@
 
 import { PROFILE_CHARTS } from "./generationIntegrity";
 import { CONTEXT_LABEL } from "../research/findingBlurb";
+import { combinedPlan } from "../planning/planChannels";
 
 export type ChartProvenance = "research" | "national-baseline" | "estimate" | "empty";
 
@@ -70,9 +71,22 @@ export function describeChannelPlan(profile: any): string {
   if (channels.length === 0) {
     return "CHANNEL PLAN: none. This plan was generated without a working-media budget, so it has no channel allocation.";
   }
+  // "Add on top of RFP": the RFP media types keep their RFP dollars outside plan.channels, so the
+  // plan the client sees totals more than workingMediaBudget. The auditor must check against
+  // that total, or it flags the narrative's correct figures as unsupported.
+  const combined = combinedPlan(profile?.channelStrategy);
+  const kept = combined.keptChannels;
+  const budgetText = kept.length > 0
+    ? `$${combined.total.toLocaleString()} total: the RFP's media types kept at their RFP dollars ($${combined.keptAtRfpBudget.toLocaleString()}) plus an additional $${combined.allocatedBudget.toLocaleString()} allocated below`
+    : `$${Number(plan.workingMediaBudget || 0).toLocaleString()}`;
   const lines = [
-    `CHANNEL PLAN (built by Digital Remedy's planning engine from its product catalog; it owns budget, channel selection, tactics and measurement. $${Number(plan.workingMediaBudget || 0).toLocaleString()} over ${plan.flightDays ?? "?"} days):`,
+    `CHANNEL PLAN (built by Digital Remedy's planning engine from its product catalog; it owns budget, channel selection, tactics and measurement. ${budgetText} over ${plan.flightDays ?? "?"} days):`,
   ];
+  if (kept.length > 0) {
+    lines.push("RFP media types kept at their RFP budgets (part of the plan; not in channels[], so not patchable):");
+    kept.forEach((c) => lines.push(`- ${c.channelName}: ${c.allocationPercent}% of the total ($${c.allocationDollars.toLocaleString()}).`));
+    lines.push(`Allocated channels (percentages below are of the additional $${combined.allocatedBudget.toLocaleString()}):`);
+  }
   channels.forEach((c, i) => {
     const parts = [
       `${c.allocationPercent}% ($${Number(c.allocationDollars || 0).toLocaleString()})`,
