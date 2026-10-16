@@ -2596,7 +2596,8 @@ export default function App() {
     setUploadedFileName(file.name);
     const extension = file.name.split('.').pop()?.toLowerCase();
     const fileFingerprint = `${file.name}_${file.size}_${file.lastModified}`;
-    const clientCacheKey = `media_plan_parsed_cache_${fileFingerprint}`;
+    // v2: merged budget/impression cells are split across their line items; older parses are stale.
+    const clientCacheKey = `media_plan_parsed_cache_v2_${fileFingerprint}`;
 
     const shouldBypassCache = forceReparse || ignoreCache;
 

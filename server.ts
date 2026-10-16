@@ -162,6 +162,8 @@ function saveMediaPlanCacheToDisk(map: Map<string, CachedParsedPlan>) {
 }
 
 const mediaPlanParseCache = loadMediaPlanCacheFromDisk();
+// Bump when the parse instructions change what a file parses to, so cached results are not reused.
+const MEDIA_PLAN_PARSER_VERSION = "2-merged-cells";
 import { summarizeSelectedPlansForPrompt } from "./src/utils/planPromptOptimizer";
 import { hasPlanTextList, normalizePlanText } from "./src/utils/planText";
 import {
@@ -1292,7 +1294,8 @@ app.post("/api/parse-plan", upload.single("file"), async (req, res) => {
 
     // Compute SHA-256 hash of file contents for instant session caching
     const fileBuffer = fs.readFileSync(extensionTempPath);
-    const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+    // The parser version is part of the key so a parser fix re-reads files parsed before it.
+    const fileHash = crypto.createHash("sha256").update(MEDIA_PLAN_PARSER_VERSION).update(fileBuffer).digest("hex");
     console.log(`[API /api/parse-plan] File SHA-256 hash: ${fileHash}`);
 
     const ignoreCache = req.body?.ignoreCache === "true" || req.body?.ignoreCache === true || req.query?.ignoreCache === "true";
@@ -1448,19 +1451,30 @@ def parse_media_plan(file_path):
         candidate_sheets = all_sheets
         
     all_placements = []
+
+    # pandas drops merged cells, so the workbook is opened once in full mode to see them.
+    # .xls (which openpyxl cannot open) falls back to pandas without merge handling.
+    try:
+        full_wb = openpyxl.load_workbook(file_path, data_only=True)
+    except Exception as e:
+        print(f"Merged-cell read unavailable, using pandas only: \${e}")
+        full_wb = None
     
     # 3. Process candidate sheets
     for sheet in candidate_sheets:
         try:
-            sample_df = pd.read_excel(file_path, sheet_name=sheet, nrows=5)
-            if sample_df.empty:
+            if full_wb is not None:
+                df, row_span = load_sheet_with_merges(full_wb[sheet])
+            else:
+                df = pd.read_excel(file_path, sheet_name=sheet, header=None)
+                row_span = {}
+            if df.dropna(how='all').empty:
                 continue
-            df = pd.read_excel(file_path, sheet_name=sheet, header=None)
         except Exception as e:
             print(f"Error loading sheet \${sheet}: \${e}")
             continue
             
-        placements = parse_dataframe(df, sheet_name=sheet)
+        placements = parse_dataframe(df, sheet_name=sheet, row_span=row_span)
         all_placements.extend(placements)
         
         # Safeguard overall output size to avoid token truncation
@@ -1470,7 +1484,31 @@ def parse_media_plan(file_path):
             
     return all_placements
 
-def parse_dataframe(df, sheet_name="Main Plan"):
+def load_sheet_with_merges(ws):
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    width = max((len(r) for r in rows), default=0)
+    rows = [r + [None] * (width - len(r)) for r in rows]
+    # Excel keeps a merged cell's value only in its top-left cell. A plan that merges one CPM,
+    # budget and impression total down several line items would otherwise give the first line
+    # everything and the rest nothing. Fill each merge down its first column (filling across
+    # would turn a one-cell section header like "Option A" into a full row) and record how many
+    # rows it covers, so a shared budget or impression total is split rather than repeated.
+    row_span = {}
+    for rng in ws.merged_cells.ranges:
+        r0, c0 = rng.min_row - 1, rng.min_col - 1
+        if r0 >= len(rows) or c0 >= width:
+            continue
+        top = rows[r0][c0]
+        last = min(rng.max_row, len(rows))
+        n = last - r0
+        for r in range(r0, last):
+            rows[r][c0] = top
+            if n > 1:
+                row_span[(r, c0)] = n
+    return pd.DataFrame(rows), row_span
+
+def parse_dataframe(df, sheet_name="Main Plan", row_span=None):
+    row_span = row_span or {}
     if df.empty:
         return []
 
@@ -1494,9 +1532,26 @@ def parse_dataframe(df, sheet_name="Main Plan"):
         df.columns = cols
         data_df = df
     else:
-        # Check if header_idx - 1 exists and might be a parent header row (e.g. "Location" spanning across sub-columns)
+        # A sub-header row under the header (e.g. "TYPE" / "Value" under a merged "Location" or
+        # "Pricing Structure") names the real columns. Read as data, it leaves the rate under the
+        # wrong column, so it is joined to its parent instead.
         header_cols = []
-        if header_idx > 0:
+        sub_row = df.iloc[header_idx + 1].values if header_idx + 1 < len(df) else []
+        sub_vals = [str(v).strip().lower() for v in sub_row if pd.notna(v) and str(v).strip() != ""]
+        is_sub_header = len(sub_vals) >= 2 and all(len(v) <= 20 and not re.match(r'^[\\d$.,%\\s-]+$', v) for v in sub_vals) and any(v in ['type', 'value', 'details', 'detail', 'name', 'rate', 'start', 'end'] for v in sub_vals)
+        if is_sub_header:
+            own_row = df.iloc[header_idx].values
+            parent_row = df.iloc[header_idx].ffill().values
+            for c_idx in range(len(own_row)):
+                own = str(own_row[c_idx]).strip() if pd.notna(own_row[c_idx]) else ""
+                child = str(sub_row[c_idx]).strip() if pd.notna(sub_row[c_idx]) else ""
+                parent = str(parent_row[c_idx]).strip() if pd.notna(parent_row[c_idx]) else ""
+                if child and (own or parent):
+                    header_cols.append(f"\${own or parent} \${child}")
+                else:
+                    header_cols.append(own or child or f"Col_\${c_idx}")
+            header_idx += 1
+        elif header_idx > 0:
             parent_row = df.iloc[header_idx - 1].ffill().values
             child_row = df.iloc[header_idx].values
             for c_idx in range(len(child_row)):
@@ -1598,10 +1653,12 @@ def parse_dataframe(df, sheet_name="Main Plan"):
         if 'startDate' not in col_mapping and 'flightDates' not in col_mapping and ('date' in col_lower or 'flight' in col_lower or 'duration' in col_lower):
             col_mapping['flightDates'] = col
 
+    col_positions = {k: list(data_df.columns).index(v) for k, v in col_mapping.items()}
+
     placements = []
     current_section = ""
 
-    for _, row in data_df.iterrows():
+    for row_idx, row in data_df.iterrows():
         non_nulls = [str(v).strip() for v in row.values if pd.notna(v) and str(v).strip() != ""]
         if len(non_nulls) == 1 or (len(non_nulls) == 2 and not any(k in col_mapping for k in ['budget', 'publisher'])):
             cell_text = non_nulls[0]
@@ -1618,6 +1675,9 @@ def parse_dataframe(df, sheet_name="Main Plan"):
         
         if not pub and not place and not budget_str:
             continue
+        # An unlabeled totals row carries only numbers; it is a sum of the lines above, not a line.
+        if not any(p_val(k) for k in ['mediaType', 'productType', 'publisher', 'placementName', 'audience']):
+            continue
         if any(kw in pub.lower() for kw in ['total', 'summary', 'disclaimer', 'notes', 'grand total']):
             continue
         if any(kw in place.lower() for kw in ['total', 'summary', 'disclaimer', 'notes', 'grand total']):
@@ -1625,14 +1685,21 @@ def parse_dataframe(df, sheet_name="Main Plan"):
             
         def clean_numeric(val):
             if not val: return 0.0
-            cleaned = re.sub(r'[^\d.]', '', val)
+            cleaned = re.sub(r'[^\\d.]', '', val)
             try:
                 return float(cleaned)
             except ValueError:
                 return 0.0
                 
+        # A budget or impression total merged across N line items belongs to the group, so each
+        # line carries an even share and the plan total still matches the spreadsheet.
+        span = lambda k: row_span.get((row_idx, col_positions[k]), 1) if k in col_positions else 1
         budget = clean_numeric(budget_str)
         impressions = clean_numeric(p_val('impressions'))
+        if span('budget') > 1:
+            budget = round(budget / span('budget'), 2)
+        if span('impressions') > 1:
+            impressions = round(impressions / span('impressions'))
         rate_val = p_val('pricingStructureDetails')
         
         perf_val = p_val('advPerformance').lower()
@@ -1648,7 +1715,7 @@ def parse_dataframe(df, sheet_name="Main Plan"):
         end_date = p_val('endDate')
         flight_dates = p_val('flightDates')
         if (not start_date or not end_date) and flight_dates:
-            parts = re.split(r'\s+(?:to|-|through)\s+|\s*-\s*', flight_dates, maxsplit=1)
+            parts = re.split(r'\\s+(?:to|-|through)\\s+|\\s*-\\s*', flight_dates, maxsplit=1)
             if len(parts) == 2:
                 if not start_date: start_date = parts[0].strip()
                 if not end_date: end_date = parts[1].strip()
