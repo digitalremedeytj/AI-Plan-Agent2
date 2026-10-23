@@ -1289,6 +1289,8 @@ async function buildChannelStrategy(
 app.post("/api/parse-plan", upload.single("file"), async (req, res) => {
   // Prevent Express or Node from timing out socket connections on this long-running parsing endpoint
   req.socket.setTimeout(0);
+  // A large plan can take minutes to read, past Cloudflare's 100-second limit on a silent request.
+  holdOpenForLongRequest(req, res);
 
   console.log(`[API /api/parse-plan] Request received. file: ${req.file ? req.file.originalname : "none"}`);
   if (!req.file) {

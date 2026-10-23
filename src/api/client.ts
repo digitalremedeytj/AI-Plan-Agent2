@@ -67,6 +67,8 @@ export class ApiError extends Error {
   readonly currentRevision?: number;
   /** Why a request was refused item by item, e.g. the parts of a ScoutAI change that no longer apply. */
   readonly reasons?: string[];
+  /** The server's technical detail behind the message, when it sent one. */
+  readonly details?: string;
 
   constructor(status: number, message: string, body?: any) {
     super(message);
@@ -75,6 +77,7 @@ export class ApiError extends Error {
     this.code = body?.code;
     this.currentRevision = body?.currentRevision;
     this.reasons = Array.isArray(body?.reasons) ? body.reasons.map(String) : undefined;
+    this.details = typeof body?.details === "string" ? body.details : undefined;
   }
 
   /** Someone else saved this plan while the user was editing it. */
@@ -206,7 +209,8 @@ export function readHeldOpenResult(text: string): { status: number; body: any } 
  */
 async function longRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = getAuthHeaders(init.headers);
-  if (init.body && !headers.has("Content-Type")) {
+  // A file upload sets its own multipart Content-Type, boundary included.
+  if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   headers.set("Accept", "application/x-ndjson, application/json");
@@ -679,15 +683,34 @@ export async function archivePlan(id: string): Promise<void> {
 }
 
 /** `staffPreview` is true when a planner (signed in now or before, on this browser) opened the link. */
-/** Reads an uploaded media plan file on the server (cached there by file contents). */
+export interface ParsedMediaPlanResponse {
+  success?: boolean;
+  placements?: ExtractedPlacement[];
+  rfpAnalysis?: RfpAnalysis | null;
+  cached?: boolean;
+  error?: string;
+  details?: string;
+}
+
+/**
+ * Sends a media plan file to the server to read (cached there by file contents). Reading a large
+ * plan can take minutes, so it goes as a held-open long request. Errors carry the server's details.
+ */
+export async function parseMediaPlanFile(form: FormData): Promise<ParsedMediaPlanResponse> {
+  try {
+    return await longRequest<ParsedMediaPlanResponse>("/api/parse-plan", { method: "POST", body: form });
+  } catch (err: any) {
+    const details = err instanceof ApiError ? err.details : undefined;
+    throw details ? new Error(`${err.message}: ${details}`) : err;
+  }
+}
+
+/** Reads an uploaded media plan file on the server, for the upload review. */
 export async function parseMediaPlan(file: File): Promise<{ placements: ExtractedPlacement[]; rfpAnalysis: RfpAnalysis | null }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await authFetch("/api/parse-plan", { method: "POST", body: form });
-  const body = await res.json().catch(() => null);
-  if (!res.ok || !body?.success || !Array.isArray(body?.placements)) {
-    throw new Error(body?.error ? `${body.error}${body.details ? `: ${body.details}` : ""}` : "The media plan could not be read.");
-  }
+  const body = await parseMediaPlanFile(form);
+  if (!body?.success || !Array.isArray(body?.placements)) throw new Error(body?.error || "The media plan could not be read.");
   if (body.placements.length === 0) throw new Error("No media lines were found in that file.");
   return { placements: body.placements, rfpAnalysis: body.rfpAnalysis || null };
 }

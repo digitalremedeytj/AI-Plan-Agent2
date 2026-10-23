@@ -2864,39 +2864,9 @@ export default function App() {
     setModalTab("raw"); // Default to raw grid on upload
     setExtractedPlacements([]); // Reset previous
 
-    api.authFetch("/api/parse-plan", {
-      method: "POST",
-      body: formData,
-    })
-      .then(async (res) => {
-        const contentType = res.headers.get("content-type") || "";
-        if (!res.ok) {
-          let errorMsg = "Failed to parse file on the server.";
-          try {
-            const errJson = await res.json();
-            if (errJson.error) {
-              errorMsg = errJson.error + (errJson.details ? `: ${errJson.details}` : "");
-            }
-          } catch (_) {
-            try {
-              const text = await res.text();
-              if (text && text.length < 300) {
-                errorMsg += ` (${text})`;
-              }
-            } catch (__) {}
-          }
-          throw new Error(errorMsg);
-        }
-        
-        if (!contentType.includes("application/json")) {
-          const text = await res.text();
-          console.error("Non-JSON response from server:", text);
-          throw new Error("Server returned an invalid non-JSON response. This can happen if the backend server is restarting or has crashed. Please wait a few seconds and try uploading again.");
-        }
-        
-        return res.json();
-      })
-      .then((data) => {
+    // A held-open long request: reading a large plan can outlast Cloudflare's 100-second limit.
+    api.parseMediaPlanFile(formData)
+      .then((data: any) => {
         if (data.success && data.placements) {
           setExtractedPlacements(data.placements);
           if (data.rfpAnalysis) {
