@@ -156,6 +156,8 @@ export interface DashboardUser {
 /** A shared plan a client opened in the period. */
 export interface DashboardOpenedPlan {
   planId: string;
+  /** The plan's current title, filled in by the server from the plan list (the log does not carry it). */
+  planTitle?: string;
   advertiserName: string;
   /** Whoever created the link (else whoever generated the plan); absent for plans older than the log. */
   sharedBy?: string;

@@ -601,6 +601,11 @@ app.get("/api/dashboard/data", async (req, res) => {
     // Repeated ?user= params, since names can contain commas.
     const users = ([] as unknown[]).concat(req.query.user ?? []).map((u) => sanitizeDisplayName(u)).filter(Boolean).slice(0, 200);
     const data = buildDashboard(events, new Date(from).toISOString(), new Date(to).toISOString(), config, { tzOffsetMinutes: tz, users });
+    if (data.openedPlans.length) {
+      // Titles come from the plans themselves, so a renamed plan shows its current name.
+      const titles = new Map((await storage.listPlans({ includeArchived: true })).map((p) => [p.id, p.title]));
+      for (const plan of data.openedPlans) plan.planTitle = titles.get(plan.planId)?.trim() || undefined;
+    }
 
     // A link's first load in a browser session counts as a visit; changing the dates does not.
     if (access.via === "link" && req.get("x-dashboard-visit") === "1") {

@@ -175,7 +175,7 @@ does this automatically.
 | Active users / total users | Distinct people active in the period / ever, up to the period's end |
 | Time saved | Plans generated × hours per plan (default 1; admins' edits are saved for everyone, link viewers' edits are theirs alone) |
 | Client views | Opens of share links by anyone who is not a planner (see `apa_staff` above), credited to whoever created the link |
-| Plans opened by clients | Each shared plan a client opened in the period: advertiser, who shared it, client views, first and last open |
+| Plans opened by clients | Each shared plan a client opened in the period: plan title (as it is now) and advertiser, who shared it, client views, first and last open |
 | Funnel | Plans generated in the period → of those, shared → of those, opened by a client, whenever that happened |
 | Change % | Against the period of the same length immediately before |
 | Feature adoption | People and uses per feature. Exports (downloads, copies and AI slides) expands by type. ScoutAI expands by prompt, by type of question, outcome (answered, failed, answers proposing changes, proposals applied, undone; applies are counted when they happen) and median answer time |
