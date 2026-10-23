@@ -1,5 +1,5 @@
 import type { ExtractedPlacement, RfpAnalysis, SavedProfile } from "../types";
-import type { PlanningSettings } from "../planning/settings";
+import type { DisplaySettings, PlanningSettings } from "../planning/settings";
 import type { CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import type { AssistantOp, ProposalChange } from "../assistant/operations";
 import type { ScoutPrompt } from "../assistant/promptLibrary";
@@ -715,9 +715,9 @@ export async function parseMediaPlan(file: File): Promise<{ placements: Extracte
   return { placements: body.placements, rfpAnalysis: body.rfpAnalysis || null };
 }
 
-export async function fetchSharedPlan(token: string): Promise<{ plan: StoredPlan; staffPreview: boolean }> {
-  const body = await request<{ plan: StoredPlan; staffPreview?: boolean }>(`/api/share/plan?token=${encodeURIComponent(token)}`);
-  return { plan: body.plan, staffPreview: Boolean(body.staffPreview) };
+export async function fetchSharedPlan(token: string): Promise<{ plan: StoredPlan; displaySettings: DisplaySettings | null; staffPreview: boolean }> {
+  const body = await request<{ plan: StoredPlan; displaySettings?: DisplaySettings; staffPreview?: boolean }>(`/api/share/plan?token=${encodeURIComponent(token)}`);
+  return { plan: body.plan, displaySettings: body.displaySettings || null, staffPreview: Boolean(body.staffPreview) };
 }
 
 export async function enablePlanShare(

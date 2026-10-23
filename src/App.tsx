@@ -119,7 +119,9 @@ import {
   normalizeCampaignBudget,
   parseCurrencyInput,
   type PlanningSettings,
+  type DisplaySettings,
   clonePlanningSettings,
+  displaySettingsOf,
   migrateStoredSettings,
   validatePlanningSettings,
 } from "./planning/settings";
@@ -655,6 +657,9 @@ export default function App() {
   // up as the shared truth. Defaults here are a first-paint placeholder, nothing more.
   const [planningSettings, setPlanningSettings] = useState<PlanningSettings>(DEFAULT_PLANNING_SETTINGS);
   const [settingsRevision, setSettingsRevision] = useState<number | null>(null);
+  // The admin's show/hide switches as they are now. Opening a plan swaps planningSettings for the
+  // revision it is pinned to, which must not bring back items the admin has since hidden.
+  const [liveDisplaySettings, setLiveDisplaySettings] = useState<DisplaySettings | null>(null);
   const [ctvPublishers, setCtvPublishers] = useState<CtvPublisherSetting[]>(DEFAULT_CTV_PUBLISHERS);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -669,6 +674,7 @@ export default function App() {
       .then((data) => {
         if (data?.settings) {
           setPlanningSettings(normalizeAndValidateSettings(data.settings));
+          setLiveDisplaySettings(displaySettingsOf(data.settings));
           setSettingsRevision(data.revision);
         }
       })
@@ -688,15 +694,21 @@ export default function App() {
     () => normalizeCampaignBudget(parseCurrencyInput(budget), Number(campaignLength)),
     [budget, campaignLength],
   );
+  const displaySettings: DisplaySettings = liveDisplaySettings ?? planningSettings;
+  // The drawer's switches show what the plan on screen is actually doing.
+  const drawerSettings = React.useMemo(
+    () => (liveDisplaySettings ? { ...planningSettings, ...liveDisplaySettings } : planningSettings),
+    [planningSettings, liveDisplaySettings],
+  );
   // Settings store internal-only visibility as a list; the plan UI wants it keyed by id.
   const internalOnlyVisibility = React.useMemo(
     () => ({
       ...ALL_INTERNAL_VISIBLE,
       ...Object.fromEntries(
-        (Array.isArray(planningSettings?.internalOnly) ? planningSettings.internalOnly : []).map((setting) => [setting.id, setting.show])
+        (Array.isArray(displaySettings?.internalOnly) ? displaySettings.internalOnly : []).map((setting) => [setting.id, setting.show])
       ),
     }) as InternalOnlyVisibility,
-    [planningSettings?.internalOnly],
+    [displaySettings?.internalOnly],
   );
   const appliedBudgetTier = React.useMemo(
     () => findBudgetChannelTier(budgetNormalization.normalized30DayBudget, planningSettings),
@@ -831,6 +843,7 @@ export default function App() {
     try {
       const saved = await api.saveSettings(nextSettings);
       setPlanningSettings(normalizeAndValidateSettings(saved.settings));
+      setLiveDisplaySettings(displaySettingsOf(saved.settings));
       setSettingsRevision(saved.revision);
 
       if (nextPublishers && Array.isArray(nextPublishers)) {
@@ -848,6 +861,7 @@ export default function App() {
       try {
         const current = await api.fetchSettings();
         setPlanningSettings(normalizeAndValidateSettings(current.settings));
+        setLiveDisplaySettings(displaySettingsOf(current.settings));
         setSettingsRevision(current.revision);
       } catch {
         // Leave the current view alone if even the re-read fails.
@@ -2507,7 +2521,8 @@ export default function App() {
     setSharedPlanError(null);
     api
       .fetchSharedPlan(shareToken)
-      .then(({ plan: stored, staffPreview }) => {
+      .then(({ plan: stored, displaySettings: shared, staffPreview }) => {
+        if (shared) setLiveDisplaySettings(shared);
         applyPlanToWorkspace(stored, true);
         setLeftTab("overview");
         // GA's share_view counts client opens, like the usage log; a planner's check is not one.
@@ -4719,7 +4734,7 @@ export default function App() {
 
       <SettingsDrawer
         open={isSettingsOpen}
-        settings={planningSettings}
+        settings={drawerSettings}
         ctvPublishers={ctvPublishers}
         onClose={() => { setIsSettingsOpen(false); setSettingsError(null); setSettingsInitialTab(null); }}
         onSave={handleSavePlanningSettings}
@@ -6151,7 +6166,7 @@ export default function App() {
                   planOptions={planOptions}
                   rfpAnalysis={rfpAnalysis}
                   profileData={profileData}
-                  metricSettings={planningSettings.overviewMetrics}
+                  metricSettings={displaySettings.overviewMetrics}
                   geography={overviewGeography}
                   reachSettings={planningSettings.reach}
                   showReachDetails={Boolean(internalOnlyVisibility.reachCalculationDetails) && (!isShareView || profileData.shareReachDetails === true)}

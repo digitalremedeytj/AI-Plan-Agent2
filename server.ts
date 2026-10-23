@@ -15,7 +15,7 @@ import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effe
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { normalizeBudgetStrategyMode, resolveStrategyBudget, type BudgetStrategyMode } from "./src/planning/budgetStrategy";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
-import { DEFAULT_PLANNING_SETTINGS, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
+import { DEFAULT_PLANNING_SETTINGS, displaySettingsOf, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
 import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink, type ScoutLog } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
@@ -3598,7 +3598,10 @@ app.get("/api/share/plan", async (req, res) => {
     // after their session has expired (see STAFF_DEVICE_COOKIE).
     const staff = staffViewerName(req);
     logUsage(req, "share_view", { planId: plan.id, advertiserName: plan.advertiserName, detail: staff ? "staff_preview" : "client", ...(staff ? { actor: staff } : {}) });
-    res.json({ success: true, plan: withoutHiddenClientSections(plan), staffPreview: Boolean(staff) });
+    // The link cannot read settings itself (no session), and the plan's pinned revision holds the
+    // show/hide switches as they were when it was made, not as the admin has them now.
+    const displaySettings = displaySettingsOf((await storage.getCurrentSettings()).settings);
+    res.json({ success: true, plan: withoutHiddenClientSections(plan), displaySettings, staffPreview: Boolean(staff) });
   } catch (err: any) {
     respondToStorageError(res, err, "load shared plan");
   }

@@ -769,6 +769,22 @@ function migrateToVersion5Shape(value: object, defaults: PlanningSettings): unkn
   return withMergedInternalOnly(withMergedOverviewMetrics(withVersion5Defaults(stored) as Record<string, unknown>));
 }
 
+/**
+ * The admin's show/hide switches. They decide what a plan displays, not its numbers, so they
+ * follow the live settings rather than the revision a plan is pinned to: an item switched off
+ * today is hidden on every plan, share links included.
+ */
+export type DisplaySettings = Pick<PlanningSettings, "overviewMetrics" | "internalOnly">;
+
+export function displaySettingsOf(settings: unknown): DisplaySettings {
+  const stored = settings && typeof settings === "object" ? (settings as Record<string, unknown>) : {};
+  const merged = withMergedInternalOnly(withMergedOverviewMetrics(stored));
+  return {
+    overviewMetrics: (merged.overviewMetrics as OverviewMetricSetting[]).map((metric) => ({ ...metric, show: metric.show === true })),
+    internalOnly: (merged.internalOnly as InternalOnlySetting[]).map((setting) => ({ ...setting, show: setting.show === true })),
+  };
+}
+
 function withMergedInternalOnly(stored: Record<string, unknown>): Record<string, unknown> {
   const rawList = Array.isArray(stored.internalOnly) ? (stored.internalOnly as any[]) : [];
   const existingMap = new Map(rawList.filter((s) => s && typeof s === "object").map((s: any) => [s.id, s]));

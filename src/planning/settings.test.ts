@@ -4,6 +4,7 @@ import {
   clonePlanningSettings,
   DEFAULT_INTERNAL_ONLY_SETTINGS,
   DEFAULT_PLANNING_SETTINGS,
+  displaySettingsOf,
   findBudgetChannelTier,
   loadPlanningSettings,
   normalizeCampaignBudget,
@@ -315,4 +316,22 @@ test("settings saved before the uploaded-plan switches gain them with their defa
   assert.equal(visibility.channelUploadedLineItems, true);
   assert.equal(visibility.channelLinePricing, false, "an upload can carry net rates, so pricing starts hidden");
   assert.equal(visibility.planAlignment, true);
+});
+
+test("a share link hides the overview metrics and internal-only items the admin switched off", () => {
+  const live = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  live.overviewMetrics = live.overviewMetrics.map((metric) => (metric.id === "estimatedReach" ? { ...metric, show: false } : metric));
+  live.internalOnly = live.internalOnly.map((setting) => (setting.id === "channelDollarsColumn" ? { ...setting, show: false } : setting));
+
+  const display = displaySettingsOf(JSON.parse(JSON.stringify(live)));
+  assert.equal(display.overviewMetrics.find((metric) => metric.id === "estimatedReach")?.show, false);
+  assert.equal(display.internalOnly.find((setting) => setting.id === "channelDollarsColumn")?.show, false);
+});
+
+test("display settings stored before a switch existed fall back to its default", () => {
+  const display = displaySettingsOf({ overviewMetrics: [{ id: "budget", show: false }] });
+  assert.equal(display.overviewMetrics.length, DEFAULT_PLANNING_SETTINGS.overviewMetrics.length);
+  assert.equal(display.overviewMetrics.find((metric) => metric.id === "budget")?.show, false);
+  assert.equal(display.overviewMetrics.find((metric) => metric.id === "impressions")?.show, true);
+  assert.equal(display.internalOnly.length, DEFAULT_INTERNAL_ONLY_SETTINGS.length);
 });
