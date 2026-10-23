@@ -171,6 +171,11 @@ export interface BriefSnapshot {
   ctvPublishers: string[];
   /** Media types that were evaluated but are not in the plan. The brief must not present them as part of it. */
   notInPlanChannels: string[];
+  /**
+   * "Use the plan as is": the client's uploaded lines outside the catalog, at their dollars. Present
+   * only when there are some, so the fingerprint of every other plan's brief is unchanged.
+   */
+  outsideCatalog?: Array<{ name: string; dollars: number }>;
 }
 
 const ADVANCED_MEASUREMENT: Array<{ label: string; pattern: RegExp }> = [
@@ -360,6 +365,7 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
     nonMediaItems,
     ctvPublishers: ctvSource.map((pub: any) => clip(pub?.name || pub?.publisher || pub?.displayName, 60)).filter(Boolean).slice(0, 10),
     notInPlanChannels,
+    ...(combined.outsideCatalog.length ? { outsideCatalog: combined.outsideCatalog.slice(0, 12).map((line) => ({ name: clip(line.name, 80), dollars: line.dollars })) } : {}),
   };
 }
 
@@ -573,6 +579,9 @@ export function buildBriefPrompt(snapshot: BriefSnapshot, instructions?: string)
     for (const m of snapshot.measurement) {
       lines.push(`- ${m.name}${m.advanced ? " (advanced: proves business impact)" : ""}${m.channels.length ? ` on ${m.channels.join(", ")}` : ""}${m.rationale ? `: ${m.rationale}` : ""}`);
     }
+  }
+  if (snapshot.outsideCatalog?.length) {
+    lines.push("", `ALSO IN THE CLIENT'S PLAN (lines outside Digital Remedy's catalog, at the client's dollars; part of the plan, but make no claims about how they perform): ${snapshot.outsideCatalog.map((o) => `${o.name} ($${Math.round(o.dollars).toLocaleString()})`).join("; ")}`);
   }
   if (snapshot.notInPlanChannels.length) {
     lines.push("", `NOT IN THIS PLAN (evaluated but not selected; never present these as part of the plan): ${snapshot.notInPlanChannels.join("; ")}`);
@@ -799,6 +808,9 @@ export function sanitizeBriefSnapshot(body: any): BriefSnapshot {
     nonMediaItems: clipList(s.nonMediaItems, 12, 100),
     ctvPublishers: clipList(s.ctvPublishers, 10, 60),
     notInPlanChannels: clipList(s.notInPlanChannels, 60, 80),
+    ...(Array.isArray(s.outsideCatalog) && s.outsideCatalog.length
+      ? { outsideCatalog: list(s.outsideCatalog, 12, (o) => ({ name: clip(o?.name, 80), dollars: Number(o?.dollars) || 0 })).filter((o) => o.name) }
+      : {}),
   };
 }
 

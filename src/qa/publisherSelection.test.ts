@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { publisherKey, restorePublisherSelection, settlePublisherSelection } from "./publisherSelection";
+import { publisherKey, restorePublisherSelection, settlePublisherSelection, withUploadedPublishers } from "./publisherSelection";
 
 const pool = [
   { name: "Hulu", category: "App", enabled: true },
@@ -42,4 +42,18 @@ test("remediation can rewrite a publisher's rationale but not change which publi
     { publisher: "Hulu", category: "App", why: "new rationale" },
     { publisher: "Roku", category: "OS", why: "old" },
   ]);
+});
+
+test("publishers named in the client's media plan lead the list, and the rest fill it up to the target", () => {
+  const picks = [{ publisher: "HGTV", why: "Home viewers" }, { publisher: "Hulu", why: "Streamers" }, { publisher: "Discovery+", why: "Factual" }];
+  const next = withUploadedPublishers(picks, ["roku", "Hulu", "Spotify", "Peacock"], pool, 3);
+  assert.deepEqual(next.map((p) => p.publisher), ["Roku", "Hulu", "HGTV"], "only enabled pool publishers; each once; Spotify and the disabled Peacock are not added");
+  assert.equal(next[0].why, "Part of your media plan.");
+  assert.equal(next[0].category, "OS");
+});
+
+test("uploaded publishers are never dropped to fit the target, and a plan naming none is left alone", () => {
+  assert.deepEqual(withUploadedPublishers([{ publisher: "HGTV" }], ["Hulu", "Roku"], pool, 1).map((p) => p.publisher), ["Hulu", "Roku"]);
+  const picks = [{ publisher: "HGTV" }];
+  assert.equal(withUploadedPublishers(picks, ["Spotify"], pool, 8), picks);
 });

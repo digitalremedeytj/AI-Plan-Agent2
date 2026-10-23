@@ -1,4 +1,4 @@
-import type { SavedProfile } from "../types";
+import type { ExtractedPlacement, RfpAnalysis, SavedProfile } from "../types";
 import type { PlanningSettings } from "../planning/settings";
 import type { CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import type { AssistantOp, ProposalChange } from "../assistant/operations";
@@ -383,15 +383,20 @@ export async function createPlan(input: {
   return body.plan;
 }
 
+/**
+ * `checkpointReason` takes a History checkpoint before this write whatever the last one was; without
+ * it the server checkpoints edits at most every 15 minutes. Only reasons the server allows are kept.
+ */
 export async function updatePlan(
   id: string,
   expectedRevision: number,
   input: { title: string; advertiserName?: string; settingsRevision: number | null; payload: PlanPayload },
+  options: { checkpointReason?: "media_plan" } = {},
 ): Promise<StoredPlan> {
   const body = await request<{ plan: StoredPlan }>(`/api/plans/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "If-Match": String(expectedRevision) },
-    body: JSON.stringify(input),
+    body: JSON.stringify(options.checkpointReason ? { ...input, checkpointReason: options.checkpointReason } : input),
   });
   return body.plan;
 }
@@ -402,7 +407,7 @@ export async function updatePlan(
 export interface PlanVersionSummary {
   id: string;
   planId: string;
-  reason: "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore";
+  reason: "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore" | "media_plan" | "content_refresh";
   createdAt: string;
   createdBy: string;
   planRevision: number;
@@ -455,6 +460,18 @@ export interface PlanAuditResponse {
 /** Audits the saved plan and proposes fixes. Changes nothing. Takes a few minutes. */
 export async function auditPlan(id: string): Promise<PlanAuditResponse> {
   return longRequest<PlanAuditResponse>(`/api/plans/${encodeURIComponent(id)}/audit`, { method: "POST" });
+}
+
+/**
+ * Rewrites the plan's narrative (and leads its CTV publishers with the uploaded plan's) for the
+ * channel plan it has now, and saves it. Takes a minute or two.
+ */
+export async function refreshPlanContent(id: string, expectedRevision: number): Promise<StoredPlan> {
+  const body = await longRequest<{ plan: StoredPlan }>(`/api/plans/${encodeURIComponent(id)}/refresh-content`, {
+    method: "POST",
+    body: JSON.stringify({ expectedRevision }),
+  });
+  return body.plan;
 }
 
 /** Applies the approved fixes, re-verifies and saves the plan with the new audit. */
@@ -662,6 +679,19 @@ export async function archivePlan(id: string): Promise<void> {
 }
 
 /** `staffPreview` is true when a planner (signed in now or before, on this browser) opened the link. */
+/** Reads an uploaded media plan file on the server (cached there by file contents). */
+export async function parseMediaPlan(file: File): Promise<{ placements: ExtractedPlacement[]; rfpAnalysis: RfpAnalysis | null }> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await authFetch("/api/parse-plan", { method: "POST", body: form });
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body?.success || !Array.isArray(body?.placements)) {
+    throw new Error(body?.error ? `${body.error}${body.details ? `: ${body.details}` : ""}` : "The media plan could not be read.");
+  }
+  if (body.placements.length === 0) throw new Error("No media lines were found in that file.");
+  return { placements: body.placements, rfpAnalysis: body.rfpAnalysis || null };
+}
+
 export async function fetchSharedPlan(token: string): Promise<{ plan: StoredPlan; staffPreview: boolean }> {
   const body = await request<{ plan: StoredPlan; staffPreview?: boolean }>(`/api/share/plan?token=${encodeURIComponent(token)}`);
   return { plan: body.plan, staffPreview: Boolean(body.staffPreview) };

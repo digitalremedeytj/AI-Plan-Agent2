@@ -86,7 +86,7 @@ export interface UpdatePlanInput extends PlanPreviewFields {
  * Why a checkpoint was taken. Each one holds the plan as it stood just before that event, so
  * restoring it undoes the event. "original" is the plan as generation (or the first save) wrote it.
  */
-export type PlanVersionReason = "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore";
+export type PlanVersionReason = "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore" | "media_plan" | "content_refresh";
 
 /** A checkpoint without its payload: what the history list shows. */
 export interface PlanVersionSummary {

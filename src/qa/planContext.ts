@@ -78,7 +78,9 @@ export function describeChannelPlan(profile: any): string {
   const kept = combined.keptChannels;
   const budgetText = kept.length > 0
     ? `$${combined.total.toLocaleString()} total: the RFP's media types kept at their RFP dollars ($${combined.keptAtRfpBudget.toLocaleString()}) plus an additional $${combined.allocatedBudget.toLocaleString()} allocated below`
-    : `$${Number(plan.workingMediaBudget || 0).toLocaleString()}`;
+    : combined.outsideCatalog.length > 0
+      ? `$${combined.total.toLocaleString()} total: the uploaded plan as is, $${combined.allocatedBudget.toLocaleString()} allocated below plus $${combined.outsideCatalogBudget.toLocaleString()} of uploaded lines outside the catalog (${combined.outsideCatalog.map((c) => `${c.name} $${c.dollars.toLocaleString()}`).join("; ")})`
+      : `$${Number(plan.workingMediaBudget || 0).toLocaleString()}`;
   const lines = [
     `CHANNEL PLAN (built by Digital Remedy's planning engine from its product catalog; it owns budget, channel selection, tactics and measurement. ${budgetText} over ${plan.flightDays ?? "?"} days):`,
   ];

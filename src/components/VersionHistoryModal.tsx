@@ -20,6 +20,8 @@ const REASON_LABELS: Record<api.PlanVersionSummary["reason"], string> = {
   qa_fixes: "Before QA fixes were applied",
   recap: "Before a Campaign Recap was added",
   restore: "Before an earlier version was restored",
+  media_plan: "Before a media plan was uploaded",
+  content_refresh: "Before the plan's content was rewritten",
 };
 
 function formatWhen(iso: string): string {

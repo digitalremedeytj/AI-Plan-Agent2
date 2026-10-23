@@ -56,7 +56,7 @@ import {
   type BriefOfRecord,
 } from "./src/research/briefOfRecord";
 import { filterCitationPool, RESEARCH_SOURCE_GUIDANCE } from "./src/research/sourceFilter";
-import { settlePublisherSelection } from "./src/qa/publisherSelection";
+import { settlePublisherSelection, withUploadedPublishers } from "./src/qa/publisherSelection";
 import { describeChannelPlan, describeCharts, describePersonas, researchForPrompt } from "./src/qa/planContext";
 import { PROSE_OWNERS, normalizeAudit, openFindingsAsFlags, type NormalizedAudit, type NormalizedVerify } from "./src/qa/planAudit";
 import { applyPatches, describeAppliedFixes, getAtPath, type AppliedPatch } from "./src/qa/planRemediation";
@@ -72,7 +72,7 @@ import {
   type AuditInputs,
 } from "./src/qa/auditRunner";
 import { PORTRAIT_SYSTEM_INSTRUCTION, applyPortraits, buildPortraitInput, buildPortraitResponseSchema } from "./src/research/personaPortraits";
-import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeSchema } from "./src/research/planNarrative";
+import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeChannelKey, narrativeSchema, planNarrativeNote } from "./src/research/planNarrative";
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
@@ -1265,11 +1265,13 @@ async function buildChannelStrategy(
     rfpChannels,
     scoutAiRecommendedChannels,
     executiveInsight: mediaPlan.channels.length > 0
-      ? `${mode === "incremental"
+      ? `${mode === "asIs"
+          ? `The uploaded plan is used as is: ${mediaPlan.selectedMediaTypeCount} media type(s) at their uploaded dollars ($${mediaPlan.workingMediaBudget.toLocaleString()}), with nothing added or moved.`
+          : mode === "incremental"
           ? `ScoutAI kept ${rfpChannels.length} RFP media type(s) at their RFP budgets and allocated the additional $${mediaPlan.workingMediaBudget.toLocaleString()} across ${mediaPlan.selectedMediaTypeCount} new media type(s).`
           : mode === "grow"
             ? `ScoutAI allocated the combined $${mediaPlan.workingMediaBudget.toLocaleString()} ($${rfpMediaBudget.toLocaleString()} RFP + $${strategyBudget.additionalBudget.toLocaleString()} additional) across ${mediaPlan.selectedMediaTypeCount} media type(s).`
-            : `ScoutAI allocated the full $${mediaPlan.workingMediaBudget.toLocaleString()} working media budget across ${mediaPlan.selectedMediaTypeCount} media type(s).`} The normalized 30-day budget permits ${mediaPlan.maxMediaTypes} automatic selection(s)${facts.requiredChannelIds.length > 0 ? `, with ${facts.requiredChannelIds.length} planner-required override(s) allowed beyond that cap` : ""}.`
+            : `ScoutAI allocated the full $${mediaPlan.workingMediaBudget.toLocaleString()} working media budget across ${mediaPlan.selectedMediaTypeCount} media type(s).`}${mode === "asIs" ? "" : ` The normalized 30-day budget permits ${mediaPlan.maxMediaTypes} automatic selection(s)${facts.requiredChannelIds.length > 0 ? `, with ${facts.requiredChannelIds.length} planner-required override(s) allowed beyond that cap` : ""}.`}`
       : "No channel cleared all deterministic availability, prerequisite, budget, and portfolio constraints; resolve the listed conditions before allocation.",
     budgetStrategyMode: strategyMode,
     ...(mode === "greenfield" ? {} : { additionalBudget: strategyBudget.additionalBudget, rfpMediaBudget }),
@@ -2381,8 +2383,11 @@ app.put("/api/plans/:id", async (req, res) => {
     const input = planPayloadFromBody(req.body);
     const storage = await getStorage();
     await refreshCampaignRecap(storage, { id: req.params.id, settingsRevision: input.settingsRevision }, input.payload);
-    await checkpointBeforeWrite(storage, req.params.id, "editing", actorName(req));
+    // Replacing the plan's media plan is a big enough change to always get its own checkpoint.
+    const reason = req.body?.checkpointReason === "media_plan" ? "media_plan" : "editing";
+    await checkpointBeforeWrite(storage, req.params.id, reason, actorName(req));
     const plan = await storage.updatePlan(req.params.id, { ...input, actor: actorName(req) }, expectedRevision);
+    if (reason === "media_plan") logUsage(req, "media_plan_upload", { planId: plan.id, advertiserName: plan.advertiserName, detail: (input.payload as any)?.profile?.channelStrategy?.budgetStrategyMode });
     res.json({ success: true, plan });
   } catch (err: any) {
     respondToStorageError(res, err, "update plan");
@@ -2467,6 +2472,88 @@ app.post("/api/plans/:id/audit", async (req, res) => {
   } catch (err: any) {
     console.error("[MANUAL AUDIT] Failed:", err);
     res.status(err?.status || 502).json({ error: "The QA audit could not be completed.", details: err?.message || String(err) });
+  }
+});
+
+// Rewrites a saved plan's written content for the channel plan it has now, after a media plan
+// upload or another channel change: the CTV publishers lead with any the uploaded plan names, then
+// the narrative is rewritten by the same writer generation uses, from the saved research. The QA
+// audit is the planner's next step (POST /api/plans/:id/audit), as after any other big change.
+app.post("/api/plans/:id/refresh-content", async (req, res) => {
+  req.socket.setTimeout(0);
+  holdOpenForLongRequest(req, res);
+  logUsageOnFinish(req, res, "content_refresh", { planId: req.params.id });
+  try {
+    const expectedRevision = Number(req.body?.expectedRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "The plan's current revision is required.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    if (plan.revision !== expectedRevision) {
+      res.status(409).json({ error: "This plan changed while its content was being prepared. Reload it and try again.", code: "REVISION_CONFLICT", currentRevision: plan.revision });
+      return;
+    }
+    res.locals.usage = { advertiserName: plan.advertiserName };
+    const payload = plan.payload as any;
+    const { profile, inputs } = auditInputsFromPlan(plan);
+
+    const uploadedPublishers = (Array.isArray(payload.planOptions) ? payload.planOptions : [])
+      .filter((option: any) => option?.selected)
+      .flatMap((option: any) => Array.isArray(option?.placements) ? option.placements : [])
+      .map((placement: any) => String(placement?.publisher || ""))
+      .filter(Boolean);
+    if (uploadedPublishers.length > 0) {
+      const pool = (await storage.getCurrentPublishers()).publishers;
+      const target = Math.max(1, Math.min(30, Math.round(Number(payload.planningSettings?.ctvPublisherTargetCount) || 8)));
+      profile.ctvPublishers = withUploadedPublishers(profile.ctvPublishers || [], uploadedPublishers, pool, target);
+      // The channel strategy snapshots the list; the two must agree.
+      if (profile.channelStrategy) profile.channelStrategy.ctvPublishers = profile.ctvPublishers;
+    }
+
+    const started = Date.now();
+    const { data, thinkingLevel } = await generateStructuredJsonWithFallback(
+      getAiClient(),
+      {
+        systemInstruction: NARRATIVE_SYSTEM_INSTRUCTION,
+        input: buildNarrativeInput({
+          briefBlock: inputs.briefBlock,
+          campaign: inputs.campaignLine,
+          personas: describePersonas(profile),
+          charts: describeCharts(profile),
+          channelPlan: describeChannelPlan(profile),
+          publishers: publishersLine(profile),
+          ledger: ledgerFor(profile, inputs),
+          research: researchForPrompt(inputs.research),
+          draft: currentNarrative(profile),
+          planNote: planNarrativeNote(profile),
+        }),
+        schema: narrativeSchema,
+      },
+      NARRATIVE_ATTEMPTS,
+    );
+    const replaced = applyNarrative(profile, data);
+    if (replaced.length === 0) throw new Error("The writer returned no usable narrative.");
+    profile.narrativeChannelKey = narrativeChannelKey(profile);
+    console.log(`[REFRESH] Plan ${plan.id}: rewrote ${replaced.length} narrative field(s) at ${thinkingLevel} thinking in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+
+    await checkpointBeforeWrite(storage, plan.id, "content_refresh", actorName(req), { existing: plan });
+    const updated = await storage.updatePlan(plan.id, {
+      title: plan.title,
+      advertiserName: plan.advertiserName,
+      settingsRevision: plan.settingsRevision,
+      payload: { ...payload, profile },
+      actor: actorName(req),
+    }, plan.revision);
+    res.json({ success: true, plan: updated, replaced });
+  } catch (err: any) {
+    console.error("[REFRESH] Failed:", err);
+    respondToStorageError(res, err, "rewrite the plan's content");
   }
 });
 
@@ -5806,6 +5893,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
               ledger: ledgerFor(originalData, auditInputs),
               research: researchForPrompt(auditInputs.research),
               draft: currentNarrative(originalData),
+              planNote: planNarrativeNote(originalData),
             }),
             schema: narrativeSchema,
             onThought: narrativeThoughts.onThought,
@@ -5816,6 +5904,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         const replaced = applyNarrative(originalData, data);
         console.log(`[NARRATIVE] Rewrote ${replaced.length} field(s) at ${thinkingLevel} thinking in ${((Date.now() - narrativeStartedAt) / 1000).toFixed(1)}s.`);
         if (replaced.length === 0) throw new Error("the model returned no usable narrative");
+        originalData.narrativeChannelKey = narrativeChannelKey(originalData);
       } catch (err: any) {
         console.warn(`[NARRATIVE] Failed; keeping the synthesis draft (${err?.message || err}).`);
         pushAlert(generationAlerts, { section: "narrative", severity: "flagged", message: `The final narrative pass did not complete (${err?.message || err}), so the narrative is synthesis's draft, written before the charts and channel plan were settled. Check it against them before presenting.` });

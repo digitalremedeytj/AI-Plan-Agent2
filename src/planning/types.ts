@@ -8,9 +8,10 @@ export type RecommendationStatus = "ADD" | "TEST" | "DO_NOT_ADD";
  * How an uploaded plan's budget is treated. "reallocation" re-spreads the RFP's own media
  * budget; "incremental" keeps every RFP media type at its RFP dollars and allocates only an
  * additional budget to new media types; "grow" re-spreads the RFP budget plus an additional
- * budget across everything. "greenfield" has no uploaded plan.
+ * budget across everything; "asIs" funds exactly the RFP's media types at exactly their RFP dollars,
+ * adding and moving nothing. "greenfield" has no uploaded plan.
  */
-export type PlanningMode = "greenfield" | "reallocation" | "incremental" | "grow";
+export type PlanningMode = "greenfield" | "reallocation" | "incremental" | "grow" | "asIs";
 export type ConfidenceLevel = "high" | "medium" | "low";
 
 export interface DataReadinessFacts {

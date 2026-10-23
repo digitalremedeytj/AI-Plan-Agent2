@@ -5,20 +5,22 @@ import { findBudgetChannelTier, normalizeCampaignBudget, type PlanningSettings }
  * "incremental" keeps its old id: plans saved in the earlier incremental mode read as
  * "Add on top of RFP", with the budget they were given treated as the additional amount.
  */
-export type BudgetStrategyMode = "reallocation" | "incremental" | "grow";
+export type BudgetStrategyMode = "reallocation" | "incremental" | "grow" | "asIs";
 
-export const BUDGET_STRATEGY_MODES: BudgetStrategyMode[] = ["reallocation", "incremental", "grow"];
+export const BUDGET_STRATEGY_MODES: BudgetStrategyMode[] = ["reallocation", "incremental", "grow", "asIs"];
 
 export const BUDGET_STRATEGY_LABELS: Record<BudgetStrategyMode, string> = {
   reallocation: "Optimize RFP budget",
   incremental: "Add on top of RFP",
   grow: "Optimize total increased budget",
+  asIs: "Use the plan as is",
 };
 
 export const BUDGET_STRATEGY_DESCRIPTIONS: Record<BudgetStrategyMode, string> = {
   reallocation: "Keep the RFP's budget and re-spread it across RFP and new media types for the goal.",
   incremental: "Keep every RFP media type at its RFP dollars and spend an additional budget on new media types.",
   grow: "Add budget and re-spread the combined total across RFP and new media types for the goal.",
+  asIs: "Keep exactly the uploaded media types and dollars. ScoutAI adds and moves nothing; the rest of the plan supports it.",
 };
 
 export function normalizeBudgetStrategyMode(value: unknown): BudgetStrategyMode {
@@ -26,13 +28,13 @@ export function normalizeBudgetStrategyMode(value: unknown): BudgetStrategyMode 
 }
 
 export function modeNeedsAdditionalBudget(mode: BudgetStrategyMode): boolean {
-  return mode !== "reallocation";
+  return mode === "incremental" || mode === "grow";
 }
 
 export interface StrategyBudget {
   /** What the plan allocates: the RFP budget, the additional budget alone, or both together. */
   allocatedBudget: number;
-  /** The additional budget the planner entered; 0 for "Optimize RFP budget". */
+  /** The additional budget the planner entered; 0 for "Optimize RFP budget" and "Use the plan as is". */
   additionalBudget: number;
 }
 
@@ -43,7 +45,7 @@ export interface StrategyBudget {
  */
 export function resolveStrategyBudget(mode: BudgetStrategyMode, rfpBudget: number, additionalBudget: number | undefined): StrategyBudget {
   const additional = Number(additionalBudget) > 0 ? Math.round(Number(additionalBudget) * 100) / 100 : 0;
-  if (mode === "reallocation") return { allocatedBudget: rfpBudget, additionalBudget: 0 };
+  if (mode === "reallocation" || mode === "asIs") return { allocatedBudget: rfpBudget, additionalBudget: 0 };
   if (additional <= 0) {
     throw new Error(`"${BUDGET_STRATEGY_LABELS[mode]}" needs an additional budget greater than $0.`);
   }

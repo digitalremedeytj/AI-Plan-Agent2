@@ -6,7 +6,7 @@ The **Channel Strategy Module** in ScoutAI provides automated, data-driven evalu
 ### Key Objectives
 * **Baseline Channel Audit**: Evaluate user-uploaded or specified RFP channels on audience fit, campaign goal alignment, and media consumption evidence.
 * **Algorithmic Channel Discovery**: Surface high-indexing programmatic channels (e.g., CTV, Audio, Digital OOH, Native, Social, OLV, Display) tailored to the audience's digital touchpoints.
-* **Budget Approaches**: Three ways to plan an uploaded RFP's budget — **Optimize RFP budget**, **Add on top of RFP**, and **Optimize total increased budget** (see section 5).
+* **Budget Approaches**: Four ways to plan an uploaded RFP's budget — **Optimize RFP budget**, **Add on top of RFP**, **Optimize total increased budget**, and **Use the plan as is** (see section 5).
 * **One Allocation Table**: RFP media types and ScoutAI or planner additions share one Channel Allocation table, each labelled by where it came from, and an RFP media type is never silently dropped.
 * **Grounding & Transparency**: Every recommendation is backed by real-time web search grounding and verifiable market evidence.
 
@@ -125,6 +125,7 @@ keeps added/removed media types). The default is **Optimize RFP budget**.
 | **Optimize RFP budget** | `reallocation` | The RFP media budget | Compete with new media types; may be cut or dropped |
 | **Add on top of RFP** | `incremental` | Only the additional budget, to new media types | Kept at their RFP dollars, outside the allocation |
 | **Optimize total increased budget** | `grow` | RFP budget + additional budget, as one total | Compete with new media types for the combined total |
+| **Use the plan as is** | `asIs` | Nothing: the RFP's media types at exactly their RFP dollars | Are the plan; nothing is added, cut or moved |
 
 * The two growth approaches need an additional budget greater than $0; the server refuses
   rather than inventing one (an earlier version silently spent the brief budget again).
@@ -135,6 +136,15 @@ keeps added/removed media types). The default is **Optimize RFP budget**.
   budget raises that cap ("…up to 8 media types, 2 more than at $50,000").
 * Plans saved in the old incremental mode open as "Add on top of RFP", with the budget they
   were given treated as the additional amount.
+* **Use the plan as is** is for a client who keeps their own plan while the rest of ours (research,
+  personas, narrative) supports it. The engine skips selection, eligibility, budget tiers and
+  allocation bounds (`asUploadedPlan` in `engine.ts`) but keeps each media type's scores for the
+  planner. The RFP media types are real allocation rows, so the allocation editor still works,
+  and a row a planner changes shows its RFP dollars and the difference. RFP lines that matched no
+  media type become their own rows at their dollars ("Outside ScoutAI catalog", planner-only label)
+  and count toward the plan total (`outsideCatalog` in `combinedPlan`). On a share link there are
+  no source badges, no source filter, no group heading unless a planner added media types, and no
+  "ScoutAI recommendations not in this plan".
 
 ---
 
@@ -168,6 +178,48 @@ dollars and minimum spends follow `channelDollarsColumn`.
 
 **Copy Summary** and the Markdown export (`/src/utils/markdownExporter.ts`) are built from the
 same rows.
+
+---
+
+### Uploading a media plan onto a finished plan
+
+**Upload media plan** above the budget approach (planners only, saved plans only) opens
+`PlanUploadModal.tsx`. A new upload replaces the earlier one, and the upload is the truth: its
+budget, flight and locations replace the brief's. The planner chooses **Use this plan as is**
+(`asIs`) or **Recommend additions to it** (the other three approaches), then reviews:
+
+* **Brief changes**, from → to, and any locations that could not be read (the brief's stay; nothing is guessed).
+* **Check the audience**: the upload's stated audiences beside the brief of record's. A warning only;
+  the research and personas are not re-run.
+* **Media types**: each distinct uploaded line and the media type it landed in, with a picker to
+  correct it or keep it outside the catalog. The choice is stored on the line as
+  `ExtractedPlacement.channelId` (or `OUTSIDE_CATALOG`), which the engine honours before its own matching.
+* **Channel Allocation, before and after**, with totals.
+
+The preview is `/api/analyze-media-plan` with the plan's stored candidate signals, so it costs no
+AI call and nothing is saved. The planner's earlier adds and removes do not carry into an upload.
+**Approve** writes once: the new channel strategy, the upload (`extractedPlacements`,
+`planOptions`, `rfpAnalysis`, `uploadedFileName`) and the brief's budget, flight and geography,
+with `checkpointReason: "media_plan"` so History always holds the plan from before
+("Before a media plan was uploaded"). The pure pieces (brief changes, geography reading, line
+mapping, before/after) are in `src/planning/planUpload.ts`.
+
+**Rewriting the content.** Approving starts `POST /api/plans/:id/refresh-content` in the
+background. It leads the CTV publisher list with publishers the uploaded plan names (in the
+enabled pool, marked "Part of your media plan.", never dropped to fit the target count;
+`withUploadedPublishers` in `src/qa/publisherSelection.ts`), then rewrites the narrative with the
+same writer and inputs generation uses, from the plan's saved research. For a plan used as is the
+writer gets `AS_IS_PLAN_NOTE` (`src/research/planNarrative.ts`): back the client's plan, explain
+each channel's role, never invent evidence for a weak fit, never argue for a different plan. It
+saves with a `content_refresh` History checkpoint, then the QA audit opens. The executive brief
+is not rewritten; its own out-of-date badge asks for that, and its snapshot carries any
+outside-catalog lines.
+
+**Out of date.** `profile.narrativeChannelKey` records the channel mix the narrative was written
+for (media types, outside-catalog lines and CTV publishers, not budget splits). When the plan's
+mix no longer matches, after an upload, a budget-approach change or adding or removing a media
+type, Channel Allocation offers **Rewrite plan content**. Plans written before the key existed are
+never flagged.
 
 ---
 

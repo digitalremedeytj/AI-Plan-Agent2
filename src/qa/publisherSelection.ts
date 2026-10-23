@@ -97,3 +97,28 @@ export function restorePublisherSelection(target: any, settled: PublisherPick[])
   if (target && typeof target === "object") target.ctvPublishers = restored;
   return { changed };
 }
+
+/**
+ * A client's media plan that names CTV publishers: those in the enabled pool lead the plan's list,
+ * marked as the client's, followed by the picks already there, up to the target count. Uploaded
+ * publishers are never dropped to fit. Returns the picks unchanged when the upload names none.
+ */
+export function withUploadedPublishers(
+  picks: PublisherPick[],
+  uploadedNames: string[],
+  pool: PoolPublisher[],
+  targetCount: number,
+): PublisherPick[] {
+  const byKey = new Map(pool.filter((p) => p && p.name && p.enabled !== false).map((p) => [publisherKey(p.name), p]));
+  const seen = new Set<string>();
+  const uploaded: PublisherPick[] = [];
+  for (const name of uploadedNames) {
+    const record = byKey.get(publisherKey(name));
+    if (!record || seen.has(publisherKey(record.name))) continue;
+    seen.add(publisherKey(record.name));
+    uploaded.push({ publisher: record.name, ...(record.category ? { category: record.category } : {}), why: "Part of your media plan." });
+  }
+  if (uploaded.length === 0) return picks;
+  const rest = picks.filter((pick) => !seen.has(publisherKey(pick?.publisher)));
+  return [...uploaded, ...rest.slice(0, Math.max(0, targetCount - uploaded.length))];
+}

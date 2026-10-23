@@ -1,4 +1,4 @@
-import type { AudienceProfile, CanonicalMediaType, ExtractedPlacement } from "../types";
+import { OUTSIDE_CATALOG, type AudienceProfile, type CanonicalMediaType, type ExtractedPlacement } from "../types";
 import { isNonMediaItem, normalizeRawChannel } from "../utils/mediaTaxonomy";
 import {
   DIGITAL_REMEDY_PRODUCT_REGISTRY,
@@ -186,6 +186,9 @@ function resolveChannelId(raw: string, products?: MediaProductRecord[]): string 
  * display) does not count, so an unrecognised line stays unmatched instead of inflating Display.
  */
 function resolvePlacementChannelId(placement: ExtractedPlacement, products: MediaProductRecord[]): string | null {
+  // A planner's mapping from the upload review is final, as long as the media type still exists.
+  if (placement.channelId === OUTSIDE_CATALOG) return null;
+  if (placement.channelId && products.some((product) => product.id === placement.channelId)) return placement.channelId;
   const fields = [placement.mediaType, placement.productType, placement.publisher].filter((value): value is string => Boolean(value && value.trim()));
   for (const field of fields) {
     const exact = findEffectiveProduct(products, field);
@@ -284,6 +287,7 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
       ...normalization.assumptions,
       ...(input.planningMode === "incremental" ? ["RFP media types keep their RFP budgets; only the additional working media budget is allocated, to new media types."] : []),
       ...(input.planningMode === "grow" ? ["The RFP budget plus the additional budget is allocated as one total across RFP and new media types."] : []),
+      ...(input.planningMode === "asIs" ? ["The uploaded plan is used as is: its media types at its dollars, with nothing added or moved."] : []),
     ],
     settings: input.planningSettings,
     appliedBudgetTier,
@@ -996,6 +1000,9 @@ export function buildMediaRecommendationPlan(
     }));
   const rfpBaseline = facts.existingPlacements.length > 0 ? buildRfpBaseline(facts) : undefined;
   const evaluatedCandidates = evaluateCandidates(facts, aiSignals);
+  if (facts.planningMode === "asIs" && rfpBaseline) {
+    return asUploadedPlan(facts, rfpBaseline, evaluatedCandidates, nonMediaCosts, allocationAudit);
+  }
   const selected = selectPortfolio(evaluatedCandidates, facts, allocationAudit);
   const requiredIds = new Set(facts.requiredChannelIds);
   const maximumCapacity = selected.reduce(
@@ -1037,57 +1044,76 @@ export function buildMediaRecommendationPlan(
   const dollars = dollarsFromBasisPoints(facts.totalWorkingMediaBudget, basisPoints);
   allocationAudit.push({ type: "rounding", detail: "Applied stable basis-point rounding and distributed final budget cents deterministically." });
 
-  const channels: ChannelPlanRecommendation[] = selected.map((candidate) => {
-    const allocationDollars = dollars.get(candidate.product.id) || 0;
-    const allocationPercent = (basisPoints.get(candidate.product.id) || 0) / 100;
-    return {
-      channelId: candidate.product.id,
-      canonicalId: candidate.product.legacyCanonicalId,
-      channelName: candidate.product.displayName,
-      familyId: candidate.product.familyId,
-      manuallyForced: facts.requiredChannelIds.includes(candidate.product.id),
-      status: candidate.status === "ADD" ? "ADD" : "TEST",
-      recommendationScore: candidate.recommendationScore,
-      confidence: candidate.confidence,
-      allocationPercent,
-      allocationDollars,
-      monthlyEquivalentSpend: facts.campaignFlightDays
-        ? Math.round((allocationDollars / facts.campaignFlightDays) * 30 * 100) / 100
-        : allocationDollars,
-      role: candidate.product.funnelRoles.join(" / "),
-      gapAddressed: candidate.gapAddressed,
-      evidence: candidate.evidence,
-      targetingTactics: candidate.targetingTactics,
-      publishers: candidate.publishers,
-      creativeEnhancements: candidate.creativeEnhancements,
-      inventoryControls: candidate.inventoryControls,
-      measurementCapabilities: candidate.measurementCapabilities,
-      prerequisites: candidate.prerequisites,
-      tradeoffs: candidate.tradeoffs,
-      assumptions: facts.assumptions,
-      allocationRationale: candidate.allocationRationale,
-      decisionRule: candidate.decisionRule,
-      minimumAllocationPercent: candidate.product.minimumAllocationPercent,
-      maximumAllocationPercent: candidate.product.maximumAllocationPercent,
-      minimumTotalSpend: candidate.product.minimumTotalSpend,
-      typicalCpmLow: candidate.product.typicalCpmLow,
-      typicalCpmHigh: candidate.product.typicalCpmHigh,
-      fundingSource: facts.planningMode === "incremental"
-        ? "Additional working media budget"
-        : facts.planningMode === "reallocation"
-          ? "Reallocated uploaded-plan working media"
-          : facts.planningMode === "grow"
-            ? "Uploaded-plan plus additional working media"
-            : "New plan working media budget",
-    };
-  });
+  const channels: ChannelPlanRecommendation[] = selected.map((candidate) => planChannel(
+    candidate,
+    facts,
+    dollars.get(candidate.product.id) || 0,
+    (basisPoints.get(candidate.product.id) || 0) / 100,
+  ));
 
+  return planResult(facts, channels, evaluatedCandidates, nonMediaCosts, allocationAudit, rfpBaseline);
+}
+
+function planChannel(candidate: EvaluatedMediaCandidate, facts: CampaignFacts, allocationDollars: number, allocationPercent: number): ChannelPlanRecommendation {
+  return {
+    channelId: candidate.product.id,
+    canonicalId: candidate.product.legacyCanonicalId,
+    channelName: candidate.product.displayName,
+    familyId: candidate.product.familyId,
+    manuallyForced: facts.requiredChannelIds.includes(candidate.product.id),
+    status: candidate.status === "ADD" ? "ADD" : "TEST",
+    recommendationScore: candidate.recommendationScore,
+    confidence: candidate.confidence,
+    allocationPercent,
+    allocationDollars,
+    monthlyEquivalentSpend: facts.campaignFlightDays
+      ? Math.round((allocationDollars / facts.campaignFlightDays) * 30 * 100) / 100
+      : allocationDollars,
+    role: candidate.product.funnelRoles.join(" / "),
+    gapAddressed: candidate.gapAddressed,
+    evidence: candidate.evidence,
+    targetingTactics: candidate.targetingTactics,
+    publishers: candidate.publishers,
+    creativeEnhancements: candidate.creativeEnhancements,
+    inventoryControls: candidate.inventoryControls,
+    measurementCapabilities: candidate.measurementCapabilities,
+    prerequisites: candidate.prerequisites,
+    tradeoffs: candidate.tradeoffs,
+    assumptions: facts.assumptions,
+    allocationRationale: candidate.allocationRationale,
+    decisionRule: candidate.decisionRule,
+    minimumAllocationPercent: candidate.product.minimumAllocationPercent,
+    maximumAllocationPercent: candidate.product.maximumAllocationPercent,
+    minimumTotalSpend: candidate.product.minimumTotalSpend,
+    typicalCpmLow: candidate.product.typicalCpmLow,
+    typicalCpmHigh: candidate.product.typicalCpmHigh,
+    fundingSource: facts.planningMode === "incremental"
+      ? "Additional working media budget"
+      : facts.planningMode === "reallocation"
+        ? "Reallocated uploaded-plan working media"
+        : facts.planningMode === "grow"
+          ? "Uploaded-plan plus additional working media"
+          : facts.planningMode === "asIs"
+            ? "Uploaded-plan working media, as submitted"
+            : "New plan working media budget",
+  };
+}
+
+function planResult(
+  facts: CampaignFacts,
+  channels: ChannelPlanRecommendation[],
+  evaluatedCandidates: EvaluatedMediaCandidate[],
+  nonMediaCosts: MediaRecommendationPlan["nonMediaCosts"],
+  allocationAudit: AllocationAuditEntry[],
+  rfpBaseline: RfpBaseline | undefined,
+  workingMediaBudget = facts.totalWorkingMediaBudget,
+): MediaRecommendationPlan {
   return {
     catalogVersion: PLANNING_CATALOG_VERSION,
     settingsVersion: facts.settings.version,
     appliedBudgetTier: facts.appliedBudgetTier,
     normalized30DayBudget: facts.normalized30DayBudget,
-    workingMediaBudget: facts.totalWorkingMediaBudget,
+    workingMediaBudget,
     flightDays: facts.campaignFlightDays,
     maxMediaTypes: facts.appliedBudgetTier.maxChannels,
     selectedMediaTypeCount: channels.length,
@@ -1099,6 +1125,42 @@ export function buildMediaRecommendationPlan(
     allocationAudit,
     ...(rfpBaseline ? { rfpBaseline } : {}),
   };
+}
+
+/**
+ * "Use the plan as is": the uploaded media types at exactly their uploaded dollars. Selection,
+ * eligibility, budget tiers and allocation bounds are all skipped; the client chose this plan, and
+ * the rest of ours is written to support it. The scores still travel with each media type so a
+ * planner can see where the research is thin. Lines that matched no media type stay in
+ * rfpBaseline.unmatchedLines and are shown beside the allocation (src/planning/allocationRows.ts),
+ * so workingMediaBudget here is what the matched media types spend.
+ */
+function asUploadedPlan(
+  facts: CampaignFacts,
+  baseline: RfpBaseline,
+  evaluatedCandidates: EvaluatedMediaCandidate[],
+  nonMediaCosts: MediaRecommendationPlan["nonMediaCosts"],
+  allocationAudit: AllocationAuditEntry[],
+): MediaRecommendationPlan {
+  const byId = new Map(evaluatedCandidates.map((candidate) => [candidate.product.id, candidate]));
+  const funded = baseline.channels.filter((channel) => byId.has(channel.channelId));
+  const total = Math.round(funded.reduce((sum, channel) => sum + channel.dollars, 0) * 100) / 100;
+  const channels = funded
+    .map((channel) => planChannel(
+      byId.get(channel.channelId)!,
+      facts,
+      channel.dollars,
+      total > 0 ? Math.round((channel.dollars / total) * 10000) / 100 : 0,
+    ))
+    .map((channel) => ({ ...channel, allocationRationale: "Allocated as in the uploaded plan." }))
+    .sort((a, b) => b.allocationDollars - a.allocationDollars);
+  allocationAudit.push({ type: "selection", detail: `Used the uploaded plan as is: ${channels.length} media type(s) at their uploaded dollars.` });
+  return planResult(facts, channels, evaluatedCandidates, nonMediaCosts, allocationAudit, baseline, total);
+}
+
+/** How an uploaded line is named everywhere it is listed; the upload review groups lines by it. */
+export function rfpLineLabel(placement: ExtractedPlacement): string {
+  return [placement.mediaType, placement.productType].filter(Boolean).join(" · ") || placement.placementName || "Line item";
 }
 
 function placementRaw(placement: ExtractedPlacement): string {
@@ -1119,7 +1181,7 @@ function buildRfpBaseline(facts: CampaignFacts): RfpBaseline {
     const raw = placementRaw(placement);
     if (isNonMediaItem(raw) || isNonMediaItem(normalizeRawChannel(raw).canonicalId)) return;
     const line: RfpBaselineLine = {
-      label: [placement.mediaType, placement.productType].filter(Boolean).join(" · ") || placement.placementName || "Line item",
+      label: rfpLineLabel(placement),
       publisher: placement.publisher || "",
       audience: placement.audience || "",
       pricing: [placement.pricingStructureType, placement.pricingStructureDetails].filter(Boolean).join(" "),

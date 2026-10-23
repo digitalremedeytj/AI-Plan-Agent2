@@ -109,6 +109,9 @@ import type { SegmentRecommendation } from "./types";
 import { captureElementToCanvas } from "./utils/html2canvasPolyfill";
 import { CtvPublisherRecommendation } from "./types";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
+import { describeGeography } from "./planning/planUpload";
+import { narrativeChannelKey } from "./research/planNarrative";
+import { PlanUploadModal, type AppliedPlanUpload, type PlanUploadPreviewInput } from "./components/PlanUploadModal";
 import { isNonMediaItem, normalizeRawChannel } from "./utils/mediaTaxonomy";
 import {
   findBudgetChannelTier,
@@ -699,23 +702,7 @@ export default function App() {
     [budgetNormalization.normalized30DayBudget, planningSettings],
   );
 
-  const geography = React.useMemo(() => {
-    if (geographyType === "National") return "National";
-    if (geoTargets.length === 0) return geographyType;
-    if (geographyType === "State") {
-      if (geoTargets.length <= 4) {
-        return `State (${geoTargets.map((t) => t.match(/\(([^)]+)\)/)?.[1] || t).join(", ")})`;
-      }
-      return `State (${geoTargets.length} States: ${geoTargets.slice(0, 3).map((t) => t.match(/\(([^)]+)\)/)?.[1] || t).join(", ")}, +${geoTargets.length - 3} more)`;
-    }
-    if (geographyType === "DMA") {
-      if (geoTargets.length <= 3) {
-        return `DMA (${geoTargets.map((t) => t.split(",")[0]).join(", ")})`;
-      }
-      return `DMA (${geoTargets.length} Markets: ${geoTargets.slice(0, 2).map((t) => t.split(",")[0]).join(", ")}, +${geoTargets.length - 2} more)`;
-    }
-    return geographyType;
-  }, [geographyType, geoTargets]);
+  const geography = React.useMemo(() => describeGeography(geographyType, geoTargets), [geographyType, geoTargets]);
 
   const briefMediaTypeChoices = React.useMemo(() => briefMediaTypeOptions(planningSettings), [planningSettings]);
   // A pick a later settings change disabled would make every portfolio infeasible in the engine
@@ -1008,8 +995,19 @@ export default function App() {
   const briefRfpBudget = selectedRfpMediaBudget > 0 ? selectedRfpMediaBudget : budgetNormalization.workingMediaBudget;
   const [channelStrategyUndo, setChannelStrategyUndo] = useState<ChannelStrategyData | null>(null);
 
+  // The sync below re-groups plan options whenever the uploaded lines change, which would drop the
+  // selection a planner just approved in the upload review; an applied upload sets them itself.
+  const skipPlacementSyncRef = React.useRef(false);
+  const [isPlanUploadOpen, setIsPlanUploadOpen] = useState(false);
+  // Rewriting the plan's written content for its current channels (POST /api/plans/:id/refresh-content).
+  const [contentRefresh, setContentRefresh] = useState<{ running: boolean; error: string | null }>({ running: false, error: null });
+
   // Sync planOptions & taxonomyMappings whenever extractedPlacements update
   React.useEffect(() => {
+    if (skipPlacementSyncRef.current) {
+      skipPlacementSyncRef.current = false;
+      return;
+    }
     if (extractedPlacements && extractedPlacements.length > 0) {
       const options = groupPlacementsIntoPlanOptions(extractedPlacements);
       setPlanOptions(options);
@@ -1855,6 +1853,11 @@ export default function App() {
     () => (profileData?.executiveBrief ? briefFingerprint(buildBriefSnapshot(profileData)) : ""),
     [profileData],
   );
+  // Plans written before the key existed carry none and are never flagged.
+  const isNarrativeOutOfDate = React.useMemo(
+    () => Boolean(profileData?.narrativeChannelKey && profileData.narrativeChannelKey !== narrativeChannelKey(profileData)),
+    [profileData],
+  );
   const isBriefStale = Boolean(profileData?.executiveBrief && profileData.executiveBrief.inputFingerprint !== liveBriefFingerprint);
   // "Add on top of RFP" keeps RFP media types outside mediaPlan.channels; the brief shows the whole plan.
   const briefPlan = React.useMemo(() => combinedPlan(profileData?.channelStrategy), [profileData?.channelStrategy]);
@@ -2401,6 +2404,8 @@ export default function App() {
     if (body.extractedPlacements) setExtractedPlacements(body.extractedPlacements);
     if (body.planOptions) setPlanOptions(body.planOptions);
     if (body.rfpAnalysis) setRfpAnalysis(body.rfpAnalysis);
+    if (body.uploadedFileName) setUploadedFileName(body.uploadedFileName);
+    setContentRefresh({ running: false, error: null });
     setActiveSavedId(saved.id);
     markPlanPersisted(saved);
     setError(null);
@@ -3608,6 +3613,31 @@ export default function App() {
     setTimeout(() => setCopySourcesCopied(false), 2000);
   };
 
+  // A re-plan reuses the plan's own AI reasoning for every media type, so it costs no AI call and
+  // the scores do not move.
+  const storedCandidateSignals = (strategy: ChannelStrategyData | null | undefined) => strategy?.mediaPlan?.evaluatedCandidates.map((candidate) => ({
+    channelId: candidate.product.id,
+    components: candidate.components,
+    gapAddressed: candidate.gapAddressed,
+    evidence: candidate.evidence,
+    activationGuidance: candidate.activationGuidance,
+    measurementApproach: candidate.measurementApproach,
+    tradeoffs: candidate.tradeoffs,
+    allocationRationale: candidate.allocationRationale,
+    decisionRule: candidate.decisionRule,
+  })) || [];
+
+  // The planner's panel edits belong to a media type, not its numbers, so a re-plan carries them
+  // over for every media type still in the plan (RFP media types kept at their RFP dollars too).
+  const withCarriedOverrides = (next: ChannelStrategyData, previous: ChannelStrategyData | null | undefined): ChannelStrategyData => {
+    const kept = new Set([
+      ...(next.mediaPlan?.channels || []).map((c) => c.channelId),
+      ...(next.mediaPlan?.rfpBaseline?.channels || []).map((c) => c.channelId),
+    ]);
+    const overrides = Object.fromEntries(Object.entries(previous?.channelOverrides || {}).filter(([id]) => kept.has(id)));
+    return { ...next, ...(Object.keys(overrides).length ? { channelOverrides: overrides } : {}) };
+  };
+
   // Re-plans the open plan with a new budget approach. It throws instead of reporting, so the
   // section that asked can show the message beside its own control.
   const handleChangeBudgetStrategy = async (mode: BudgetStrategyMode, additionalBudget: number) => {
@@ -3616,17 +3646,7 @@ export default function App() {
     const selectedOpts = planOptions.filter(p => p.selected);
     if (selectedOpts.length === 0) throw new Error("Select at least one RFP plan option in the brief first.");
     const currentStrategy = profileData.channelStrategy;
-    const candidateSignals = currentStrategy?.mediaPlan?.evaluatedCandidates.map((candidate) => ({
-      channelId: candidate.product.id,
-      components: candidate.components,
-      gapAddressed: candidate.gapAddressed,
-      evidence: candidate.evidence,
-      activationGuidance: candidate.activationGuidance,
-      measurementApproach: candidate.measurementApproach,
-      tradeoffs: candidate.tradeoffs,
-      allocationRationale: candidate.allocationRationale,
-      decisionRule: candidate.decisionRule,
-    })) || [];
+    const candidateSignals = storedCandidateSignals(currentStrategy);
 
     try {
       const res = await api.authFetch("/api/analyze-media-plan", {
@@ -3655,16 +3675,7 @@ export default function App() {
       if (data.success && data.channelStrategy) {
         // The re-analysis rebuilds the allocations but not the planner's panel edits, which belong
         // to the media type rather than its numbers; they carry over for every media type kept.
-        setProfileData(prev => {
-          if (!prev) return null;
-          // RFP media types kept at their RFP dollars are rows too, so their edits carry over as well.
-          const kept = new Set([
-            ...(data.channelStrategy.mediaPlan?.channels || []).map((c: any) => c.channelId),
-            ...(data.channelStrategy.mediaPlan?.rfpBaseline?.channels || []).map((c: any) => c.channelId),
-          ]);
-          const overrides = Object.fromEntries(Object.entries(prev.channelStrategy?.channelOverrides || {}).filter(([id]) => kept.has(id)));
-          return { ...prev, channelStrategy: { ...data.channelStrategy, ...(Object.keys(overrides).length ? { channelOverrides: overrides } : {}) } };
-        });
+        setProfileData(prev => prev ? { ...prev, channelStrategy: withCarriedOverrides(data.channelStrategy, prev.channelStrategy) } : null);
         setChannelStrategyUndo(currentStrategy || null);
         setBudgetStrategyMode(mode);
         setAdditionalBudgetInput(additionalBudget > 0 ? Math.round(additionalBudget).toLocaleString() : "");
@@ -3675,6 +3686,133 @@ export default function App() {
     } catch (err: any) {
       console.error("Failed to re-plan the channel strategy with a new budget approach:", err);
       throw new Error(`The plan was not changed: ${err?.message || err}`);
+    }
+  };
+
+  // --- Media plan uploaded onto a finished plan (src/components/PlanUploadModal.tsx) ---------------
+
+  /** Re-plans against an uploaded media plan without saving anything: the upload review's preview. */
+  const handlePreviewUploadedPlan = async ({ selectedOptions, mode, additionalBudget, brief }: PlanUploadPreviewInput): Promise<ChannelStrategyData> => {
+    if (!profileData) throw new Error("Open a plan first.");
+    const geo = brief.geography;
+    const res = await api.authFetch("/api/analyze-media-plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        audienceProfile: profileData,
+        selectedPlanOptions: selectedOptions,
+        budgetStrategyMode: mode,
+        additionalBudget,
+        advertiserName,
+        advertiserUrl: url,
+        kpis: kpis.filter((k) => k.trim().length > 0),
+        campaignFocus,
+        additionalContext,
+        // The upload is the truth for locations and flight, so the preview plans with its values.
+        geography: geo ? describeGeography(geo.type, geo.targets) : geography,
+        workingMediaBudget: brief.budget ?? budgetNormalization.workingMediaBudget,
+        campaignFlightDays: brief.flightDays ?? budgetNormalization.campaignFlightDays,
+        planningSettings,
+        // The planner's adds and removes were choices about the plan being replaced, so they do not carry.
+        requiredChannelIds: [],
+        excludedChannelIds: [],
+        candidateSignals: storedCandidateSignals(profileData.channelStrategy),
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success || !data.channelStrategy) throw new Error(data?.details || data?.error || "The uploaded plan could not be previewed.");
+    return data.channelStrategy;
+  };
+
+  /**
+   * Saves an approved upload in one write: the new channel plan and the upload itself, with the
+   * brief's budget, flight and locations taken from it. A History checkpoint is taken first, so
+   * restoring "Before a media plan was uploaded" brings back the plan and its earlier upload.
+   */
+  const handleApplyUploadedPlan = async (upload: AppliedPlanUpload) => {
+    const planId = activeSavedId;
+    const current = profileDataRef.current;
+    if (!planId || !current) throw new Error("Save the plan before uploading a media plan to it.");
+    await autoSaveQueueRef.current;
+    const existing = await api.getPlan(planId);
+    const nextBudget = upload.brief.budget !== null ? `$${Math.round(upload.brief.budget).toLocaleString()}` : budget;
+    const nextLength = upload.brief.flightDays !== null ? String(upload.brief.flightDays) : campaignLength;
+    const geo = upload.brief.geography ?? { type: geographyType, targets: geoTargets };
+    const profile: AudienceProfile = { ...current, channelStrategy: withCarriedOverrides(upload.strategy, current.channelStrategy) };
+    const updated = await api.updatePlan(planId, existing.revision, {
+      title: existing.title,
+      advertiserName: existing.advertiserName,
+      settingsRevision: existing.settingsRevision,
+      payload: {
+        ...existing.payload,
+        profile,
+        budget: nextBudget,
+        campaignLength: nextLength,
+        geography: describeGeography(geo.type, geo.targets),
+        geographyConfig: { type: geo.type, targets: geo.targets, rawInput: "" },
+        extractedPlacements: upload.placements,
+        planOptions: upload.planOptions,
+        rfpAnalysis: upload.rfpAnalysis,
+        uploadedFileName: upload.fileName,
+      },
+    }, { checkpointReason: "media_plan" });
+
+    markPlanPersisted(updated);
+    // Set now, not on the next render: the content refresh below flushes the save queue first,
+    // and a stale ref there would write the old channel plan back over this one.
+    profileDataRef.current = profile;
+    lastAutoSavedProfileRef.current = profile;
+    setProfileData(profile);
+    skipPlacementSyncRef.current = true;
+    setExtractedPlacements(upload.placements);
+    setPlanOptions(upload.planOptions);
+    setRfpAnalysis(upload.rfpAnalysis);
+    setUploadedFileName(upload.fileName);
+    setBudget(nextBudget);
+    setCampaignLength(nextLength);
+    setGeographyType(geo.type);
+    setGeoTargets(geo.targets);
+    setGeoRawInput("");
+    setGeoUnrecognized([]);
+    setBudgetStrategyMode(upload.mode);
+    setAdditionalBudgetInput(upload.additionalBudget > 0 ? Math.round(upload.additionalBudget).toLocaleString() : "");
+    // Undo covers the channel plan only; History holds the whole plan from before the upload.
+    setChannelStrategyUndo(null);
+    setActionError(null);
+    // Approving is the go-ahead to rewrite the content for the new channels; it runs in the background.
+    void handleRefreshPlanContent();
+  };
+
+  /**
+   * Rewrites the narrative and publisher insights for the channel plan the plan has now, then opens
+   * the QA audit, as after any big change. The server works from the saved plan, so pending edits
+   * are saved first; an edit made while it runs makes the server refuse rather than overwrite it.
+   */
+  const handleRefreshPlanContent = async () => {
+    const planId = activeSavedId;
+    if (!planId || contentRefresh.running) return;
+    setContentRefresh({ running: true, error: null });
+    try {
+      await queueAutoSave(planId);
+      const revision = activePlanRevisionRef.current;
+      if (revision === null) throw new Error("Save the plan first.");
+      const updated = await api.refreshPlanContent(planId, revision);
+      if (lastPersistedPlanRef.current?.id !== planId) return; // the planner opened another plan meanwhile
+      const profile = updated.payload.profile as AudienceProfile;
+      markPlanPersisted(updated);
+      profileDataRef.current = profile;
+      lastAutoSavedProfileRef.current = profile;
+      setProfileData(profile);
+      setContentRefresh({ running: false, error: null });
+      setIsAuditModalOpen(true);
+    } catch (err: any) {
+      console.error("Could not rewrite the plan's content:", err);
+      setContentRefresh({
+        running: false,
+        error: err instanceof ApiError && err.isConflict
+          ? "The plan was edited while its content was being rewritten, so nothing was saved. Try again."
+          : err?.message || "The plan's content could not be rewritten.",
+      });
     }
   };
 
@@ -7651,6 +7789,9 @@ export default function App() {
                     ctvPublishers={profileData.ctvPublishers ?? []}
                     internalOnly={internalOnlyVisibility}
                     onChangeBudgetStrategy={handleChangeBudgetStrategy}
+                    onUploadMediaPlan={activeSavedId ? () => setIsPlanUploadOpen(true) : undefined}
+                    contentStatus={activeSavedId ? { ...contentRefresh, outOfDate: isNarrativeOutOfDate } : undefined}
+                    onRefreshContent={activeSavedId ? () => void handleRefreshPlanContent() : undefined}
                     mediaTypeCapFor={(amount) => mediaTypeCapFor(amount, profileData.channelStrategy?.mediaPlan?.flightDays, planningSettings)}
                     onManualMediaTypeChange={handleManualMediaTypeChange}
                     onSaveAllocations={handleSaveManualAllocations}
@@ -9006,6 +9147,18 @@ export default function App() {
           }}
         />
       )}
+
+      <PlanUploadModal
+        isOpen={isPlanUploadOpen && !isShareView}
+        onClose={() => setIsPlanUploadOpen(false)}
+        currentStrategy={profileData?.channelStrategy}
+        brief={{ budget, campaignLength, geographyType, geoTargets }}
+        mediaTypes={briefMediaTypeChoices}
+        researchAudience={profileData?.briefOfRecord?.primaryAudience}
+        capFor={(amount) => mediaTypeCapFor(amount, profileData?.channelStrategy?.mediaPlan?.flightDays, planningSettings)}
+        onPreview={handlePreviewUploadedPlan}
+        onApply={handleApplyUploadedPlan}
+      />
 
       <VersionHistoryModal
         isOpen={isVersionHistoryOpen}

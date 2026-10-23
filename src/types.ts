@@ -266,7 +266,15 @@ export interface ExtractedPlacement {
   adSizes?: string;
   notes?: string;
   planName?: string;
+  /**
+   * The planner's own mapping from the upload review: a catalog media type id, or
+   * OUTSIDE_CATALOG to keep the line out of every media type. Wins over the engine's matching.
+   */
+  channelId?: string;
 }
+
+/** ExtractedPlacement.channelId for a line the planner keeps outside the catalog. */
+export const OUTSIDE_CATALOG = "outside_catalog";
 
 export interface RfpCapabilityMatch {
   rfpAsk: string;
@@ -407,6 +415,12 @@ export interface AudienceProfile {
   channelStrategy?: ChannelStrategyData;
   additionalRfpRequirements?: RfpAnalysis;
   generationAlerts?: GenerationAlert[];
+  /**
+   * The channel mix the narrative was last written for (narrativeChannelKey in
+   * src/research/planNarrative.ts). When the plan's mix no longer matches, the planner is offered a
+   * rewrite. Absent on plans written before it existed, which are never flagged.
+   */
+  narrativeChannelKey?: string;
   generationLog?: GenerationLogEntry[];
   geoInsights?: string;
   geoTargeting?: GeoTargeting;
@@ -493,6 +507,11 @@ export interface SavedProfile {
   groundingSources?: Array<{ title: string; uri: string }>;
   selectedPlanOptions?: ParsedPlanOption[];
   taxonomyMappings?: TaxonomyMapping[];
+  /** The uploaded media plan: its lines, its options (with the planner's selection) and the RFP read. */
+  extractedPlacements?: ExtractedPlacement[];
+  planOptions?: ParsedPlanOption[];
+  rfpAnalysis?: RfpAnalysis | null;
+  uploadedFileName?: string;
 }
 
 // --- CANONICAL MEDIA TAXONOMY ---
@@ -578,7 +597,7 @@ export interface ChannelStrategyData {
   scoutAiRecommendedChannels: ChannelEvaluation[];
   executiveInsight: string;
   /** See src/planning/budgetStrategy.ts for what each mode allocates. */
-  budgetStrategyMode: 'reallocation' | 'incremental' | 'grow';
+  budgetStrategyMode: 'reallocation' | 'incremental' | 'grow' | 'asIs';
   /** The additional budget for "Add on top of RFP" and "Optimize total increased budget". */
   additionalBudget?: number;
   /** The RFP's media budget the choice started from. Absent on plans saved before budget choices. */

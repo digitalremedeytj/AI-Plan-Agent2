@@ -231,7 +231,7 @@ export function exportProfileToMarkdown(
     const allocationView = buildAllocationView(profile.channelStrategy);
     const money = (value: number) => `$${Math.round(value).toLocaleString()}`;
     const rowFacts = (row: AllocationRow) => [
-      row.source === 'rfp' ? (row.keptAtRfp ? 'RFP baseline, kept at RFP budget' : 'RFP baseline') : row.source === 'planner' ? 'Added by planner' : allocationView.hasRfp ? 'ScoutAI added' : '',
+      row.outsideCatalog ? 'Uploaded line outside the ScoutAI catalog' : row.source === 'rfp' ? (row.keptAtRfp ? 'RFP baseline, kept at RFP budget' : allocationView.asIs ? 'Uploaded plan' : 'RFP baseline') : row.source === 'planner' ? 'Added by planner' : allocationView.hasRfp ? 'ScoutAI added' : '',
       row.rfpDollars !== null ? `RFP ${money(row.rfpDollars)}${row.changeDollars ? ` (${row.changeDollars > 0 ? '+' : '−'}${money(Math.abs(row.changeDollars))})` : ''}` : '',
       row.audienceFit !== null ? `Audience Fit ${row.audienceFit}/100, Goal Match ${row.goalMatch}/100` : '',
     ].filter(Boolean).join('; ');
@@ -246,7 +246,7 @@ export function exportProfileToMarkdown(
       markdown += `- **Catalog / Settings Version**: ${mediaPlan.catalogVersion} / ${mediaPlan.settingsVersion}\n\n`;
       markdown += `### Channel Allocation\n`;
       const channelOverrides = profile.channelStrategy.channelOverrides;
-      allocationView.rfpRows.filter((row) => row.keptAtRfp).forEach((row) => {
+      allocationView.rfpRows.filter((row) => row.keptAtRfp || row.outsideCatalog).forEach((row) => {
         markdown += `- **${row.channelName}** — ${row.percentOfTotal !== null ? `${row.percentOfTotal.toFixed(0)}% ` : ''}(${row.dollars !== null ? money(row.dollars) : 'RFP budget'})${row.score !== null ? `; score ${row.score}/100` : ''}; ${rowFacts(row)}\n`;
         markdown += rowReasons(row);
       });

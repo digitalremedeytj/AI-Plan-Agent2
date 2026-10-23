@@ -20,12 +20,14 @@ interface BudgetStrategyControlProps {
   capFor?: (budget: number) => number;
   disabled?: boolean;
   idPrefix: string;
+  /** Limits the choices, e.g. the upload review offers "as is" separately. Defaults to all four. */
+  modes?: BudgetStrategyMode[];
 }
 
 const money = (value: number) => `$${Math.round(value).toLocaleString()}`;
 
 /**
- * The three ways to plan an uploaded RFP's budget. Used in the brief before a plan exists and on
+ * The four ways to plan an uploaded RFP's budget. Used in the brief before a plan exists and on
  * the plan afterwards, so a planner can change the budget approach at either point.
  */
 export const BudgetStrategyControl: React.FC<BudgetStrategyControlProps> = ({
@@ -37,6 +39,7 @@ export const BudgetStrategyControl: React.FC<BudgetStrategyControlProps> = ({
   capFor,
   disabled = false,
   idPrefix,
+  modes = BUDGET_STRATEGY_MODES,
 }) => {
   const additional = parseCurrencyInput(additionalBudgetInput);
   const needsAdditional = modeNeedsAdditionalBudget(mode);
@@ -56,8 +59,8 @@ export const BudgetStrategyControl: React.FC<BudgetStrategyControlProps> = ({
 
   return (
     <div className="space-y-2.5">
-      <div role="radiogroup" aria-label="Budget approach" className="grid gap-2 sm:grid-cols-3">
-        {BUDGET_STRATEGY_MODES.map((option) => {
+      <div role="radiogroup" aria-label="Budget approach" className={`grid gap-2 sm:grid-cols-2 ${modes.length === 3 ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}>
+        {modes.map((option) => {
           const selected = option === mode;
           return (
             <button

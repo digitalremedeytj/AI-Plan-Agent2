@@ -28,6 +28,7 @@ export const ADOPTION_FEATURES: Array<{ action: string; label: string; actions?:
   { action: "exec_brief", label: "Executive brief" },
   { action: "segments_generate", label: "Segments" },
   { action: "campaign_recap", label: "Campaign recap" },
+  { action: "media_plan_upload", label: "Media plan upload" },
 ];
 
 /**

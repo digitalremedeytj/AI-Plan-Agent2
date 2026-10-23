@@ -21,7 +21,7 @@ const rfp: ParsedPlanOption[] = [{
   ],
 }];
 
-function strategyFor(mode: BudgetStrategyMode, additional = 0, options: { excludedChannelIds?: string[] } = {}): ChannelStrategyData {
+function strategyFor(mode: BudgetStrategyMode, additional = 0, options: { excludedChannelIds?: string[]; plan?: ParsedPlanOption[] } = {}): ChannelStrategyData {
   const budget = resolveStrategyBudget(mode, 50_000, additional);
   const mediaPlan = buildMediaRecommendationPlan(buildCampaignFacts({
     kpis: ["awareness", "reach"],
@@ -30,7 +30,7 @@ function strategyFor(mode: BudgetStrategyMode, additional = 0, options: { exclud
     campaignFlightDays: 30,
     geography: "United States",
     planningMode: mode,
-    selectedPlanOptions: rfp,
+    selectedPlanOptions: options.plan || rfp,
     excludedChannelIds: options.excludedChannelIds,
     planningSettings: clonePlanningSettings(DEFAULT_PLANNING_SETTINGS),
   }));
@@ -176,4 +176,52 @@ test("a growth choice without an additional budget is refused instead of silentl
   assert.throws(() => resolveStrategyBudget("grow", 50_000, undefined), /additional budget/);
   assert.deepEqual(resolveStrategyBudget("reallocation", 50_000, 25_000), { allocatedBudget: 50_000, additionalBudget: 0 });
   assert.deepEqual(resolveStrategyBudget("grow", 50_000, 25_000), { allocatedBudget: 75_000, additionalBudget: 25_000 });
+});
+
+const withPrint: ParsedPlanOption[] = [{
+  ...rfp[0],
+  placements: [...rfp[0].placements, { mediaType: "Print", productType: "Newspaper insert", budget: 5_000 }, { mediaType: "Print", productType: "Newspaper insert", budget: 2_500 }],
+}];
+
+test("using the plan as is funds exactly the uploaded media types at exactly their uploaded dollars", () => {
+  const strategy = strategyFor("asIs");
+  const plan = strategy.mediaPlan!;
+  assert.equal(plan.planningMode, "asIs");
+  assert.equal(plan.workingMediaBudget, 50_000);
+  assert.deepEqual(
+    plan.channels.map((channel) => [channel.channelId, channel.allocationDollars, channel.allocationPercent]),
+    [["channel.ctv", 30_000, 60], ["channel.dooh", 20_000, 40]],
+  );
+  const view = buildAllocationView(strategy);
+  assert.equal(view.asIs, true);
+  assert.equal(view.planTotal, 50_000);
+  view.rfpRows.forEach((row) => assert.equal(row.changeDollars, 0));
+  assert.deepEqual(view.addedRows, []);
+  assert.deepEqual(view.rfpNotFunded, []);
+  assert.deepEqual(view.recommendedAdditions, [], "a plan used as is offers no upsell");
+});
+
+test("a plan used as is keeps a media type even when the engine would not fund it at that budget", () => {
+  const tiny: ParsedPlanOption[] = [{ ...rfp[0], budget: 1_500, placements: [{ mediaType: "Video", productType: "OTT", budget: 1_000 }, { mediaType: "Digital Out of Home", productType: "DOOH", budget: 500 }] }];
+  const plan = strategyFor("asIs", 0, { plan: tiny }).mediaPlan!;
+  assert.deepEqual(plan.channels.map((channel) => [channel.channelId, channel.allocationDollars]), [["channel.ctv", 1_000], ["channel.dooh", 500]]);
+});
+
+test("uploaded lines outside the catalog are rows at their dollars when the plan is used as is, and only a warning otherwise", () => {
+  const asIs = buildAllocationView(strategyFor("asIs", 0, { plan: withPrint }));
+  const print = asIs.rfpRows.find((row) => row.outsideCatalog);
+  assert.equal(print?.channelName, "Print · Newspaper insert");
+  assert.equal(print?.dollars, 7_500, "lines with the same label are one row");
+  assert.equal(asIs.planTotal, 57_500);
+  assert.equal(Math.round(asIs.rfpRows.reduce((sum, row) => sum + (row.percentOfTotal || 0), 0)), 100);
+  assert.deepEqual(asIs.unmatchedLines, [], "no warning: they are rows");
+  assert.equal(asIs.summary.rfpFunded, 2, "the summary counts media types, not uploaded lines");
+
+  const optimized = buildAllocationView(strategyFor("reallocation", 0, { plan: withPrint }));
+  assert.equal(optimized.rfpRows.some((row) => row.outsideCatalog), false);
+  assert.equal(optimized.unmatchedLines.length, 2);
+});
+
+test("using the plan as is needs no additional budget", () => {
+  assert.deepEqual(resolveStrategyBudget("asIs", 50_000, undefined), { allocatedBudget: 50_000, additionalBudget: 0 });
 });

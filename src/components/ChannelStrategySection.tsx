@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sparkles, Copy, Check, Info, ArrowLeftRight, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, SlidersHorizontal, Trash2, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2, Download } from 'lucide-react';
+import { Sparkles, Copy, Check, Info, ArrowLeftRight, Layers, HelpCircle, FileText, DollarSign, CalendarDays, Gauge, ShieldCheck, Plus, Minus, ChevronDown, SlidersHorizontal, Trash2, Loader2, Edit3, Lock, Unlock, RotateCcw, Save, X, Undo2, Download, Upload } from 'lucide-react';
 import { RowActionsMenu } from './RowActionsMenu';
 import { ChannelStrategyData, CtvPublisherRecommendation, ChannelPanelOverride, ChannelOverridesMap } from '../types';
 import { EditableDetailCard } from './EditableDetailCard';
@@ -33,6 +33,11 @@ export interface ChannelStrategySectionProps {
   internalOnly?: InternalOnlyVisibility;
   /** Re-plans with a new budget approach; rejects with a message the section shows. */
   onChangeBudgetStrategy?: (mode: BudgetStrategyMode, additionalBudget: number) => Promise<void>;
+  /** Opens the upload review for a media plan on this finished plan (src/components/PlanUploadModal.tsx). */
+  onUploadMediaPlan?: () => void;
+  /** Whether the written content matches the channel plan, and a rewrite in progress or failed. */
+  contentStatus?: { outOfDate: boolean; running: boolean; error: string | null };
+  onRefreshContent?: () => void;
   /** The settings' budget tiers: most media types a budget allows over this plan's flight. */
   mediaTypeCapFor?: (budget: number) => number;
   onManualMediaTypeChange?: (channelId: string, action: 'add' | 'remove') => Promise<void>;
@@ -467,6 +472,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   initialExpandedChannels,
   internalOnly = ALL_INTERNAL_VISIBLE,
   onChangeBudgetStrategy,
+  onUploadMediaPlan,
+  contentStatus,
+  onRefreshContent,
   mediaTypeCapFor,
   onManualMediaTypeChange,
   onSaveAllocations,
@@ -815,12 +823,13 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
       const pct = row.percentOfTotal !== null ? ` (${row.percentOfTotal.toFixed(0)}%)` : '';
       const rfp = row.rfpDollars !== null ? ` | RFP ${money(row.rfpDollars)}${row.changeDollars ? `, ${signedMoney(row.changeDollars)}` : ''}` : '';
       const scores = row.score !== null ? ` | Score ${row.score}/100, Audience Fit ${row.audienceFit}/100, Goal Match ${row.goalMatch}/100` : '';
-      return `- ${row.channelName} [${row.keptAtRfp ? 'RFP, kept at RFP budget' : SOURCE_LABELS[row.source]}]${money$}${pct}${rfp}${scores}`
+      const label = row.outsideCatalog ? 'Uploaded, outside ScoutAI catalog' : row.keptAtRfp ? 'RFP, kept at RFP budget' : view.asIs && row.source === 'rfp' ? 'Uploaded plan' : SOURCE_LABELS[row.source];
+      return `- ${row.channelName} [${label}]${money$}${pct}${rfp}${scores}`
         + `${row.evidence ? `\n  Evidence: ${row.evidence}` : ''}${row.why ? `\n  ${row.whyLabel}: ${row.why}` : ''}`;
     };
     const section = (title: string, rows: AllocationRow[]) => rows.length > 0 ? `\n\n${title}\n${rows.map(rowLine).join('\n')}` : '';
     const text = `CHANNEL ALLOCATION — ${budgetModeLabel}, plan total ${money(view.planTotal)}`
-      + (view.hasRfp ? section('From your RFP', view.rfpRows) + section('Added to your plan', view.addedRows) : section('Media types', view.addedRows))
+      + (view.hasRfp ? section(view.asIs ? 'Your plan' : 'From your RFP', view.rfpRows) + section('Added to your plan', view.addedRows) : section('Media types', view.addedRows))
       + section('From your RFP, not funded', view.rfpNotFunded)
       + section('Recommended additions', view.recommendedAdditions)
       + `\n\nScoutAI Insight:\n${data.executiveInsight || ''}`;
@@ -831,6 +840,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   };
 
   const sourceBadge = (row: AllocationRow) => {
+    // Used as is, the uploaded plan is the plan: an "RFP" badge on every row would say nothing.
+    if (row.outsideCatalog) return readOnly ? null : <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600">Outside ScoutAI catalog</span>;
+    if (row.source === 'rfp' && view.asIs) return null;
     if (row.source === 'rfp') return <span className="rounded-full border border-slate-800 bg-slate-900 px-2 py-0.5 text-[10px] font-bold text-white">RFP</span>;
     if (row.source === 'planner') return <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Added by you</span>;
     // On a plan without an RFP every media type is ScoutAI's, so the badge would say nothing.
@@ -864,7 +876,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     </dl>
   );
 
-  const rfpComparison = (row: AllocationRow) => row.rfpDollars !== null && (
+  // As is, an unchanged row's RFP dollars repeat its dollars; only a planner's edit is worth showing.
+  const rfpComparison = (row: AllocationRow) => row.rfpDollars !== null && !(view.asIs && !row.changeDollars) && (
     <div className="mt-0.5 whitespace-nowrap text-[10px] font-semibold text-slate-500">
       RFP {money(row.rfpDollars)}
       {row.changeDollars !== null && row.changeDollars !== 0 && (
@@ -894,7 +907,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   const rowsMatchingFilter = (rows: AllocationRow[]) => sourceFilter === 'all' ? rows : rows.filter((row) => row.source === sourceFilter);
   const allocationGroups = (view.hasRfp
     ? [
-        { id: 'rfp', title: 'From your RFP', rows: rowsMatchingFilter(view.rfpRows) },
+        // As is, the uploaded plan needs no heading of its own unless a planner has added to it.
+        { id: 'rfp', title: view.asIs ? (view.addedRows.length > 0 ? 'From your plan' : '') : 'From your RFP', rows: rowsMatchingFilter(view.rfpRows) },
         { id: 'added', title: 'Added to your plan', rows: rowsMatchingFilter(view.addedRows) },
       ]
     : [{ id: 'all', title: '', rows: rowsMatchingFilter(view.addedRows) }]
@@ -1046,6 +1060,22 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
   // "Add on top of RFP": an RFP media type held at its RFP dollars. It sits outside the allocated
   // budget, so it has no editor, lock or remove control; changing the budget approach moves it.
+  // An uploaded line no catalog media type covers: in the plan at its dollars, with nothing to expand or edit.
+  const renderOutsideCatalogRow = (row: AllocationRow) => (
+    <article key={row.channelId} className="p-4 md:p-5">
+      <div className="flex w-full flex-col gap-3 p-1 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-base font-extrabold text-slate-900">{row.channelName}</h3>
+            {sourceBadge(row)}
+          </div>
+          {!readOnly && <p className="mt-1 text-xs text-slate-500">Kept at its uploaded dollars. ScoutAI has no research or scores for media outside its catalog.</p>}
+        </div>
+        <div className="flex shrink-0 items-center gap-3">{rowMetrics(row)}</div>
+      </div>
+    </article>
+  );
+
   const renderKeptRow = (row: AllocationRow) => {
     const candidate = mediaPlan?.evaluatedCandidates.find((item) => item.product.id === row.channelId);
     const detailsId = `media-type-details-${row.channelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
@@ -1197,6 +1227,54 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             </div>
           )}
 
+          {!readOnly && onUploadMediaPlan && (
+            <div className="flex flex-col gap-3 rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/40 p-4 sm:flex-row sm:items-center sm:justify-between md:px-5">
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-900">{view.hasRfp ? 'Replace the uploaded media plan' : 'Have the client\'s media plan?'}</h3>
+                <p className="mt-0.5 text-xs text-slate-600">Upload it to use it as is, or as the baseline ScoutAI recommends additions to. You review every change before it is applied.</p>
+              </div>
+              <button
+                type="button"
+                onClick={onUploadMediaPlan}
+                className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 sm:self-auto"
+              >
+                <Upload className="h-3.5 w-3.5" /> Upload media plan
+              </button>
+            </div>
+          )}
+
+          {!readOnly && contentStatus && (contentStatus.running || contentStatus.error || contentStatus.outOfDate) && (
+            <div
+              role="status"
+              className={`flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center sm:justify-between md:px-5 ${contentStatus.error ? 'border-rose-200 bg-rose-50' : 'border-amber-200 bg-amber-50'}`}
+            >
+              <div className="flex items-start gap-2 text-xs">
+                {contentStatus.running ? <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-amber-700" /> : <Info className={`mt-0.5 h-4 w-4 shrink-0 ${contentStatus.error ? 'text-rose-600' : 'text-amber-700'}`} />}
+                <div className={contentStatus.error ? 'text-rose-800' : 'text-amber-900'}>
+                  <div className="font-bold">
+                    {contentStatus.running ? 'Rewriting the plan for these channels…' : contentStatus.error ? 'The plan\'s content could not be rewritten' : 'The plan\'s content was written for a different channel mix'}
+                  </div>
+                  <div className="mt-0.5">
+                    {contentStatus.running
+                      ? 'The narrative, recommendations and publisher insights are being rewritten from the plan\'s research. A QA audit opens when it is done. This takes a minute or two.'
+                      : contentStatus.error
+                        ? contentStatus.error
+                        : 'The narrative, recommendations or publisher insights may mention channels this plan no longer has. Rewrite them before sharing.'}
+                  </div>
+                </div>
+              </div>
+              {!contentStatus.running && onRefreshContent && (
+                <button
+                  type="button"
+                  onClick={onRefreshContent}
+                  className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-amber-700 sm:self-auto"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" /> {contentStatus.error ? 'Try again' : 'Rewrite plan content'}
+                </button>
+              )}
+            </div>
+          )}
+
           {!readOnly && view.hasRfp && mediaPlan.planningMode !== 'greenfield' && onChangeBudgetStrategy && (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 md:p-5">
               <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
@@ -1243,7 +1321,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
             <div className="flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-800 px-4 py-2 text-xs font-bold uppercase tracking-widest text-white">
               <ShieldCheck className="h-4 w-4 text-indigo-200" /> Channel Allocation
             </div>
-            {view.hasRfp && (
+            {view.hasRfp && !(view.asIs && (readOnly || view.addedRows.length === 0)) && (
               <div className="flex flex-wrap items-center gap-2 border-b border-indigo-100 bg-white px-4 py-2.5 md:px-5" role="group" aria-label="Filter media types by source">
                 {([
                   { id: 'all', label: `All ${view.rfpRows.length + view.addedRows.length}` },
@@ -1438,7 +1516,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                               disabled={isSavingAllocations}
                               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                             >
-                              <RotateCcw className="h-3.5 w-3.5" /> Reset to ScoutAI
+                              <RotateCcw className="h-3.5 w-3.5" /> {view.asIs ? 'Reset to uploaded plan' : 'Reset to ScoutAI'}
                             </button>
                           )}
                           <button
@@ -1493,6 +1571,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                     <div className="divide-y divide-slate-100">
                       {group.rows.map((row) => {
                         if (row.keptAtRfp) return renderKeptRow(row);
+                        if (row.outsideCatalog) return renderOutsideCatalogRow(row);
                         const channel = mediaPlan.channels.find((item) => item.channelId === row.channelId);
                         return channel ? renderAllocatedRow(channel, row) : null;
                       })}
@@ -1671,7 +1750,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
       {/* What the plan leaves out, for the client: RFP media types it does not fund and the media
           types ScoutAI would add. Planners see the full candidate list above instead. */}
-      {readOnly && mediaPlan && internalOnly.channelRecommendationsNotInPlan !== false && (view.rfpNotFunded.length > 0 || view.recommendedAdditions.length > 0) && (
+      {/* Not on a plan used as is: the client's plan is the plan, and this list would second-guess it. */}
+      {readOnly && mediaPlan && !view.asIs && internalOnly.channelRecommendationsNotInPlan !== false && (view.rfpNotFunded.length > 0 || view.recommendedAdditions.length > 0) && (
         <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
           <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 md:px-5">
             <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-900"><Sparkles className="h-4 w-4 text-indigo-600" /> ScoutAI recommendations not in this plan</h3>

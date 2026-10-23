@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyNarrative, currentNarrative } from "./planNarrative";
+import { AS_IS_PLAN_NOTE, applyNarrative, buildNarrativeInput, currentNarrative, narrativeChannelKey, planNarrativeNote } from "./planNarrative";
+import { RFP_OPTIONS, rfpStrategy } from "../planning/testing/rfpPlans";
 
 const recs = (n: number) => Array.from({ length: n }, (_, i) => ({ title: `T${i}`, action: "a", why: "w", channels: "CTV / OTT" }));
 
@@ -50,4 +51,30 @@ test("the narrative's publisher highlights are held to the plan's publishers", (
 
   applyNarrative(profile, { publisherHighlights: { headline: "Thin", pillars: pillars.slice(0, 1) } });
   assert.equal(profile.publisherHighlights.headline, "New");
+});
+
+const withStrategy = (strategy: any, publishers: string[] = ["Hulu", "Roku"]) => ({ channelStrategy: strategy, ctvPublishers: publishers.map((publisher) => ({ publisher })) });
+
+test("the narrative is out of date when the channels or publishers change, but not when only the budget split does", () => {
+  const plan = withStrategy(rfpStrategy("asIs"));
+  const key = narrativeChannelKey(plan);
+  assert.equal(narrativeChannelKey(withStrategy(rfpStrategy("asIs"), ["roku", "Hulu"])), key, "publisher order and case do not matter");
+
+  const resplit = withStrategy(rfpStrategy("asIs"));
+  resplit.channelStrategy.mediaPlan.channels = resplit.channelStrategy.mediaPlan.channels.map((c: any) => ({ ...c, allocationDollars: 25_000, allocationPercent: 50 }));
+  assert.equal(narrativeChannelKey(resplit), key);
+
+  assert.notEqual(narrativeChannelKey(withStrategy(rfpStrategy("reallocation"))), key, "a different mix of media types");
+  assert.notEqual(narrativeChannelKey(withStrategy(rfpStrategy("asIs"), ["Hulu"])), key, "a different publisher list");
+  const withPrint = rfpStrategy("asIs", 0, [{ ...RFP_OPTIONS[0], placements: [...RFP_OPTIONS[0].placements, { mediaType: "Print", productType: "Newspaper insert", budget: 5_000 }] }]);
+  assert.notEqual(narrativeChannelKey(withStrategy(withPrint)), key, "an uploaded line outside the catalog");
+});
+
+test("a client plan used as is tells the writer to back it without inventing evidence; other plans get no extra rules", () => {
+  assert.equal(planNarrativeNote(withStrategy(rfpStrategy("asIs"))), AS_IS_PLAN_NOTE);
+  assert.equal(planNarrativeNote(withStrategy(rfpStrategy("reallocation"))), "");
+  assert.match(AS_IS_PLAN_NOTE, /Never invent or stretch evidence/);
+  assert.match(AS_IS_PLAN_NOTE, /Do not suggest adding, cutting or moving budget/);
+  const input = buildNarrativeInput({ briefBlock: "BRIEF", campaign: "", personas: "", charts: "", channelPlan: "CHANNELS", publishers: "", ledger: "", research: "", draft: {}, planNote: AS_IS_PLAN_NOTE });
+  assert.ok(input.indexOf("THE CLIENT'S OWN PLAN") > input.indexOf("CHANNELS"), "the rules follow the channel plan they are about");
 });

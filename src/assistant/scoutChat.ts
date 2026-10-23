@@ -132,6 +132,14 @@ export function buildPlanContext(
         ...combined.keptChannels.map((c) => `* ${c.channelName} (channelId: ${c.channelId}) - ${money(c.allocationDollars)}, ${c.allocationPercent}% of the plan total`),
       ].join("\n"));
     }
+    // "Use the plan as is" can carry uploaded lines no media type covers; they are still the client's spend.
+    if (combined.outsideCatalog.length) {
+      out.push([
+        `PLAN TOTAL ${money(combined.total)}: the uploaded plan as is, the MEDIA PLAN below (${money(combined.allocatedBudget)}) plus uploaded lines outside Digital Remedy's catalog (${money(combined.outsideCatalogBudget)}). Quote this total, and these shares, when asked what the plan spends.`,
+        "UPLOADED LINES OUTSIDE THE CATALOG (in the plan at their uploaded dollars; not media types, so they cannot be edited or moved):",
+        ...combined.outsideCatalog.map((c) => `* ${c.name} - ${money(c.dollars)}`),
+      ].join("\n"));
+    }
     out.push([
       `MEDIA PLAN (${combined.keptChannels.length ? "additional " : ""}working media budget ${money(plan.workingMediaBudget)}${plan.flightDays ? ` over ${plan.flightDays} days` : ""}; ${plan.channels.length} of at most ${plan.maxMediaTypes} media types; budget approach: ${BUDGET_STRATEGY_LABELS[normalizeBudgetStrategyMode(strategy.budgetStrategyMode)]}${strategy.additionalBudget ? ` (additional ${money(strategy.additionalBudget)})` : ""}${strategy.hasManualAllocationChanges ? "; allocations hand-edited" : ""}):`,
       ...channelLines,

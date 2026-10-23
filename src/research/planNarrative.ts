@@ -12,6 +12,7 @@
 // executiveSummary stays on the profile for the channel engine and for older plans.
 
 import { EVIDENCE_RULES } from "../qa/evidenceRules";
+import { combinedPlan } from "../planning/planChannels";
 import { normalizePublisherHighlights, publisherHighlightsSchema } from "../planning/publisherHighlights";
 
 export const NARRATIVE_SYSTEM_INSTRUCTION = `You are the senior media planner who owns this plan, writing its final narrative for the client. The audience research, brief of record, personas, charts, CTV publishers and channel plan are settled. Your job is to write the story that ties them together, as one expert planner would.
@@ -71,6 +72,38 @@ export interface NarrativeContext {
   ledger: string;
   research: string;
   draft: unknown;
+  /** Extra rules for this plan, e.g. a client plan used as is (see planNarrativeNote). */
+  planNote?: string;
+}
+
+/**
+ * The client chose this plan and we are using it as is. The narrative backs it, but only with
+ * what the research supports: a weak-fit channel is explained by its job in the plan, never by
+ * invented evidence, and the narrative never argues for a different plan.
+ */
+export const AS_IS_PLAN_NOTE = `THE CLIENT'S OWN PLAN: this channel plan is the client's media plan, used exactly as submitted. Write the narrative that shows how it reaches this audience.
+- Every recommendation uses channels from this plan. Do not suggest adding, cutting or moving budget between channels.
+- For each channel, explain the role it plays for the personas (reach, frequency, local presence, retargeting, conversion) and support that with research where the research applies.
+- Where the research says little about a channel, describe its role in the plan plainly. Never invent or stretch evidence to justify it.
+- Lines outside Digital Remedy's catalog (if listed) are part of the client's plan: mention them only where they matter, without claims about their performance.`;
+
+/** Plan-specific rules for the narrative writer, or "" when the plan needs none. */
+export function planNarrativeNote(profile: any): string {
+  return profile?.channelStrategy?.budgetStrategyMode === "asIs" ? AS_IS_PLAN_NOTE : "";
+}
+
+/**
+ * The channel mix a narrative was written for: the media types (kept RFP ones included), any
+ * uploaded lines outside the catalog, and the CTV publishers. Budget splits are left out, since the
+ * narrative never quotes them, so editing an allocation does not make it out of date.
+ */
+export function narrativeChannelKey(profile: any): string {
+  const plan = combinedPlan(profile?.channelStrategy);
+  const channels = plan.channels.map((channel) => channel.channelId).sort();
+  const outside = plan.outsideCatalog.map((line) => line.name).sort();
+  const publishers = (Array.isArray(profile?.ctvPublishers) ? profile.ctvPublishers : [])
+    .map((pub: any) => String(pub?.publisher || "").trim().toLowerCase()).filter(Boolean).sort();
+  return JSON.stringify({ channels, outside, publishers });
 }
 
 export function buildNarrativeInput(ctx: NarrativeContext): string {
@@ -81,6 +114,7 @@ export function buildNarrativeInput(ctx: NarrativeContext): string {
     ctx.charts,
     ctx.channelPlan,
     ctx.publishers,
+    ctx.planNote,
     ctx.ledger,
     "DRAFT NARRATIVE (written before the charts and channel plan were settled; keep what is good, fix what contradicts them):",
     JSON.stringify(ctx.draft, null, 2),

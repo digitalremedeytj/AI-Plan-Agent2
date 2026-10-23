@@ -19,7 +19,7 @@ export const RFP_OPTIONS: ParsedPlanOption[] = [{
   ],
 }];
 
-export function rfpStrategy(mode: BudgetStrategyMode, additional = 0): ChannelStrategyData {
+export function rfpStrategy(mode: BudgetStrategyMode, additional = 0, options: ParsedPlanOption[] = RFP_OPTIONS): ChannelStrategyData {
   const budget = resolveStrategyBudget(mode, 50_000, additional);
   const mediaPlan = buildMediaRecommendationPlan(buildCampaignFacts({
     kpis: ["awareness", "reach"],
@@ -28,7 +28,7 @@ export function rfpStrategy(mode: BudgetStrategyMode, additional = 0): ChannelSt
     campaignFlightDays: 30,
     geography: "United States",
     planningMode: mode,
-    selectedPlanOptions: RFP_OPTIONS,
+    selectedPlanOptions: options,
     planningSettings: clonePlanningSettings(DEFAULT_PLANNING_SETTINGS),
   }));
   // A real plan's candidates all carry AI reasoning; these engine-only plans are marked to match.

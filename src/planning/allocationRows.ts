@@ -7,7 +7,8 @@ import type { EvaluatedMediaCandidate, EvidenceItem, RfpBaselineLine } from "./t
  *
  * Every RFP media type always lands somewhere: funded in the allocation, kept at its RFP
  * dollars ("Add on top of RFP"), or listed as not funded with the reason. A client's channel
- * never quietly disappears from the page.
+ * never quietly disappears from the page. "Use the plan as is" goes one step further: RFP lines
+ * that matched no media type are rows too, at their dollars, so the table totals the upload.
  */
 
 export type ChannelSource = "rfp" | "scoutai" | "planner";
@@ -20,6 +21,11 @@ export interface AllocationRow {
   inAllocation: boolean;
   /** "Add on top of RFP": an RFP media type held at its RFP dollars, outside the allocated budget. */
   keptAtRfp: boolean;
+  /**
+   * "Use the plan as is": uploaded lines that matched no catalog media type, grouped by label and
+   * shown at their dollars. Not in the allocation, so they have no scores and no row actions.
+   */
+  outsideCatalog?: true;
   /** Plan dollars. For a kept RFP media type, its RFP dollars; null when an older plan never recorded them. */
   dollars: number | null;
   /** Share of the plan total the table shows (allocated budget plus any kept RFP dollars). */
@@ -42,6 +48,8 @@ export interface AllocationView {
   hasRfp: boolean;
   /** What the table totals to: the allocated budget plus RFP dollars kept outside it. */
   planTotal: number;
+  /** "Use the plan as is": the plan is the upload, so there is nothing to compare or upsell. */
+  asIs: boolean;
   allocatedBudget: number;
   /** RFP media types in the plan, funded or kept at their RFP dollars. */
   rfpRows: AllocationRow[];
@@ -49,7 +57,7 @@ export interface AllocationView {
   addedRows: AllocationRow[];
   /** RFP media types the plan does not fund, with why. */
   rfpNotFunded: AllocationRow[];
-  /** Qualified media types ScoutAI would add, best first. The share link's upsell list. */
+  /** Qualified media types ScoutAI would add, best first. The share link's upsell list. Empty as is. */
   recommendedAdditions: AllocationRow[];
   summary: { rfpCount: number; rfpFunded: number; scoutAdded: number; plannerAdded: number };
   unmatchedLines: RfpBaselineLine[];
@@ -97,11 +105,14 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
   const plannerIds = new Set(strategy.manualIncludedChannelIds || []);
   const allocatedIds = new Set((plan?.channels || []).map((channel) => channel.channelId));
   const isIncremental = strategy.budgetStrategyMode === "incremental";
+  const asIs = strategy.budgetStrategyMode === "asIs";
   const allocatedBudget = plan?.workingMediaBudget || 0;
 
   const kept = isIncremental ? rfpIds.filter((id) => !allocatedIds.has(id)) : [];
   const keptTotal = kept.reduce((sum, id) => sum + (baselineById.get(id)?.dollars || 0), 0);
-  const planTotal = allocatedBudget + keptTotal;
+  const outside = asIs ? outsideCatalogGroups(plan?.rfpBaseline?.unmatchedLines || []) : [];
+  const outsideTotal = outside.reduce((sum, group) => sum + group.dollars, 0);
+  const planTotal = allocatedBudget + keptTotal + outsideTotal;
 
   const scores = (candidate: EvaluatedMediaCandidate | undefined) => candidate && candidate.aiAssessed !== false
     ? { score: candidate.recommendationScore, audienceFit: Math.round(candidate.components.audienceAndPersonaFit), goalMatch: Math.round(candidate.components.kpiAndFunnelFit) }
@@ -153,6 +164,26 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
     };
   });
 
+  const outsideRows: AllocationRow[] = outside.map((group) => ({
+    channelId: `outside:${group.label}`,
+    channelName: group.label,
+    source: "rfp",
+    inAllocation: false,
+    keptAtRfp: false,
+    outsideCatalog: true,
+    dollars: group.dollars,
+    percentOfTotal: planTotal > 0 ? (group.dollars / planTotal) * 100 : null,
+    rfpDollars: group.dollars,
+    changeDollars: 0,
+    score: null,
+    audienceFit: null,
+    goalMatch: null,
+    evidence: "",
+    why: "",
+    whyLabel: WHY_LABELS.funded,
+    minimumSpend: 0,
+  }));
+
   const unfundedRow = (candidate: EvaluatedMediaCandidate, whyLabel: string, why: string): AllocationRow => {
     const rfpDollars = rfpDollarsOf(candidate.product.id);
     return {
@@ -174,7 +205,7 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
   };
 
   const byDollars = (a: AllocationRow, b: AllocationRow) => (b.dollars ?? 0) - (a.dollars ?? 0) || a.channelName.localeCompare(b.channelName);
-  const rfpRows = [...allocatedRows.filter((row) => row.source === "rfp"), ...keptRows].sort(byDollars);
+  const rfpRows = [...allocatedRows.filter((row) => row.source === "rfp"), ...keptRows, ...outsideRows].sort(byDollars);
   const addedRows = allocatedRows.filter((row) => row.source !== "rfp").sort(byDollars);
   const placed = new Set([...allocatedIds, ...kept]);
 
@@ -192,7 +223,7 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
       };
     });
 
-  const recommendedAdditions = candidates
+  const recommendedAdditions = asIs ? [] : candidates
     .filter((candidate) =>
       !placed.has(candidate.product.id)
       && !rfpIdSet.has(candidate.product.id)
@@ -203,8 +234,9 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
     .map((candidate) => unfundedRow(candidate, WHY_LABELS.addition, candidate.gapAddressed));
 
   return {
-    hasRfp: rfpIds.length > 0,
+    hasRfp: rfpIds.length > 0 || outsideRows.length > 0,
     planTotal,
+    asIs,
     allocatedBudget,
     rfpRows,
     addedRows,
@@ -212,10 +244,18 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
     recommendedAdditions,
     summary: {
       rfpCount: rfpIds.length,
-      rfpFunded: rfpRows.length,
+      rfpFunded: rfpRows.filter((row) => !row.outsideCatalog).length,
       scoutAdded: addedRows.filter((row) => row.source === "scoutai").length,
       plannerAdded: addedRows.filter((row) => row.source === "planner").length,
     },
-    unmatchedLines: plan?.rfpBaseline?.unmatchedLines || [],
+    // As is, they are rows above rather than a warning.
+    unmatchedLines: asIs ? [] : plan?.rfpBaseline?.unmatchedLines || [],
   };
+}
+
+/** Unmatched uploaded lines by label, in the order they first appear. */
+function outsideCatalogGroups(lines: RfpBaselineLine[]): Array<{ label: string; dollars: number }> {
+  const groups = new Map<string, number>();
+  for (const line of lines) groups.set(line.label, (groups.get(line.label) || 0) + line.budget);
+  return [...groups].map(([label, dollars]) => ({ label, dollars: Math.round(dollars * 100) / 100 }));
 }

@@ -11,7 +11,7 @@ import {
   sectionToEditText,
   unsupportedMention,
 } from "./executiveBrief";
-import { rfpStrategy } from "../planning/testing/rfpPlans";
+import { RFP_OPTIONS, rfpStrategy } from "../planning/testing/rfpPlans";
 
 const record = (displayName: string, rationale = "") => ({ id: displayName.toLowerCase().replace(/\W+/g, "_"), displayName, rationale });
 
@@ -241,4 +241,16 @@ test("briefs for plans in the other budget approaches keep their fingerprint", (
     assert.equal(snapshot.plan.workingMediaBudget, strategy.mediaPlan!.workingMediaBudget, mode);
     assert.ok(snapshot.channels.every((c) => !("keptAtRfp" in c)), mode);
   }
+});
+
+test("a plan used as is tells the brief about the client's lines outside the catalog, and only that plan's fingerprint carries them", () => {
+  const withPrint = rfpStrategy("asIs", 0, [{ ...RFP_OPTIONS[0], placements: [...RFP_OPTIONS[0].placements, { mediaType: "Print", productType: "Newspaper insert", budget: 5_000 }] }]);
+  const snapshot = buildBriefSnapshot(profile({ channelStrategy: withPrint }), inputs);
+  assert.deepEqual(snapshot.outsideCatalog, [{ name: "Print · Newspaper insert", dollars: 5_000 }]);
+  assert.equal(snapshot.plan.workingMediaBudget, 55_000);
+  assert.match(buildBriefPrompt(snapshot).input, /ALSO IN THE CLIENT'S PLAN[^\n]*Print · Newspaper insert \(\$5,000\)/);
+  assert.deepEqual(sanitizeBriefSnapshot(JSON.parse(JSON.stringify(snapshot))).outsideCatalog, snapshot.outsideCatalog);
+
+  const plain = buildBriefSnapshot(profile({ channelStrategy: rfpStrategy("asIs") }), inputs);
+  assert.equal("outsideCatalog" in plain, false);
 });
