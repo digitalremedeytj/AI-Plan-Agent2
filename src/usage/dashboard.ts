@@ -153,6 +153,17 @@ export interface DashboardUser {
   lastActiveAt: string;
 }
 
+/** A shared plan a client opened in the period. */
+export interface DashboardOpenedPlan {
+  planId: string;
+  advertiserName: string;
+  /** Whoever created the link (else whoever generated the plan); absent for plans older than the log. */
+  sharedBy?: string;
+  views: number;
+  firstViewedAt: string;
+  lastViewedAt: string;
+}
+
 export interface DashboardData {
   from: string;
   to: string;
@@ -178,6 +189,8 @@ export interface DashboardData {
   funnel: { generated: number; shared: number; viewed: number };
   users: DashboardUser[];
   advertisers: Array<{ name: string; plans: number; budget: number }>;
+  /** Plans clients opened in the period, most recently opened first. */
+  openedPlans: DashboardOpenedPlan[];
   channels: Array<{ name: string; budget: number; plans: number }>;
   adoption: AdoptionRow[];
   /** True when part of the data was imported from saved plans rather than recorded live. */
@@ -367,6 +380,18 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
     }
   }
 
+  // Per plan, for "which plans did clients open". Views are already in time order.
+  const opened = new Map<string, DashboardOpenedPlan>();
+  for (const e of current) {
+    if (!isClientView(e) || !e.planId) continue;
+    const plan = opened.get(e.planId) ?? { planId: e.planId, advertiserName: "", sharedBy: ownerOf(e.planId), views: 0, firstViewedAt: e.at, lastViewedAt: e.at };
+    plan.views += 1;
+    plan.lastViewedAt = e.at;
+    // The advertiser as it was last opened, in case the plan was renamed.
+    if (e.advertiserName?.trim()) plan.advertiserName = e.advertiserName.trim();
+    opened.set(e.planId, plan);
+  }
+
   // Per advertiser and per media type.
   const advertisers = new Map<string, { name: string; plans: number; budget: number }>();
   const channels = new Map<string, { name: string; budget: number; plans: number }>();
@@ -424,6 +449,7 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
       .filter((u) => u.plans || u.shareLinks || u.shareViews)
       .sort((a, b) => b.plans - a.plans || b.shareLinks - a.shareLinks || b.shareViews - a.shareViews),
     advertisers: [...advertisers.values()].sort((a, b) => b.plans - a.plans || b.budget - a.budget),
+    openedPlans: [...opened.values()].sort((a, b) => (a.lastViewedAt < b.lastViewedAt ? 1 : a.lastViewedAt > b.lastViewedAt ? -1 : 0)),
     channels: [...channels.values()].sort((a, b) => b.budget - a.budget),
     adoption,
     includesBackfill: current.some((e) => e.id.startsWith("backfill-")),

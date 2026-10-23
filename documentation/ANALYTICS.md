@@ -72,8 +72,13 @@ segments, slides, campaign recaps, performance uploads, settings saves and sign-
 route that performs them. The browser reports only what the server cannot see (`export`,
 `plan_open`, `plan_save`) through `POST /api/usage/events`, which accepts nothing else.
 
-A share-link view by a signed-in planner is recorded with `detail: "staff_preview"`;
-an unauthenticated view is attributed to `(client share link)`.
+A share-link view by a planner is recorded with `detail: "staff_preview"` under their name;
+any other view is attributed to `(client share link)`. "A planner" means the browser has a live
+session, or carries the `apa_staff` cookie: a signed, HTTP-only mark set at sign-in and renewed on
+every app load, which lasts 400 days and survives sign-out and session expiry. That way a planner
+double-checking a link before sending it is not counted as the client even if they signed in days
+ago. It cannot tell a planner on a browser they have never signed in on (a phone, a private
+window) from a client. GA's `share_view` is skipped for the same views.
 
 `export` and `slide_generate` carry the format or slide in `detail`. ScoutAI events carry more,
 never the question's text:
@@ -169,7 +174,8 @@ does this automatically.
 | Media budget by channel | The counted briefs' allocations, by media type name |
 | Active users / total users | Distinct people active in the period / ever, up to the period's end |
 | Time saved | Plans generated × hours per plan (default 1; admins' edits are saved for everyone, link viewers' edits are theirs alone) |
-| Client views | Unauthenticated opens of share links (a planner previewing their own link is not counted), credited to whoever created the link |
+| Client views | Opens of share links by anyone who is not a planner (see `apa_staff` above), credited to whoever created the link |
+| Plans opened by clients | Each shared plan a client opened in the period: advertiser, who shared it, client views, first and last open |
 | Funnel | Plans generated in the period → of those, shared → of those, opened by a client, whenever that happened |
 | Change % | Against the period of the same length immediately before |
 | Feature adoption | People and uses per feature. Exports (downloads, copies and AI slides) expands by type. ScoutAI expands by prompt, by type of question, outcome (answered, failed, answers proposing changes, proposals applied, undone; applies are counted when they happen) and median answer time |

@@ -2489,10 +2489,11 @@ export default function App() {
     setSharedPlanError(null);
     api
       .fetchSharedPlan(shareToken)
-      .then((stored) => {
+      .then(({ plan: stored, staffPreview }) => {
         applyPlanToWorkspace(stored, true);
         setLeftTab("overview");
-        track("share_view", { plan_id: stored.id, advertiser_name: stored.advertiserName });
+        // GA's share_view counts client opens, like the usage log; a planner's check is not one.
+        if (!staffPreview) track("share_view", { plan_id: stored.id, advertiser_name: stored.advertiserName });
       })
       .catch((err: any) => {
         console.error("Could not load shared plan:", err);

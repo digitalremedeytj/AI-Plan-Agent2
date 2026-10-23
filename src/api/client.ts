@@ -661,9 +661,10 @@ export async function archivePlan(id: string): Promise<void> {
   await request(`/api/plans/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export async function fetchSharedPlan(token: string): Promise<StoredPlan> {
-  const body = await request<{ plan: StoredPlan }>(`/api/share/plan?token=${encodeURIComponent(token)}`);
-  return body.plan;
+/** `staffPreview` is true when a planner (signed in now or before, on this browser) opened the link. */
+export async function fetchSharedPlan(token: string): Promise<{ plan: StoredPlan; staffPreview: boolean }> {
+  const body = await request<{ plan: StoredPlan; staffPreview?: boolean }>(`/api/share/plan?token=${encodeURIComponent(token)}`);
+  return { plan: body.plan, staffPreview: Boolean(body.staffPreview) };
 }
 
 export async function enablePlanShare(

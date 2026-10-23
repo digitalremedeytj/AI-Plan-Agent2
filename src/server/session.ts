@@ -143,6 +143,52 @@ export function setSessionCookie(res: Response, user: SessionUser): void {
   } as any);
 }
 
+/**
+ * Marks a browser that a planner has signed in on, so a share link they open there is not
+ * counted as a client view. It outlives the 24h session on purpose: planners double-check a
+ * link before sending it, often long after they signed in, and signing out does not make them
+ * the client. It is signed under its own prefix, so it can never pass as a session.
+ */
+export const STAFF_DEVICE_COOKIE = "apa_staff";
+const STAFF_DEVICE_TTL_MS = 400 * 24 * 60 * 60 * 1000; // browsers cap cookie lifetime at 400 days
+
+export function createStaffDeviceToken(name: string, issuedAt = Date.now()): string {
+  const payload = Buffer.from(JSON.stringify({ staff: name, issuedAt }), "utf-8").toString("base64url");
+  return `${payload}.${sign(`staff:${payload}`)}`;
+}
+
+/** The planner a browser was last signed in as, or null if it never was (or the mark is forged). */
+export function verifyStaffDeviceToken(token: string | undefined): string | null {
+  if (!token || !token.includes(".")) return null;
+  const separator = token.lastIndexOf(".");
+  const payload = token.slice(0, separator);
+  if (!timingSafeEqual(token.slice(separator + 1), sign(`staff:${payload}`))) return null;
+  try {
+    const mark = JSON.parse(Buffer.from(payload, "base64url").toString("utf-8"));
+    if (typeof mark?.staff !== "string" || !mark.staff || typeof mark.issuedAt !== "number") return null;
+    if (Date.now() - mark.issuedAt > STAFF_DEVICE_TTL_MS) return null;
+    return mark.staff;
+  } catch {
+    return null;
+  }
+}
+
+/** Who is previewing a share link: the signed-in planner, else a planner who signed in on this browser before. */
+export function staffViewerName(req: Request): string | null {
+  return getSession(req)?.name || verifyStaffDeviceToken(parseCookies(req.headers.cookie)[STAFF_DEVICE_COOKIE]);
+}
+
+export function setStaffDeviceCookie(res: Response, name: string): void {
+  res.cookie(STAFF_DEVICE_COOKIE, createStaffDeviceToken(name), {
+    httpOnly: true,
+    sameSite: "none",
+    secure: true,
+    maxAge: STAFF_DEVICE_TTL_MS,
+    path: "/",
+    partitioned: true,
+  } as any);
+}
+
 export function clearSessionCookie(res: Response): void {
   res.clearCookie(SESSION_COOKIE, {
     path: "/",

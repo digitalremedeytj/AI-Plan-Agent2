@@ -6,7 +6,9 @@ import {
   getSession,
   isAdminRequestAllowed,
   parseCookies,
+  createStaffDeviceToken,
   sanitizeDisplayName,
+  staffViewerName,
   verifySessionToken,
 } from "./session";
 
@@ -113,4 +115,25 @@ test("the analytics id is stable per person, ignores capitalisation, and does no
   assert.notEqual(id, analyticsIdFor("Ana Smith"));
   assert.ok(!id.toLowerCase().includes("pascal"));
   assert.match(id, /^[0-9a-f]{32}$/);
+});
+
+const withCookie = (cookie: string) => ({ headers: { cookie } }) as any;
+
+test("a planner whose session has expired is still recognised on a share link they open", () => {
+  const twoDaysAgo = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  const expired = createSessionToken({ name: "Ana", isAdmin: false, issuedAt: twoDaysAgo });
+  const cookie = `apa_session=${expired}; apa_staff=${createStaffDeviceToken("Ana", twoDaysAgo)}`;
+  assert.equal(getSession(withCookie(cookie)), null);
+  assert.equal(staffViewerName(withCookie(cookie)), "Ana");
+});
+
+test("a browser no planner has signed in on is a client", () => {
+  assert.equal(staffViewerName(withCookie("")), null);
+  assert.equal(staffViewerName(withCookie("apa_staff=forged.signature")), null);
+});
+
+test("the staff mark cannot be used as a session", () => {
+  const mark = createStaffDeviceToken("Ana");
+  assert.equal(verifySessionToken(mark), null);
+  assert.equal(getSession(withCookie(`apa_session=${mark}`)), null);
 });

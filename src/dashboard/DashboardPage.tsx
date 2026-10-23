@@ -96,6 +96,10 @@ function Card({ title, subtitle, children, className = "" }: { title: string; su
   );
 }
 
+function formatViewedAt(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="flex h-40 items-center justify-center rounded-xl bg-slate-50 text-sm text-slate-500">{children}</div>;
 }
@@ -740,6 +744,40 @@ export default function DashboardPage() {
                 )}
               </Card>
             </div>
+
+            <Card
+              title="Plans opened by clients"
+              subtitle={data.openedPlans.length ? `${data.openedPlans.length} shared plan${data.openedPlans.length === 1 ? "" : "s"} opened · most recent first` : undefined}
+            >
+              {data.openedPlans.length === 0 ? (
+                <Empty>No client opened a shared plan in this period.</Empty>
+              ) : (
+                <div className="-mx-5 max-h-[500px] overflow-auto print:max-h-none print:overflow-visible">
+                  <table className="w-full min-w-[560px] text-sm">
+                    <thead className="sticky top-0 z-10 bg-white">
+                      <tr className="border-b border-slate-100 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 shadow-[0_1px_0_#f1f5f9]">
+                        <th className="px-5 py-2">Advertiser</th>
+                        <th className="py-2">Shared by</th>
+                        <th className="px-3 py-2 text-right">Client views</th>
+                        <th className="px-3 py-2 text-right">First opened</th>
+                        <th className="px-5 py-2 text-right">Last opened</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {data.openedPlans.map((p) => (
+                        <tr key={p.planId} className="hover:bg-slate-50/60">
+                          <td className="px-5 py-2.5 font-medium text-slate-900">{p.advertiserName || "Untitled plan"}</td>
+                          <td className="whitespace-nowrap py-2.5 pr-4 text-slate-700">{p.sharedBy || "–"}</td>
+                          <td className="px-3 py-2.5 text-right font-semibold tabular-nums">{p.views}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-slate-600">{formatViewedAt(p.firstViewedAt)}</td>
+                          <td className="whitespace-nowrap px-5 py-2.5 text-right tabular-nums text-slate-600">{formatViewedAt(p.lastViewedAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
 
             <footer className="space-y-1 pt-2 text-xs text-slate-500">
               <p>

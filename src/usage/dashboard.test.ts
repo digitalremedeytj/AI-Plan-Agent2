@@ -70,6 +70,24 @@ test("client views are credited to whoever created the share link", () => {
   assert.equal(data.users[0].name, "Ana", "the leaderboard is ordered by plans generated");
 });
 
+test("each shared plan a client opened is listed with its sharer and view count, most recently opened first", () => {
+  const data = build([
+    gen("2026-10-02T09:00:00.000Z", "Ana", { planId: "p1", advertiserName: "Acme" }),
+    ev("2026-10-02T10:00:00.000Z", "Ana", "share_create", { planId: "p1" }),
+    ev("2026-10-03T10:00:00.000Z", SHARE_VIEWER_ACTOR, "share_view", { planId: "p1", advertiserName: "Acme", detail: "client" }),
+    ev("2026-10-04T10:00:00.000Z", "Ana", "share_view", { planId: "p1", advertiserName: "Acme", detail: "staff_preview" }),
+    ev("2026-10-05T10:00:00.000Z", SHARE_VIEWER_ACTOR, "share_view", { planId: "p2", advertiserName: "Globex", detail: "client" }),
+    ev("2026-10-06T10:00:00.000Z", SHARE_VIEWER_ACTOR, "share_view", { planId: "p1", advertiserName: "Acme", detail: "client" }),
+  ]);
+  assert.deepEqual(
+    data.openedPlans.map((p) => [p.advertiserName, p.sharedBy, p.views, p.firstViewedAt.slice(0, 10), p.lastViewedAt.slice(0, 10)]),
+    [
+      ["Acme", "Ana", 2, "2026-10-03", "2026-10-06"],
+      ["Globex", undefined, 1, "2026-10-05", "2026-10-05"],
+    ],
+  );
+});
+
 test("excluded test accounts are left out of every number", () => {
   const data = build([
     gen("2026-10-02T10:00:00.000Z", "Ana", { budget: 10_000 }),

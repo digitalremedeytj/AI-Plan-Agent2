@@ -39,6 +39,8 @@ import {
   requireAuth,
   sanitizeDisplayName,
   setSessionCookie,
+  setStaffDeviceCookie,
+  staffViewerName,
 } from "./src/server/session";
 import { DEFAULT_CTV_PUBLISHERS } from "./src/planning/knowledge/ctvPublishers";
 import { applyProgrammaticSanityChecks } from "./src/qa/chartSanity";
@@ -2237,6 +2239,7 @@ app.post("/api/auth/login", (req, res) => {
     const user = { name, isAdmin, issuedAt: Date.now() };
     const token = createSessionToken(user);
     setSessionCookie(res, user);
+    setStaffDeviceCookie(res, name);
     logUsage(req, "login", { actor: name });
     console.log(`[AUTH] '${name}' signed in${isAdmin ? " as an administrator" : ""}.`);
     res.json({
@@ -2259,6 +2262,8 @@ app.get("/api/auth/me", (req, res) => {
     return;
   }
   const token = createSessionToken(user);
+  // Renewed on every app load, so planners already signed in when this shipped get the mark too.
+  setStaffDeviceCookie(res, user.name);
   res.json({
     authenticated: true,
     token,
@@ -3495,9 +3500,11 @@ app.get("/api/share/plan", async (req, res) => {
       });
       return;
     }
-    // A signed-in planner opening their own link is told apart from a client opening it.
-    logUsage(req, "share_view", { planId: plan.id, advertiserName: plan.advertiserName, detail: getSession(req) ? "staff_preview" : "client" });
-    res.json({ success: true, plan: withoutHiddenClientSections(plan) });
+    // A planner checking a link before sending it is told apart from a client opening it, even
+    // after their session has expired (see STAFF_DEVICE_COOKIE).
+    const staff = staffViewerName(req);
+    logUsage(req, "share_view", { planId: plan.id, advertiserName: plan.advertiserName, detail: staff ? "staff_preview" : "client", ...(staff ? { actor: staff } : {}) });
+    res.json({ success: true, plan: withoutHiddenClientSections(plan), staffPreview: Boolean(staff) });
   } catch (err: any) {
     respondToStorageError(res, err, "load shared plan");
   }
