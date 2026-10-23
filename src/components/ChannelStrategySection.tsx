@@ -17,6 +17,8 @@ import {
 export { isCtvOrPerformanceTvChannel } from '../planning/ctvChannel';
 import { isCtvOrPerformanceTvChannel } from '../planning/ctvChannel';
 import { buildAllocationView, type AllocationRow, type ChannelSource } from '../planning/allocationRows';
+import { PlanAlignmentPanel } from './PlanAlignmentPanel';
+import type { PlanAlignment } from '../planning/planAlignment';
 import { BUDGET_STRATEGY_LABELS, modeNeedsAdditionalBudget, normalizeBudgetStrategyMode, type BudgetStrategyMode } from '../planning/budgetStrategy';
 import { parseCurrencyInput } from '../planning/settings';
 import { BudgetStrategyControl } from './BudgetStrategyControl';
@@ -38,6 +40,8 @@ export interface ChannelStrategySectionProps {
   /** Whether the written content matches the channel plan, and a rewrite in progress or failed. */
   contentStatus?: { outOfDate: boolean; running: boolean; error: string | null };
   onRefreshContent?: () => void;
+  /** "How this plan reaches your audience", built by the app from the personas and narrative (planAlignment). */
+  alignment?: PlanAlignment | null;
   /** The settings' budget tiers: most media types a budget allows over this plan's flight. */
   mediaTypeCapFor?: (budget: number) => number;
   onManualMediaTypeChange?: (channelId: string, action: 'add' | 'remove') => Promise<void>;
@@ -61,6 +65,9 @@ export interface InternalOnlyVisibility {
   channelFitScores?: boolean;
   channelEvidence?: boolean;
   channelRecommendationsNotInPlan?: boolean;
+  channelUploadedLineItems?: boolean;
+  channelLinePricing?: boolean;
+  planAlignment?: boolean;
   channelConfidenceBadge: boolean;
   channelStatusTag: boolean;
   planningAssumptions?: boolean;
@@ -75,6 +82,9 @@ export const ALL_INTERNAL_VISIBLE: InternalOnlyVisibility = {
   channelFitScores: true,
   channelEvidence: true,
   channelRecommendationsNotInPlan: true,
+  channelUploadedLineItems: true,
+  channelLinePricing: true,
+  planAlignment: true,
   channelConfidenceBadge: true,
   channelStatusTag: true,
   planningAssumptions: true,
@@ -475,6 +485,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
   onUploadMediaPlan,
   contentStatus,
   onRefreshContent,
+  alignment,
   mediaTypeCapFor,
   onManualMediaTypeChange,
   onSaveAllocations,
@@ -1023,6 +1034,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
         )}
       </div>
 
+      {expandedChannels.has(channel.channelId) && uploadedLines(row)}
       {expandedChannels.has(channel.channelId) && (
         <MediaTypeDetails
           channelId={channel.channelId}
@@ -1060,21 +1072,74 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
   // "Add on top of RFP": an RFP media type held at its RFP dollars. It sits outside the allocated
   // budget, so it has no editor, lock or remove control; changing the budget approach moves it.
-  // An uploaded line no catalog media type covers: in the plan at its dollars, with nothing to expand or edit.
-  const renderOutsideCatalogRow = (row: AllocationRow) => (
-    <article key={row.channelId} className="p-4 md:p-5">
-      <div className="flex w-full flex-col gap-3 p-1 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-base font-extrabold text-slate-900">{row.channelName}</h3>
-            {sourceBadge(row)}
-          </div>
-          {!readOnly && <p className="mt-1 text-xs text-slate-500">Kept at its uploaded dollars. ScoutAI has no research or scores for media outside its catalog.</p>}
-        </div>
-        <div className="flex shrink-0 items-center gap-3">{rowMetrics(row)}</div>
+  // The uploaded plan's own lines behind a row, so the client recognises their plan. Pricing and
+  // dollars follow their own switches: an upload can be Digital Remedy's proposal with net rates.
+  const uploadedLines = (row: AllocationRow) => {
+    if (!row.lines?.length || internalOnly.channelUploadedLineItems === false) return null;
+    const showPricing = internalOnly.channelLinePricing !== false && row.lines.some((line) => line.pricing);
+    const showDollars = internalOnly.channelDollarsColumn;
+    const showAudience = row.lines.some((line) => line.audience);
+    const showImpressions = row.lines.some((line) => line.impressions > 0);
+    return (
+      <div className="mx-1 mt-3 overflow-x-auto rounded-xl border border-slate-200">
+        <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wide text-slate-600">From your media plan</div>
+        <table className="w-full min-w-[480px] text-xs">
+          <thead>
+            <tr className="text-left text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <th className="px-3 py-1.5">Line</th>
+              <th className="px-3 py-1.5">Publisher</th>
+              {showAudience && <th className="px-3 py-1.5">Audience</th>}
+              {showImpressions && <th className="px-3 py-1.5 text-right">Impressions</th>}
+              {showPricing && <th className="px-3 py-1.5">Pricing</th>}
+              {showDollars && <th className="px-3 py-1.5 text-right">Dollars</th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {row.lines.map((line, index) => (
+              <tr key={`${line.label}-${index}`}>
+                <td className="px-3 py-1.5 font-semibold text-slate-900">{line.label}</td>
+                <td className="px-3 py-1.5 text-slate-700">{line.publisher || '–'}</td>
+                {showAudience && <td className="px-3 py-1.5 text-slate-700">{line.audience || '–'}</td>}
+                {showImpressions && <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">{line.impressions > 0 ? line.impressions.toLocaleString() : '–'}</td>}
+                {showPricing && <td className="px-3 py-1.5 text-slate-700">{line.pricing || '–'}</td>}
+                {showDollars && <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-900">{money(line.budget)}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-    </article>
-  );
+    );
+  };
+
+  // An uploaded line no catalog media type covers: in the plan at its dollars, with no scores or edits.
+  const renderOutsideCatalogRow = (row: AllocationRow) => {
+    const expanded = expandedChannels.has(row.channelId);
+    const canExpand = Boolean(uploadedLines(row));
+    return (
+      <article key={row.channelId} className="p-4 md:p-5">
+        <button
+          type="button"
+          onClick={() => toggleChannelDetails(row.channelId)}
+          aria-expanded={expanded}
+          disabled={!canExpand}
+          className="flex w-full flex-col gap-3 rounded-xl p-1 text-left hover:bg-slate-50 disabled:cursor-default disabled:hover:bg-transparent md:flex-row md:items-start md:justify-between"
+        >
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-extrabold text-slate-900">{row.channelName}</h3>
+              {sourceBadge(row)}
+            </div>
+            {!readOnly && <p className="mt-1 text-xs text-slate-500">Kept at its uploaded dollars. ScoutAI has no research or scores for media outside its catalog.</p>}
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            {rowMetrics(row)}
+            {canExpand && <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />}
+          </div>
+        </button>
+        {expanded && uploadedLines(row)}
+      </article>
+    );
+  };
 
   const renderKeptRow = (row: AllocationRow) => {
     const candidate = mediaPlan?.evaluatedCandidates.find((item) => item.product.id === row.channelId);
@@ -1107,6 +1172,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
           </div>
           {rowReasons(row, expanded)}
         </button>
+        {expanded && uploadedLines(row)}
         {expanded && candidate && (
           <MediaTypeDetails
             channelId={candidate.product.id}
@@ -1750,6 +1816,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
 
       {/* What the plan leaves out, for the client: RFP media types it does not fund and the media
           types ScoutAI would add. Planners see the full candidate list above instead. */}
+      {/* A client's plan used as is gets the case for it instead of the list below. */}
+      {view.asIs && alignment && internalOnly.planAlignment !== false && <PlanAlignmentPanel alignment={alignment} readOnly={readOnly} />}
+
       {/* Not on a plan used as is: the client's plan is the plan, and this list would second-guess it. */}
       {readOnly && mediaPlan && !view.asIs && internalOnly.channelRecommendationsNotInPlan !== false && (view.rfpNotFunded.length > 0 || view.recommendedAdditions.length > 0) && (
         <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">

@@ -57,3 +57,8 @@ test("uploaded publishers are never dropped to fit the target, and a plan naming
   const picks = [{ publisher: "HGTV" }];
   assert.equal(withUploadedPublishers(picks, ["Spotify"], pool, 8), picks);
 });
+
+test("a line listing several publishers in one cell contributes each of them, in order", () => {
+  const next = withUploadedPublishers([], ["Roku, Pluto; HGTV / Hulu", "A&E"], [...pool, { name: "A&E", category: "Network", enabled: true }], 8);
+  assert.deepEqual(next.map((p) => p.publisher), ["Roku", "HGTV", "Hulu", "A&E"]);
+});

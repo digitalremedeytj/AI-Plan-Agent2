@@ -215,6 +215,22 @@ saves with a `content_refresh` History checkpoint, then the QA audit opens. The 
 is not rewritten; its own out-of-date badge asks for that, and its snapshot carries any
 outside-catalog lines.
 
+**Uploaded line items.** Every RFP row (and outside-catalog row) carries the uploaded lines behind
+it (`AllocationRow.lines`), shown as "From your media plan" when the row is expanded: line,
+publisher, audience and impressions. Pricing follows **Channel > Uploaded Line Pricing** (off by
+default, since an upload can be Digital Remedy's proposal with net rates) and line dollars follow
+the Dollars Column switch; **Channel > Uploaded Line Items** hides the table altogether.
+
+**How this plan reaches your audience** (`PlanAlignmentPanel.tsx`, logic in
+`src/planning/planAlignment.ts`, no AI) appears on a plan used as is, in place of "ScoutAI
+recommendations not in this plan". Each persona shows the plan channels the narrative's
+recommendations name for them and the plan's CTV publishers their viewing mentions; the funnel row
+shows which channels cover awareness, consideration and conversion. The client sees only what is
+covered; planners also see "For you, not the client": channels the research rates below 55 audience
+fit, uncovered funnel stages, personas nothing reaches, and outside-catalog lines. A share link
+leaves out personas, or the recommendation titles, when those sections are hidden. Switch:
+**Channel > How This Plan Reaches Your Audience**.
+
 **Out of date.** `profile.narrativeChannelKey` records the channel mix the narrative was written
 for (media types, outside-catalog lines and CTV publishers, not budget splits). When the plan's
 mix no longer matches, after an upload, a budget-approach change or adding or removing a media

@@ -50,6 +50,9 @@ export type InternalOnlySettingId =
   | "channelFitScores"
   | "channelEvidence"
   | "channelRecommendationsNotInPlan"
+  | "channelUploadedLineItems"
+  | "channelLinePricing"
+  | "planAlignment"
   | "channelConfidenceBadge"
   | "channelStatusTag"
   | "planningAssumptions"
@@ -98,6 +101,24 @@ export const DEFAULT_INTERNAL_ONLY_SETTINGS: InternalOnlySetting[] = [
     id: "channelRecommendationsNotInPlan",
     label: "Channel > Recommendations Not In Plan (Share Link)",
     description: "On the share link: RFP media types this plan does not fund and the media types ScoutAI recommends adding, each with why.",
+    show: true,
+  },
+  {
+    id: "channelUploadedLineItems",
+    label: "Channel > Uploaded Line Items",
+    description: "The uploaded media plan's own lines (publisher, audience, impressions) under each media type that came from it.",
+    show: true,
+  },
+  {
+    id: "channelLinePricing",
+    label: "Channel > Uploaded Line Pricing",
+    description: "The pricing (e.g. CPM) on each uploaded line. Line dollars follow the Dollars Column switch.",
+    show: false,
+  },
+  {
+    id: "planAlignment",
+    label: "Channel > How This Plan Reaches Your Audience",
+    description: "On a plan used as is: which channels reach each persona and which funnel stages the plan covers. Planners also see what it leaves out.",
     show: true,
   },
   {

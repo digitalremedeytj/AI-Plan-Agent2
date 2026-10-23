@@ -86,6 +86,9 @@ test("internal-only defaults hide dollars, confidence, assumptions, and qa audit
     channelFitScores: true,
     channelEvidence: true,
     channelRecommendationsNotInPlan: true,
+    channelUploadedLineItems: true,
+    channelLinePricing: false,
+    planAlignment: true,
     channelConfidenceBadge: false,
     channelStatusTag: false,
     planningAssumptions: false,
@@ -301,4 +304,15 @@ test("an invalid measurement availability blocks a save", () => {
   const result = validatePlanningSettings(settings);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((error) => /availability must be/.test(error)));
+});
+
+test("settings saved before the uploaded-plan switches gain them with their defaults and still validate", () => {
+  const current = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  const older = { ...current, internalOnly: current.internalOnly.filter((setting) => !["channelUploadedLineItems", "channelLinePricing", "planAlignment"].includes(setting.id)) };
+  const result = validatePlanningSettings(migrateStoredSettings(JSON.parse(JSON.stringify(older))));
+  assert.equal(result.valid, true, result.errors.join("; "));
+  const visibility = Object.fromEntries(result.settings!.internalOnly.map((setting) => [setting.id, setting.show]));
+  assert.equal(visibility.channelUploadedLineItems, true);
+  assert.equal(visibility.channelLinePricing, false, "an upload can carry net rates, so pricing starts hidden");
+  assert.equal(visibility.planAlignment, true);
 });

@@ -225,3 +225,14 @@ test("uploaded lines outside the catalog are rows at their dollars when the plan
 test("using the plan as is needs no additional budget", () => {
   assert.deepEqual(resolveStrategyBudget("asIs", 50_000, undefined), { allocatedBudget: 50_000, additionalBudget: 0 });
 });
+
+test("each RFP row and outside-catalog row carries the uploaded lines behind it; added media types carry none", () => {
+  const asIs = buildAllocationView(strategyFor("asIs", 0, { plan: withPrint }));
+  const ctv = asIs.rfpRows.find((row) => row.channelId === "channel.ctv");
+  assert.deepEqual(ctv?.lines?.map((line) => [line.label, line.budget]), [["Video · OTT", 30_000]]);
+  assert.equal(asIs.rfpRows.find((row) => row.outsideCatalog)?.lines?.length, 2);
+
+  const grown = buildAllocationView(strategyFor("incremental", 25_000));
+  assert.ok(grown.rfpRows.every((row) => row.lines?.length), "kept RFP rows too");
+  assert.ok(grown.addedRows.every((row) => row.lines === undefined));
+});

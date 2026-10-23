@@ -111,6 +111,7 @@ import { CtvPublisherRecommendation } from "./types";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
 import { describeGeography } from "./planning/planUpload";
 import { narrativeChannelKey } from "./research/planNarrative";
+import { planAlignment } from "./planning/planAlignment";
 import { PlanUploadModal, type AppliedPlanUpload, type PlanUploadPreviewInput } from "./components/PlanUploadModal";
 import { isNonMediaItem, normalizeRawChannel } from "./utils/mediaTaxonomy";
 import {
@@ -1847,6 +1848,18 @@ export default function App() {
   const isTemporalHidden = hiddenSections.has("temporal") || hiddenSections.has("daypart");
   const isChannelsHidden = hiddenSections.has("channels");
   const isExecutiveSummaryHidden = hiddenSections.has("executiveSummary") || hiddenSections.has("blueprint");
+  // "How this plan reaches your audience" is only for a client's plan used as is. A share link
+  // leaves out what the planner hid there: personas, and the recommendations it quotes.
+  const planAlignmentView = React.useMemo(() => {
+    if (profileData?.channelStrategy?.budgetStrategyMode !== "asIs") return null;
+    const alignment = planAlignment(profileData);
+    if (!isShareView) return alignment;
+    return {
+      ...alignment,
+      personas: isPersonasHidden ? [] : alignment.personas.map((persona) => (isInsightsHidden ? { ...persona, because: [] } : persona)),
+      cautions: [],
+    };
+  }, [profileData, isShareView, isPersonasHidden, isInsightsHidden]);
 
   // The brief is out of date once the plan it was written from no longer matches the plan on screen.
   const liveBriefFingerprint = React.useMemo(
@@ -7792,6 +7805,7 @@ export default function App() {
                     onUploadMediaPlan={activeSavedId ? () => setIsPlanUploadOpen(true) : undefined}
                     contentStatus={activeSavedId ? { ...contentRefresh, outOfDate: isNarrativeOutOfDate } : undefined}
                     onRefreshContent={activeSavedId ? () => void handleRefreshPlanContent() : undefined}
+                    alignment={planAlignmentView}
                     mediaTypeCapFor={(amount) => mediaTypeCapFor(amount, profileData.channelStrategy?.mediaPlan?.flightDays, planningSettings)}
                     onManualMediaTypeChange={handleManualMediaTypeChange}
                     onSaveAllocations={handleSaveManualAllocations}

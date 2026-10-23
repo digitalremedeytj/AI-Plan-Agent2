@@ -42,6 +42,8 @@ export interface AllocationRow {
   why: string;
   whyLabel: string;
   minimumSpend: number;
+  /** The uploaded plan's own lines behind this row, for an RFP media type or an outside-catalog row. */
+  lines?: RfpBaselineLine[];
 }
 
 export interface AllocationView {
@@ -119,6 +121,10 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
     : { score: null, audienceFit: null, goalMatch: null };
   const sourceOf = (id: string): ChannelSource => rfpIdSet.has(id) ? "rfp" : plannerIds.has(id) ? "planner" : "scoutai";
   const rfpDollarsOf = (id: string) => rfpIdSet.has(id) && plan?.rfpBaseline ? (baselineById.get(id)?.dollars ?? 0) : null;
+  const linesOf = (id: string) => {
+    const lines = rfpIdSet.has(id) ? baselineById.get(id)?.lines : undefined;
+    return lines?.length ? { lines } : {};
+  };
   const nameOf = (id: string) => candidateById.get(id)?.product.displayName || baselineById.get(id)?.channelName
     || (strategy.rfpChannels || []).find((channel) => channel.channelId === id)?.channelName || id;
 
@@ -140,6 +146,7 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
       why: candidate?.gapAddressed || channel.gapAddressed,
       whyLabel: WHY_LABELS.funded,
       minimumSpend: channel.minimumTotalSpend,
+      ...linesOf(channel.channelId),
     };
   });
 
@@ -161,6 +168,7 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
       why: candidate?.gapAddressed || "",
       whyLabel: WHY_LABELS.funded,
       minimumSpend: candidate?.product.minimumTotalSpend || 0,
+      ...linesOf(id),
     };
   });
 
@@ -182,6 +190,7 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
     why: "",
     whyLabel: WHY_LABELS.funded,
     minimumSpend: 0,
+    lines: group.lines,
   }));
 
   const unfundedRow = (candidate: EvaluatedMediaCandidate, whyLabel: string, why: string): AllocationRow => {
@@ -254,8 +263,12 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
 }
 
 /** Unmatched uploaded lines by label, in the order they first appear. */
-function outsideCatalogGroups(lines: RfpBaselineLine[]): Array<{ label: string; dollars: number }> {
-  const groups = new Map<string, number>();
-  for (const line of lines) groups.set(line.label, (groups.get(line.label) || 0) + line.budget);
-  return [...groups].map(([label, dollars]) => ({ label, dollars: Math.round(dollars * 100) / 100 }));
+function outsideCatalogGroups(lines: RfpBaselineLine[]): Array<{ label: string; dollars: number; lines: RfpBaselineLine[] }> {
+  const groups = new Map<string, RfpBaselineLine[]>();
+  for (const line of lines) groups.set(line.label, [...(groups.get(line.label) || []), line]);
+  return [...groups].map(([label, group]) => ({
+    label,
+    dollars: Math.round(group.reduce((sum, line) => sum + line.budget, 0) * 100) / 100,
+    lines: group,
+  }));
 }

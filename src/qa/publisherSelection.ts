@@ -112,7 +112,10 @@ export function withUploadedPublishers(
   const byKey = new Map(pool.filter((p) => p && p.name && p.enabled !== false).map((p) => [publisherKey(p.name), p]));
   const seen = new Set<string>();
   const uploaded: PublisherPick[] = [];
-  for (const name of uploadedNames) {
+  // Uploaded lines often list several publishers in one cell ("Roku, Pluto, NBC"). "&" is part of
+  // names like A&E, so it is not a separator.
+  const names = uploadedNames.flatMap((cell) => String(cell || "").split(/\s*[,;|\n]\s*|\s+\/\s+/)).map((name) => name.trim()).filter(Boolean);
+  for (const name of names) {
     const record = byKey.get(publisherKey(name));
     if (!record || seen.has(publisherKey(record.name))) continue;
     seen.add(publisherKey(record.name));
