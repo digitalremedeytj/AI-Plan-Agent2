@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ChannelStrategyData, ParsedPlanOption } from "../types";
-import { buildAllocationView, WHY_LABELS } from "./allocationRows";
+import { budgetToAdd, buildAllocationView, WHY_LABELS } from "./allocationRows";
 import { resolveStrategyBudget, type BudgetStrategyMode } from "./budgetStrategy";
 import { buildCampaignFacts, buildMediaRecommendationPlan } from "./engine";
 import { addMediaTypeAndRebalance } from "./manualAllocations";
@@ -235,4 +235,35 @@ test("each RFP row and outside-catalog row carries the uploaded lines behind it;
   const grown = buildAllocationView(strategyFor("incremental", 25_000));
   assert.ok(grown.rfpRows.every((row) => row.lines?.length), "kept RFP rows too");
   assert.ok(grown.addedRows.every((row) => row.lines === undefined));
+});
+
+test("a scale-up option quotes the budget that adds it without taking dollars from the plan", () => {
+  const view = buildAllocationView(strategyFor("reallocation"));
+  const strategy = strategyFor("reallocation");
+  const plan = strategy.mediaPlan!;
+  for (const row of view.recommendedAdditions) {
+    const candidate = plan.evaluatedCandidates.find((item) => item.product.id === row.channelId)!;
+    const extra = row.budgetToAdd!;
+    assert.ok(extra >= candidate.product.minimumTotalSpend, `${row.channelName} covers its minimum spend`);
+    // At its minimum share of the larger total, the media types already funded keep every dollar.
+    assert.ok(extra / (plan.workingMediaBudget + extra) >= candidate.product.minimumAllocationPercent / 100 - 1e-9, `${row.channelName} reaches its minimum share`);
+    assert.equal(extra % 500, 0, "rounded to a quotable figure");
+  }
+});
+
+test("budget to add covers the monthly minimum across a long flight", () => {
+  const strategy = strategyFor("reallocation");
+  const candidate = strategy.mediaPlan!.evaluatedCandidates.find((item) => item.product.id === "channel.youtube_tv")!;
+  const sixMonths = budgetToAdd(candidate, { workingMediaBudget: 10_000, flightDays: 180 });
+  assert.ok(sixMonths >= candidate.product.minimumNormalized30DaySpend * 6);
+});
+
+test("scale-up options lead with the media types ScoutAI called core, then by score", () => {
+  const strategy = strategyFor("reallocation");
+  const plan = strategy.mediaPlan!;
+  const before = buildAllocationView(strategy).recommendedAdditions;
+  assert.ok(before.length >= 2);
+  const last = before[before.length - 1].channelId;
+  plan.evaluatedCandidates = plan.evaluatedCandidates.map((candidate) => candidate.product.id === last ? { ...candidate, aiRole: "core" as const } : candidate);
+  assert.equal(buildAllocationView(strategy).recommendedAdditions[0].channelId, last);
 });

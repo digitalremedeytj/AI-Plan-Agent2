@@ -1,5 +1,5 @@
 import type { ChannelStrategyData } from "../types";
-import type { EvaluatedMediaCandidate, EvidenceItem, RfpBaselineLine } from "./types";
+import type { ChannelRole, EvaluatedMediaCandidate, EvidenceItem, MediaRecommendationPlan, RfpBaselineLine } from "./types";
 
 /**
  * The Channel Allocation table's rows, built once from a saved channel strategy so the page,
@@ -42,6 +42,11 @@ export interface AllocationRow {
   why: string;
   whyLabel: string;
   minimumSpend: number;
+  /**
+   * Scale-up options only: the extra budget that funds this media type at its minimums without
+   * taking anything from what the plan already funds. See budgetToAdd.
+   */
+  budgetToAdd?: number;
   /** The uploaded plan's own lines behind this row, for an RFP media type or an outside-catalog row. */
   lines?: RfpBaselineLine[];
 }
@@ -59,7 +64,11 @@ export interface AllocationView {
   addedRows: AllocationRow[];
   /** RFP media types the plan does not fund, with why. */
   rfpNotFunded: AllocationRow[];
-  /** Qualified media types ScoutAI would add, best first. The share link's upsell list. Empty as is. */
+  /**
+   * Scale-up options: qualified media types the plan does not fund, with the budget it would take
+   * to add each one. Core and supporting fits first, then by score. The share link's upsell list.
+   * Empty as is.
+   */
   recommendedAdditions: AllocationRow[];
   summary: { rfpCount: number; rfpFunded: number; scoutAdded: number; plannerAdded: number };
   unmatchedLines: RfpBaselineLine[];
@@ -89,6 +98,25 @@ function notFundedReason(candidate: EvaluatedMediaCandidate | undefined): string
     || candidate?.prerequisites[0]
     || "The budget does more for the campaign goal in the media types this plan funds.";
 }
+
+/**
+ * Extra budget to add a media type on top of the plan: enough for its total and monthly minimums
+ * over the flight, and for its minimum share of the larger total, so the media types the plan
+ * already funds keep their dollars. Rounded up to a figure a client can be quoted.
+ */
+export function budgetToAdd(candidate: EvaluatedMediaCandidate, plan: Pick<MediaRecommendationPlan, "workingMediaBudget" | "flightDays">): number {
+  const product = candidate.product;
+  const months = (plan.flightDays && plan.flightDays > 0 ? plan.flightDays : 30) / 30;
+  const share = Math.min(0.95, Math.max(0, product.minimumAllocationPercent) / 100);
+  const forShare = (share * plan.workingMediaBudget) / (1 - share);
+  const needed = Math.max(product.minimumTotalSpend, product.minimumNormalized30DaySpend * months, forShare);
+  const step = needed >= 10_000 ? 1_000 : 500;
+  return Math.ceil(needed / step) * step;
+}
+
+const ROLE_ORDER: Record<ChannelRole, number> = { core: 0, supporting: 1, optional: 2 };
+// Plans saved before roles existed have none, and sort with supporting so score still decides.
+const roleRank = (candidate: EvaluatedMediaCandidate) => ROLE_ORDER[candidate.aiRole ?? "supporting"];
 
 function rfpChannelIds(strategy: ChannelStrategyData): string[] {
   const baseline = strategy.mediaPlan?.rfpBaseline;
@@ -239,8 +267,11 @@ export function buildAllocationView(strategy: ChannelStrategyData): AllocationVi
       && (candidate.status === "ADD" || candidate.status === "TEST")
       && candidate.eligibilityFailures.length === 0
       && candidate.aiAssessed !== false)
-    .sort((a, b) => b.recommendationScore - a.recommendationScore || a.product.displayName.localeCompare(b.product.displayName))
-    .map((candidate) => unfundedRow(candidate, WHY_LABELS.addition, candidate.gapAddressed));
+    .sort((a, b) => roleRank(a) - roleRank(b) || b.recommendationScore - a.recommendationScore || a.product.displayName.localeCompare(b.product.displayName))
+    .map((candidate) => ({
+      ...unfundedRow(candidate, WHY_LABELS.addition, candidate.gapAddressed),
+      ...(plan ? { budgetToAdd: budgetToAdd(candidate, plan) } : {}),
+    }));
 
   return {
     hasRfp: rfpIds.length > 0 || outsideRows.length > 0,

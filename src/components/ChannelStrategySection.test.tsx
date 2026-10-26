@@ -340,7 +340,8 @@ test("add on top of RFP lists RFP media types at their RFP dollars with no remov
 test("the share link shows what the plan leaves out, with why, but no planner controls", () => {
   const markup = renderToStaticMarkup(<ChannelStrategySection data={rfpStrategy("reallocation")} readOnly />);
   assert.match(markup, /ScoutAI recommendations not in this plan/);
-  assert.match(markup, /Recommended additions/);
+  assert.match(markup, /Scale-up options/);
+  assert.match(markup, /Add with about \$[0-9,]+ more budget/);
   assert.match(markup, /<dt[^>]*>Why add it<\/dt>/);
   assert.doesNotMatch(markup, /Media types not in plan/);
   assert.doesNotMatch(markup, /Budget approach<\/h3>/);

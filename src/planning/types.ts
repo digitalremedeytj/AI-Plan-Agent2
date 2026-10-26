@@ -138,8 +138,17 @@ export interface CandidateScoreComponents {
   measurementFit: number;
 }
 
+/**
+ * The reasoning layer's read of a media type's job in this campaign. Easier to judge than the
+ * difference between an 82 and a 79, so it is what separates the mix when fit scores bunch.
+ */
+export type ChannelRole = "core" | "supporting" | "optional";
+export const CHANNEL_ROLES: ChannelRole[] = ["core", "supporting", "optional"];
+
 export interface AiCandidateSignal {
   channelId: string;
+  /** Free text from the model; anything outside CHANNEL_ROLES is ignored. */
+  role?: string;
   components?: Partial<CandidateScoreComponents>;
   gapAddressed?: string;
   evidence?: EvidenceItem[];
@@ -158,6 +167,8 @@ export interface EvaluatedMediaCandidate {
    * present their numbers or text as analysis.
    */
   aiAssessed: boolean;
+  /** Absent on plans saved before roles existed, and when the model gave none; weighs as supporting. */
+  aiRole?: ChannelRole;
   product: MediaProductRecord;
   status: RecommendationStatus;
   recommendationScore: number;

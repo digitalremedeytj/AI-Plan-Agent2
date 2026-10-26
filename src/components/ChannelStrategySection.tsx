@@ -842,7 +842,7 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     const text = `CHANNEL ALLOCATION — ${budgetModeLabel}, plan total ${money(view.planTotal)}`
       + (view.hasRfp ? section(view.asIs ? 'Your plan' : 'From your RFP', view.rfpRows) + section('Added to your plan', view.addedRows) : section('Media types', view.addedRows))
       + section('From your RFP, not funded', view.rfpNotFunded)
-      + section('Recommended additions', view.recommendedAdditions)
+      + section('Scale-up options', view.recommendedAdditions)
       + `\n\nScoutAI Insight:\n${data.executiveInsight || ''}`;
 
     navigator.clipboard.writeText(text);
@@ -1824,11 +1824,11 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
         <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
           <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 md:px-5">
             <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-900"><Sparkles className="h-4 w-4 text-indigo-600" /> ScoutAI recommendations not in this plan</h3>
-            <p className="mt-1 text-xs text-slate-600">Where ScoutAI moved RFP budget, and media types that would add the most for this audience and goal.</p>
+            <p className="mt-1 text-xs text-slate-600">Where ScoutAI moved RFP budget, and the media types that would add the most for this audience and goal with more budget.</p>
           </div>
           {[
             { id: 'rfp', title: 'From your RFP, not carried forward', rows: view.rfpNotFunded },
-            { id: 'add', title: 'Recommended additions', rows: view.recommendedAdditions.slice(0, 5) },
+            { id: 'add', title: 'Scale-up options', rows: view.recommendedAdditions.slice(0, 5) },
           ].filter((group) => group.rows.length > 0).map((group) => (
             <section key={group.id} aria-labelledby={`share-recs-${group.id}`}>
               <div className="border-b border-slate-200 bg-white px-4 py-2 md:px-5">
@@ -1844,8 +1844,10 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
                       </div>
                       {fitScores(row)}
                       <div className="mt-2">{rowReasons(row, true)}</div>
-                      {internalOnly.channelDollarsColumn && row.source !== 'rfp' && row.minimumSpend > 0 && (
-                        <p className="mt-1.5 text-[11px] font-semibold text-slate-500">Minimum spend to add: {money(row.minimumSpend)}</p>
+                      {internalOnly.channelDollarsColumn && row.source !== 'rfp' && (row.budgetToAdd ?? row.minimumSpend) > 0 && (
+                        <p className="mt-1.5 text-[11px] font-semibold text-indigo-700">
+                          {row.budgetToAdd ? `Add with about ${money(row.budgetToAdd)} more budget` : `Minimum spend to add: ${money(row.minimumSpend)}`}
+                        </p>
                       )}
                     </div>
                     {internalOnly.channelScoreColumn && row.score !== null && (

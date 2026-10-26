@@ -371,3 +371,16 @@ test("planning notes reach the scoring candidates, and blank notes add nothing t
   assert.deepEqual(plannerGuidanceField(settings, blank.productId), {});
   assert.deepEqual(plannerGuidanceField(settings, "custom.anything"), {}, "custom types already send their notes as evidence");
 });
+
+test("settings without a plan focus read as Balanced, and an unknown focus blocks the save", () => {
+  const storage = new MemoryStorage();
+  const { planFocus: _focus, ...older } = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  storage.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify(older));
+  assert.equal(loadPlanningSettings(storage).planFocus, "balanced");
+
+  const focused = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  focused.planFocus = "focused";
+  assert.equal(savePlanningSettings(storage, focused).valid, true);
+  assert.equal(loadPlanningSettings(storage).planFocus, "focused");
+  assert.equal(validatePlanningSettings({ ...focused, planFocus: "laser" as never }).valid, false);
+});

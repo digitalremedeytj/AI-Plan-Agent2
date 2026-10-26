@@ -44,6 +44,8 @@ import {
   MeasurementPlanningSetting,
   OverviewMetricId,
   PlanningSettings,
+  PLAN_FOCUS_OPTIONS,
+  planFocusOf,
   PLANNING_NOTES_MAX_LENGTH,
   ProductPlanningSetting,
   validatePlanningSettings,
@@ -1479,7 +1481,32 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
               <div>
                 <h3 className="text-base font-bold text-slate-900">Budget &amp; Media-Type Limits</h3>
                 <p className="mt-1 text-sm leading-6 text-slate-600">
-                  Campaign budgets are normalized to 30 days before these caps are applied. ScoutAI may recommend fewer media types when minimums or allocation bounds make a wider mix infeasible.
+                  Campaign budgets are normalized to 30 days before these caps are applied. Each cap is a ceiling, not a target: ScoutAI adds a media type only when it is worth more to the campaign's goal than more budget on the ones already in.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Plan focus</span>
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Plan focus">
+                  {PLAN_FOCUS_OPTIONS.map((option) => {
+                    const selected = planFocusOf(draftSettings.planFocus) === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => setDraftSettings((curr) => ({ ...curr, planFocus: option.value }))}
+                        className={`rounded-lg border px-3 py-2 text-left transition-colors ${selected ? "border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100" : "border-slate-200 hover:border-slate-300"}`}
+                      >
+                        <span className={`block text-sm font-semibold ${selected ? "text-indigo-700" : "text-slate-800"}`}>{option.label}</span>
+                        <span className="mt-0.5 block text-xs leading-5 text-slate-500">{option.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  Applies to new plans. Each media type's minimum and maximum allocation % still apply, so a low maximum on a strong media type can still spread a Focused plan.
                 </p>
               </div>
 

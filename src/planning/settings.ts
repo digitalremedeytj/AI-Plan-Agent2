@@ -287,6 +287,18 @@ export interface MeasurementPlanningSetting {
   dataRequirements: MeasurementDataRequirement[];
 }
 
+export type PlanFocus = "focused" | "balanced" | "broad";
+export const PLAN_FOCUS_OPTIONS: Array<{ value: PlanFocus; label: string; description: string }> = [
+  { value: "focused", label: "Focused", description: "Fewer media types with more budget behind the strongest fits." },
+  { value: "balanced", label: "Balanced", description: "Adds a media type when it is worth more than more budget on the ones already in." },
+  { value: "broad", label: "Broad", description: "Spreads across more media types for reach and coverage, still within the cap." },
+];
+export const DEFAULT_PLAN_FOCUS: PlanFocus = "balanced";
+
+export function planFocusOf(value: unknown): PlanFocus {
+  return PLAN_FOCUS_OPTIONS.some((option) => option.value === value) ? (value as PlanFocus) : DEFAULT_PLAN_FOCUS;
+}
+
 export interface PlanningSettings {
   version: typeof PLANNING_SETTINGS_VERSION;
   overviewMetrics: OverviewMetricSetting[];
@@ -304,6 +316,11 @@ export interface PlanningSettings {
   ctvTier2TargetPercent?: number;
   /** CTV Publisher target percentage for Tier 3 (FAST / Device OS, default 20). */
   ctvTier3TargetPercent?: number;
+  /**
+   * How widely the engine spreads the budget (see RESPONSE_SATURATION_SCALE in engine.ts). Optional
+   * so settings saved before it existed, including those pinned to saved plans, read as balanced.
+   */
+  planFocus?: PlanFocus;
   /** Assumptions behind Est. Monthly Reach and Avg Monthly Frequency. See src/planning/reach. */
   reach: ReachSettings;
   /** One row per live workbook measurement product. See mergeMeasurementSettings. */
@@ -457,6 +474,7 @@ function buildDefaultSettings(): PlanningSettings {
           specificationNotes: String(enhancement.metadata["Spec / Vendor Notes"] || "").trim() || "Best-guess starting specification: confirm dimensions, file weight, duration, click behavior, tracking, accessibility, production lead time, and final QA requirements with the selected vendor before launch.",
         };
       }),
+    planFocus: DEFAULT_PLAN_FOCUS,
     ctvPublisherTargetCount: 8,
     ctvTier1TargetPercent: 35,
     ctvTier2TargetPercent: 45,
@@ -511,6 +529,7 @@ export function clonePlanningSettings(settings: PlanningSettings): PlanningSetti
       ...enhancement,
       attachesTo: [...(enhancement.attachesTo || [])],
     })),
+    planFocus: planFocusOf(settings.planFocus),
     ctvPublisherTargetCount: typeof settings.ctvPublisherTargetCount === "number" && Number.isFinite(settings.ctvPublisherTargetCount)
       ? Math.max(1, Math.min(30, Math.round(settings.ctvPublisherTargetCount)))
       : 8,
@@ -682,6 +701,8 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
   const ctvPublisherTargetCount = typeof candidate.ctvPublisherTargetCount === "number" && Number.isFinite(candidate.ctvPublisherTargetCount)
     ? Math.max(1, Math.min(30, Math.round(candidate.ctvPublisherTargetCount)))
     : 8;
+  if (candidate.planFocus !== undefined && planFocusOf(candidate.planFocus) !== candidate.planFocus) errors.push("Plan focus must be Focused, Balanced or Broad.");
+  const planFocus = planFocusOf(candidate.planFocus);
 
   const ctvTier1TargetPercent = typeof candidate.ctvTier1TargetPercent === "number" && Number.isFinite(candidate.ctvTier1TargetPercent)
     ? Math.max(0, Math.min(100, Math.round(candidate.ctvTier1TargetPercent)))
@@ -720,6 +741,7 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
       customProducts,
       publishers,
       enhancements,
+      planFocus,
       ctvPublisherTargetCount,
       ctvTier1TargetPercent,
       ctvTier2TargetPercent,

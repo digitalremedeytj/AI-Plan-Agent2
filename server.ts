@@ -996,6 +996,7 @@ const candidateSignalSchema = {
     type: Type.OBJECT,
     properties: {
       channelId: { type: Type.STRING },
+      role: { type: Type.STRING, description: "One of: core, supporting, optional." },
       components: {
         type: Type.OBJECT,
         properties: {
@@ -1027,7 +1028,7 @@ const candidateSignalSchema = {
       allocationRationale: { type: Type.STRING },
       decisionRule: { type: Type.STRING },
     },
-    required: ["channelId", "components", "gapAddressed", "evidence", "activationGuidance", "measurementApproach", "tradeoffs", "allocationRationale", "decisionRule"],
+    required: ["channelId", "role", "components", "gapAddressed", "evidence", "activationGuidance", "measurementApproach", "tradeoffs", "allocationRationale", "decisionRule"],
   },
 };
 // Wrapped in an object rather than sent as a top-level array: the 3.8 structured-output docs
@@ -1075,6 +1076,12 @@ Code—not you—owns eligibility, availability, budget tiers, product minimums,
 A candidate with catalogSource "custom" is a media type the Digital Remedy team added themselves. Treat it as a genuine option and score it on the same terms as the rest, using its planningNotes as the primary evidence for fit. It carries no workbook validation, so cite it as a digital_remedy_rule rather than implying workbook or research backing, and do not award it dataReadiness or creativeReadiness credit that the campaign facts do not support.
 
 A workbook candidate may carry plannerGuidance: the Digital Remedy planning team's internal direction on when to include, skip or lean on that media type. Follow it when scoring, raising or lowering fit where its conditions match this campaign. It is internal direction, not evidence: never quote or paraphrase it in client-facing text, and never cite it as an evidence line. It does not override eligibility, minimums or budget tiers, which code enforces.
+
+Give each candidate a role for this campaign's primary goal:
+- "core": central to reaching the goal; the plan would be weaker without real budget behind it. Usually two or three candidates, rarely more than four.
+- "supporting": adds reach, a funnel stage or reinforcement alongside the core media types.
+- "optional": a reasonable add if budget allows, but not needed for the goal.
+Judge the role from the goal, the audience and the evidence, not from the scores alone, and follow any plannerGuidance on when to lean on or skip a media type. Code uses roles to decide how much budget each media type deserves, so be discerning: labelling everything core helps no one.
 
 Score each component from 0 to 100 using campaign-specific evidence. Keep confidence separate from fit by citing evidence source types. Provide concise activation, measurement, tradeoff, allocation-rationale, and scale/stop explanations. Do not calculate final allocations.
 

@@ -855,3 +855,30 @@ test("only explicit exclusions of CTV count, not limits or comparisons", () => {
     assert.equal(ctvRuledOutByBrief([allowed]), null, `should not rule out: ${allowed}`);
   }
 });
+
+test("a media type ScoutAI calls core earns more of the budget than the same fit called optional", () => {
+  const withRole = (role: string) => buildMediaRecommendationPlan(hundredThousand(["purchases"]), scored(MIXED_FIT).map((signal) => signal.channelId === "channel.social_meta" ? { ...signal, role } : signal));
+  const share = (plan: ReturnType<typeof withRole>) => plan.channels.find((channel) => channel.channelId === "channel.social_meta")?.allocationPercent ?? 0;
+  assert.ok(share(withRole("core")) > share(withRole("optional")), `core ${share(withRole("core"))}% vs optional ${share(withRole("optional"))}%`);
+  assert.equal(withRole("Core").evaluatedCandidates.find((candidate) => candidate.product.id === "channel.social_meta")?.aiRole, "core");
+  assert.equal(withRole("essential").evaluatedCandidates.find((candidate) => candidate.product.id === "channel.social_meta")?.aiRole, undefined, "an unknown label is ignored, not guessed");
+});
+
+test("Plan focus moves a plan between fewer, deeper media types and a broader mix", () => {
+  const withFocus = (planFocus: "focused" | "balanced" | "broad") => {
+    const planningSettings = settings();
+    planningSettings.planFocus = planFocus;
+    return buildMediaRecommendationPlan(buildCampaignFacts({
+      kpis: ["awareness", "reach"],
+      audienceDescriptions: ["Online shoppers who stream, search and scroll social"],
+      workingMediaBudget: 250_000,
+      campaignFlightDays: 30,
+      geography: "United States",
+      planningSettings,
+    }), scored(MIXED_FIT));
+  };
+  const effective = (plan: ReturnType<typeof withFocus>) => 1 / plan.channels.reduce((sum, channel) => sum + (channel.allocationPercent / 100) ** 2, 0);
+  const [focused, balanced, broad] = [withFocus("focused"), withFocus("balanced"), withFocus("broad")];
+  assert.ok(effective(focused) < effective(balanced) && effective(balanced) < effective(broad), `${effective(focused).toFixed(2)} < ${effective(balanced).toFixed(2)} < ${effective(broad).toFixed(2)}`);
+  assert.ok(broad.selectedMediaTypeCount <= broad.maxMediaTypes, "Broad still respects the cap");
+});

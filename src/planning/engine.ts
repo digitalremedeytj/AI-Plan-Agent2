@@ -7,9 +7,11 @@ import {
 } from "./knowledge/registry";
 import { planningKnowledgeBase } from "./knowledge/normalizeWorkbook";
 import { findEffectiveProduct, resolveEffectiveProducts } from "./effectiveProducts";
-import { findBudgetChannelTier, mergeMeasurementSettings, normalizeCampaignBudget, type MeasurementPlanningSetting, type PlanningSettings } from "./settings";
+import { findBudgetChannelTier, mergeMeasurementSettings, normalizeCampaignBudget, planFocusOf, type MeasurementPlanningSetting, type PlanFocus, type PlanningSettings } from "./settings";
+import { CHANNEL_ROLES } from "./types";
 import type {
   AiCandidateSignal,
+  ChannelRole,
   AllocationAuditEntry,
   AttachedPlanningRecord,
   CampaignAudienceType,
@@ -86,6 +88,9 @@ const SCORE_WEIGHTS: Record<keyof CandidateScoreComponents, number> = {
 // biggest shares of large plans whatever their fit; the square root keeps it a factor, not the rule.
 // Bigger budgets flatten every curve sooner, which is what widens a large plan.
 const RESPONSE_SATURATION_SCALE = 2;
+// The admin's Plan focus setting stretches or shortens every curve: longer curves keep the
+// strongest media types worth funding further, so fewer others earn a place.
+const PLAN_FOCUS_SCALE: Record<PlanFocus, number> = { focused: 2.5, balanced: 1, broad: 0.6 };
 // Fit scores bunch in the 70s and 80s. Measuring them above the do-not-add line rather than from
 // zero is what lets an 84 outweigh a 72 by enough to change the split.
 const VALUE_SCORE_BASELINE = 50;
@@ -108,11 +113,21 @@ function goalConcentration(facts: CampaignFacts): number {
   return 1;
 }
 
+// A core media type is worth more per dollar than its score alone says, an optional one less.
+// Unlabelled (older plans, or the model gave none) weighs as supporting, so those replay unchanged.
+const ROLE_WEIGHT: Record<ChannelRole, number> = { core: 1.25, supporting: 1, optional: 0.7 };
+
+function normalizeRole(value: unknown): ChannelRole | undefined {
+  const role = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return (CHANNEL_ROLES as string[]).includes(role) ? (role as ChannelRole) : undefined;
+}
+
 function candidateWeight(candidate: EvaluatedMediaCandidate, facts: CampaignFacts): number {
   const existingBonus = facts.existingChannelIds.includes(candidate.product.id) ? 12 : 0;
   const preferredBonus = facts.preferredChannelIds.includes(candidate.product.id) ? 8 : 0;
   const addBonus = candidate.status === "ADD" ? 5 : 0;
-  return Math.max(1, candidate.recommendationScore - VALUE_SCORE_BASELINE + existingBonus + preferredBonus + addBonus);
+  const roleWeight = candidate.aiRole ? ROLE_WEIGHT[candidate.aiRole] : 1;
+  return Math.max(1, (candidate.recommendationScore - VALUE_SCORE_BASELINE + existingBonus + preferredBonus + addBonus) * roleWeight);
 }
 
 /** Share of the budget, in percent, over which a media type's returns flatten. */
@@ -122,7 +137,7 @@ function saturationPercent(candidate: EvaluatedMediaCandidate, facts: CampaignFa
   const base = monthlyMinimum > 0 && monthlyBudget > 0
     ? RESPONSE_SATURATION_SCALE * Math.sqrt(monthlyMinimum / monthlyBudget) * 100
     : DEFAULT_SATURATION_PERCENT;
-  return Math.min(100, Math.max(5, base * goalConcentration(facts)));
+  return Math.min(100, Math.max(5, base * goalConcentration(facts) * PLAN_FOCUS_SCALE[planFocusOf(facts.settings.planFocus)]));
 }
 
 function responseValue(weight: number, saturation: number, percent: number): number {
@@ -553,9 +568,11 @@ export function evaluateCandidates(facts: CampaignFacts, aiSignals: AiCandidateS
     if (facts.existingChannelIds.includes(product.id)) evidence.push({ sourceType: "uploaded_plan", detail: `${product.displayName} appears in the uploaded baseline.` });
     const confidence = evidenceConfidence(evidence.length, prerequisites, score);
 
+    const aiRole = normalizeRole(signal?.role);
     return {
       product,
       aiAssessed: Boolean(signal),
+      ...(aiRole ? { aiRole } : {}),
       status,
       recommendationScore: score,
       confidence,

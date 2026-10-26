@@ -88,6 +88,7 @@ export function replayInputsFromRecord(record: any): ReplayOutcome {
     .filter((candidate) => candidate.aiAssessed)
     .map((candidate) => ({
       channelId: candidate.product.id,
+      role: candidate.aiRole,
       components: candidate.components,
       gapAddressed: candidate.gapAddressed,
       evidence: candidate.evidence,

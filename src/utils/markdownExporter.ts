@@ -310,9 +310,9 @@ export function exportProfileToMarkdown(
       markdown += `\n`;
     }
     if (allocationView.recommendedAdditions.length > 0) {
-      markdown += `### ScoutAI Recommended Additions\n`;
+      markdown += `### Scale-Up Options\n`;
       allocationView.recommendedAdditions.slice(0, 5).forEach((row) => {
-        markdown += `- **${row.channelName}**${row.score !== null ? ` (Score ${row.score}/100)` : ''}${rowFacts(row) ? `; ${rowFacts(row)}` : ''}\n`;
+        markdown += `- **${row.channelName}**${row.score !== null ? ` (Score ${row.score}/100)` : ''}${rowFacts(row) ? `; ${rowFacts(row)}` : ''}${row.budgetToAdd ? `; add with about ${money(row.budgetToAdd)} more budget` : ''}\n`;
         markdown += rowReasons(row);
       });
       markdown += `\n`;

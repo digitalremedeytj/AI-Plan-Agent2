@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { planFocusOf } from "../settings";
 import { effectiveChannelCount, replayInputsFromRecord, replayMix, sameSelection, type MixSummary } from "./mixReplay";
 
 // Before/after harness for channel selection and allocation.
 //
 //   npx tsx src/planning/testing/compareChannelMix.ts --save-baseline   # record the current engine
 //   npx tsx src/planning/testing/compareChannelMix.ts                   # compare the engine now to it
+//   ... --focus focused|balanced|broad                                   # replay under a Plan focus
 //
 // Reads saved plans from data/store/plans (or --plans <dir> of exported plan records). The
 // baseline lives in data/, which is gitignored local state, because it is built from local plans.
@@ -18,6 +20,7 @@ const option = (name: string) => {
 };
 const plansDir = path.resolve(option("--plans") || "data/store/plans");
 const baselinePath = path.resolve(option("--baseline") || "data/channel-mix/baseline.json");
+const focus = option("--focus");
 
 const money = (value: number) => `$${Math.round(value).toLocaleString("en-US")}`;
 const shares = (mix: MixSummary) => mix.channels.map((channel) => `${channel.name} ${channel.percent}%`).join(", ");
@@ -45,6 +48,7 @@ for (const file of files) {
     skipped.push(`  ${outcome.title} - ${outcome.reason}`);
     continue;
   }
+  if (focus) outcome.inputs.facts.settings = { ...outcome.inputs.facts.settings, planFocus: planFocusOf(focus) };
   const mix = replayMix(outcome.stored.id, outcome.stored.title, outcome.inputs);
   replayed.push(mix);
   if (flag("--save-baseline") && !sameSelection(mix, outcome.stored)) {
