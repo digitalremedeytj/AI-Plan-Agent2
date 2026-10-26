@@ -61,6 +61,7 @@ import Markdown from "react-markdown";
 import { AudienceProfile, type AudienceNarrowing, type Persona, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { docxLines } from "./utils/docxText";
+import { rtfLines } from "./utils/rtfText";
 import { asWebsiteUrl } from "./utils/websiteUrl";
 import { asAdvertiserName } from "./utils/advertiserName";
 import { jsPDF } from "jspdf";
@@ -2793,9 +2794,9 @@ export default function App() {
       };
       reader.readAsArrayBuffer(file);
     } else {
-      // CSV, plain TXT and Word. Word and PDF files are binary: read as text they show their raw
-      // bytes, so .docx is unzipped for its text and PDF / legacy .doc get a note instead (the
-      // server-side parse below still reads the whole document).
+      // CSV, plain TXT, RTF and Word. Word and PDF files are binary: read as text they show their
+      // raw bytes, so .docx is unzipped for its text and PDF / legacy .doc get a note instead (the
+      // server-side parse below still reads the whole document). RTF is text but mostly markup.
       const isDocx = extension === 'docx';
       const isBinaryDocument = extension === 'pdf' || extension === 'doc';
       const showTextRows = (text: string, rawRows: any[][], diagnostics: string) => {
@@ -2851,6 +2852,11 @@ export default function App() {
               return;
             }
             const text = (evt.target?.result as string) || '';
+            if (extension === 'rtf') {
+              const lines = rtfLines(text);
+              showTextRows(lines.join("\n"), lines.map((line) => [line]), "Rich Text Document");
+              return;
+            }
             const lines = text.split("\n").filter(l => l.trim() !== "");
             if (extension === 'csv') {
               const delim = detectDelimiter(text);
@@ -2859,7 +2865,7 @@ export default function App() {
               showTextRows(text, lines.map((line) => [line]), "Plain Text Document");
             }
           } catch (err: any) {
-            setError(`Error reading ${isDocx ? "Word" : "text"} file: ` + err.message);
+            setError(`Error reading ${isDocx ? "Word" : extension === 'rtf' ? "RTF" : "text"} file: ` + err.message);
           }
         };
         if (isDocx) reader.readAsArrayBuffer(file);
@@ -4879,7 +4885,7 @@ export default function App() {
                       <input
                         ref={mediaPlanFileInputRef}
                         type="file"
-                        accept=".pdf,.doc,.docx,.txt,.csv,.xlsx,.xls"
+                        accept=".pdf,.doc,.docx,.rtf,.txt,.csv,.xlsx,.xls"
                         onChange={handleFileUpload}
                         className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
                       />
@@ -4897,7 +4903,7 @@ export default function App() {
                         ) : (
                           <div className="flex flex-col items-center space-y-1">
                             <span className="text-xs font-semibold text-slate-600">Drag & drop or tap to select file</span>
-                            <span className="text-[10px] text-slate-400">Supports .pdf, .docx, .xlsx, .xls, .csv, .txt</span>
+                            <span className="text-[10px] text-slate-400">Supports .pdf, .docx, .rtf, .xlsx, .xls, .csv, .txt</span>
                           </div>
                         )}
                       </div>
@@ -8831,13 +8837,14 @@ export default function App() {
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                   {rfpAnalysis.digitalRemedyCapabilityMatches.map((match, idx) => (
                                     <div key={idx} className="bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-2xs space-y-2">
-                                      <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2">
+                                      {/* The solution tag sits above the ask: beside it, a long tag squeezed the ask into a narrow column. */}
+                                      <div className="flex flex-col items-start gap-1.5 border-b border-slate-100 pb-2">
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                                          <Check className="w-3 h-3 text-emerald-600 shrink-0" />
+                                          {match.digitalRemedySolution}
+                                        </span>
                                         <span className="font-bold text-slate-900 text-xs leading-snug">
                                           Ask: {match.rfpAsk}
-                                        </span>
-                                        <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
-                                          <Check className="w-3 h-3 text-emerald-600" />
-                                          {match.digitalRemedySolution}
                                         </span>
                                       </div>
                                       <p className="text-xs text-slate-600 leading-relaxed">

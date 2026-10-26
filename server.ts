@@ -1370,7 +1370,7 @@ app.post("/api/parse-plan", upload.single("file"), async (req, res) => {
     console.log(`[API /api/parse-plan] File MIME type: ${mimeType}`);
     
     const lowerName = originalName.toLowerCase();
-    const isPdfOrDoc = lowerName.endsWith('.pdf') || lowerName.endsWith('.doc') || lowerName.endsWith('.docx') || lowerName.endsWith('.txt') || mimeType.includes('pdf');
+    const isPdfOrDoc = lowerName.endsWith('.pdf') || lowerName.endsWith('.doc') || lowerName.endsWith('.docx') || lowerName.endsWith('.rtf') || lowerName.endsWith('.txt') || mimeType.includes('pdf');
 
     const fileUpload = await openai.files.create({
       file: await toFile(fileBuffer, originalName, { type: mimeType }),
