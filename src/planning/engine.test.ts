@@ -882,3 +882,30 @@ test("Plan focus moves a plan between fewer, deeper media types and a broader mi
   assert.ok(effective(focused) < effective(balanced) && effective(balanced) < effective(broad), `${effective(focused).toFixed(2)} < ${effective(balanced).toFixed(2)} < ${effective(broad).toFixed(2)}`);
   assert.ok(broad.selectedMediaTypeCount <= broad.maxMediaTypes, "Broad still respects the cap");
 });
+
+test("a local footprint puts Geo-Targeting in each channel's tactics, and a radius adds Geo-Fencing", () => {
+  const base = {
+    kpis: ["awareness"],
+    audienceDescriptions: ["Streaming video viewers"],
+    workingMediaBudget: 100_000,
+    campaignFlightDays: 30,
+    geography: "DMA (Boston)",
+    planningSettings: settings(),
+  };
+  const tacticIds = (plan: ReturnType<typeof buildMediaRecommendationPlan>, id: string) =>
+    plan.evaluatedCandidates.find((candidate) => candidate.product.id === id)!.targetingTactics.map((t) => t.id);
+
+  const national = buildMediaRecommendationPlan(buildCampaignFacts(base));
+  assert.ok(!tacticIds(national, "channel.ctv").includes("tactic.geo_targeting"));
+
+  const geo = { scope: "dma" as const, unitCount: 1, households: 2_424_240, usSharePct: 2.1, places: ["Boston (Manchester), MA"], precision: [] };
+  const local = buildMediaRecommendationPlan(buildCampaignFacts({ ...base, geo }));
+  assert.ok(tacticIds(local, "channel.ctv").includes("tactic.geo_targeting"));
+  assert.ok(!tacticIds(local, "channel.display").includes("tactic.geo_fencing"));
+  assert.ok(local.assumptions.some((line) => /Boston DMA · 2\.4M TV households \(2\.1% of US\)/.test(line)), local.assumptions.join(" | "));
+
+  const radius = buildMediaRecommendationPlan(buildCampaignFacts({ ...base, geo: { ...geo, precision: ["radius" as const] } }));
+  assert.ok(tacticIds(radius, "channel.display").includes("tactic.geo_fencing"));
+  // A retargeting channel still leads with the site visitors it exists to reach.
+  assert.equal(radius.evaluatedCandidates.find((c) => c.product.id === "channel.display_retargeting")!.targetingTactics[0].id, "tactic.site_retargeting");
+});

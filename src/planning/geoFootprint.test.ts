@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { GeoTargeting } from "../types";
-import { buildGeoFootprint, geoSnapshotFromBrief, precisionTargets, splitByHouseholds } from "./geoFootprint";
+import { buildGeoFootprint, footprintSummary, geoPlanFacts, geoSnapshotFromBrief, precisionTargets, rehydrateGeoSnapshot, splitByHouseholds, thinMarketAlert } from "./geoFootprint";
 
 const NEW_ENGLAND = { type: "DMA" as const, targets: ["Boston (Manchester), MA", "Hartford & New Haven, CT", "Providence-New Bedford, RI"] };
 
@@ -73,4 +73,37 @@ test("notes become precision chips, naming geofence only when the plan buys it",
     { kind: "zip", label: "ZIPs 02108, 02109", action: "ZIP targeting at activation" },
   ]);
   assert.equal(precisionTargets("Prudential Center + 2 mi", ["Geofence Video"])[0].action, "Geofence Video");
+});
+
+test("the saved footprint keeps the planner's notes, and its chips read them over the brief's", () => {
+  const snapshot = geoSnapshotFromBrief({ ...NEW_ENGLAND, rawInput: "Prudential Center + 2 mi" })!;
+  assert.equal(snapshot.notes, "Prudential Center + 2 mi");
+  const view = buildGeoFootprint({ targeting: snapshot, plannedBudget: 0, notes: "Exclude Cape Cod" })!;
+  assert.deepEqual(view.precision.map((target) => target.kind), ["radius"]);
+});
+
+test("the engine's footprint facts name the places largest first and the kinds of precision asked for", () => {
+  const facts = geoPlanFacts(geoSnapshotFromBrief({ ...NEW_ENGLAND, rawInput: "Prudential + 2 mi; ZIPs 02108" }))!;
+  assert.equal(facts.scope, "dma");
+  assert.equal(facts.unitCount, 3);
+  assert.deepEqual(facts.precision, ["radius", "zip"]);
+  assert.equal(footprintSummary(facts), "Boston, Hartford and Providence DMAs · 4.0M TV households");
+  assert.equal(geoPlanFacts(undefined), undefined);
+});
+
+test("a client cannot change a saved footprint's households on a re-plan", () => {
+  const snapshot = geoSnapshotFromBrief(NEW_ENGLAND)!;
+  const tampered = { ...snapshot, entries: snapshot.entries.map((entry) => ({ ...entry, tvHouseholds: 1 })), notes: "Exclude Cape Cod" };
+  const restored = rehydrateGeoSnapshot(tampered)!;
+  assert.equal(restored.entries[0].tvHouseholds, 2_424_240);
+  assert.equal(restored.notes, "Exclude Cape Cod");
+  assert.equal(rehydrateGeoSnapshot({ scope: "national", entries: [] }), undefined);
+});
+
+test("markets spread below the lead media type's monthly minimum are named for the planner", () => {
+  const many = geoSnapshotFromBrief({ type: "DMA", targets: ["New York, NY", "Boston (Manchester), MA", "Elmira (Corning), NY"] });
+  const alert = thinMarketAlert(many, 100_000, { name: "CTV / OTT", monthlyMinimum: 10_000 });
+  assert.match(alert || "", /^1 of 3 markets get less than \$10,000 per 30 days.*CTV \/ OTT's monthly minimum \(smallest: Elmira\)/);
+  assert.equal(thinMarketAlert(many, 2_000_000, { name: "CTV / OTT", monthlyMinimum: 10_000 }), null);
+  assert.equal(thinMarketAlert(geoSnapshotFromBrief({ type: "DMA", targets: ["Elmira (Corning), NY"] }), 1_000, { name: "CTV / OTT", monthlyMinimum: 10_000 }), null);
 });

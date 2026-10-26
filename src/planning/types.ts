@@ -1,5 +1,6 @@
 import type { CanonicalMediaType, CtvPublisherRecommendation, ExtractedPlacement, ParsedPlanOption } from "../types";
 import type { BudgetChannelTier, PlanningSettings } from "./settings";
+import type { GeoPlanFacts } from "./geoFootprint";
 
 export type TriState = true | false | "unknown";
 export type ProductStatus = "live" | "beta" | "future" | "retired";
@@ -54,6 +55,8 @@ export interface CampaignFacts {
   audienceDescriptions: string[];
   audienceSignals: string[];
   geography: string;
+  /** The footprint below the geography, when the brief targets states or DMAs. See geoFootprint.ts. */
+  geo?: GeoPlanFacts;
   totalWorkingMediaBudget: number;
   campaignStartDate: string | null;
   campaignEndDate: string | null;
@@ -311,6 +314,7 @@ export interface CampaignFactsInput {
   audienceDescriptions?: string[];
   audienceSignals?: string[];
   geography?: string;
+  geo?: GeoPlanFacts;
   workingMediaBudget: number;
   campaignFlightDays?: number | null;
   campaignStartDate?: string | null;

@@ -504,6 +504,8 @@ export interface GeoTargeting {
   unresolved: GeoUnresolvedToken[];
   inputMethod: "select" | "paste" | "upload";
   sourceFileName?: string;
+  /** The brief's Locations & Notes when the plan was generated: radii, ZIPs, exclusions. */
+  notes?: string;
 }
 
 export type GeographyType = 'National' | 'State' | 'DMA';

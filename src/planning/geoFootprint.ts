@@ -11,8 +11,9 @@ import type { GeoEntry, GeoTargeting, GeographyTargetConfig } from "../types";
 import { dmasForState } from "./knowledge/dmaMarkets";
 import { findStateHouseholds, NATIONAL_TV_HOUSEHOLDS } from "./knowledge/stateHouseholds";
 import { US_STATES } from "./knowledge/usStates";
-import { geoCoverage } from "./geoTargeting";
-import { resolvePickerDma, resolvePickerState } from "./reach/briefGeography";
+import { geoCoverage, rehydrateGeoTargeting } from "./geoTargeting";
+import type { MediaRecommendationPlan } from "./types";
+import { GEOGRAPHY_NOTES_MAX_CHARS, resolvePickerDma, resolvePickerState } from "./reach/briefGeography";
 
 /**
  * The brief's geography resolved once, with the household figures it was sized to. Saved on the
@@ -42,7 +43,8 @@ export function geoSnapshotFromBrief(config: GeographyTargetConfig | null | unde
     entries.push(entry);
   }
   if (entries.length === 0) return undefined;
-  return { scope, entries, unresolved, inputMethod: "select" };
+  const notes = typeof config.rawInput === "string" ? config.rawInput.trim().slice(0, GEOGRAPHY_NOTES_MAX_CHARS) : "";
+  return { scope, entries, unresolved, inputMethod: "select", ...(notes ? { notes } : {}) };
 }
 
 function dmaSnapshotEntry(target: string): GeoEntry | undefined {
@@ -247,7 +249,99 @@ export function buildGeoFootprint(input: GeoFootprintInput): GeoFootprintView | 
     coveredStates: coverage?.scope === "dma" ? coverage.states : rows.map((row) => row.id),
     alsoReachedStates: coverage?.scope === "state" ? coverage.spillStates : [],
     coverageNote: coverageNoteFor({ ...targeting, entries: sized.map((item) => item.entry) }, rows),
-    precision: precisionTargets(input.notes, input.geofenceChannels),
+    // The notes saved with the plan, so the chips match what it was generated from; a plan from
+    // before notes were saved reads the brief's.
+    precision: precisionTargets(targeting.notes ?? input.notes, input.geofenceChannels),
     unsized,
   };
 }
+
+/** The footprint as the planning engine and the QA checks read it. */
+export interface GeoPlanFacts {
+  scope: "state" | "dma";
+  unitCount: number;
+  households: number;
+  usSharePct: number;
+  /** Market or state names, largest first. */
+  places: string[];
+  precision: PrecisionKind[];
+}
+
+export function geoPlanFacts(targeting: GeoTargeting | undefined | null): GeoPlanFacts | undefined {
+  const view = buildGeoFootprint({ targeting, plannedBudget: 0 });
+  if (!view) return undefined;
+  return {
+    scope: view.scope,
+    unitCount: view.rows.length,
+    households: view.households,
+    usSharePct: Math.round(view.usSharePct * 10) / 10,
+    places: view.rows.map((row) => row.name),
+    precision: Array.from(new Set(view.precision.map((target) => target.kind))),
+  };
+}
+
+/** "Boston (Manchester), MA" -> "Boston", "Hartford & New Haven, CT" -> "Hartford"; state names pass through. */
+export function shortPlaceName(name: string): string {
+  return name.split(/[(,&]/)[0].split("-")[0].trim();
+}
+
+/**
+ * One line naming the footprint, for the slide glance and the executive brief: the places when
+ * there are few enough to read, else a count, then the households.
+ */
+export function footprintSummary(facts: Pick<GeoPlanFacts, "scope" | "places" | "households">): string {
+  const unit = facts.scope === "dma" ? (facts.places.length === 1 ? "DMA" : "DMAs") : (facts.places.length === 1 ? "state" : "states");
+  const names = facts.places.length <= 3
+    ? `${joinNames(facts.places.map(shortPlaceName))} ${unit}`
+    : `${facts.places.length} ${unit}`;
+  const households = facts.households >= 1_000_000 ? `${(facts.households / 1_000_000).toFixed(1)}M` : `${Math.round(facts.households / 1000)}K`;
+  return `${names} · ${households} TV households`;
+}
+
+/**
+ * Markets whose household share of the monthly budget falls below the lead media type's monthly
+ * minimum. The section shows a per-market budget, so a footprint spread too thin is visible to
+ * the client; the planner hears about it first. The minimum is the catalog's own, not a new rule.
+ */
+export function thinMarketAlert(
+  targeting: GeoTargeting | undefined | null,
+  monthlyBudget: number,
+  leadMediaType: { name: string; monthlyMinimum: number } | null,
+): string | null {
+  if (!leadMediaType || leadMediaType.monthlyMinimum <= 0 || monthlyBudget <= 0) return null;
+  const view = buildGeoFootprint({ targeting, plannedBudget: monthlyBudget });
+  if (!view || view.rows.length < 2) return null;
+  const thin = view.rows.filter((row) => (row.budget ?? 0) < leadMediaType.monthlyMinimum);
+  if (thin.length === 0) return null;
+  const named = thin.slice(-3).map((row) => shortPlaceName(row.name));
+  const unit = view.scope === "dma" ? "markets" : "states";
+  return `${thin.length} of ${view.rows.length} ${unit} get less than $${leadMediaType.monthlyMinimum.toLocaleString()} per 30 days by household share, ${leadMediaType.name}'s monthly minimum (smallest: ${joinNames(named)}). Consider fewer ${unit}, a larger budget, or buying them as one regional footprint.`;
+}
+
+/**
+ * A saved footprint as a client sent it back: entries rebuilt from the reference data by id
+ * (so a request cannot change the households), notes kept as text. Undefined for national.
+ */
+export function rehydrateGeoSnapshot(value: unknown): GeoTargeting | undefined {
+  const base = rehydrateGeoTargeting(value);
+  if (!base || base.scope === "national" || base.entries.length === 0) return undefined;
+  const notes = typeof (value as { notes?: unknown })?.notes === "string" ? ((value as { notes: string }).notes).trim().slice(0, GEOGRAPHY_NOTES_MAX_CHARS) : "";
+  return { ...base, ...(notes ? { notes } : {}) };
+}
+
+/** CTV when the plan carries it (plans are CTV-first), else the largest allocation. */
+export function leadMediaType(plan: MediaRecommendationPlan | undefined | null): { name: string; monthlyMinimum: number } | null {
+  const channels = plan?.channels || [];
+  if (channels.length === 0) return null;
+  const lead = channels.find((channel) => channel.channelId === "channel.ctv")
+    || [...channels].sort((a, b) => (b.allocationDollars || 0) - (a.allocationDollars || 0))[0];
+  const product = plan!.evaluatedCandidates.find((candidate) => candidate.product.id === lead.channelId)?.product;
+  return { name: lead.channelName, monthlyMinimum: product?.minimumNormalized30DaySpend ?? 0 };
+}
+
+/**
+ * Prose that calls a plan national, and prose that promises radius or venue targeting. Shared by
+ * the QA check on the plan and the executive brief's guard, so both read a claim the same way.
+ */
+export const NATIONAL_CLAIM = /\b(?:nationwide|nation-wide|coast[- ]to[- ]coast|national (?:campaign|reach|footprint|scale|coverage|flight|buy|plan)|across the (?:country|nation|u\.?s\.?|united states)|all 50 states)\b/i;
+export const GEOFENCE_CLAIM = /\bgeo-?fenc\w*|\bgeo-?fram\w*|\bradius\b|\bwithin (?:a )?\d+(?:\.\d+)?[- ]?(?:mi|miles?|km)\b/i;

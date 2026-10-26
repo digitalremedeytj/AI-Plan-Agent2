@@ -15,7 +15,8 @@ import { isCustomProductId, plannerGuidanceField, resolveEffectiveProducts } fro
 import { ctvMissingAlerts, plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { normalizeBudgetStrategyMode, resolveStrategyBudget, type BudgetStrategyMode } from "./src/planning/budgetStrategy";
 import { geographyForPrompt } from "./src/planning/reach/briefGeography";
-import { geoSnapshotFromBrief } from "./src/planning/geoFootprint";
+import { geoClaimAlerts } from "./src/qa/geoClaims";
+import { geoPlanFacts, geoSnapshotFromBrief, leadMediaType, rehydrateGeoSnapshot, thinMarketAlert, type GeoPlanFacts } from "./src/planning/geoFootprint";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, displaySettingsOf, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
@@ -1162,6 +1163,8 @@ async function buildChannelStrategy(
     campaignFocus?: string;
     additionalContext?: string;
     geography?: string;
+    /** The footprint under the geography; absent for national. */
+    geo?: GeoPlanFacts;
     workingMediaBudget?: number;
     /** The additional budget for "Add on top of RFP" and "Optimize total increased budget". */
     additionalBudget?: number;
@@ -1224,6 +1227,7 @@ async function buildChannelStrategy(
     audienceDescriptions: signals.audienceDescriptions,
     audienceSignals: signals.audienceSignals,
     geography: options?.geography || "United States",
+    geo: options?.geo,
     workingMediaBudget: resolvedBudget,
     campaignFlightDays: options?.campaignFlightDays,
     planningMode: mode,
@@ -2070,7 +2074,8 @@ app.post("/api/analyze-media-plan", async (req, res) => {
       normalizeBudgetStrategyMode(budgetStrategyMode),
       advertiserName,
       kpis,
-      { advertiserUrl, campaignFocus, additionalContext: typeof additionalContext === "string" ? additionalContext.slice(0, 500) : undefined, geography, workingMediaBudget, additionalBudget: Number(additionalBudget) || 0, campaignFlightDays, planningSettings, requiredChannelIds, requiredChannelsOnly: requiredChannelsOnly === true, excludedChannelIds, candidateSignals },
+      // A re-plan reads the footprint saved with the plan, which the client cannot alter.
+      { advertiserUrl, campaignFocus, additionalContext: typeof additionalContext === "string" ? additionalContext.slice(0, 500) : undefined, geography, geo: geoPlanFacts(rehydrateGeoSnapshot(audienceProfile?.geoTargeting)), workingMediaBudget, additionalBudget: Number(additionalBudget) || 0, campaignFlightDays, planningSettings, requiredChannelIds, requiredChannelsOnly: requiredChannelsOnly === true, excludedChannelIds, candidateSignals },
     );
     res.json({ success: true, channelStrategy });
   } catch (err: any) {
@@ -2520,7 +2525,7 @@ function auditInputsFromPlan(plan: any): { profile: any; inputs: AuditInputs } {
         advertiser: plan.advertiserName || payload.url || "",
         kpis: Array.isArray(payload.kpis) ? payload.kpis : [],
         campaignFocus: payload.campaignFocus || "",
-        geography: payload.geography || "United States",
+        geography: geographyForPrompt(payload.geography, payload.geographyConfig).replace(/\n/g, "; "),
         workingMediaBudget: budget,
         flightDays,
         targetPersonas: Array.isArray(payload.targetPersonas) ? payload.targetPersonas : [],
@@ -5059,6 +5064,8 @@ app.post("/api/generate-profile", async (req, res) => {
   // Prompts get the computed footprint and the planner's notes; the engine keeps `geography`,
   // which gates product eligibility and must stay a scope it knows.
   const promptGeography = geographyForPrompt(geography, draft?.geographyConfig);
+  // The footprint resolved once, for the engine, the QA checks and the saved plan.
+  const geoSnapshot = geoSnapshotFromBrief(draft?.geographyConfig);
   // The brief's media-type picker. Only ids from the live catalog survive buildCampaignFacts.
   const briefMediaTypeIds: string[] = Array.isArray(req.body?.requiredChannelIds)
     ? req.body.requiredChannelIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 50)
@@ -5817,6 +5824,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             campaignFocus,
             additionalContext: cleanAdditionalContext,
             geography,
+            geo: geoPlanFacts(geoSnapshot),
             workingMediaBudget: Number(workingMediaBudget) || 0,
             additionalBudget: Number(additionalBudget) || 0,
             campaignFlightDays: Number(campaignFlightDays) || null,
@@ -5836,6 +5844,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         for (const message of [...plannerPickAlerts(channelStrategy.mediaPlan, channelStrategy.manualIncludedChannelIds), ...ctvMissingAlerts(channelStrategy.mediaPlan)]) {
           pushAlert(generationAlerts, { section: "channelStrategy", severity: "flagged", message });
         }
+        const thin = thinMarketAlert(geoSnapshot, channelStrategy.mediaPlan.normalized30DayBudget, leadMediaType(channelStrategy.mediaPlan));
+        if (thin) pushAlert(generationAlerts, { section: "geo", severity: "flagged", message: thin });
         sendEvent("status", { message: "Media portfolio and allocation constraints validated successfully." });
       } catch (channelErr: any) {
         console.error("Error generating media recommendation plan:", channelErr);
@@ -5955,7 +5965,9 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         advertiser: cleanAdvertiserName || cleanUrl,
         kpis: cleanKpis,
         campaignFocus: campaignFocus || "",
-        geography,
+        // The computed footprint and the planner's notes, so the auditor checks claims against
+        // where the plan actually runs rather than a bare "DMA (Boston)".
+        geography: promptGeography.replace(/\n/g, "; "),
         workingMediaBudget: Number(workingMediaBudget) || 0,
         flightDays: Number(campaignFlightDays) || null,
         targetPersonas: cleanTargetPersonas,
@@ -6137,10 +6149,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // into the Markdown export and the segment prompt, and showed as an "older summary".
     delete finalProfile.executiveSummary;
     for (const alert of reportChartsNotFound(finalProfile, generationAlerts)) pushAlert(generationAlerts, alert);
+    // Last, on the prose as delivered: the audit's fixes can reword a line into a geography claim.
+    for (const alert of geoClaimAlerts(finalProfile, geoPlanFacts(geoSnapshot))) pushAlert(generationAlerts, alert);
     finalProfile.generationAlerts = generationAlerts;
     // The footprint as it was sized, frozen with the plan: the Geo Footprint section and reach read
     // this, so a later change to the household data cannot move a saved plan's numbers.
-    const geoSnapshot = geoSnapshotFromBrief(draft?.geographyConfig);
     if (geoSnapshot) finalProfile.geoTargeting = geoSnapshot;
     else delete finalProfile.geoTargeting;
 

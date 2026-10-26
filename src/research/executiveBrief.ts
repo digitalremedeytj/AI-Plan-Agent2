@@ -16,6 +16,7 @@
 
 import type { AudienceProfile, ChannelPanelOverride } from "../types";
 import { combinedPlan } from "../planning/planChannels";
+import { GEOFENCE_CLAIM, NATIONAL_CLAIM, footprintSummary, geoPlanFacts } from "../planning/geoFootprint";
 
 // --- types ------------------------------------------------------------------------------
 
@@ -172,11 +173,27 @@ export interface BriefSnapshot {
   /** Media types that were evaluated but are not in the plan. The brief must not present them as part of it. */
   notInPlanChannels: string[];
   /**
+   * Where a State or DMA plan runs, from the footprint saved with it. Present only for those plans
+   * (and while the Geo Footprint section is shown), so a national plan's fingerprint is unchanged.
+   */
+  footprint?: BriefFootprint;
+  /**
    * "Use the plan as is": the client's uploaded lines outside the catalog, at their dollars. Present
    * only when there are some, so the fingerprint of every other plan's brief is unchanged.
    */
   outsideCatalog?: Array<{ name: string; dollars: number }>;
 }
+
+export interface BriefFootprint {
+  /** "Boston, Hartford and Providence DMAs · 4.0M TV households" */
+  summary: string;
+  usSharePct: number;
+  places: string[];
+  /** Precision the brief asked for: "radius", "zip", "exclusion". */
+  precision: string[];
+}
+
+const PRECISION_KINDS = new Set(["radius", "zip", "exclusion"]);
 
 const ADVANCED_MEASUREMENT: Array<{ label: string; pattern: RegExp }> = [
   { label: "Incrementality", pattern: /\bincrementality\b|\bincremental(ity)? (lift|study|test)\b/i },
@@ -322,6 +339,11 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
         .map((i: number) => personaNames[i]).filter(Boolean),
     }));
 
+  const geo = hidden.has("geo") ? undefined : geoPlanFacts(p.geoTargeting);
+  const footprint: BriefFootprint | undefined = geo
+    ? { summary: footprintSummary(geo), usSharePct: geo.usSharePct, places: geo.places.slice(0, 25).map((place) => clip(place, 80)), precision: geo.precision }
+    : undefined;
+
   const bor = p.briefOfRecord;
   const ctvSource: any[] = Array.isArray(p.ctvPublishers) && p.ctvPublishers.length ? p.ctvPublishers : (Array.isArray(strategy.ctvPublishers) ? strategy.ctvPublishers : []);
 
@@ -365,6 +387,7 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
     nonMediaItems,
     ctvPublishers: ctvSource.map((pub: any) => clip(pub?.name || pub?.publisher || pub?.displayName, 60)).filter(Boolean).slice(0, 10),
     notInPlanChannels,
+    ...(footprint ? { footprint } : {}),
     ...(combined.outsideCatalog.length ? { outsideCatalog: combined.outsideCatalog.slice(0, 12).map((line) => ({ name: clip(line.name, 80), dollars: line.dollars })) } : {}),
   };
 }
@@ -419,7 +442,8 @@ RULES
 2. NUMBERS. Use a figure only if it appears in the plan below. Do not restate dollar amounts; allocations are shown beside your text.
 3. ONE STORY. The sections describe the same audience, personas and channel plan. Refer to personas and core segments by name.
 4. VOICE. A planner recommending a plan: specific, no hedging, no compliance boilerplate, no commentary about how the plan was produced.
-5. PLANNER INSTRUCTIONS change emphasis, order and wording only. They never add facts. If an instruction asks you to highlight something the plan does not include, do not claim it; add a short 'plannerNotes' entry saying what is missing and what to add to the plan instead.`;
+5. PLANNER INSTRUCTIONS change emphasis, order and wording only. They never add facts. If an instruction asks you to highlight something the plan does not include, do not claim it; add a short 'plannerNotes' entry saying what is missing and what to add to the plan instead.
+6. GEOGRAPHY. When the plan has a FOOTPRINT, say where it runs in 'understanding', by its place names. Never call such a plan national or nationwide. Promise radius or venue targeting (geofencing) only when a channel's targeting tactics include Geo-Fencing.`;
 
 const bulletSchema = {
   type: "object",
@@ -514,6 +538,11 @@ export function buildBriefPrompt(snapshot: BriefSnapshot, instructions?: string)
   lines.push("CAMPAIGN");
   lines.push(`Advertiser: ${c.advertiser || "n/a"}${c.url ? ` (${c.url})` : ""}`);
   lines.push(`Geography: ${c.geography || "n/a"}`);
+  if (snapshot.footprint) {
+    const f = snapshot.footprint;
+    lines.push(`Footprint (where the plan runs; shown to the client on a map): ${f.summary} (${f.usSharePct}% of US)${f.places.length > 3 ? `. Places: ${f.places.join("; ")}` : ""}`);
+    if (f.precision.length) lines.push(`Precision targeting the brief asks for: ${f.precision.join(", ")}`);
+  }
   if (c.campaignFocus) lines.push(`Campaign focus: ${c.campaignFocus}`);
   lines.push(`KPIs: ${c.kpis.join("; ") || "n/a"}`);
   if (snapshot.plan.flightDays) lines.push(`Flight: ${snapshot.plan.flightDays} days`);
@@ -626,6 +655,9 @@ export function unsupportedMention(text: string, snapshot: BriefSnapshot): strin
   const planMeasurement = snapshot.measurement.map((m) => m.name).join(" | ") + " | " + snapshot.nonMediaItems.join(" | ");
   const study = GUARDED_MEASUREMENT.find(({ pattern }) => pattern.test(rest) && !pattern.test(planMeasurement));
   if (study) return `${study.label} measurement is not in this plan`;
+  if (snapshot.footprint && NATIONAL_CLAIM.test(rest)) return `the plan runs in ${snapshot.footprint.summary}, not nationally`;
+  const fenced = snapshot.channels.some((c) => c.targeting.some((t) => /geo-?fenc/i.test(t)));
+  if (!fenced && GEOFENCE_CLAIM.test(rest)) return "Geo-Fencing is not in this plan";
   return null;
 }
 
@@ -808,6 +840,14 @@ export function sanitizeBriefSnapshot(body: any): BriefSnapshot {
     nonMediaItems: clipList(s.nonMediaItems, 12, 100),
     ctvPublishers: clipList(s.ctvPublishers, 10, 60),
     notInPlanChannels: clipList(s.notInPlanChannels, 60, 80),
+    ...(s.footprint && typeof s.footprint === "object" && clip(s.footprint.summary, 200)
+      ? { footprint: {
+          summary: clip(s.footprint.summary, 200),
+          usSharePct: Number(s.footprint.usSharePct) || 0,
+          places: clipList(s.footprint.places, 25, 80),
+          precision: clipList(s.footprint.precision, 3, 12).filter((kind) => PRECISION_KINDS.has(kind)),
+        } }
+      : {}),
     ...(Array.isArray(s.outsideCatalog) && s.outsideCatalog.length
       ? { outsideCatalog: list(s.outsideCatalog, 12, (o) => ({ name: clip(o?.name, 80), dollars: Number(o?.dollars) || 0 })).filter((o) => o.name) }
       : {}),

@@ -254,3 +254,25 @@ test("a plan used as is tells the brief about the client's lines outside the cat
   const plain = buildBriefSnapshot(profile({ channelStrategy: rfpStrategy("asIs") }), inputs);
   assert.equal("outsideCatalog" in plain, false);
 });
+
+test("a State or DMA plan's brief is told where it runs, and a line calling it national is dropped", async () => {
+  const { geoSnapshotFromBrief } = await import("../planning/geoFootprint");
+  const local = profile({ geoTargeting: geoSnapshotFromBrief({ type: "DMA", targets: ["Boston (Manchester), MA"], rawInput: "Prudential Center + 2 mi" }) });
+  const snapshot = buildBriefSnapshot(local);
+  assert.equal(snapshot.footprint?.summary, "Boston DMA · 2.4M TV households");
+  assert.deepEqual(snapshot.footprint?.precision, ["radius"]);
+  assert.match(buildBriefPrompt(snapshot).input, /Footprint \(where the plan runs.*\): Boston DMA · 2\.4M TV households \(2(\.\d)?% of US\)/);
+  assert.deepEqual(sanitizeBriefSnapshot(JSON.parse(JSON.stringify(snapshot))).footprint, snapshot.footprint);
+
+  assert.match(unsupportedMention("Nationwide streaming reach builds awareness.", snapshot) || "", /runs in Boston DMA/);
+  assert.match(unsupportedMention("Geofence a 2-mile radius around the venue.", snapshot) || "", /Geo-Fencing is not in this plan/);
+  assert.equal(unsupportedMention("Streaming reach across greater Boston.", snapshot), null);
+});
+
+test("a national plan's brief and fingerprint are unchanged, and a hidden Geo Footprint stays out of the brief", async () => {
+  const { geoSnapshotFromBrief } = await import("../planning/geoFootprint");
+  assert.equal("footprint" in buildBriefSnapshot(profile()), false);
+  const hidden = profile({ geoTargeting: geoSnapshotFromBrief({ type: "DMA", targets: ["Boston (Manchester), MA"] }), hiddenSections: ["geo"] });
+  assert.equal(buildBriefSnapshot(hidden).footprint, undefined);
+  assert.equal(unsupportedMention("Nationwide streaming reach.", buildBriefSnapshot(profile())), null);
+});

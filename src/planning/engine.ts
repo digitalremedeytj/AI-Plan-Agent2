@@ -6,6 +6,7 @@ import {
   PLANNING_CATALOG_VERSION,
 } from "./knowledge/registry";
 import { planningKnowledgeBase } from "./knowledge/normalizeWorkbook";
+import { footprintSummary } from "./geoFootprint";
 import { findEffectiveProduct, resolveEffectiveProducts } from "./effectiveProducts";
 import { findBudgetChannelTier, mergeMeasurementSettings, normalizeCampaignBudget, planFocusOf, type MeasurementPlanningSetting, type PlanFocus, type PlanningSettings } from "./settings";
 import { CHANNEL_ROLES } from "./types";
@@ -367,6 +368,7 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     audienceDescriptions: (input.audienceDescriptions || []).filter(Boolean),
     audienceSignals: (input.audienceSignals || []).filter(Boolean),
     geography: input.geography || "United States",
+    ...(input.geo ? { geo: input.geo } : {}),
     totalWorkingMediaBudget: normalization.workingMediaBudget,
     campaignStartDate,
     campaignEndDate,
@@ -385,6 +387,7 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     brandSafetyConstraints: input.brandSafetyConstraints || [],
     assumptions: [
       ...normalization.assumptions,
+      ...(input.geo ? [`Delivery is limited to the targeted footprint: ${footprintSummary(input.geo)} (${input.geo.usSharePct}% of US).`] : []),
       ...(input.planningMode === "incremental" ? ["RFP media types keep their RFP budgets; only the additional working media budget is allocated, to new media types."] : []),
       ...(input.planningMode === "grow" ? ["The RFP budget plus the additional budget is allocated as one total across RFP and new media types."] : []),
       ...(input.planningMode === "asIs" ? ["The uploaded plan is used as is: its media types at its dollars, with nothing added or moved."] : []),
@@ -910,9 +913,22 @@ const TACTIC_SERVES: Record<string, string[]> = {
   "tactic.daypart_targeting": ["frequency", "efficiency"],
 };
 
+/**
+ * The brief's footprint, which no KPI or audience phrase carries: a State or DMA plan is the
+ * "defined physical markets" Geo-Targeting exists for, and a radius in the notes is the
+ * venue-level case Geo-Fencing is for. Enough to reach a channel's top three, not to displace a
+ * retargeting channel's lead.
+ */
+function geoTacticBoost(recordId: string, facts: CampaignFacts): number {
+  if (!facts.geo) return 0;
+  if (recordId === "tactic.geo_fencing") return facts.geo.precision.includes("radius") ? 30 : 0;
+  if (recordId === "tactic.geo_targeting") return 30;
+  return 0;
+}
+
 function tacticScore(record: { id: string; trigger: string }, facts: CampaignFacts, context: string): number {
   const goals = [...facts.kpis, facts.primaryKpi, ...facts.funnelStages].join(" ");
-  return includesAny(goals, TACTIC_SERVES[record.id] ?? []) * 10 + tacticRelevance(record.trigger, context);
+  return includesAny(goals, TACTIC_SERVES[record.id] ?? []) * 10 + tacticRelevance(record.trigger, context) + geoTacticBoost(record.id, facts);
 }
 
 /** How many of a tactic's trigger phrases ("Awareness", "Conversion", ...) the campaign mentions. */

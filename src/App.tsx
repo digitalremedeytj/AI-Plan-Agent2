@@ -168,7 +168,7 @@ import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorB
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 import { mediaTypeCapFor, modeNeedsAdditionalBudget, normalizeBudgetStrategyMode, BUDGET_STRATEGY_LABELS, type BudgetStrategyMode } from "./planning/budgetStrategy";
 import { combinedPlan } from "./planning/planChannels";
-import { buildGeoFootprint, geoSnapshotFromBrief } from "./planning/geoFootprint";
+import { buildGeoFootprint, footprintSummary, geoPlanFacts, geoSnapshotFromBrief } from "./planning/geoFootprint";
 import { GeoFootprintSection } from "./components/GeoFootprintSection";
 import { NATIONAL_TV_HOUSEHOLDS } from "./planning/knowledge/stateHouseholds";
 import { BudgetStrategyControl } from "./components/BudgetStrategyControl";
@@ -1936,6 +1936,12 @@ export default function App() {
     () => Object.fromEntries(briefPlan.channels.map((c) => [c.channelId, Math.round(c.allocationPercent * 10) / 10])),
     [briefPlan],
   );
+  // The footprint in one line for the slides, which go to the client: shown only while the Geo
+  // Footprint section is; otherwise the brief's own geography.
+  const slideGeography = React.useMemo(() => {
+    const facts = profileData?.hiddenSections?.includes("geo") ? undefined : geoPlanFacts(profileData?.geoTargeting ?? geoSnapshotFromBrief(overviewGeography));
+    return facts ? footprintSummary(facts) : geography;
+  }, [profileData?.geoTargeting, profileData?.hiddenSections, overviewGeography, geography]);
   const briefGlance = React.useMemo(() => {
     const plan = profileData?.channelStrategy?.mediaPlan;
     const facts: Array<{ label: string; value: string }> = [];
@@ -1944,10 +1950,10 @@ export default function App() {
     const primaryKpi = kpis.find((k) => k.trim());
     if (primaryKpi) facts.push({ label: "Primary KPI", value: primaryKpi.trim() });
     if (briefPlan.channels.length) facts.push({ label: "Channels", value: String(briefPlan.channels.length) });
-    const geo = geography || profileData?.briefOfRecord?.geography;
+    const geo = slideGeography || profileData?.briefOfRecord?.geography;
     if (geo) facts.push({ label: "Geography", value: geo });
     return facts;
-  }, [profileData?.channelStrategy?.mediaPlan, briefPlan, profileData?.briefOfRecord, kpis, geography]);
+  }, [profileData?.channelStrategy?.mediaPlan, briefPlan, profileData?.briefOfRecord, kpis, slideGeography]);
   const isSourcesHidden = hiddenSections.has("sources");
   const isGeoHidden = hiddenSections.has("geo");
 
@@ -8089,7 +8095,7 @@ export default function App() {
                     glance={briefGlance}
                     livePercents={briefLivePercents}
                     advertiserName={advertiserName}
-                    geography={geography}
+                    geography={slideGeography}
                     learnings={hiddenSections.has("performanceLearnings") ? undefined : profileData.performanceLearnings}
                     slidePlanKey={slidePlanKey}
                   />
