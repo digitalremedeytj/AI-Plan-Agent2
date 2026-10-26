@@ -182,7 +182,16 @@ export interface ProductPlanningSetting {
   minimumFlightDays: number;
   minimumAllocationPercent: number;
   maximumAllocationPercent: number;
+  /**
+   * The planning team's own direction for this media type (when to include it, skip it, lean
+   * on it). Handed to the reasoning layer as internal guidance, never as evidence, and it
+   * cannot override the minimums or tiers code enforces. Blank by default.
+   */
+  planningNotes: string;
 }
+
+/** Kept short: all of them ride in one scoring prompt that has to finish inside the run budget. */
+export const PLANNING_NOTES_MAX_LENGTH = 500;
 
 /**
  * A media type added by an admin that is not in the Digital Remedy workbook registry.
@@ -423,6 +432,7 @@ function buildDefaultSettings(): PlanningSettings {
       minimumFlightDays: product.minimumFlightDays,
       minimumAllocationPercent: product.minimumAllocationPercent,
       maximumAllocationPercent: product.maximumAllocationPercent,
+      planningNotes: "",
     })),
     customProducts: [],
     publishers: planningKnowledgeBase.publishers.map((publisher) => ({
@@ -483,6 +493,7 @@ export function clonePlanningSettings(settings: PlanningSettings): PlanningSetti
     products: (settings.products || []).map((product) => ({
       ...product,
       supportedGeographies: [...(product.supportedGeographies || [])],
+      planningNotes: product.planningNotes ?? "",
     })),
     customProducts: (settings.customProducts || []).map((product) => ({
       ...product,
@@ -591,7 +602,10 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
     else if (previous.maxBudgetExclusive > current.minBudget) errors.push(`Tiers ${index} and ${index + 1} overlap.`);
   }
 
-  const products = Array.isArray(candidate.products) ? candidate.products.map((product) => ({ ...product, supportedGeographies: [...(product.supportedGeographies || [])] })) : [];
+  // Records saved before planning notes existed have none; blank is what they always meant.
+  const products = Array.isArray(candidate.products)
+    ? candidate.products.map((product) => ({ ...product, supportedGeographies: [...(product.supportedGeographies || [])], planningNotes: product.planningNotes ?? "" }))
+    : [];
   if (products.length === 0) errors.push("At least one Digital Remedy product is required.");
   uniqueIds(products, (product) => product.productId, "Product", errors);
   products.forEach((product) => {
@@ -607,6 +621,8 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
     if (!Number.isInteger(product.minimumFlightDays) || product.minimumFlightDays < 1) errors.push(`${label} minimum flight must be a positive whole number of days.`);
     if (![product.minimumAllocationPercent, product.maximumAllocationPercent].every((entry) => isFiniteNumber(entry) && entry >= 0 && entry <= 100)) errors.push(`${label} allocation bounds must be between 0% and 100%.`);
     if (isFiniteNumber(product.minimumAllocationPercent) && isFiniteNumber(product.maximumAllocationPercent) && product.maximumAllocationPercent < product.minimumAllocationPercent) errors.push(`${label} maximum allocation must be at least its minimum allocation.`);
+    if (typeof product.planningNotes !== "string") errors.push(`${label} planning notes must be text.`);
+    else if (product.planningNotes.length > PLANNING_NOTES_MAX_LENGTH) errors.push(`${label} planning notes must be ${PLANNING_NOTES_MAX_LENGTH} characters or fewer.`);
   });
 
   const customProducts = Array.isArray(candidate.customProducts)

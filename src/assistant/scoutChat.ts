@@ -16,6 +16,7 @@ import { MAX_BRIEF_INSTRUCTIONS } from "../research/executiveBrief";
 import type { MediaRecommendationPlan } from "../planning/types";
 import { BUDGET_STRATEGY_LABELS, normalizeBudgetStrategyMode } from "../planning/budgetStrategy";
 import { combinedPlan } from "../planning/planChannels";
+import { plannerGuidanceField } from "../planning/effectiveProducts";
 import { hasPublisherHighlights, publisherHighlightFields } from "../planning/publisherHighlights";
 import { RECAP_BLOCKS } from "../performance/recap";
 import { KPI_METRICS } from "../performance/recapKpi";
@@ -115,6 +116,7 @@ export function buildPlanContext(
       return [
         `* ${c.channelName} (channelId: ${c.channelId}) - ${c.status}, ${c.allocationPercent}% = ${money(c.allocationDollars)}${locked.has(c.channelId) ? ", LOCKED" : ""}${c.manuallyForced ? ", added by a planner" : ""}`,
         `  recommended range: ${c.manuallyForced ? 1 : c.minimumAllocationPercent}-${c.maximumAllocationPercent}% of budget (a guide, not a limit), recommended minimum spend ${money(c.minimumTotalSpend)}; typical CPM ${c.typicalCpmLow != null ? `$${c.typicalCpmLow}-$${c.typicalCpmHigh}` : "not set"}; score ${c.recommendationScore}, confidence ${c.confidence}; role: ${clip(c.role, 200)}`,
+        ...[plannerGuidanceField(planningSettings, c.channelId).plannerGuidance].filter(Boolean).map((notes) => `  planning team notes (internal, never quote to a client): ${clip(notes, 500)}`),
         `  [${p}.gapAddressed] ${clip(c.gapAddressed)}`,
         `  [${p}.allocationRationale] ${clip(c.allocationRationale)}`,
         ...(c.tradeoffs || []).map((t, i) => `  [${p}.tradeoffs[${i}]] ${clip(t, 400)}`),
@@ -275,7 +277,7 @@ How you answer:
 - Use only the plan, the Brief of Record, the original request, the research excerpts, the sources and, when given, the past campaign performance provided. If the plan does not contain something (a CPM it does not list, reach it did not estimate, a publisher it does not name), say so plainly. Never invent figures, research, benchmarks or expected results.
 - Be concise: you are in a narrow side panel. Lead with the answer. Short paragraphs or a few bullets; markdown is fine in your reply (never in text you write into the plan); no tables. Refer to media types by name, never by channelId or segmentId.
 - Check the plan against the original request and the Brief of Record when it matters: budget, KPIs, audience, geography, RFP asks. Point out conflicts the planner may not have noticed.
-- Channel numbers come from Digital Remedy's planning engine and its catalog guides (recommended ranges, minimum spend). Explain them from the plan's rationale. The ranges guide the recommendation but do not limit the planner: when asked, set any whole percentage from 0% to 100%, and mention it when a figure falls outside the recommended range.
+- Channel numbers come from Digital Remedy's planning engine and its catalog guides (recommended ranges, minimum spend). Explain them from the plan's rationale. The ranges guide the recommendation but do not limit the planner: when asked, set any whole percentage from 0% to 100%, and mention it when a figure falls outside the recommended range. Some media types carry the planning team's internal notes on when to include, skip or lean on them: use them to explain or question a choice, but never write them into the plan or present them as research.
 
 How you edit:
 - You never change the plan directly. You return a proposal; the planner sees the exact computed result and approves it before anything is saved. Say in the reply what you are proposing; never claim it is done.

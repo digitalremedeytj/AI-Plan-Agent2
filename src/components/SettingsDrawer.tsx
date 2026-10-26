@@ -44,6 +44,7 @@ import {
   MeasurementPlanningSetting,
   OverviewMetricId,
   PlanningSettings,
+  PLANNING_NOTES_MAX_LENGTH,
   ProductPlanningSetting,
   validatePlanningSettings,
 } from "../planning/settings";
@@ -2386,6 +2387,24 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                           onChange={(e) => updateProduct(product.productId, { maximumAllocationPercent: numericValue(e.target.value) })}
                           className={inputClass}
                         />
+                      </label>
+                      <label className={`${labelClass} sm:col-span-2 lg:col-span-4`}>
+                        <span className="flex items-baseline justify-between gap-3">
+                          <span>Planning notes</span>
+                          <span className={`font-normal ${(product.planningNotes || "").length > PLANNING_NOTES_MAX_LENGTH ? "text-rose-600" : "text-slate-400"}`}>
+                            {(product.planningNotes || "").length}/{PLANNING_NOTES_MAX_LENGTH}
+                          </span>
+                        </span>
+                        <textarea
+                          value={product.planningNotes || ""}
+                          onChange={(e) => updateProduct(product.productId, { planningNotes: e.target.value })}
+                          rows={2}
+                          className={inputClass}
+                          placeholder="e.g. Prioritize for B2C awareness with $50K+ budgets. Skip when no video creative is available."
+                        />
+                        <span className="mt-1 block font-normal text-slate-500">
+                          Internal guidance for ScoutAI on when to include, skip, or lean on this media type. It shapes scoring but cannot override the minimums or budget tiers, and is never shown to clients.
+                        </span>
                       </label>
                     </div>
                   </article>

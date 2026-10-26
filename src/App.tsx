@@ -8380,7 +8380,7 @@ export default function App() {
       <footer className="bg-white border-t border-slate-100 py-6 px-6 mt-12">
         <div className="max-w-[1500px] mx-auto flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-400">
           <div>
-            <span>&copy; 2026 Digital Remedy Audience Profile Builder. All rights reserved.</span>
+            <span>&copy; 2026 Digital Remedy AI Plan Agent. All rights reserved.</span>
           </div>
         </div>
       </footer>

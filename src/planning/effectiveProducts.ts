@@ -99,3 +99,14 @@ export function findEffectiveProduct(products: MediaProductRecord[], value: stri
     record.aliases.some((alias) => alias.toLowerCase() === normalized),
   );
 }
+
+/**
+ * The planning team's notes on a workbook media type, as the field the reasoning layer sees.
+ * Blank notes add nothing, so a catalog with no notes sends the same prompt it always did.
+ * Custom products are excluded: their notes are already sent as their primary evidence.
+ */
+export function plannerGuidanceField(settings: Pick<PlanningSettings, "products"> | null | undefined, productId: string): { plannerGuidance?: string } {
+  if (isCustomProductId(productId)) return {};
+  const notes = (settings?.products || []).find((product) => product.productId === productId)?.planningNotes?.trim();
+  return notes ? { plannerGuidance: notes } : {};
+}

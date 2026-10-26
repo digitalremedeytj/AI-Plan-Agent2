@@ -11,7 +11,7 @@ import crypto from "crypto";
 import { CANONICAL_MEDIA_TAXONOMY, isNonMediaItem, normalizeRawChannel } from "./src/utils/mediaTaxonomy";
 import { buildCampaignFacts, buildMediaRecommendationPlan, profileSignals } from "./src/planning/engine";
 import { validateProductRegistry } from "./src/planning/knowledge/registry";
-import { isCustomProductId, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
+import { isCustomProductId, plannerGuidanceField, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
 import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { normalizeBudgetStrategyMode, resolveStrategyBudget, type BudgetStrategyMode } from "./src/planning/budgetStrategy";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
@@ -1065,7 +1065,7 @@ async function generateCandidateSignals(audienceProfile: any, facts: any, resear
         // workbook-verified.
         ...(custom
           ? { catalogSource: "custom", planningNotes: customNotes.get(product.id) || "" }
-          : { catalogSource: "digital_remedy_workbook" }),
+          : { catalogSource: "digital_remedy_workbook", ...plannerGuidanceField(facts.settings, product.id) }),
       };
     });
   const prompt = `You are ScoutAI's media-strategy reasoning layer. Evaluate only the supplied, Digital Remedy-executable product candidates.
@@ -1073,6 +1073,8 @@ async function generateCandidateSignals(audienceProfile: any, facts: any, resear
 Code—not you—owns eligibility, availability, budget tiers, product minimums, portfolio selection, and allocation arithmetic. Do not add products, change IDs, or claim a prerequisite is present when it is unknown.
 
 A candidate with catalogSource "custom" is a media type the Digital Remedy team added themselves. Treat it as a genuine option and score it on the same terms as the rest, using its planningNotes as the primary evidence for fit. It carries no workbook validation, so cite it as a digital_remedy_rule rather than implying workbook or research backing, and do not award it dataReadiness or creativeReadiness credit that the campaign facts do not support.
+
+A workbook candidate may carry plannerGuidance: the Digital Remedy planning team's internal direction on when to include, skip or lean on that media type. Follow it when scoring, raising or lowering fit where its conditions match this campaign. It is internal direction, not evidence: never quote or paraphrase it in client-facing text, and never cite it as an evidence line. It does not override eligibility, minimums or budget tiers, which code enforces.
 
 Score each component from 0 to 100 using campaign-specific evidence. Keep confidence separate from fit by citing evidence source types. Provide concise activation, measurement, tradeoff, allocation-rationale, and scale/stop explanations. Do not calculate final allocations.
 

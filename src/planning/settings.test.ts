@@ -9,11 +9,13 @@ import {
   loadPlanningSettings,
   normalizeCampaignBudget,
   migrateStoredSettings,
+  PLANNING_NOTES_MAX_LENGTH,
   PLANNING_SETTINGS_STORAGE_KEY,
   PLANNING_SETTINGS_VERSION,
   savePlanningSettings,
   validatePlanningSettings,
 } from "./settings";
+import { plannerGuidanceField } from "./effectiveProducts";
 
 class MemoryStorage {
   private values = new Map<string, string>();
@@ -334,4 +336,38 @@ test("display settings stored before a switch existed fall back to its default",
   assert.equal(display.overviewMetrics.find((metric) => metric.id === "budget")?.show, false);
   assert.equal(display.overviewMetrics.find((metric) => metric.id === "impressions")?.show, true);
   assert.equal(display.internalOnly.length, DEFAULT_INTERNAL_ONLY_SETTINGS.length);
+});
+
+test("settings saved before planning notes existed still load, with every media type's notes blank", () => {
+  const storage = new MemoryStorage();
+  const current = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  current.products[0].minimumTotalSpend = 12_345;
+  const stripped = { ...current, products: current.products.map(({ planningNotes: _notes, ...product }) => product) };
+  storage.setItem(PLANNING_SETTINGS_STORAGE_KEY, JSON.stringify(stripped));
+
+  const loaded = loadPlanningSettings(storage);
+  assert.equal(loaded.products[0].minimumTotalSpend, 12_345, "the stored edits were kept, not reseeded from defaults");
+  assert.ok(loaded.products.every((product) => product.planningNotes === ""));
+});
+
+test("a planner's notes on a media type survive save and reload, and overlong notes block the save", () => {
+  const storage = new MemoryStorage();
+  const settings = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  settings.products[0].planningNotes = "Skip when no display creative is available.";
+  assert.equal(savePlanningSettings(storage, settings).valid, true);
+  assert.equal(loadPlanningSettings(storage).products[0].planningNotes, "Skip when no display creative is available.");
+
+  settings.products[0].planningNotes = "x".repeat(PLANNING_NOTES_MAX_LENGTH + 1);
+  assert.equal(validatePlanningSettings(settings).valid, false);
+});
+
+test("planning notes reach the scoring candidates, and blank notes add nothing to the prompt", () => {
+  const settings = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  const [noted, blank] = settings.products;
+  noted.planningNotes = "  Prioritize for B2C awareness with $50K+ budgets.  ";
+  blank.planningNotes = "   ";
+
+  assert.deepEqual(plannerGuidanceField(settings, noted.productId), { plannerGuidance: "Prioritize for B2C awareness with $50K+ budgets." });
+  assert.deepEqual(plannerGuidanceField(settings, blank.productId), {});
+  assert.deepEqual(plannerGuidanceField(settings, "custom.anything"), {}, "custom types already send their notes as evidence");
 });
