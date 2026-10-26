@@ -12,7 +12,7 @@ import { CANONICAL_MEDIA_TAXONOMY, isNonMediaItem, normalizeRawChannel } from ".
 import { buildCampaignFacts, buildMediaRecommendationPlan, profileSignals } from "./src/planning/engine";
 import { validateProductRegistry } from "./src/planning/knowledge/registry";
 import { isCustomProductId, plannerGuidanceField, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
-import { plannerPickAlerts } from "./src/planning/briefMediaTypes";
+import { ctvMissingAlerts, plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { normalizeBudgetStrategyMode, resolveStrategyBudget, type BudgetStrategyMode } from "./src/planning/budgetStrategy";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, displaySettingsOf, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
@@ -1205,6 +1205,12 @@ async function buildChannelStrategy(
     kpis,
     campaignFocus: options?.campaignFocus,
     additionalContext: options?.additionalContext,
+    // The uploaded RFP's own words, so a brief that rules out a media type is honoured.
+    mediaDirections: [
+      audienceProfile?.additionalRfpRequirements?.rfpSummary,
+      ...(audienceProfile?.additionalRfpRequirements?.rfpAsksAndQuestions || []),
+      audienceProfile?.additionalRfpRequirements?.additionalNotes,
+    ].filter((text): text is string => typeof text === "string" && text.length > 0),
     audienceDescriptions: signals.audienceDescriptions,
     audienceSignals: signals.audienceSignals,
     geography: options?.geography || "United States",
@@ -5729,7 +5735,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         originalData.channelStrategy = channelStrategy;
         // A pick the budget cannot fund is kept below its product minimum rather than dropped;
         // say so, or the plan looks executable when it is not.
-        for (const message of plannerPickAlerts(channelStrategy.mediaPlan, channelStrategy.manualIncludedChannelIds)) {
+        for (const message of [...plannerPickAlerts(channelStrategy.mediaPlan, channelStrategy.manualIncludedChannelIds), ...ctvMissingAlerts(channelStrategy.mediaPlan)]) {
           pushAlert(generationAlerts, { section: "channelStrategy", severity: "flagged", message });
         }
         sendEvent("status", { message: "Media portfolio and allocation constraints validated successfully." });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCampaignFacts, buildMediaRecommendationPlan, channelRecordOptions, inferAudienceType, measurementFitsCampaign, profileSignals, tacticFitsCampaign } from "./engine";
+import { buildCampaignFacts, buildMediaRecommendationPlan, channelRecordOptions, CTV_PRODUCT_ID, ctvRuledOutByBrief, inferAudienceType, measurementFitsCampaign, profileSignals, tacticFitsCampaign } from "./engine";
+import { ctvMissingAlerts } from "./briefMediaTypes";
 import { planningKnowledgeBase, resolveCompatibilityTacticIds } from "./knowledge/normalizeWorkbook";
 import { validatePlanningKnowledgeBase } from "./knowledge/normalizeWorkbook";
 import { validateProductRegistry } from "./knowledge/registry";
@@ -323,7 +324,7 @@ test("editable publisher tiers and enhancement specifications drive plan-stack a
   assert.equal(ctv.creativeEnhancements[0]?.limitation, "Confirm VAST, duration, tracking, and vendor QA.");
 });
 
-test("manual additions expand beyond the automatic media-type cap", () => {
+test("manual additions expand beyond the automatic media-type cap, and a strong fit can take the extra room", () => {
   const planningSettings = settings();
   const audio = planningSettings.products.find((product) => product.productId === "channel.audio");
   assert.ok(audio);
@@ -341,7 +342,11 @@ test("manual additions expand beyond the automatic media-type cap", () => {
     creativeReadiness: { audioAssets: true, displayAssets: true },
     requiredChannelIds: ["channel.audio"],
     planningSettings,
-  }));
+  }), [
+    // The expanded cap is room, not a target: the second slot is filled only by a media type
+    // worth its minimum, so this one is scored as a clear fit.
+    { channelId: "channel.display", components: { kpiAndFunnelFit: 95, audienceAndPersonaFit: 95, incrementalGapCoverage: 95, dataReadiness: 95, creativeReadiness: 95, measurementFit: 95 } },
+  ]);
   assert.equal(plan.maxMediaTypes, 1);
   assert.equal(plan.selectedMediaTypeCount, 2);
   assert.ok(plan.channels.some((channel) => channel.channelId === "channel.audio"));
@@ -741,4 +746,112 @@ test("measurement switched off in Settings is neither recommended nor offered fo
   const s = withMeasurement("measurement.brand_lift", { availability: "off" });
   assert.ok(!recommendedMeasurement(ynhhFacts(s)).includes("measurement.brand_lift"));
   assert.ok(!channelRecordOptions(ctv(), s).measurementCapabilities.some((record) => record.id === "measurement.brand_lift"));
+});
+
+const scored = (scores: Record<string, number>) => Object.entries(scores).map(([channelId, score]) => ({
+  channelId,
+  components: { kpiAndFunnelFit: score, audienceAndPersonaFit: score, incrementalGapCoverage: score, dataReadiness: score, creativeReadiness: score, measurementFit: score },
+}));
+const MIXED_FIT = { "channel.search": 92, "channel.social_meta": 90, "channel.ctv": 88, "channel.display": 74, "channel.olv": 73, "channel.native": 73, "channel.youtube": 73, "channel.audio": 72, "channel.display_retargeting": 72, "channel.dooh": 72, "channel.youtube_tv": 72, "channel.linear_tv": 72 };
+const hundredThousand = (kpis: string[]) => buildCampaignFacts({
+  kpis,
+  audienceDescriptions: ["Online shoppers who stream, search and scroll social"],
+  workingMediaBudget: 100_000,
+  campaignFlightDays: 30,
+  geography: "United States",
+  planningSettings: settings(),
+});
+
+test("the media-type cap is a ceiling, not a target: weaker fits are left out when the strong ones can use the budget", () => {
+  const plan = buildMediaRecommendationPlan(hundredThousand(["purchases", "roas"]), scored(MIXED_FIT));
+  assert.equal(plan.maxMediaTypes, 8);
+  assert.ok(plan.selectedMediaTypeCount < 8, `expected fewer than 8 media types, got ${plan.selectedMediaTypeCount}`);
+  const strong = plan.channels.filter((channel) => ["channel.search", "channel.social_meta", "channel.ctv"].includes(channel.channelId));
+  assert.equal(strong.length, 3, "the three clear fits are all funded");
+  assert.ok(strong.reduce((sum, channel) => sum + channel.allocationPercent, 0) >= 60, "and carry most of the budget");
+  assert.equal(plan.channels.reduce((sum, channel) => sum + channel.allocationPercent, 0), 100);
+  assert.ok(plan.allocationAudit.some((entry) => entry.type === "exclusion" && entry.detail.startsWith("Not funded")));
+});
+
+test("a stronger fit gets a meaningfully larger share than a weaker one with the same minimum spend", () => {
+  // Meta and Native share a $5,000 minimum, so their curves differ only by fit. (A cheap media
+  // type such as Search flattens sooner whatever its score, which is the point of the curves.)
+  const plan = buildMediaRecommendationPlan(hundredThousand(["awareness", "reach"]), scored(MIXED_FIT));
+  const share = (id: string) => plan.channels.find((channel) => channel.channelId === id)?.allocationPercent ?? 0;
+  assert.ok(share("channel.native") > 0, "the weaker fit is still funded here");
+  assert.ok(share("channel.social_meta") >= share("channel.native") * 1.5, `meta ${share("channel.social_meta")}% vs native ${share("channel.native")}%`);
+});
+
+test("a conversion goal concentrates the budget more than an awareness goal with the same scores", () => {
+  const conversion = buildMediaRecommendationPlan(hundredThousand(["purchases", "roas"]), scored(MIXED_FIT));
+  const awareness = buildMediaRecommendationPlan(hundredThousand(["awareness", "reach"]), scored(MIXED_FIT));
+  // 1 / sum of squared shares: how many equal media types the split behaves like.
+  const effective = (plan: typeof conversion) => 1 / plan.channels.reduce((sum, channel) => sum + (channel.allocationPercent / 100) ** 2, 0);
+  assert.ok(conversion.selectedMediaTypeCount <= awareness.selectedMediaTypeCount);
+  assert.ok(effective(conversion) < effective(awareness), `conversion ${effective(conversion).toFixed(2)} vs awareness ${effective(awareness).toFixed(2)}`);
+});
+
+test("every allocation still honours each media type's minimum spend and allocation bounds", () => {
+  for (const kpis of [["purchases"], ["awareness"], ["site visits"]]) {
+    const plan = buildMediaRecommendationPlan(hundredThousand(kpis), scored(MIXED_FIT));
+    plan.channels.forEach((channel) => {
+      assert.ok(channel.allocationDollars >= channel.minimumTotalSpend, `${channel.channelId} below its minimum spend`);
+      assert.ok(channel.allocationPercent >= channel.minimumAllocationPercent);
+      assert.ok(channel.allocationPercent <= channel.maximumAllocationPercent);
+    });
+  }
+});
+
+// CTV scores well below the rest here, so only the CTV-first rule can keep it in.
+const WEAK_CTV = { ...MIXED_FIT, "channel.ctv": 60 };
+const ctvPlan = (input: Partial<Parameters<typeof buildCampaignFacts>[0]> = {}) => buildMediaRecommendationPlan(buildCampaignFacts({
+  kpis: ["purchases", "roas"],
+  audienceDescriptions: ["Online shoppers who stream, search and scroll social"],
+  workingMediaBudget: 100_000,
+  campaignFlightDays: 30,
+  geography: "United States",
+  planningSettings: settings(),
+  ...input,
+}), scored(WEAK_CTV));
+const hasCtv = (plan: ReturnType<typeof ctvPlan>) => plan.channels.some((channel) => channel.channelId === CTV_PRODUCT_ID);
+
+test("CTV stays in every plan it is eligible for, even on a weak fit, within the media-type cap", () => {
+  const plan = ctvPlan();
+  assert.ok(hasCtv(plan));
+  const ctv = plan.channels.find((channel) => channel.channelId === CTV_PRODUCT_ID)!;
+  assert.ok(ctv.allocationDollars >= ctv.minimumTotalSpend, "at its normal minimum, not a planner-override floor");
+  assert.ok(plan.selectedMediaTypeCount <= plan.maxMediaTypes);
+  assert.deepEqual(ctvMissingAlerts(plan), []);
+});
+
+test("a planner who removes CTV, or picks only other media types, gets a plan without it and no warning", () => {
+  const removed = ctvPlan({ excludedChannelIds: [CTV_PRODUCT_ID] });
+  const onlyThese = ctvPlan({ requiredChannelIds: ["channel.search", "channel.social_meta"], requiredChannelsOnly: true });
+  assert.ok(!hasCtv(removed));
+  assert.ok(!hasCtv(onlyThese));
+  assert.deepEqual(ctvMissingAlerts(removed), []);
+  assert.deepEqual(ctvMissingAlerts(onlyThese), []);
+});
+
+test("a brief or RFP that rules out CTV is honoured, and the planner is shown the words it matched", () => {
+  const fromNotes = ctvPlan({ additionalContext: "Client has a separate TV agency. No CTV this flight." });
+  const fromRfp = ctvPlan({ mediaDirections: ["Streaming TV is out of scope for this RFP."] });
+  assert.ok(!hasCtv(fromNotes));
+  assert.ok(!hasCtv(fromRfp));
+  const [alert] = ctvMissingAlerts(fromNotes);
+  assert.ok(alert.includes('"No CTV"') && alert.includes("add CTV back"), alert);
+});
+
+test("a planner who adds CTV back overrides the brief's wording", () => {
+  const plan = ctvPlan({ additionalContext: "No CTV this flight.", requiredChannelIds: [CTV_PRODUCT_ID] });
+  assert.ok(hasCtv(plan));
+});
+
+test("only explicit exclusions of CTV count, not limits or comparisons", () => {
+  for (const ruledOut of ["No CTV please", "exclude CTV/OTT from the mix", "We do not want to run connected TV", "Client won't buy OTT", "CTV is not approved by legal", "without streaming TV"]) {
+    assert.ok(ctvRuledOutByBrief([ruledOut]), `should rule out: ${ruledOut}`);
+  }
+  for (const allowed of ["No more than 30% in CTV", "Not just CTV, we need search too", "CTV and OLV are priorities", "No other channels besides CTV matter as much", "Lead with CTV; no audio"]) {
+    assert.equal(ctvRuledOutByBrief([allowed]), null, `should not rule out: ${allowed}`);
+  }
 });

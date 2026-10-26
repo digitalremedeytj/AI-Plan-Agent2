@@ -1,4 +1,5 @@
 import { resolveEffectiveProducts } from "./effectiveProducts";
+import { CTV_PRODUCT_ID } from "./engine";
 import type { PlanningSettings } from "./settings";
 import type { MediaRecommendationPlan } from "./types";
 
@@ -71,4 +72,18 @@ export function plannerPickAlerts(plan: MediaRecommendationPlan, pickedIds: stri
     }
   }
   return alerts;
+}
+
+/**
+ * Plans are CTV-first, so a plan without CTV says why. A planner who removed it already knows;
+ * anything else (the brief's wording, a budget or flight below CTV's minimums) is worth a look,
+ * and the brief match especially, since it is read from free text.
+ */
+export function ctvMissingAlerts(plan: MediaRecommendationPlan): string[] {
+  if (plan.channels.length === 0 || plan.channels.some((channel) => channel.channelId === CTV_PRODUCT_ID)) return [];
+  const ctv = plan.evaluatedCandidates.find((candidate) => candidate.product.id === CTV_PRODUCT_ID);
+  if (!ctv) return [];
+  const reason = ctv.eligibilityFailures.find((failure) => !failure.includes("excluded by the planner") && !failure.includes("RFP budget"));
+  if (!reason) return [];
+  return [`This plan has no CTV. ${reason}${reason.includes("brief says") ? " If that is not what the brief meant, add CTV back in Channel Allocation." : ""}`];
 }

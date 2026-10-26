@@ -70,6 +70,65 @@ const SCORE_WEIGHTS: Record<keyof CandidateScoreComponents, number> = {
   measurementFit: 0.1,
 };
 
+/**
+ * Breadth comes from diminishing returns, not from the channel cap. Each media type's value grows
+ * with its budget but flattens: the first dollars reach new people, later ones mostly add
+ * frequency. A mix is scored by its total value at its best split, so a media type joins only
+ * when its first dollars (its whole minimum) are worth more than the same dollars added to the
+ * media types already funded. The cap stays a ceiling.
+ *
+ * These curves are directional planning judgement, not fitted to campaign results; nothing
+ * client-facing may quote them as a saturation point.
+ */
+// Where a media type's curve flattens, as a share of the monthly budget: RESPONSE_SATURATION_SCALE
+// x sqrt(monthly minimum / monthly budget). A higher minimum means a media type needs, and can use,
+// more budget, but taken straight it let the most expensive media types (YouTube TV, CTV) take the
+// biggest shares of large plans whatever their fit; the square root keeps it a factor, not the rule.
+// Bigger budgets flatten every curve sooner, which is what widens a large plan.
+const RESPONSE_SATURATION_SCALE = 2;
+// Fit scores bunch in the 70s and 80s. Measuring them above the do-not-add line rather than from
+// zero is what lets an 84 outweigh a 72 by enough to change the split.
+const VALUE_SCORE_BASELINE = 50;
+const DEFAULT_SATURATION_PERCENT = 20;
+
+const CONVERSION_GOAL = /\b(conversions?|cpa|roas|sales|purchases?|leads?|lead gen|sign[- ]?ups?|acquisition|revenue|installs?|bookings?|performance|site visits?|visits|traffic|checkouts?|clicks?)\b/;
+const AWARENESS_GOAL = /\b(awareness|reach|brand|frequency|consideration|full[- ]funnel)\b/;
+
+/**
+ * How much the campaign's goal favours depth over breadth. A conversion goal rewards putting
+ * more behind the media types that convert; an awareness goal earns real value from reaching
+ * new people in more places, so its curves flatten sooner and the mix widens.
+ */
+function goalConcentration(facts: CampaignFacts): number {
+  const goal = [facts.primaryKpi, ...facts.kpis].join(" ").toLowerCase();
+  const conversion = CONVERSION_GOAL.test(goal);
+  const awareness = AWARENESS_GOAL.test(goal);
+  if (conversion && !awareness) return 1.4;
+  if (awareness && !conversion) return 0.8;
+  return 1;
+}
+
+function candidateWeight(candidate: EvaluatedMediaCandidate, facts: CampaignFacts): number {
+  const existingBonus = facts.existingChannelIds.includes(candidate.product.id) ? 12 : 0;
+  const preferredBonus = facts.preferredChannelIds.includes(candidate.product.id) ? 8 : 0;
+  const addBonus = candidate.status === "ADD" ? 5 : 0;
+  return Math.max(1, candidate.recommendationScore - VALUE_SCORE_BASELINE + existingBonus + preferredBonus + addBonus);
+}
+
+/** Share of the budget, in percent, over which a media type's returns flatten. */
+function saturationPercent(candidate: EvaluatedMediaCandidate, facts: CampaignFacts): number {
+  const monthlyMinimum = candidate.product.minimumNormalized30DaySpend || candidate.product.minimumTotalSpend;
+  const monthlyBudget = facts.normalized30DayBudget || facts.totalWorkingMediaBudget;
+  const base = monthlyMinimum > 0 && monthlyBudget > 0
+    ? RESPONSE_SATURATION_SCALE * Math.sqrt(monthlyMinimum / monthlyBudget) * 100
+    : DEFAULT_SATURATION_PERCENT;
+  return Math.min(100, Math.max(5, base * goalConcentration(facts)));
+}
+
+function responseValue(weight: number, saturation: number, percent: number): number {
+  return percent > 0 ? weight * saturation * (1 - Math.exp(-percent / saturation)) : 0;
+}
+
 const DEFAULT_DATA_READINESS: DataReadinessFacts = {
   sitePixel: "unknown",
   conversionEvents: "unknown",
@@ -118,6 +177,31 @@ function inferTriState(text: string, positive: string[], negative: Array<string 
 // counts as a no.
 const NO_PIXEL = /\b(?:no|cannot|can ?not|can['’]?t|unable to|not able to|won['’]?t|will not|don['’]?t|do not|doesn['’]?t|does not|not allowed to|not permitted to)\b[^.;\n]{0,40}\bpixel|\bpixels?\b[^.;\n]{0,20}\b(?:not allowed|not permitted|not possible|unavailable|prohibited|not an option)\b/;
 const NO_LOWER_FUNNEL_TRACKING = /\b(?:cannot|can ?not|can['’]?t|unable to|not able to|no way to)\b[^.;\n]{0,30}\b(?:track|measure|attribute)\b[^.;\n]{0,30}\b(?:lower[- ]funnel|conversions?|site activity|on-site)/;
+
+/**
+ * Digital Remedy plans are CTV-first: CTV is in every plan it is eligible for, unless the planner
+ * removed it or the brief says not to use it. Fit still decides how much it gets.
+ */
+export const CTV_PRODUCT_ID = "channel.ctv";
+const CTV_TERM = String.raw`(?:ctv(?:\s*/\s*ott)?|ott|connected[- ]?tv|connected television|streaming tv|streaming television)`;
+// Kept to explicit exclusions. "No more than 30% CTV" and "not just CTV" are not exclusions, so a
+// bare "no" or "not" only counts directly in front of the term.
+const CTV_RULED_OUT = new RegExp([
+  String.raw`\b(?:no|not|zero)\s+(?:on\s+)?${CTV_TERM}\b`,
+  String.raw`\b(?:exclude[sd]?|excluding|without|avoid(?:ing)?|omit(?:ting)?|skip(?:ping)?|remove|drop)\b[^.;\n]{0,25}?\b${CTV_TERM}\b`,
+  String.raw`\b(?:do not|don['’]?t|does not|doesn['’]?t|will not|won['’]?t|cannot|can['’]?t|not)\s+(?:want|use|run|buy|include|consider|need|approve|allow)\b[^.;\n]{0,25}?\b${CTV_TERM}\b`,
+  String.raw`\b${CTV_TERM}\b[^.;\n]{0,25}?\b(?:is |are )?(?:excluded|out of scope|off the table|prohibited|not (?:allowed|permitted|approved|included|wanted|needed|an option|in scope))\b`,
+].join("|"), "i");
+
+/** The brief's words that rule out CTV, for the planner to see why it is missing. */
+export function ctvRuledOutByBrief(texts: Array<string | undefined | null>): string | null {
+  for (const text of texts) {
+    if (!text) continue;
+    const match = CTV_RULED_OUT.exec(text);
+    if (match) return match[0].trim();
+  }
+  return null;
+}
 
 function inferReadiness(text: string): { data: DataReadinessFacts; creative: CreativeReadinessFacts } {
   return {
@@ -279,6 +363,7 @@ export function buildCampaignFacts(input: CampaignFactsInput): CampaignFacts {
     requiredChannelIds,
     preferredChannelIds: (input.preferredChannelIds || []).map((id) => resolveChannelId(id, effectiveProducts) || id),
     excludedChannelIds,
+    ctvRuledOutByBrief: ctvRuledOutByBrief([input.campaignFocus, input.additionalContext, ...(input.mediaDirections || [])]),
     dataReadiness: { ...inferred.data, ...(input.dataReadiness || {}) },
     creativeReadiness: { ...inferred.creative, ...(input.creativeReadiness || {}) },
     measurementExpectations: input.measurementExpectations || [],
@@ -367,6 +452,10 @@ function eligibility(product: MediaProductRecord, facts: CampaignFacts): { failu
   if (product.status !== "live") failures.push(`Product status is ${product.status}; only live products can receive allocation.`);
   if (!product.supportedGeographies.some((geography) => canonicalGeography(geography) === canonicalGeography(facts.geography))) failures.push(`Product is not currently verified for ${facts.geography}.`);
   if (facts.excludedChannelIds.includes(product.id)) failures.push("Product was explicitly excluded by the planner.");
+  // A planner who adds CTV back has overruled the brief's wording.
+  if (product.id === CTV_PRODUCT_ID && facts.ctvRuledOutByBrief && !facts.requiredChannelIds.includes(product.id)) {
+    failures.push(`Left out because the brief says "${facts.ctvRuledOutByBrief}".`);
+  }
   if (facts.planningMode === "incremental" && facts.existingChannelIds.includes(product.id)) {
     failures.push("Kept at its RFP budget; the additional budget goes to new media types.");
   }
@@ -491,10 +580,14 @@ export function evaluateCandidates(facts: CampaignFacts, aiSignals: AiCandidateS
 
 function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignFacts, audit: AllocationAuditEntry[]): EvaluatedMediaCandidate[] {
   const required = new Set(facts.requiredChannelIds);
+  // CTV is kept whenever nothing rules it out (budget, flight, planner, brief), even on a weak fit
+  // score; it holds its normal minimums and counts within the cap, unlike a planner-required pick.
+  const ctv = candidates.find((candidate) => candidate.product.id === CTV_PRODUCT_ID && candidate.eligibilityFailures.length === 0 && !required.has(candidate.product.id));
   const selectable = candidates
     .filter((candidate) =>
       candidate.status === "ADD" ||
       candidate.status === "TEST" ||
+      candidate === ctv ||
       (required.has(candidate.product.id) && isSellable(candidate.product)),
     )
     .sort((a, b) => {
@@ -513,10 +606,12 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
   }
   let best: EvaluatedMediaCandidate[] = [];
   let bestObjective = Number.NEGATIVE_INFINITY;
+  let keepCtv = Boolean(ctv);
 
   const evaluatePortfolio = (portfolio: EvaluatedMediaCandidate[]) => {
     if (portfolio.length === 0) return;
     if ([...required].some((id) => !portfolio.some((candidate) => candidate.product.id === id))) return;
+    if (keepCtv && !portfolio.includes(ctv!)) return;
     const minimumSpend = portfolio.reduce(
       (sum, candidate) => sum + (required.has(candidate.product.id) ? 0 : candidate.product.minimumTotalSpend),
       0,
@@ -531,17 +626,16 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
       0,
     );
     if (minimumPercent > 100 || maximumPercent < 100) return;
-    const objective = portfolio.reduce((sum, candidate) => {
-      const existingBonus = facts.existingChannelIds.includes(candidate.product.id) ? 12 : 0;
-      const preferredBonus = facts.preferredChannelIds.includes(candidate.product.id) ? 8 : 0;
-      const requiredBonus = required.has(candidate.product.id) ? 100 : 0;
-      const addBonus = candidate.status === "ADD" ? 5 : 0;
-      return sum + candidate.recommendationScore - 60 + existingBonus + preferredBonus + requiredBonus + addBonus;
-    }, 0) - Math.max(0, portfolio.length - 1) * 5;
+    const split = fillAllocation(portfolio, facts, required);
+    if (!split) return;
+    const objective = mixValue(portfolio, split, facts);
+    // Near-ties go to the smaller mix: a media type that adds almost nothing is not worth
+    // the extra setup, learning period and reporting line.
+    const tolerance = Number.isFinite(bestObjective) ? Math.abs(bestObjective) * 1e-6 : 0;
     if (
-      objective > bestObjective ||
-      (objective === bestObjective && portfolio.length < best.length) ||
-      (objective === bestObjective && portfolio.length === best.length && portfolio.map((item) => item.product.id).join("|") < best.map((item) => item.product.id).join("|"))
+      objective > bestObjective + tolerance ||
+      (Math.abs(objective - bestObjective) <= tolerance && portfolio.length < best.length) ||
+      (Math.abs(objective - bestObjective) <= tolerance && portfolio.length === best.length && portfolio.map((item) => item.product.id).join("|") < best.map((item) => item.product.id).join("|"))
     ) {
       best = [...portfolio];
       bestObjective = objective;
@@ -562,6 +656,13 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
     }
   };
   search(0, []);
+  if (keepCtv && best.length === 0) {
+    // Only reachable when CTV and the planner's required picks cannot all fit the budget
+    // together; the planner's picks win.
+    keepCtv = false;
+    search(0, []);
+    audit.push({ type: "exclusion", channelId: CTV_PRODUCT_ID, detail: "CTV could not fit alongside the planner-required media types within this budget." });
+  }
 
   if (required.size > 0 && best.length === 0) {
     audit.push({
@@ -574,21 +675,23 @@ function selectPortfolio(candidates: EvaluatedMediaCandidate[], facts: CampaignF
   best.forEach((candidate) => audit.push({
     type: "selection",
     channelId: candidate.product.id,
-    detail: `Selected with score ${candidate.recommendationScore} and ${candidate.status} status in the highest-value feasible portfolio.`,
+    detail: candidate === ctv && keepCtv
+      ? `Kept as the plan's CTV foundation (score ${candidate.recommendationScore}); its share follows its fit for this campaign.`
+      : `Selected with score ${candidate.recommendationScore} and ${candidate.status} status in the highest-value feasible portfolio.`,
   }));
   selectable.filter((candidate) => !selectedIds.has(candidate.product.id)).forEach((candidate) => audit.push({
     type: "exclusion",
     channelId: candidate.product.id,
-    detail: "Excluded by portfolio optimization because it did not improve the highest-value feasible mix after spend, allocation, and fragmentation constraints.",
+    detail: "Not funded: its minimum would have taken budget from media types still earning more from each added dollar for this campaign's goal.",
   }));
   return best;
 }
 
-function allocateBasisPoints(selected: EvaluatedMediaCandidate[], totalBudget: number, audit: AllocationAuditEntry[], forcedIds: Set<string> = new Set()): Map<string, number> {
-  const allocations = new Map<string, number>();
-  // Non-forced products hold a hard minimum. Whatever room is left over is offered to the
-  // planner-forced products at their own product minimum, and only squeezed toward the 1%
-  // override floor when the rest of the portfolio has already claimed the budget.
+/**
+ * Whole-percent starting points: each media type's minimum, and for planner-required ones the
+ * room left after everyone else's minimum (see allocateBasisPoints).
+ */
+function startingPercents(selected: EvaluatedMediaCandidate[], totalBudget: number, forcedIds: Set<string>): Map<string, number> {
   const hardMinimumPercent = selected.reduce((sum, candidate) => {
     if (forcedIds.has(candidate.product.id)) return sum;
     return sum + allocationBoundsPercent(candidate.product, totalBudget, false).minimum;
@@ -613,14 +716,69 @@ function allocateBasisPoints(selected: EvaluatedMediaCandidate[], totalBudget: n
       forcedRoomPercent = Math.max(0, forcedRoomPercent - grant);
     });
 
+  const start = new Map<string, number>();
   selected.forEach((candidate) => {
     const forced = forcedIds.has(candidate.product.id);
     const bounds = allocationBoundsPercent(candidate.product, totalBudget, forced);
-    const productMinimum = allocationBoundsPercent(candidate.product, totalBudget, false).minimum;
-    const wholeMinimumPercent = forced
+    start.set(candidate.product.id, forced
       ? Math.min(bounds.maximum, forcedTargets.get(candidate.product.id) ?? bounds.minimum)
-      : Math.min(bounds.maximum, bounds.minimum);
-    allocations.set(candidate.product.id, wholeMinimumPercent * 100);
+      : Math.min(bounds.maximum, bounds.minimum));
+  });
+  return start;
+}
+
+/**
+ * The best whole-percent split of the budget across a mix: start from the minimums, then give
+ * each remaining point to whichever media type gains most from it. The curves are concave, so
+ * this greedy fill is the optimal split. Null when the mix cannot absorb the budget.
+ */
+function fillAllocation(selected: EvaluatedMediaCandidate[], facts: CampaignFacts, forcedIds: Set<string>): Map<string, number> | null {
+  const totalBudget = facts.totalWorkingMediaBudget;
+  const percents = startingPercents(selected, totalBudget, forcedIds);
+  let remaining = 100 - Array.from(percents.values()).reduce((sum, value) => sum + value, 0);
+  if (remaining < 0) return null;
+  const curves = selected.map((candidate) => ({
+    id: candidate.product.id,
+    weight: candidateWeight(candidate, facts),
+    saturation: saturationPercent(candidate, facts),
+    cap: allocationBoundsPercent(candidate.product, totalBudget, forcedIds.has(candidate.product.id)).maximum,
+  }));
+  while (remaining > 0) {
+    let bestCurve: (typeof curves)[number] | null = null;
+    let bestGain = Number.NEGATIVE_INFINITY;
+    for (const curve of curves) {
+      const current = percents.get(curve.id) || 0;
+      if (current >= curve.cap) continue;
+      const gain = responseValue(curve.weight, curve.saturation, current + 1) - responseValue(curve.weight, curve.saturation, current);
+      if (gain > bestGain) {
+        bestGain = gain;
+        bestCurve = curve;
+      }
+    }
+    if (!bestCurve) return null;
+    percents.set(bestCurve.id, (percents.get(bestCurve.id) || 0) + 1);
+    remaining -= 1;
+  }
+  return percents;
+}
+
+function mixValue(selected: EvaluatedMediaCandidate[], percents: Map<string, number>, facts: CampaignFacts): number {
+  return selected.reduce(
+    (sum, candidate) => sum + responseValue(candidateWeight(candidate, facts), saturationPercent(candidate, facts), percents.get(candidate.product.id) || 0),
+    0,
+  );
+}
+
+function allocateBasisPoints(selected: EvaluatedMediaCandidate[], facts: CampaignFacts, audit: AllocationAuditEntry[], forcedIds: Set<string> = new Set()): Map<string, number> {
+  const totalBudget = facts.totalWorkingMediaBudget;
+  // Non-forced products hold a hard minimum. Whatever room is left over is offered to the
+  // planner-forced products at their own product minimum, and only squeezed toward the 1%
+  // override floor when the rest of the portfolio has already claimed the budget.
+  const start = startingPercents(selected, totalBudget, forcedIds);
+  selected.forEach((candidate) => {
+    const forced = forcedIds.has(candidate.product.id);
+    const productMinimum = allocationBoundsPercent(candidate.product, totalBudget, false).minimum;
+    const wholeMinimumPercent = start.get(candidate.product.id) || 0;
     audit.push({
       type: "minimum",
       channelId: candidate.product.id,
@@ -631,37 +789,13 @@ function allocateBasisPoints(selected: EvaluatedMediaCandidate[], totalBudget: n
         : `Applied a whole-number effective minimum of ${wholeMinimumPercent}% from product percent and spend constraints.`,
     });
   });
-  let remaining = 10_000 - Array.from(allocations.values()).reduce((sum, value) => sum + value, 0);
-  if (remaining < 0) throw new Error("Selected channel minimum allocation percentages exceed 100%. Remove a media type or increase the budget.");
-
-  const capOf = (candidate: EvaluatedMediaCandidate) => allocationBoundsPercent(candidate.product, totalBudget, forcedIds.has(candidate.product.id)).maximum * 100;
-  let active = selected.filter((candidate) => (allocations.get(candidate.product.id) || 0) < capOf(candidate));
-  while (remaining > 0 && active.length > 0) {
-    const totalWeight = active.reduce((sum, candidate) => sum + Math.max(1, candidate.recommendationScore), 0);
-    let distributed = 0;
-    active.forEach((candidate) => {
-      const available = remaining - distributed;
-      if (available <= 0) return;
-      const current = allocations.get(candidate.product.id) || 0;
-      const cap = capOf(candidate);
-      const proportional = Math.max(100, Math.floor(((remaining * candidate.recommendationScore) / totalWeight) / 100) * 100);
-      const addition = Math.min(cap - current, proportional, available);
-      if (addition > 0) {
-        allocations.set(candidate.product.id, current + addition);
-        distributed += addition;
-      }
-    });
-    remaining -= distributed;
-    active = active.filter((candidate) => (allocations.get(candidate.product.id) || 0) < capOf(candidate));
-    if (distributed === 0 && active.length > 0) {
-      const candidate = active[0];
-      allocations.set(candidate.product.id, (allocations.get(candidate.product.id) || 0) + 100);
-      remaining -= 100;
-    }
+  if (Array.from(start.values()).reduce((sum, value) => sum + value, 0) > 100) {
+    throw new Error("Selected channel minimum allocation percentages exceed 100%. Remove a media type or increase the budget.");
   }
-  if (remaining !== 0) throw new Error("Channel maximum allocations cannot absorb the full budget.");
-  audit.push({ type: "rebalance", detail: "Distributed remaining allocation across uncapped channels using validated recommendation scores." });
-  return allocations;
+  const percents = fillAllocation(selected, facts, forcedIds);
+  if (!percents) throw new Error("Channel maximum allocations cannot absorb the full budget.");
+  audit.push({ type: "rebalance", detail: "Distributed the budget above each minimum to whichever media type gained most from each added point, so stronger fits for the campaign goal carry more of the plan." });
+  return new Map(Array.from(percents.entries()).map(([id, percent]) => [id, percent * 100]));
 }
 
 function dollarsFromBasisPoints(totalBudget: number, basisPoints: Map<string, number>): Map<string, number> {
@@ -1040,7 +1174,7 @@ export function buildMediaRecommendationPlan(
     };
   }
 
-  const basisPoints = allocateBasisPoints(selected, facts.totalWorkingMediaBudget, allocationAudit, new Set(facts.requiredChannelIds));
+  const basisPoints = allocateBasisPoints(selected, facts, allocationAudit, new Set(facts.requiredChannelIds));
   const dollars = dollarsFromBasisPoints(facts.totalWorkingMediaBudget, basisPoints);
   allocationAudit.push({ type: "rounding", detail: "Applied stable basis-point rounding and distributed final budget cents deterministically." });
 

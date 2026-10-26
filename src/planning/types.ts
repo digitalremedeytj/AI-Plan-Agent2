@@ -65,6 +65,8 @@ export interface CampaignFacts {
   requiredChannelIds: string[];
   preferredChannelIds: string[];
   excludedChannelIds: string[];
+  /** The brief's own words ruling out CTV ("no CTV this flight"), or null. See ctvRuledOutByBrief. */
+  ctvRuledOutByBrief: string | null;
   dataReadiness: DataReadinessFacts;
   creativeReadiness: CreativeReadinessFacts;
   measurementExpectations: string[];
@@ -293,6 +295,8 @@ export interface CampaignFactsInput {
   campaignFocus?: string;
   /** The brief's free-text context; read for data constraints such as "cannot place pixels". */
   additionalContext?: string;
+  /** What an uploaded RFP or brief asks for (summary, asks, notes); read for a media type it rules out. */
+  mediaDirections?: string[];
   audienceDescriptions?: string[];
   audienceSignals?: string[];
   geography?: string;
