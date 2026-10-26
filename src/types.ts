@@ -281,6 +281,31 @@ export interface RfpCapabilityMatch {
   digitalRemedySolution: string;
   capabilityDetails: string;
   isSupported: boolean;
+  /** The uploaded file the ask came from, when the RFP arrived as several files. */
+  sourceFile?: string;
+}
+
+/** What an uploaded file is to the RFP it came with. See src/research/rfpPackage.ts. */
+export type PackageFileRole = "rfp" | "media_plan" | "geo_list" | "reference";
+
+export interface RfpPackageFile {
+  name: string;
+  role: PackageFileRole;
+}
+
+/** An attachment the RFP points to ("see Attachment B"), and the uploaded file that holds it. */
+export interface RfpReferencedAttachment {
+  name: string;
+  /** null when none of the uploaded files is that attachment. */
+  foundInFile: string | null;
+}
+
+export type RfpConflictField = "advertiserName" | "websiteUrl" | "budget" | "flightDates" | "submissionDueDate";
+
+/** Two uploaded files that state different values for the same brief field. */
+export interface RfpFieldConflict {
+  field: RfpConflictField;
+  values: Array<{ value: string; sourceFile: string }>;
 }
 
 export interface RfpAnalysis {
@@ -302,6 +327,12 @@ export interface RfpAnalysis {
   };
   hasExplicitPlacements?: boolean;
   additionalNotes?: string;
+  /** The files read together for this analysis. Absent on single-file analyses saved before. */
+  packageFiles?: RfpPackageFile[];
+  /** Which uploaded file each extracted metadata field came from. */
+  metadataSources?: Partial<Record<string, string>>;
+  referencedAttachments?: RfpReferencedAttachment[];
+  conflicts?: RfpFieldConflict[];
 }
 
 /**

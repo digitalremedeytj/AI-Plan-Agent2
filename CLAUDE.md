@@ -85,7 +85,9 @@ src/research/           Crawl, Brief of Record (the audience every step is built
                         citation-pool filter, segment recommendations, planNarrative
                         (the narrative, written last against the settled plan), and
                         executiveBrief (the post-delivery executive summary: plan snapshot,
-                        fingerprint for the out-of-date badge, fact guards, hand edits).
+                        fingerprint for the out-of-date badge, fact guards, hand edits), and
+                        rfpPackage (an RFP uploaded with its attachments: file roles, the
+                        brief text built from the reading, missing attachments, conflicts).
 src/api/                Typed browser client for the shared store + one-time
                         localStorage migration.
 src/analytics.ts        Google Analytics 4. Never sends a real URL (share tokens) or a name.

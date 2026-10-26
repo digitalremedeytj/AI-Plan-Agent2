@@ -207,7 +207,36 @@ export function readHeldOpenResult(text: string): { status: number; body: any } 
  * heartbeat line every 15 seconds and send the real status and body last (holdOpenForLongRequest
  * in server.ts). A server that does not do this answers with plain JSON, handled as before.
  */
-async function longRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+/**
+ * A held-open response's text, read as it arrives so each progress line reaches onProgress while
+ * the request is still running. Without a stream to read (or a callback) it is read whole.
+ */
+export async function readHeldOpenText(res: Response, onProgress?: (event: any) => void): Promise<string> {
+  if (!onProgress || !res.body) return res.text();
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let pending = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    text += chunk;
+    const lines = (pending + chunk).split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        if (event?.type === "progress") onProgress(event);
+      } catch {
+        // A heartbeat or result line is not progress; a malformed one is skipped either way.
+      }
+    }
+  }
+  return text + decoder.decode();
+}
+
+async function longRequest<T>(path: string, init: RequestInit = {}, onProgress?: (event: any) => void): Promise<T> {
   const headers = getAuthHeaders(init.headers);
   // A file upload sets its own multipart Content-Type, boundary included.
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
@@ -228,7 +257,7 @@ async function longRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
 
   let text = "";
   try {
-    text = await res.text();
+    text = await readHeldOpenText(res, onProgress);
   } catch {
     // The connection dropped mid-response; handled below as a missing result.
   }
@@ -696,9 +725,15 @@ export interface ParsedMediaPlanResponse {
  * Sends a media plan file to the server to read (cached there by file contents). Reading a large
  * plan can take minutes, so it goes as a held-open long request. Errors carry the server's details.
  */
-export async function parseMediaPlanFile(form: FormData): Promise<ParsedMediaPlanResponse> {
+/** One file's progress through a parse: "reading", then "done" or "cached". */
+export interface ParseFileProgress {
+  file: string;
+  status: "reading" | "done" | "cached";
+}
+
+export async function parseMediaPlanFile(form: FormData, onProgress?: (progress: ParseFileProgress) => void): Promise<ParsedMediaPlanResponse> {
   try {
-    return await longRequest<ParsedMediaPlanResponse>("/api/parse-plan", { method: "POST", body: form });
+    return await longRequest<ParsedMediaPlanResponse>("/api/parse-plan", { method: "POST", body: form }, onProgress);
   } catch (err: any) {
     const details = err instanceof ApiError ? err.details : undefined;
     throw details ? new Error(`${err.message}: ${details}`) : err;

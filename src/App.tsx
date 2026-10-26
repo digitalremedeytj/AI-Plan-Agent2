@@ -62,6 +62,7 @@ import { AudienceProfile, type AudienceNarrowing, type Persona, PersonaAvatarVer
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { docxLines } from "./utils/docxText";
 import { rtfLines } from "./utils/rtfText";
+import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, PACKAGE_ACCEPT, PACKAGE_ROLE_LABELS, fileExtension, guessFileRoles, isPackageFileType, packageLabel, suggestGeoTargets, uploadBriefText } from "./research/rfpPackage";
 import { asWebsiteUrl } from "./utils/websiteUrl";
 import { asAdvertiserName } from "./utils/advertiserName";
 import { jsPDF } from "jspdf";
@@ -107,6 +108,8 @@ import {
   topUpCount,
 } from "./research/segmentRecommendations";
 import type { SegmentRecommendation } from "./types";
+import type { PackageFileRole, RfpConflictField } from "./types";
+import { RfpPackageFileList, RfpPackageNotices, type PackageFileStatus } from "./components/RfpPackagePanel";
 import { captureElementToCanvas } from "./utils/html2canvasPolyfill";
 import { CtvPublisherRecommendation } from "./types";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
@@ -532,6 +535,22 @@ async function compressAvatarUrl(url?: string, maxDim = 120, quality = 0.65): Pr
 }
 
 const LAST_DISPLAY_NAME_KEY = "apa_last_display_name";
+
+// One view in the upload preview: a sheet shows as a grid, a document as text, a PDF in the
+// browser's viewer. fileName is the uploaded file it came from.
+type PreviewKind = "sheet" | "document" | "pdf";
+type PreviewSheet = { name: string; rows: any[][]; headers: string[]; diagnostics?: string; fileName?: string; kind?: PreviewKind };
+const DOCUMENT_DIAGNOSTICS = ["Word Document", "Rich Text Document", "Plain Text Document"];
+// Previews cached before kinds existed are told apart by their diagnostics label.
+const previewKind = (sheet: PreviewSheet | undefined): PreviewKind =>
+  sheet?.kind ?? (sheet?.diagnostics === "PDF Document" ? "pdf" : DOCUMENT_DIAGNOSTICS.includes(sheet?.diagnostics || "") ? "document" : "sheet");
+type PackageEntry = { file: File; role: PackageFileRole };
+
+// The uploaded file a brief specification came from; only a package's analysis records one.
+function SpecSource({ analysis, field }: { analysis: RfpAnalysis; field: string }) {
+  const file = analysis.metadataSources?.[field];
+  return file ? <span className="block mt-1.5 text-[10px] font-mono text-slate-400 truncate" title={file}>From {file}</span> : null;
+}
 
 export default function App() {
   // --- AUTHENTICATION -------------------------------------------------------
@@ -975,19 +994,22 @@ export default function App() {
   const [briefMode, setBriefMode] = useState<"text" | "upload">("text");
   const [uploadedFileName, setUploadedFileName] = useState<string>("");
   const [uploadedFileText, setUploadedFileText] = useState<string>("");
-  const [parsedSheetsData, setParsedSheetsData] = useState<Array<{
-    name: string;
-    rows: any[][];
-    headers: string[];
-    diagnostics?: string;
-  }>>([]);
+  const [parsedSheetsData, setParsedSheetsData] = useState<PreviewSheet[]>([]);
   const [extractedPlacements, setExtractedPlacements] = useState<ExtractedPlacement[]>([]);
   const [rfpAnalysis, setRfpAnalysis] = useState<RfpAnalysis | null>(null);
   const [activePlanSubTab, setActivePlanSubTab] = useState<string>("ALL");
   const [isParsingPlan, setIsParsingPlan] = useState<boolean>(false);
   const [parsingError, setParsingError] = useState<string | null>(null);
   const [ignoreCache, setIgnoreCache] = useState<boolean>(false);
-  const lastUploadedFileRef = React.useRef<File | null>(null);
+  // The uploaded package's files, in memory only: a File cannot be saved, so a reopened plan
+  // keeps its parsed results but has no files to re-run.
+  const [packageFiles, setPackageFiles] = useState<PackageEntry[]>([]);
+  const packageUploadRunRef = React.useRef(0);
+  const attachmentInputRef = React.useRef<HTMLInputElement | null>(null);
+  // The location list whose states or DMAs the planner applied to the brief's geography.
+  const [appliedGeoFile, setAppliedGeoFile] = useState<string | null>(null);
+  // Each package file's progress through the parse, by file name, from the server's progress lines.
+  const [packageFileStatus, setPackageFileStatus] = useState<Record<string, PackageFileStatus>>({});
   const mediaPlanFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Media plan option selection & taxonomy state
@@ -2644,59 +2666,42 @@ export default function App() {
     setIsEditingBlueprintTitle(false);
   };
 
-  // File upload and parsing handler using SheetJS (XLSX) with smart client & server caching
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement> | { target: { files: FileList | null } }, forceReparse = false) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    lastUploadedFileRef.current = file;
-    setUploadedFileName(file.name);
-    const extension = file.name.split('.').pop()?.toLowerCase();
-    const fileFingerprint = `${file.name}_${file.size}_${file.lastModified}`;
-    // v2: merged budget/impression cells are split across their line items; older parses are stale.
-    const clientCacheKey = `media_plan_parsed_cache_v2_${fileFingerprint}`;
-
-    const shouldBypassCache = forceReparse || ignoreCache;
-
-    // 1. Instant Client-Side Cache Check: Load cached placements immediately if user re-selects or tests identical file
-    if (!shouldBypassCache) {
-      try {
-        const cachedRaw = localStorage.getItem(clientCacheKey);
-        if (cachedRaw) {
-          const cached = JSON.parse(cachedRaw);
-          if (cached && Array.isArray(cached.extractedPlacements) && cached.extractedPlacements.length > 0) {
-            console.log("⚡ INSTANT CLIENT CACHE HIT: Restored media plan parsing results for", file.name);
-            setUploadedFileText(cached.uploadedFileText || "");
-            setParsedSheetsData(cached.parsedSheetsData || []);
-            setExtractedPlacements(cached.extractedPlacements);
-            setRfpAnalysis(cached.rfpAnalysis || null);
-            // The cached parse skips the reading below, so the brief is filled from it here.
-            applyBriefMetadata(extractCampaignMetadata(cached.parsedSheetsData || []));
-            applyBriefMetadata(cached.rfpAnalysis?.extractedMetadata);
-            setActiveSheetIndex(0);
-            setModalCurrentPage(1);
-            setIsPreviewModalOpen(true);
-            setIsParsingPlan(false);
-            setParsingError(null);
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn("Error reading media plan cache from localStorage:", err);
+  // One uploaded file's preview grid tabs and text. Word and PDF files are binary: read as text
+  // they show their raw bytes, so .docx is unzipped for its text and PDF / legacy .doc get a note
+  // instead (the server-side parse still reads the whole document). RTF is text but mostly markup.
+  const readFilePreview = (file: File): Promise<{ text: string; sheets: PreviewSheet[] }> => new Promise((resolve, reject) => {
+    const extension = fileExtension(file.name);
+    const textPreview = (text: string, rawRows: any[][], diagnostics: string, kind: PreviewKind) => {
+      if (rawRows.length === 0) {
+        throw new Error("Uploaded file is empty.");
       }
-    }
 
-    let localFullText = "";
-    let localSheetsData: any[] = [];
+      // Find the maximum number of columns across all rows in this file
+      const maxCols = Math.max(1, ...rawRows.map(r => r.length));
 
+      // Normalize all rows to have exactly maxCols length
+      const normalizedRows = rawRows.map(row => {
+        const newRow = [...row];
+        while (newRow.length < maxCols) {
+          newRow.push("");
+        }
+        return newRow.map(cell => cell !== null && cell !== undefined ? String(cell).trim() : "");
+      });
+
+      // Generate column letters: A, B, C...
+      const headers = Array.from({ length: maxCols }, (_, i) => getColumnLetter(i));
+      return { text, sheets: [{ name: file.name, rows: normalizedRows, headers, diagnostics, fileName: file.name, kind }] };
+    };
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("The file could not be read."));
     if (extension === 'xlsx' || extension === 'xls') {
-      const reader = new FileReader();
       reader.onload = (evt) => {
         try {
           const data = new Uint8Array(evt.target?.result as ArrayBuffer);
           const workbook = XLSX.read(data, { type: 'array' });
           let fullText = "";
-          const sheetsData: any[] = [];
+          const sheetsData: PreviewSheet[] = [];
 
           workbook.SheetNames.forEach((sheetName) => {
             const sheet = workbook.Sheets[sheetName];
@@ -2768,174 +2773,312 @@ export default function App() {
               name: sheetName,
               rows: normalizedRows,
               headers,
-              diagnostics
+              diagnostics,
+              fileName: file.name,
+              kind: "sheet"
             });
           });
 
           if (sheetsData.length === 0) {
             throw new Error("No data found in any sheet.");
           }
-
-          localFullText = fullText.trim();
-          localSheetsData = sheetsData;
-
-          // Auto extract metadata (Advertiser Name, Website URL, KPIs)
-          applyBriefMetadata(extractCampaignMetadata(sheetsData));
-
-          setUploadedFileText(fullText.trim());
-          setParsedSheetsData(sheetsData);
-          setActiveSheetIndex(0);
-          setModalCurrentPage(1);
-          setIsPreviewModalOpen(true);
-          setError(null);
-        } catch (err: any) {
-          setError("Error reading Excel file: " + err.message);
+          resolve({ text: fullText.trim(), sheets: sheetsData });
+        } catch (err) {
+          reject(err);
         }
       };
       reader.readAsArrayBuffer(file);
-    } else {
-      // CSV, plain TXT, RTF and Word. Word and PDF files are binary: read as text they show their
-      // raw bytes, so .docx is unzipped for its text and PDF / legacy .doc get a note instead (the
-      // server-side parse below still reads the whole document). RTF is text but mostly markup.
-      const isDocx = extension === 'docx';
-      const isBinaryDocument = extension === 'pdf' || extension === 'doc';
-      const showTextRows = (text: string, rawRows: any[][], diagnostics: string) => {
-        localFullText = text;
+      return;
+    }
 
-        if (rawRows.length === 0) {
-          throw new Error("Uploaded file is empty.");
+    if (extension === 'pdf' || extension === 'doc') {
+      // A PDF is shown in the browser's own viewer from the file itself; legacy .doc has none.
+      resolve(textPreview("", [[`A preview isn't available for .${extension} files. ScoutAI reads the full document — see the AI Analysis tab.`]], extension === 'pdf' ? "PDF Document" : "Word Document", extension === 'pdf' ? "pdf" : "document"));
+      return;
+    }
+    const isDocx = extension === 'docx';
+    reader.onload = (evt) => {
+      try {
+        if (isDocx) {
+          const lines = docxLines(new Uint8Array(evt.target?.result as ArrayBuffer));
+          resolve(textPreview(lines.join("\n"), lines.map((line) => [line]), "Word Document", "document"));
+          return;
         }
+        const text = (evt.target?.result as string) || '';
+        if (extension === 'rtf') {
+          const lines = rtfLines(text);
+          resolve(textPreview(lines.join("\n"), lines.map((line) => [line]), "Rich Text Document", "document"));
+          return;
+        }
+        const lines = text.split("\n").filter(l => l.trim() !== "");
+        if (extension === 'csv') {
+          const delim = detectDelimiter(text);
+          resolve(textPreview(text, lines.map((line) => parseCSVLine(line, delim)), "CSV Data Table", "sheet"));
+        } else {
+          resolve(textPreview(text, lines.map((line) => [line]), "Plain Text Document", "document"));
+        }
+      } catch (err) {
+        reject(err);
+      }
+    };
+    if (isDocx) reader.readAsArrayBuffer(file);
+    else reader.readAsText(file);
+  });
 
-        // Find the maximum number of columns across all rows in this file
-        const maxCols = Math.max(1, ...rawRows.map(r => r.length));
+  // An upload is a package: the RFP and the files it came with, each with a role (see
+  // src/research/rfpPackage.ts). One file is a package of one, and the server reads it as before.
+  // Parsing again with smart client & server caching each time the package changes.
+  const handlePackageUpload = async (entries: PackageEntry[], forceReparse = false) => {
+    if (entries.length === 0) return;
+    // A package changed while an earlier one was still parsing must not take that one's results.
+    const run = ++packageUploadRunRef.current;
+    const isCurrent = () => run === packageUploadRunRef.current;
+    const files = entries.map((entry) => entry.file);
+    setPackageFiles(entries);
+    setUploadedFileName(packageLabel(entries.map(({ file, role }) => ({ name: file.name, role }))));
+    setAppliedGeoFile(null);
+    const fileFingerprint = entries.map(({ file, role }) => `${file.name}_${file.size}_${file.lastModified}${entries.length > 1 ? `_${role}` : ""}`).join("|");
+    // v2: merged budget/impression cells are split across their line items; older parses are stale.
+    const clientCacheKey = `media_plan_parsed_cache_v2_${fileFingerprint}`;
 
-        // Normalize all rows to have exactly maxCols length
-        const normalizedRows = rawRows.map(row => {
-          const newRow = [...row];
-          while (newRow.length < maxCols) {
-            newRow.push("");
+    const shouldBypassCache = forceReparse || ignoreCache;
+
+    // 1. Instant Client-Side Cache Check: Load cached placements immediately if user re-selects or tests identical file
+    if (!shouldBypassCache) {
+      try {
+        const cachedRaw = localStorage.getItem(clientCacheKey);
+        if (cachedRaw) {
+          const cached = JSON.parse(cachedRaw);
+          if (cached && Array.isArray(cached.extractedPlacements) && cached.extractedPlacements.length > 0) {
+            console.log("⚡ INSTANT CLIENT CACHE HIT: Restored media plan parsing results for", files.map((file) => file.name).join(", "));
+            setUploadedFileText(cached.uploadedFileText || "");
+            setParsedSheetsData(cached.parsedSheetsData || []);
+            setExtractedPlacements(cached.extractedPlacements);
+            setRfpAnalysis(cached.rfpAnalysis || null);
+            setPackageFileStatus(Object.fromEntries(files.map((file) => [file.name, "cached" as const])));
+            // An RFP's reading is what the planner acts on; a media plan is checked against its sheet.
+            setModalTab(cached.rfpAnalysis ? "ai" : "raw");
+            // The cached parse skips the reading below, so the brief is filled from it here.
+            applyBriefMetadata(extractCampaignMetadata(cached.parsedSheetsData || []));
+            applyBriefMetadata(cached.rfpAnalysis?.extractedMetadata);
+            setActiveSheetIndex(0);
+            setModalCurrentPage(1);
+            setIsPreviewModalOpen(true);
+            setIsParsingPlan(false);
+            setParsingError(null);
+            return;
           }
-          return newRow.map(cell => cell !== null && cell !== undefined ? String(cell).trim() : "");
-        });
+        }
+      } catch (err) {
+        console.warn("Error reading media plan cache from localStorage:", err);
+      }
+    }
 
-        // Generate column letters: A, B, C...
-        const headers = Array.from({ length: maxCols }, (_, i) => getColumnLetter(i));
-
-        const sheetsData = [{
-          name: file.name,
-          rows: normalizedRows,
-          headers,
-          diagnostics
-        }];
-        localSheetsData = sheetsData;
-
+    // The preview grid is read here while the server reads the files; neither waits on the other.
+    const previewRead = Promise.all(files.map((file) => readFilePreview(file).catch((err: any) => {
+      throw new Error(`Error reading "${file.name}": ${err?.message || err}`);
+    }))).then((previews) => {
+      const multiFile = previews.length > 1;
+      const sheets = previews.flatMap((preview, index) => preview.sheets.map((sheet) => (
+        multiFile && sheet.name !== files[index].name ? { ...sheet, name: `${files[index].name} › ${sheet.name}` } : sheet
+      )));
+      const text = multiFile
+        ? previews.map((preview, index) => `--- File: ${files[index].name} ---\n${preview.text}`).join("\n\n")
+        : previews[0].text;
+      if (isCurrent()) {
         // Auto extract metadata (Advertiser Name, Website URL, KPIs)
-        applyBriefMetadata(extractCampaignMetadata(sheetsData));
-
+        applyBriefMetadata(extractCampaignMetadata(sheets));
         setUploadedFileText(text);
-        setParsedSheetsData(sheetsData);
+        setParsedSheetsData(sheets);
         setActiveSheetIndex(0);
         setModalCurrentPage(1);
         setIsPreviewModalOpen(true);
         setError(null);
-      };
-
-      if (isBinaryDocument) {
-        showTextRows("", [[`A preview isn't available for .${extension} files. ScoutAI reads the full document — see the AI-Extracted Content tab.`]], extension === 'pdf' ? "PDF Document" : "Word Document");
-      } else {
-        const reader = new FileReader();
-        reader.onload = (evt) => {
-          try {
-            if (isDocx) {
-              const lines = docxLines(new Uint8Array(evt.target?.result as ArrayBuffer));
-              showTextRows(lines.join("\n"), lines.map((line) => [line]), "Word Document");
-              return;
-            }
-            const text = (evt.target?.result as string) || '';
-            if (extension === 'rtf') {
-              const lines = rtfLines(text);
-              showTextRows(lines.join("\n"), lines.map((line) => [line]), "Rich Text Document");
-              return;
-            }
-            const lines = text.split("\n").filter(l => l.trim() !== "");
-            if (extension === 'csv') {
-              const delim = detectDelimiter(text);
-              showTextRows(text, lines.map((line) => parseCSVLine(line, delim)), "CSV Data Table");
-            } else {
-              showTextRows(text, lines.map((line) => [line]), "Plain Text Document");
-            }
-          } catch (err: any) {
-            setError(`Error reading ${isDocx ? "Word" : extension === 'rtf' ? "RTF" : "text"} file: ` + err.message);
-          }
-        };
-        if (isDocx) reader.readAsArrayBuffer(file);
-        else reader.readAsText(file);
       }
-    }
+      return { text, sheets };
+    }).catch((err: any) => {
+      if (isCurrent()) setError(err.message);
+      return { text: "", sheets: [] as PreviewSheet[] };
+    });
 
     // Launch server-side high-accuracy AI parsing pipeline
     const formData = new FormData();
-    formData.append("file", file);
+    if (entries.length === 1) {
+      formData.append("file", files[0]);
+    } else {
+      for (const file of files) formData.append("files", file);
+      formData.append("roles", JSON.stringify(entries.map((entry) => entry.role)));
+    }
     if (shouldBypassCache) {
       formData.append("ignoreCache", "true");
     }
 
     setIsParsingPlan(true);
     setParsingError(null);
+    setPackageFileStatus(Object.fromEntries(files.map((file) => [file.name, "waiting" as const])));
     setModalTab("raw"); // Default to raw grid on upload
     setExtractedPlacements([]); // Reset previous
+    setRfpAnalysis(null);
 
-    // A held-open long request: reading a large plan can outlast Cloudflare's 100-second limit.
-    api.parseMediaPlanFile(formData)
-      .then((data: any) => {
-        if (data.success && data.placements) {
-          setExtractedPlacements(data.placements);
-          if (data.rfpAnalysis) {
-            setRfpAnalysis(data.rfpAnalysis);
-            applyBriefMetadata(data.rfpAnalysis.extractedMetadata);
-          } else {
-            setRfpAnalysis(null);
-          }
-          setActivePlanSubTab("ALL");
-          console.log("AI Parsed Placements:", data.placements, data.rfpAnalysis ? "(RFP Analyzed)" : "", data.cached ? "(Server Cache Hit)" : "(Fresh Parse)");
-
-          // Save parsed output to client-side localStorage cache
-          try {
-            const cachePayload = {
-              uploadedFileText: localFullText,
-              parsedSheetsData: localSheetsData,
-              extractedPlacements: data.placements,
-              rfpAnalysis: data.rfpAnalysis || null,
-              timestamp: Date.now()
-            };
-            // Clean up old parsed_plan_file_ keys to keep localStorage clean
-            for (let i = 0; i < localStorage.length; i++) {
-              const k = localStorage.key(i);
-              if (k && k.startsWith("media_plan_parsed_cache_") && k !== clientCacheKey) {
-                localStorage.removeItem(k);
-              }
-            }
-            localStorage.setItem(clientCacheKey, JSON.stringify(cachePayload));
-          } catch (cacheErr) {
-            console.warn("Could not save parsed media plan to localStorage:", cacheErr);
-          }
-        } else {
-          console.warn("AI parsing completed but did not return expected placements structure", data);
-          setParsingError("AI parsing completed but did not return expected placements structure.");
-        }
-      })
-      .catch((err: any) => {
-        console.error("Error during server-side AI parsing:", err);
-        setParsingError(err.message || String(err));
-      })
-      .finally(() => {
-        setIsParsingPlan(false);
+    try {
+      // A held-open long request: reading a large plan can outlast Cloudflare's 100-second limit.
+      const data: any = await api.parseMediaPlanFile(formData, (progress) => {
+        if (isCurrent()) setPackageFileStatus((prev) => ({ ...prev, [progress.file]: progress.status }));
       });
+      if (!isCurrent()) return;
+      // A response without progress lines (plain JSON) still means every file was read.
+      setPackageFileStatus((prev) => Object.fromEntries(files.map((file) => [file.name, prev[file.name] === "cached" ? "cached" as const : "done" as const])));
+      if (data.success && data.placements) {
+        setExtractedPlacements(data.placements);
+        if (data.rfpAnalysis) {
+          setRfpAnalysis(data.rfpAnalysis);
+          applyBriefMetadata(data.rfpAnalysis.extractedMetadata);
+          // An RFP's reading is what the planner acts on; a media plan is checked against its sheet.
+          setModalTab("ai");
+        } else {
+          setRfpAnalysis(null);
+        }
+        setActivePlanSubTab("ALL");
+        console.log("AI Parsed Placements:", data.placements, data.rfpAnalysis ? "(RFP Analyzed)" : "", data.cached ? "(Server Cache Hit)" : "(Fresh Parse)");
+
+        // Save parsed output to client-side localStorage cache
+        const preview = await previewRead;
+        try {
+          const cachePayload = {
+            uploadedFileText: preview.text,
+            parsedSheetsData: preview.sheets,
+            extractedPlacements: data.placements,
+            rfpAnalysis: data.rfpAnalysis || null,
+            timestamp: Date.now()
+          };
+          // Clean up old parsed_plan_file_ keys to keep localStorage clean
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith("media_plan_parsed_cache_") && k !== clientCacheKey) {
+              localStorage.removeItem(k);
+            }
+          }
+          localStorage.setItem(clientCacheKey, JSON.stringify(cachePayload));
+        } catch (cacheErr) {
+          console.warn("Could not save parsed media plan to localStorage:", cacheErr);
+        }
+      } else {
+        console.warn("AI parsing completed but did not return expected placements structure", data);
+        setParsingError("AI parsing completed but did not return expected placements structure.");
+      }
+    } catch (err: any) {
+      console.error("Error during server-side AI parsing:", err);
+      if (isCurrent()) {
+        setParsingError(err.message || String(err));
+        setPackageFileStatus((prev) => Object.fromEntries(files.map((file) => [file.name, prev[file.name] === "done" || prev[file.name] === "cached" ? prev[file.name] : "failed" as const])));
+      }
+    } finally {
+      if (isCurrent()) setIsParsingPlan(false);
+    }
   };
 
+  // Choosing files starts a new package; "Add attachment" adds to the one already uploaded.
+  const handleFilesChosen = (list: FileList | File[] | null, mode: "replace" | "add") => {
+    const chosen = Array.from(list || []);
+    if (chosen.length === 0) return;
+    const unsupported = chosen.filter((file) => !isPackageFileType(file.name));
+    if (unsupported.length > 0) {
+      setParsingError(`${unsupported.map((file) => file.name).join(", ")}: only PDF, Word, RTF, text, CSV and Excel files can be uploaded.`);
+      return;
+    }
+    const tooBig = chosen.filter((file) => file.size > MAX_PACKAGE_FILE_BYTES);
+    if (tooBig.length > 0) {
+      setParsingError(`${tooBig.map((file) => file.name).join(", ")}: each file must be under ${Math.round(MAX_PACKAGE_FILE_BYTES / 1024 / 1024)} MB.`);
+      return;
+    }
+    // Adding a file with the name of one already in the package replaces it.
+    const kept = mode === "add" ? packageFiles.filter((entry) => !chosen.some((file) => file.name === entry.file.name)) : [];
+    const all = [...kept.map((entry) => entry.file), ...chosen];
+    if (all.length > MAX_PACKAGE_FILES) {
+      setParsingError(`Upload at most ${MAX_PACKAGE_FILES} files: the RFP and up to ${MAX_PACKAGE_FILES - 1} attachments.`);
+      return;
+    }
+    // Roles the planner already set are kept; new files are guessed against the whole package.
+    const guessed = guessFileRoles(all.map((file) => file.name));
+    const hasRfp = kept.some((entry) => entry.role === "rfp");
+    handlePackageUpload(all.map((file, index) => ({
+      file,
+      role: kept[index]?.role ?? (hasRfp && guessed[index] === "rfp" ? "reference" : guessed[index]),
+    })));
+  };
+
+  const handlePackageRoleChange = (index: number, role: PackageFileRole) => {
+    // One RFP per package: choosing another demotes the old one to an attachment.
+    handlePackageUpload(packageFiles.map((entry, i) => (
+      i === index ? { ...entry, role } : role === "rfp" && entry.role === "rfp" ? { ...entry, role: "reference" as const } : entry
+    )));
+  };
+
+  const clearUploadedPackage = () => {
+    packageUploadRunRef.current++;
+    setPackageFiles([]);
+    setUploadedFileName("");
+    setUploadedFileText("");
+    setParsedSheetsData([]);
+    setExtractedPlacements([]);
+    setRfpAnalysis(null);
+    setIsParsingPlan(false);
+    setAppliedGeoFile(null);
+  };
+
+  const handleRemovePackageFile = (index: number) => {
+    const remaining = packageFiles.filter((_, i) => i !== index);
+    if (remaining.length === 0) clearUploadedPackage();
+    else handlePackageUpload(remaining);
+  };
+
+  // The planner's pick between two files that disagree becomes the RFP's value.
+  const handlePickRfpConflict = (field: RfpConflictField, value: string) => {
+    setRfpAnalysis((prev) => prev && {
+      ...prev,
+      extractedMetadata: {
+        ...prev.extractedMetadata,
+        [field]: field === "budget" ? Number(value.replace(/[^\d.]/g, "")) || prev.extractedMetadata?.budget : value,
+      },
+      conflicts: (prev.conflicts || []).filter((conflict) => conflict.field !== field),
+    });
+    if (field === "advertiserName") {
+      const advertiser = asAdvertiserName(value);
+      if (advertiser) setAdvertiserName(advertiser);
+    }
+    if (field === "websiteUrl") {
+      const websiteUrl = asWebsiteUrl(value);
+      if (websiteUrl) setUrl(websiteUrl);
+    }
+  };
+
+  // States or DMAs each location list in the package could target, for the planner to apply.
+  const packageGeoSuggestions = React.useMemo(() => packageFiles
+    .filter((entry) => entry.role === "geo_list")
+    .flatMap((entry) => {
+      const sheet = parsedSheetsData.find((candidate) => (candidate as PreviewSheet).fileName === entry.file.name);
+      const suggestion = sheet ? suggestGeoTargets(sheet.rows) : null;
+      return suggestion ? [{ fileName: entry.file.name, ...suggestion }] : [];
+    }), [packageFiles, parsedSheetsData]);
+
+  // Object URLs for the package's PDFs, shown in the preview with the browser's own viewer.
+  const packagePdfUrls = React.useMemo(() => new Map(packageFiles
+    .filter((entry) => fileExtension(entry.file.name) === "pdf")
+    .map((entry) => [entry.file.name, URL.createObjectURL(entry.file)] as const)), [packageFiles]);
+  React.useEffect(() => () => packagePdfUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl)), [packagePdfUrls]);
+
+  const handleApplyPackageGeo = (suggestion: { fileName: string; type: "State" | "DMA"; targets: string[] }) => {
+    setGeographyType(suggestion.type);
+    setGeoTargets(suggestion.targets);
+    setGeoRawInput("");
+    setGeoUnrecognized([]);
+    setAppliedGeoFile(suggestion.fileName);
+  };
+
+  // Re-run parsing on the uploaded package
   const handleReRunAnalysis = () => {
-    if (lastUploadedFileRef.current) {
-      handleFileUpload({ target: { files: [lastUploadedFileRef.current] as any } } as any, true);
+    if (packageFiles.length > 0) {
+      handlePackageUpload(packageFiles, true);
     }
   };
 
@@ -3024,7 +3167,7 @@ export default function App() {
         body: JSON.stringify({
           advertiserName,
           kpis: kpis.filter((k) => k.trim().length > 0),
-          audienceDescription: briefMode === "upload" ? `[Media Plan / RFP: ${uploadedFileName || 'Uploaded File'}]\n\n${(uploadedFileText || '').slice(0, 1500)}` : audienceDescription,
+          audienceDescription: briefMode === "upload" ? uploadBriefText(uploadedFileName, rfpAnalysis, uploadedFileText || "") : audienceDescription,
           url,
           geography,
           campaignFocus,
@@ -3548,7 +3691,9 @@ export default function App() {
     setBudgetStrategyMode("reallocation");
     setAdditionalBudgetInput("");
     setChannelStrategyUndo(null);
-    if (lastUploadedFileRef.current) lastUploadedFileRef.current = null;
+    packageUploadRunRef.current++;
+    setPackageFiles([]);
+    setAppliedGeoFile(null);
     if (geoFileInputRef.current) geoFileInputRef.current.value = "";
     if (mediaPlanFileInputRef.current) mediaPlanFileInputRef.current.value = "";
 
@@ -4885,8 +5030,11 @@ export default function App() {
                       <input
                         ref={mediaPlanFileInputRef}
                         type="file"
-                        accept=".pdf,.doc,.docx,.rtf,.txt,.csv,.xlsx,.xls"
-                        onChange={handleFileUpload}
+                        accept={PACKAGE_ACCEPT}
+                        multiple
+                        // With files already uploaded, more files join them: a planner dropping an attachment
+                        // in expects it beside the RFP, not in place of it. Remove starts over.
+                        onChange={(e) => { handleFilesChosen(e.target.files, packageFiles.length > 0 ? "add" : "replace"); e.target.value = ""; }}
                         className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
                       />
                       <div className="flex flex-col items-center space-y-2">
@@ -4898,16 +5046,49 @@ export default function App() {
                             <div className="inline-flex items-center space-x-1.5 bg-emerald-50 border border-emerald-100 text-emerald-800 px-2.5 py-1 rounded-lg">
                               <span className="text-xs font-semibold truncate max-w-[200px]">{uploadedFileName}</span>
                             </div>
-                            <p className="text-[10px] text-slate-400">Tap or drag to replace file</p>
+                            <p className="text-[10px] text-slate-400">
+                              {packageFiles.length >= MAX_PACKAGE_FILES ? `${MAX_PACKAGE_FILES} files is the limit; remove one to add another` : "Tap or drag to add attachments"}
+                            </p>
                           </div>
                         ) : (
                           <div className="flex flex-col items-center space-y-1">
-                            <span className="text-xs font-semibold text-slate-600">Drag & drop or tap to select file</span>
-                            <span className="text-[10px] text-slate-400">Supports .pdf, .docx, .rtf, .xlsx, .xls, .csv, .txt</span>
+                            <span className="text-xs font-semibold text-slate-600">Drag & drop or tap to select files</span>
+                            <span className="text-[10px] text-slate-400">An RFP and up to {MAX_PACKAGE_FILES - 1} attachments: .pdf, .docx, .rtf, .xlsx, .xls, .csv, .txt</span>
                           </div>
                         )}
                       </div>
                     </div>
+
+                    <input
+                      ref={attachmentInputRef}
+                      type="file"
+                      accept={PACKAGE_ACCEPT}
+                      multiple
+                      className="hidden"
+                      onChange={(e) => { handleFilesChosen(e.target.files, "add"); e.target.value = ""; }}
+                    />
+                    {packageFiles.length > 0 && (
+                      <RfpPackageFileList
+                        files={packageFiles.map(({ file, role }) => ({ name: file.name, role }))}
+                        statuses={packageFileStatus}
+                        disabled={isParsingPlan}
+                        canAdd={packageFiles.length < MAX_PACKAGE_FILES}
+                        onRoleChange={handlePackageRoleChange}
+                        onRemove={handleRemovePackageFile}
+                        onAdd={() => attachmentInputRef.current?.click()}
+                      />
+                    )}
+                    {!isParsingPlan && (
+                      <RfpPackageNotices
+                        analysis={rfpAnalysis}
+                        geoSuggestions={packageGeoSuggestions}
+                        appliedGeoFile={appliedGeoFile}
+                        canAdd={packageFiles.length > 0 && packageFiles.length < MAX_PACKAGE_FILES}
+                        onAdd={() => attachmentInputRef.current?.click()}
+                        onPickConflict={handlePickRfpConflict}
+                        onApplyGeo={handleApplyPackageGeo}
+                      />
+                    )}
 
                     {/* Ignore Cache Toggle & Re-run Control under Dropzone */}
                     <div className="mt-2.5 bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 space-y-2">
@@ -4932,7 +5113,7 @@ export default function App() {
                         </span>
                       </div>
 
-                      {uploadedFileName && lastUploadedFileRef.current && (
+                      {uploadedFileName && packageFiles.length > 0 && (
                         <div className="pt-1.5 border-t border-slate-200/60 flex items-center justify-between text-[10px]">
                           <span className="text-slate-500">
                             {ignoreCache ? "Cache disabled — file will re-parse" : "Uploads will use cached results"}
@@ -4961,17 +5142,11 @@ export default function App() {
                           className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer"
                         >
                           <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-                          AI-Extracted Content & Analysis
+                          AI Analysis & Source Content
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            setUploadedFileName("");
-                            setUploadedFileText("");
-                            setParsedSheetsData([]);
-                            setExtractedPlacements([]);
-                            setRfpAnalysis(null);
-                          }}
+                          onClick={clearUploadedPackage}
                           className="text-[10px] text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
                         >
                           Remove
@@ -4984,7 +5159,11 @@ export default function App() {
                       <div className="mt-3 p-3.5 bg-indigo-50/90 border border-indigo-200/80 rounded-xl flex items-center gap-3 text-indigo-900 shadow-xs">
                         <Loader2 className="w-5 h-5 text-indigo-600 animate-spin shrink-0" />
                         <div>
-                          <p className="text-xs font-bold leading-snug">Parsing and analyzing upload, this may take a minute or two.</p>
+                          <p className="text-xs font-bold leading-snug">
+                            {packageFiles.length > 1
+                              ? `Reading ${packageFiles.length} files: ${packageFiles.filter((entry) => ["done", "cached"].includes(packageFileStatus[entry.file.name])).length} of ${packageFiles.length} read. This may take a minute or two.`
+                              : "Parsing and analyzing upload, this may take a minute or two."}
+                          </p>
                           <p className="text-[10px] text-indigo-600/80 mt-0.5">Analyzing RFP document text, images/screenshots, capability asks, and media lines...</p>
                         </div>
                       </div>
@@ -5173,7 +5352,7 @@ export default function App() {
                             className="text-xs font-bold text-emerald-400 hover:text-emerald-300 hover:underline flex items-center gap-1 cursor-pointer bg-slate-800/90 px-3 py-1.5 rounded-lg border border-slate-700"
                           >
                             <Eye className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>Inspect Full AI-Extracted Content & Analysis &rarr;</span>
+                            <span>Inspect AI Analysis & Source Content &rarr;</span>
                           </button>
                         </div>
                       </div>
@@ -8431,47 +8610,105 @@ export default function App() {
               {/* Left Sidebar: Tabs and Key-Value Insights */}
               <div className="w-full md:w-[280px] shrink-0 bg-slate-50/50 border-b md:border-b-0 md:border-r border-slate-100 p-4 overflow-y-auto custom-scrollbar flex flex-col gap-5">
                 
-                {/* Workbook Tabs Section */}
-                {parsedSheetsData.length > 1 && (
-                  <div className="space-y-1.5 shrink-0">
-                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                      Workbook Tabs / Sheets
-                    </h4>
-                    <div className="flex md:flex-col gap-2 md:gap-1.5 overflow-x-auto md:overflow-x-visible pb-2 md:pb-0 snap-x">
-                      {parsedSheetsData.map((sheet, index) => (
+                {/* Files Section: each uploaded file, with a workbook's sheets under it */}
+                <div className="space-y-1.5 shrink-0">
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    {packageFiles.length > 1 ? `Files (${packageFiles.length})` : "File"}
+                  </h4>
+                  <div className="flex md:flex-col gap-2 md:gap-1.5 overflow-x-auto md:overflow-x-visible pb-2 md:pb-0 snap-x">
+                    {(() => {
+                      const groups: Array<{ fileName: string; sheets: Array<{ sheet: PreviewSheet; index: number }> }> = [];
+                      parsedSheetsData.forEach((sheet, index) => {
+                        const fileName = sheet.fileName || sheet.name;
+                        const group = groups.find((candidate) => candidate.fileName === fileName);
+                        if (group) group.sheets.push({ sheet, index });
+                        else groups.push({ fileName, sheets: [{ sheet, index }] });
+                      });
+                      const countLabel = (sheet: PreviewSheet) => {
+                        const kind = previewKind(sheet);
+                        return kind === "pdf" ? "PDF" : `${sheet.rows.length} ${kind === "document" ? (sheet.rows.length === 1 ? "paragraph" : "paragraphs") : (sheet.rows.length === 1 ? "row" : "rows")}`;
+                      };
+                      const selectSheet = (index: number) => {
+                        setActiveSheetIndex(index);
+                        setModalCurrentPage(1);
+                        setModalSearchQuery("");
+                      };
+                      const sheetButton = (sheet: PreviewSheet, index: number, label: string, nested: boolean) => (
                         <button
                           key={index}
                           type="button"
-                          onClick={() => {
-                            setActiveSheetIndex(index);
-                            setModalCurrentPage(1);
-                            setModalSearchQuery("");
-                          }}
-                          className={`text-left text-xs font-semibold px-3 py-2 rounded-xl transition-all flex items-center justify-between shrink-0 md:shrink border cursor-pointer w-full ${
+                          onClick={() => selectSheet(index)}
+                          className={`text-left text-xs font-semibold px-3 py-2 rounded-xl transition-all flex items-center justify-between shrink-0 md:shrink border cursor-pointer w-full ${nested ? "md:pl-7" : ""} ${
                             activeSheetIndex === index
                               ? "bg-white text-indigo-700 shadow-xs border-indigo-200 font-bold"
                               : "text-slate-600 hover:bg-slate-100/60 border-transparent hover:text-slate-900"
                           }`}
                         >
-                          <span className="truncate max-w-[140px]">{sheet.name}</span>
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            {!nested && (previewKind(sheet) === "sheet"
+                              ? <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
+                              : <FileText className="w-3.5 h-3.5 shrink-0 text-slate-400" />)}
+                            <span className="truncate max-w-[140px]" title={label}>{label}</span>
+                          </span>
                           <span className="text-[10px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded-md font-mono shrink-0 ml-2">
-                            {sheet.rows.length} rows
+                            {countLabel(sheet)}
                           </span>
                         </button>
-                      ))}
-                    </div>
+                      );
+                      return groups.map((group) => {
+                        const role = packageFiles.find((entry) => entry.file.name === group.fileName)?.role;
+                        const roleChip = role && packageFiles.length > 1 && (
+                          <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100 shrink-0">
+                            {PACKAGE_ROLE_LABELS[role]}
+                          </span>
+                        );
+                        if (group.sheets.length === 1) {
+                          const { sheet, index } = group.sheets[0];
+                          return (
+                            <div key={group.fileName} className="space-y-1 shrink-0 md:shrink">
+                              {sheetButton(sheet, index, group.fileName, false)}
+                              {roleChip && <div className="px-3">{roleChip}</div>}
+                            </div>
+                          );
+                        }
+                        // A workbook: the file is a heading and each of its sheets can be opened.
+                        return (
+                          <div key={group.fileName} className="space-y-1 shrink-0 md:shrink">
+                            <div className="flex items-center gap-1.5 px-3 pt-1 text-xs font-bold text-slate-700 min-w-0">
+                              <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
+                              <span className="truncate" title={group.fileName}>{group.fileName}</span>
+                              {roleChip}
+                            </div>
+                            {group.sheets.map(({ sheet, index }) => sheetButton(sheet, index, sheet.name.split(" › ").pop() || sheet.name, true))}
+                          </div>
+                        );
+                      });
+                    })()}
                   </div>
-                )}
+                </div>
 
                 {/* Key-Value Extracted Metadata Section */}
                 {(() => {
-                  const meta = extractMetadata(parsedSheetsData[activeSheetIndex]?.rows || []);
+                  const activeSheet = parsedSheetsData[activeSheetIndex];
+                  const isSheet = previewKind(activeSheet) === "sheet";
+                  // The top-rows scan reads label/value cells, which only a sheet has; a document's
+                  // key details come from ScoutAI's reading of it instead.
+                  const rfpMeta = rfpAnalysis?.extractedMetadata;
+                  const meta = isSheet
+                    ? extractMetadata(activeSheet?.rows || [])
+                    : [
+                        { key: "Advertiser", value: rfpMeta?.advertiserName },
+                        { key: "Website", value: rfpMeta?.websiteUrl },
+                        { key: "Budget", value: Number(rfpMeta?.budget) > 0 ? `$${Math.round(Number(rfpMeta?.budget)).toLocaleString()}` : "" },
+                        { key: "Flight", value: rfpMeta?.flightDates },
+                        { key: "Due", value: rfpMeta?.submissionDueDate },
+                      ].filter((item): item is { key: string; value: string } => Boolean(item.value));
                   return (
                     <div className="space-y-3">
                       <div className="flex items-center gap-1.5 border-b border-slate-200/60 pb-1.5">
                         <Info className="w-3.5 h-3.5 text-indigo-500" />
                         <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                          Extracted Key Insights
+                          {isSheet ? "Extracted Key Insights" : "Key Details"}
                         </h4>
                       </div>
                       
@@ -8490,8 +8727,12 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="bg-white/40 border border-dashed border-slate-200 p-3 rounded-xl text-center">
-                          <p className="text-[10px] text-slate-400 italic">
-                            No standard metadata headers (such as Advertiser, Brand, Campaign, Planner) detected in the top rows of this sheet.
+                          <p className="text-[10px] text-slate-400 italic flex items-center justify-center gap-1.5">
+                            {isSheet
+                              ? "No standard metadata headers (such as Advertiser, Brand, Campaign, Planner) detected in the top rows of this sheet."
+                              : isParsingPlan
+                                ? <><Loader2 className="w-3 h-3 animate-spin" /> ScoutAI is reading the document...</>
+                                : "No advertiser, budget or dates were found in the document."}
                           </p>
                         </div>
                       )}
@@ -8505,7 +8746,11 @@ export default function App() {
                     <ShieldCheck className="w-3 h-3 text-indigo-600" />
                     <span>Privacy & Clean Analysis</span>
                   </p>
-                  <span>This visual grid displays raw cell ranges with full integrity. Contact info can be safely ignored; only media targeting, publishers, placements, and buy models will be analyzed for the final plan.</span>
+                  <span>
+                    {previewKind(parsedSheetsData[activeSheetIndex]) === "sheet"
+                      ? "This visual grid displays raw cell ranges with full integrity. Contact info can be safely ignored; only media targeting, publishers, placements, and buy models will be analyzed for the final plan."
+                      : "Source Content shows the file as uploaded. Contact info can be safely ignored; ScoutAI's reading of the brief is on the AI Analysis tab."}
+                  </span>
                 </div>
               </div>
 
@@ -8523,7 +8768,7 @@ export default function App() {
                     }`}
                   >
                     <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-                    <span>AI-Extracted Content</span>
+                    <span>AI Analysis</span>
                     {extractedPlacements.length > 0 && (
                       <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono bg-indigo-100 text-indigo-700 font-bold">
                         {extractedPlacements.length}
@@ -8531,7 +8776,7 @@ export default function App() {
                     )}
                     {isParsingPlan && <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />}
                   </button>
-                  {!rfpAnalysis && parsedSheetsData.length > 0 && (
+                  {parsedSheetsData.length > 0 && (
                     <button
                       onClick={() => setModalTab("raw")}
                       className={`pb-2 px-3 text-xs font-semibold border-b-2 transition-all cursor-pointer ${
@@ -8540,12 +8785,12 @@ export default function App() {
                           : "border-transparent text-slate-500 hover:text-slate-800"
                       }`}
                     >
-                      Spreadsheet Data Grid
+                      Source Content
                     </button>
                   )}
                 </div>
 
-                {modalTab === "raw" && !rfpAnalysis ? (
+                {modalTab === "raw" ? (
                   <>
                     {/* Controls Bar */}
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4 shrink-0">
@@ -8560,18 +8805,27 @@ export default function App() {
                           )}
                         </h4>
                         <p className="text-xs text-slate-400">
-                          Total Rows: {parsedSheetsData[activeSheetIndex]?.rows?.length || 0} | Columns: {parsedSheetsData[activeSheetIndex]?.headers?.length || 0}
+                          {(() => {
+                            const activeSheet = parsedSheetsData[activeSheetIndex];
+                            const rowCount = activeSheet?.rows?.length || 0;
+                            const kind = previewKind(activeSheet);
+                            if (kind === "pdf") return packagePdfUrls.has(activeSheet?.fileName || "") ? "Shown in your browser's PDF viewer" : "";
+                            if (kind === "document") return `${rowCount} ${rowCount === 1 ? "paragraph" : "paragraphs"}`;
+                            const columnCount = activeSheet?.headers?.length || 0;
+                            return `${rowCount} ${rowCount === 1 ? "row" : "rows"} · ${columnCount} ${columnCount === 1 ? "column" : "columns"}`;
+                          })()}
                         </p>
                       </div>
 
                       {/* In-Modal Filter / Search */}
+                      {previewKind(parsedSheetsData[activeSheetIndex]) !== "pdf" && (
                       <div className="relative w-full sm:w-[280px]">
                         <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
                           <Target className="w-3.5 h-3.5" />
                         </span>
                         <input
                           type="text"
-                          placeholder="Search rows in this tab..."
+                          placeholder={previewKind(parsedSheetsData[activeSheetIndex]) === "document" ? "Search this document..." : "Search this sheet..."}
                           value={modalSearchQuery}
                           onChange={(e) => {
                             setModalSearchQuery(e.target.value);
@@ -8588,6 +8842,7 @@ export default function App() {
                           </button>
                         )}
                       </div>
+                      )}
                     </div>
 
                     {/* Tabular Grid Table */}
@@ -8598,6 +8853,34 @@ export default function App() {
                           return (
                             <div className="text-center py-12 text-slate-400 text-xs">
                               No data found in this sheet.
+                            </div>
+                          );
+                        }
+                        const kind = previewKind(activeSheet);
+                        const pdfUrl = kind === "pdf" ? packagePdfUrls.get(activeSheet.fileName || "") : undefined;
+                        if (pdfUrl) {
+                          return <iframe src={pdfUrl} title={activeSheet.name} className="w-full h-full min-h-[480px] border-0 rounded-xl" />;
+                        }
+                        if (kind !== "sheet") {
+                          // A document reads as text: no row numbers or column letters. A table row
+                          // inside it keeps its cells, joined the way the reader joined them.
+                          const query = modalSearchQuery.toLowerCase();
+                          const paragraphs = activeSheet.rows.map((row) => String(row[0] ?? "")).filter((text) => !query || text.toLowerCase().includes(query));
+                          return (
+                            <div className="px-6 py-5 max-w-3xl space-y-3 text-sm leading-relaxed text-slate-700">
+                              {paragraphs.map((text, index) => (
+                                <p key={index} className={`whitespace-pre-wrap ${text.includes(" | ") ? "font-mono text-xs bg-slate-50 rounded px-2 py-1" : ""}`}>{text}</p>
+                              ))}
+                              {paragraphs.length === 0 && (
+                                <p className="text-center py-12 text-slate-400 text-xs">
+                                  No paragraphs match your search: <strong className="font-semibold text-slate-600">"{modalSearchQuery}"</strong>
+                                </p>
+                              )}
+                              {modalSearchQuery && paragraphs.length > 0 && (
+                                <p className="text-xs text-slate-400 pt-2 border-t border-slate-100">
+                                  {paragraphs.length} of {activeSheet.rows.length} paragraphs match.
+                                </p>
+                              )}
                             </div>
                           );
                         }
@@ -8702,7 +8985,7 @@ export default function App() {
                                 <span className="font-bold text-slate-800">
                                   {Math.min(startIndex + rowsPerPage, totalRows)}
                                 </span>{" "}
-                                of <span className="font-bold text-slate-800">{totalRows}</span> filtered rows
+                                of <span className="font-bold text-slate-800">{totalRows}</span> {modalSearchQuery ? "matching rows" : "rows"}
                                 {modalSearchQuery && (
                                   <span> (filtered from {activeSheet?.rows?.length || 0} total)</span>
                                 )}
@@ -8751,6 +9034,15 @@ export default function App() {
                         {/* RFP Brief Analysis & Capability Section */}
                         {rfpAnalysis && (
                           <div className="space-y-4">
+                            <RfpPackageNotices
+                              analysis={rfpAnalysis}
+                              geoSuggestions={packageGeoSuggestions}
+                              appliedGeoFile={appliedGeoFile}
+                              canAdd={packageFiles.length > 0 && packageFiles.length < MAX_PACKAGE_FILES}
+                              onAdd={() => attachmentInputRef.current?.click()}
+                              onPickConflict={handlePickRfpConflict}
+                              onApplyGeo={handleApplyPackageGeo}
+                            />
                             {/* Executive Summary */}
                             {rfpAnalysis.rfpSummary && (
                               <div className="bg-slate-900 text-white p-4 rounded-xl border border-slate-800 space-y-1.5 shadow-xs">
@@ -8775,12 +9067,14 @@ export default function App() {
                                     <div className="bg-white p-2.5 rounded-lg border border-slate-200/60 shadow-2xs">
                                       <span className="text-slate-400 font-bold block text-[10px] uppercase mb-0.5">Flight Dates</span>
                                       <span className="font-mono text-slate-800 font-semibold">{rfpAnalysis.extractedMetadata.flightDates}</span>
+                                      <SpecSource analysis={rfpAnalysis} field="flightDates" />
                                     </div>
                                   )}
                                   {rfpAnalysis.extractedMetadata.submissionDueDate && (
                                     <div className="bg-white p-2.5 rounded-lg border border-slate-200/60 shadow-2xs">
                                       <span className="text-slate-400 font-bold block text-[10px] uppercase mb-0.5">Submission Due Date</span>
                                       <span className="font-mono text-amber-700 font-bold">{rfpAnalysis.extractedMetadata.submissionDueDate}</span>
+                                      <SpecSource analysis={rfpAnalysis} field="submissionDueDate" />
                                     </div>
                                   )}
                                   {rfpAnalysis.extractedMetadata.targetAudiences && rfpAnalysis.extractedMetadata.targetAudiences.length > 0 && (
@@ -8793,6 +9087,7 @@ export default function App() {
                                           </span>
                                         ))}
                                       </div>
+                                      <SpecSource analysis={rfpAnalysis} field="targetAudiences" />
                                     </div>
                                   )}
                                   {rfpAnalysis.extractedMetadata.geographies && rfpAnalysis.extractedMetadata.geographies.length > 0 && (
@@ -8805,12 +9100,14 @@ export default function App() {
                                           </span>
                                         ))}
                                       </div>
+                                      <SpecSource analysis={rfpAnalysis} field="geographies" />
                                     </div>
                                   )}
                                   {rfpAnalysis.extractedMetadata.paymentTerms && (
                                     <div className="bg-white p-2.5 rounded-lg border border-slate-200/60 shadow-2xs">
                                       <span className="text-slate-400 font-bold block text-[10px] uppercase mb-0.5">Payment Terms</span>
                                       <span className="text-slate-800 font-medium">{rfpAnalysis.extractedMetadata.paymentTerms}</span>
+                                      <SpecSource analysis={rfpAnalysis} field="paymentTerms" />
                                     </div>
                                   )}
                                   {rfpAnalysis.extractedMetadata.reportingRequirements && rfpAnalysis.extractedMetadata.reportingRequirements.length > 0 && (
@@ -8821,6 +9118,7 @@ export default function App() {
                                           <li key={idx}>{rep}</li>
                                         ))}
                                       </ul>
+                                      <SpecSource analysis={rfpAnalysis} field="reportingRequirements" />
                                     </div>
                                   )}
                                 </div>
@@ -8850,6 +9148,9 @@ export default function App() {
                                       <p className="text-xs text-slate-600 leading-relaxed">
                                         {match.capabilityDetails}
                                       </p>
+                                      {match.sourceFile && (
+                                        <p className="text-[10px] font-mono text-slate-400 truncate" title={match.sourceFile}>From {match.sourceFile}</p>
+                                      )}
                                     </div>
                                   ))}
                                 </div>

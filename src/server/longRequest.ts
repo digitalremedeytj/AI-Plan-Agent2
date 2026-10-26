@@ -14,6 +14,7 @@ import type { Request, Response } from "express";
  * is unchanged. A client that does not ask still gets a plain JSON response.
  *
  * The real status is kept in res.locals.finalStatus for anything that reports the outcome.
+ * A route may also send progress lines (sendLongRequestProgress) for a client to show.
  */
 export function holdOpenForLongRequest(req: Request, res: Response, heartbeatMs = 15000): void {
   if (!String(req.get("accept") || "").includes("application/x-ndjson")) return;
@@ -25,6 +26,7 @@ export function holdOpenForLongRequest(req: Request, res: Response, heartbeatMs 
   const beat = setInterval(() => res.write(`{"type":"heartbeat"}\n`), heartbeatMs);
   res.on("close", () => clearInterval(beat));
   res.locals.finalStatus = 200;
+  res.locals.heldOpen = true;
   res.status = ((code: number) => {
     res.locals.finalStatus = code;
     return res;
@@ -34,4 +36,13 @@ export function holdOpenForLongRequest(req: Request, res: Response, heartbeatMs 
     res.end(`${JSON.stringify({ type: "result", status: res.locals.finalStatus, body })}\n`);
     return res;
   }) as typeof res.json;
+}
+
+/**
+ * A progress line on a held-open response ({"type":"progress", ...}), which longRequest passes to
+ * its onProgress. A plain JSON response cannot carry one, so it is dropped there.
+ */
+export function sendLongRequestProgress(res: Response, progress: Record<string, unknown>): void {
+  if (!res.locals.heldOpen || res.writableEnded) return;
+  res.write(`${JSON.stringify({ ...progress, type: "progress" })}\n`);
 }

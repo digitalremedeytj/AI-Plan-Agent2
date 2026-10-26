@@ -25,7 +25,7 @@ import { ASK_SYSTEM_INSTRUCTION, askBlocksAsText, askKnownText, askResponseSchem
 import { filterScoutLogs, sanitizeReviewFilters } from "./src/scoutReview/scoutReviewData";
 import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
-import { holdOpenForLongRequest } from "./src/server/longRequest";
+import { holdOpenForLongRequest, sendLongRequestProgress } from "./src/server/longRequest";
 import { knownPeople, suggestNames, type KnownPerson } from "./src/usage/knownPeople";
 import {
   actorName,
@@ -96,7 +96,8 @@ import { throttledProgress } from "./src/server/thoughtProgress";
 import { EVIDENCE_RULES } from "./src/qa/evidenceRules";
 import type { ResearchDossierText } from "./src/qa/claimLedger";
 import { extractFindingBlurb } from "./src/research/findingBlurb";
-import type { GenerationLogEntry } from "./src/types";
+import type { GenerationLogEntry, PackageFileRole, RfpPackageFile } from "./src/types";
+import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, guessFileRoles, normalizeRfpAnalysis } from "./src/research/rfpPackage";
 import { CHART_SHAPE_GUIDANCE, chartRealismProblems, findUnrealisticCharts, labelEstimatedPoints, realismFixes } from "./src/qa/chartRealism";
 import { applyAudienceSkews, audienceSkewSchema, chartsNeedingBaselineEstimates, describeBaselines } from "./src/qa/baselineEstimates";
 import { NATIONAL_BASELINES } from "./src/planning/knowledge/nationalBaselines";
@@ -1301,91 +1302,11 @@ async function buildChannelStrategy(
 }
 
 // API: Parse media plan spreadsheet using OpenAI Code Interpreter (gpt-5.6)
-app.post("/api/parse-plan", upload.single("file"), async (req, res) => {
-  // Prevent Express or Node from timing out socket connections on this long-running parsing endpoint
-  req.socket.setTimeout(0);
-  // A large plan can take minutes to read, past Cloudflare's 100-second limit on a silent request.
-  holdOpenForLongRequest(req, res);
-
-  console.log(`[API /api/parse-plan] Request received. file: ${req.file ? req.file.originalname : "none"}`);
-  if (!req.file) {
-    res.status(400).json({ error: "No file was uploaded." });
-    return;
-  }
-
-  const tempFilePath = req.file.path;
-  const originalName = req.file.originalname || "";
-  const ext = path.extname(originalName) || ".xlsx";
-  const extensionTempPath = tempFilePath + ext;
-
-  let fileUploadId = "";
-  let openai;
-  
-  try {
-    openai = getOpenaiClient();
-  } catch (initErr: any) {
-    res.status(500).json({ error: "Media plan parser service configuration error.", details: initErr.message || initErr });
-    return;
-  }
-
-  try {
-    // Rename temp file to preserve original extension for OpenAI Files API
-    fs.renameSync(tempFilePath, extensionTempPath);
-    console.log(`[API /api/parse-plan] Renamed temp file to preserve extension: ${extensionTempPath}`);
-
-    // Compute SHA-256 hash of file contents for instant session caching
-    const fileBuffer = fs.readFileSync(extensionTempPath);
-    // The parser version is part of the key so a parser fix re-reads files parsed before it.
-    const fileHash = crypto.createHash("sha256").update(MEDIA_PLAN_PARSER_VERSION).update(fileBuffer).digest("hex");
-    console.log(`[API /api/parse-plan] File SHA-256 hash: ${fileHash}`);
-
-    const ignoreCache = req.body?.ignoreCache === "true" || req.body?.ignoreCache === true || req.query?.ignoreCache === "true";
-
-    if (!ignoreCache && mediaPlanParseCache.has(fileHash)) {
-      const cached = mediaPlanParseCache.get(fileHash)!;
-      console.log(`[API /api/parse-plan] CACHE HIT for media plan hash ${fileHash} ("${originalName}"). Returning ${cached.placements.length} cached placements instantly.`);
-
-      // Clean up local temp files immediately
-      try {
-        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-        if (fs.existsSync(extensionTempPath)) fs.unlinkSync(extensionTempPath);
-      } catch (cleanErr) {}
-
-      res.json({
-        success: true,
-        placements: cached.placements,
-        rfpAnalysis: cached.rfpAnalysis,
-        cached: true,
-        cachedAt: new Date(cached.timestamp).toISOString()
-      });
-      return;
-    } else if (ignoreCache) {
-      console.log(`[API /api/parse-plan] CACHE BYPASS requested for media plan hash ${fileHash} ("${originalName}"). Re-running full AI analysis.`);
-    }
-
-    console.log(`[API /api/parse-plan] Uploading file to OpenAI Files API: ${originalName}`);
-    
-    // 1. Upload file to OpenAI with toFile for robust multipart boundary and contentType
-    const mimeType = req.file?.mimetype || "application/octet-stream";
-    console.log(`[API /api/parse-plan] File MIME type: ${mimeType}`);
-    
-    const lowerName = originalName.toLowerCase();
-    const isPdfOrDoc = lowerName.endsWith('.pdf') || lowerName.endsWith('.doc') || lowerName.endsWith('.docx') || lowerName.endsWith('.rtf') || lowerName.endsWith('.txt') || mimeType.includes('pdf');
-
-    const fileUpload = await openai.files.create({
-      file: await toFile(fileBuffer, originalName, { type: mimeType }),
-      purpose: "assistants",
-    });
-    fileUploadId = fileUpload.id;
-    console.log(`[API /api/parse-plan] Upload successful. OpenAI file_id: ${fileUploadId} (isPdfOrDoc=${isPdfOrDoc})`);
-
-    // 2. Instructions based on file type (Spreadsheet vs PDF/Doc RFP)
-    let parseInstructions = "";
-
-    if (isPdfOrDoc) {
-      parseInstructions = `You are an expert RFP analysis and media strategy agent for Digital Remedy.
+// The RFP reading, for one document or (with rfpPackageInstructions) the files it came with.
+function rfpParseInstructions(fileNameLine: string): string {
+  return `You are an expert RFP analysis and media strategy agent for Digital Remedy.
 You have been provided with an uploaded document (PDF/Word/Text) which represents a Request for Proposal (RFP), brief, or client guidelines.
-The uploaded file is named: "${originalName.replace(/["\n\r]/g, "").slice(0, 200)}"
+${fileNameLine}
 PDF documents may contain text, embedded data tables, diagrams, workflow charts, or screenshots/images of campaign specifications or past performance.
 
 --- DIGITAL REMEDY OFFICIAL COMPANY CONTEXT ---
@@ -1440,8 +1361,37 @@ Output ONLY a raw JSON object with NO markdown code block wrapping:
   },
   "placements": []
 }`;
-    } else {
-      parseInstructions = `You are an expert media plan extraction agent. You have been given a media plan spreadsheet with potentially multiple sheets.
+}
+
+const PACKAGE_ROLE_DESCRIPTIONS: Record<PackageFileRole, string> = {
+  rfp: "the RFP itself",
+  reference: "an attachment to the RFP",
+  geo_list: "a location list attached to the RFP",
+  media_plan: "a media plan attached to the RFP; its placements are read separately, so it is not among your files",
+};
+
+// Appended when the RFP came as several files. They are read in one call so that a reference
+// from one to another ("the ports in Attachment B") resolves: read apart, neither side knows.
+function rfpPackageInstructions(files: RfpPackageFile[]): string {
+  const clean = (name: string) => name.replace(/["\n\r]/g, "").slice(0, 200);
+  return `
+
+--- THIS RFP ARRIVED AS ${files.length} FILES ---
+They are one request. The files:
+${files.map((file) => `- "${clean(file.name)}": ${PACKAGE_ROLE_DESCRIPTIONS[file.role]}`).join("\n")}
+
+PACKAGE RULES:
+1. When a file refers to another ("the ports in Attachment B", "see the attached market list"), find that file among the ones above and use what it holds. Put a location list's locations in "geographies" (with the city and state when the file gives them; past 40 entries, summarize as e.g. "47 ports (full list in <file>)"), and its audiences, budgets and dates in their fields.
+2. Name files exactly as listed above, never by their path in the sandbox.
+3. Add these fields to the JSON object:
+  "referencedAttachments": every attachment, appendix, exhibit, schedule or separate document any file refers to: [{"name": "Attachment B (Port List)", "foundInFile": "<the listed file that is it, or null when none of them is>"}]. An empty array when no file refers to another.
+  "metadataSources": for each extractedMetadata field you filled, the listed file it came from, e.g. {"budget": "<file>", "geographies": "<file>"}.
+  "conflicts": only when two files state different values for the same field: [{"field": "advertiserName" | "websiteUrl" | "budget" | "flightDates" | "submissionDueDate", "values": [{"value": "...", "sourceFile": "<file>"}]}]. Use the RFP's value in extractedMetadata. An empty array when the files agree.
+4. Add "sourceFile" (a listed file name) to each digitalRemedyCapabilityMatches item: the file the ask came from.`;
+}
+
+function spreadsheetParseInstructions(): string {
+  return `You are an expert media plan extraction agent. You have been given a media plan spreadsheet with potentially multiple sheets.
 Some of these sheets may contain extremely large reference lists (e.g., lists of thousands of zip codes, DOOH venues, or creative specs) which are NOT media plan placements. Loading or parsing these massive sheets will cause timeouts or memory crashes. You must bypass them.
 
 Your goal is to write and run Python code using pandas/openpyxl to inspect and extract ONLY the active media plan placements sheets (typically containing between 10 to 300 rows and representing publishers/networks, placements, ad types, CPM, budgets).
@@ -1832,119 +1782,255 @@ else:
 \`\`\`
 
 Write a Python script that implements the above logic, execute it in the sandboxed environment with Code Interpreter on the uploaded spreadsheet, and print the raw JSON output list directly. Ensure no markdown wrapping is in the final printed response output.`;
-    }
+}
 
-    console.log(`[API /api/parse-plan] Requesting high-accuracy parsing from gpt-5.6 with code_interpreter...`);
+const SINGLE_FILE_REQUEST = "Please read this file, extract the media placements using Python code_interpreter, and output them as a clean JSON array.";
+const PACKAGE_REQUEST = "Please read these files together as one RFP using Python code_interpreter, and output the JSON object described.";
+// Part of the package cache key: bump when the package instructions change what a package reads to.
+const RFP_PACKAGE_VERSION = "1";
 
-    // 3. Call responses.create with gpt-5.6 and code_interpreter
-    const response = await openai.responses.create({
-      model: "gpt-5.6",
-      tools: [
-        {
-          type: "code_interpreter",
-          container: { type: "auto", memory_limit: "4g" },
-        },
-      ],
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_file",
-              file_id: fileUploadId,
-            },
-            {
-              type: "input_text",
-              text: "Please read this file, extract the media placements using Python code_interpreter, and output them as a clean JSON array.",
-            },
-          ],
-        },
-      ],
-      instructions: parseInstructions,
-    });
+// A model reply that is not the JSON asked for. The raw reply goes back as details, as it always has.
+class PlanParseError extends Error {
+  constructor(message: string, readonly details: string) {
+    super(message);
+  }
+}
 
-    const outputText = response.output_text || "";
-    console.log(`[API /api/parse-plan] Parsing call completed. Response length: ${outputText.length}`);
+function parseModelJson(outputText: string, fileName: string): any {
+  let jsonText = outputText.trim();
+  if (jsonText.startsWith("```")) {
+    jsonText = jsonText.replace(/^```[a-zA-Z]*\n/, "").replace(/\n```$/, "");
+  }
+  try {
+    return JSON.parse(jsonText.trim());
+  } catch (parseErr) {
+    console.error(`Failed to parse LLM response text as JSON for "${fileName}":`, parseErr);
+    console.log("Raw response output_text was:", outputText);
+    throw new PlanParseError(`Failed to parse "${fileName}" into valid JSON.`, outputText);
+  }
+}
 
-    // Clean up any markdown code blocks if the model wrapped it anyway
-    let jsonText = outputText.trim();
-    if (jsonText.startsWith("```")) {
-      jsonText = jsonText.replace(/^```[a-zA-Z]*\n/, "").replace(/\n```$/, "");
-    }
-    jsonText = jsonText.trim();
+async function runPlanParse(openai: OpenAI, fileIds: string[], instructions: string, request: string): Promise<string> {
+  const response = await openai.responses.create({
+    model: "gpt-5.6",
+    tools: [
+      {
+        type: "code_interpreter",
+        container: { type: "auto", memory_limit: "4g" },
+      },
+    ],
+    input: [
+      {
+        role: "user",
+        content: [
+          ...fileIds.map((fileId) => ({ type: "input_file" as const, file_id: fileId })),
+          { type: "input_text" as const, text: request },
+        ],
+      },
+    ],
+    instructions,
+  });
+  return response.output_text || "";
+}
 
-    try {
-      const parsedData = JSON.parse(jsonText);
-      let placements: any[] = [];
-      let rfpAnalysis: any = null;
+// A lone document is read as an RFP and a lone spreadsheet as a media plan, as before packages.
+function isDocumentUpload(name: string, mimeType: string): boolean {
+  const lower = name.toLowerCase();
+  return [".pdf", ".doc", ".docx", ".rtf", ".txt"].some((ext) => lower.endsWith(ext)) || mimeType.includes("pdf");
+}
 
-      if (Array.isArray(parsedData)) {
-        placements = parsedData;
-      } else if (parsedData && typeof parsedData === "object") {
-        placements = Array.isArray(parsedData.placements) ? parsedData.placements : [];
-        if (parsedData.isRfpDocument || parsedData.rfpSummary || parsedData.digitalRemedyCapabilityMatches) {
-          rfpAnalysis = {
-            isRfpDocument: parsedData.isRfpDocument ?? true,
-            hasExplicitPlacements: parsedData.hasExplicitPlacements ?? (placements.length > 0),
-            rfpSummary: parsedData.rfpSummary || "",
-            rfpAsksAndQuestions: parsedData.rfpAsksAndQuestions || [],
-            digitalRemedyCapabilityMatches: parsedData.digitalRemedyCapabilityMatches || [],
-            extractedMetadata: parsedData.extractedMetadata || {}
-          };
-        }
-      }
+const PACKAGE_ROLES: PackageFileRole[] = ["rfp", "media_plan", "geo_list", "reference"];
 
-      mediaPlanParseCache.set(fileHash, {
-        placements,
-        rfpAnalysis,
-        filename: originalName,
-        hash: fileHash,
-        timestamp: Date.now()
-      });
-      saveMediaPlanCacheToDisk(mediaPlanParseCache);
-      console.log(`[API /api/parse-plan] Saved parsed placements (${placements.length} items) & RFP analysis to disk cache for hash ${fileHash}.`);
+function packageRoles(raw: unknown, names: string[]): PackageFileRole[] {
+  try {
+    const roles = typeof raw === "string" ? JSON.parse(raw) : null;
+    if (Array.isArray(roles) && roles.length === names.length && roles.every((role) => PACKAGE_ROLES.includes(role))) return roles;
+  } catch {}
+  return guessFileRoles(names);
+}
 
-      res.json({ success: true, placements, rfpAnalysis, cached: false });
-    } catch (parseErr) {
-      console.error("Failed to parse LLM response text as JSON:", parseErr);
-      console.log("Raw response output_text was:", outputText);
-      res.status(500).json({
-        error: "Failed to parse placements into valid JSON.",
-        details: outputText
-      });
-    }
+const planUpload = multer({ dest: os.tmpdir(), limits: { fileSize: MAX_PACKAGE_FILE_BYTES, files: MAX_PACKAGE_FILES } });
 
-  } catch (error: any) {
-    console.error("Error in /api/parse-plan:", error);
-    res.status(500).json({ error: "Failed to parse media plan.", details: error.message || error });
-  } finally {
-    // 4. Cleanup local temp files
-    try {
-      if (fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
-        console.log(`[API /api/parse-plan] Cleaned up local file: ${tempFilePath}`);
-      }
-    } catch (cleanupErr) {
-      console.error("Failed to delete local temp file:", cleanupErr);
-    }
-    try {
-      if (fs.existsSync(extensionTempPath)) {
-        fs.unlinkSync(extensionTempPath);
-        console.log(`[API /api/parse-plan] Cleaned up local extension file: ${extensionTempPath}`);
-      }
-    } catch (cleanupErr) {
-      console.error("Failed to delete local extension temp file:", cleanupErr);
-    }
+// "file" is the single upload every caller sent before packages; "files" is a package.
+const receivePlanFiles: express.RequestHandler = (req, res, next) => {
+  planUpload.fields([{ name: "file", maxCount: 1 }, { name: "files", maxCount: MAX_PACKAGE_FILES }])(req, res, (err: any) => {
+    if (!err) return next();
+    const message = err?.code === "LIMIT_FILE_SIZE"
+      ? `Each file must be under ${Math.round(MAX_PACKAGE_FILE_BYTES / 1024 / 1024)} MB.`
+      : err?.code === "LIMIT_FILE_COUNT" || err?.code === "LIMIT_UNEXPECTED_FILE"
+        ? `Upload at most ${MAX_PACKAGE_FILES} files at once.`
+        : "The upload could not be read.";
+    res.status(400).json({ error: message, details: err?.message || String(err) });
+  });
+};
 
-    // 5. Cleanup OpenAI file
-    if (fileUploadId && openai) {
+interface UploadedPlanFile {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+  hash: string;
+  role: PackageFileRole;
+}
+
+app.post("/api/parse-plan", receivePlanFiles, async (req, res) => {
+  // Prevent Express or Node from timing out socket connections on this long-running parsing endpoint
+  req.socket.setTimeout(0);
+  // A large plan can take minutes to read, past Cloudflare's 100-second limit on a silent request.
+  holdOpenForLongRequest(req, res);
+
+  const fields = (req.files || {}) as Record<string, Express.Multer.File[]>;
+  const received = [...(fields.file || []), ...(fields.files || [])];
+  console.log(`[API /api/parse-plan] Request received. files: ${received.map((file) => file.originalname).join(", ") || "none"}`);
+
+  const tempPaths = received.map((file) => file.path);
+  const openaiFileIds: string[] = [];
+  const cleanUp = async (openai?: OpenAI) => {
+    for (const tempPath of tempPaths) {
       try {
-        await openai.files.delete(fileUploadId);
-        console.log(`[API /api/parse-plan] Cleaned up OpenAI file: ${fileUploadId}`);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      } catch (cleanupErr) {
+        console.error("Failed to delete local temp file:", cleanupErr);
+      }
+    }
+    for (const fileId of openai ? openaiFileIds : []) {
+      try {
+        await openai!.files.delete(fileId);
+        console.log(`[API /api/parse-plan] Cleaned up OpenAI file: ${fileId}`);
       } catch (openaiCleanupErr) {
         console.error("Failed to delete file from OpenAI:", openaiCleanupErr);
       }
     }
+  };
+
+  if (received.length === 0) {
+    res.status(400).json({ error: "No file was uploaded." });
+    return;
+  }
+
+  let openai: OpenAI;
+  try {
+    openai = getOpenaiClient();
+  } catch (initErr: any) {
+    await cleanUp();
+    res.status(500).json({ error: "Media plan parser service configuration error.", details: initErr.message || initErr });
+    return;
+  }
+
+  try {
+    const names = received.map((file, index) => file.originalname || `upload-${index + 1}`);
+    const roles = received.length === 1
+      ? [isDocumentUpload(names[0], received[0].mimetype || "") ? "rfp" as const : "media_plan" as const]
+      : packageRoles(req.body?.roles, names);
+    const files: UploadedPlanFile[] = received.map((file, index) => {
+      // OpenAI reads a file by its extension, which multer's temp name drops.
+      const extensionPath = file.path + (path.extname(names[index]) || ".xlsx");
+      fs.renameSync(file.path, extensionPath);
+      tempPaths.push(extensionPath);
+      const buffer = fs.readFileSync(extensionPath);
+      return {
+        name: names[index],
+        mimeType: file.mimetype || "application/octet-stream",
+        buffer,
+        // The parser version is part of the key so a parser fix re-reads files parsed before it.
+        hash: crypto.createHash("sha256").update(MEDIA_PLAN_PARSER_VERSION).update(buffer).digest("hex"),
+        role: roles[index],
+      };
+    });
+    const packageFiles: RfpPackageFile[] = files.map((file) => ({ name: file.name, role: file.role }));
+    console.log(`[API /api/parse-plan] Files: ${files.map((file) => `${file.name} (${file.role}, ${file.hash.slice(0, 12)})`).join("; ")}`);
+
+    const ignoreCache = req.body?.ignoreCache === "true" || req.body?.ignoreCache === true || req.query?.ignoreCache === "true";
+    if (ignoreCache) console.log(`[API /api/parse-plan] CACHE BYPASS requested. Re-running full AI analysis.`);
+    const cachedEntry = (key: string) => (ignoreCache ? undefined : mediaPlanParseCache.get(key));
+    const remember = (key: string, filename: string, placements: any[], rfpAnalysis: any) => {
+      mediaPlanParseCache.set(key, { placements, rfpAnalysis, filename, hash: key, timestamp: Date.now() });
+      saveMediaPlanCacheToDisk(mediaPlanParseCache);
+    };
+    const uploadToOpenai = async (file: UploadedPlanFile) => {
+      const uploaded = await openai.files.create({
+        file: await toFile(file.buffer, file.name, { type: file.mimeType }),
+        purpose: "assistants",
+      });
+      openaiFileIds.push(uploaded.id);
+      console.log(`[API /api/parse-plan] Uploaded "${file.name}" to OpenAI: ${uploaded.id}`);
+      return uploaded.id;
+    };
+
+    // Each file's progress, for the upload's file list: the files read together finish together.
+    const progress = (group: UploadedPlanFile[], status: "reading" | "done" | "cached") => {
+      for (const file of group) sendLongRequestProgress(res, { file: file.name, status });
+    };
+
+    const extractPlacements = async (file: UploadedPlanFile) => {
+      const hit = cachedEntry(file.hash);
+      progress([file], hit ? "cached" : "reading");
+      if (hit) {
+        console.log(`[API /api/parse-plan] CACHE HIT for "${file.name}": ${hit.placements.length} placements.`);
+        return { placements: hit.placements, cached: true };
+      }
+      const outputText = await runPlanParse(openai, [await uploadToOpenai(file)], spreadsheetParseInstructions(), SINGLE_FILE_REQUEST);
+      const parsed = parseModelJson(outputText, file.name);
+      const placements: any[] = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.placements) ? parsed.placements : [];
+      remember(file.hash, file.name, placements, null);
+      progress([file], "done");
+      console.log(`[API /api/parse-plan] Read ${placements.length} placements from "${file.name}".`);
+      return { placements, cached: false };
+    };
+
+    // Everything but the media plans is read in one call, so references between files resolve.
+    const readTogether = files.filter((file) => file.role !== "media_plan");
+    const analyzeRfp = async () => {
+      const cleanName = (name: string) => name.replace(/["\n\r]/g, "").slice(0, 200);
+      const primary = readTogether.find((file) => file.role === "rfp") ?? readTogether[0];
+      // The package key covers every file and its role, since the instructions list them all.
+      const key = files.length === 1
+        ? files[0].hash
+        : crypto.createHash("sha256").update(`package-${RFP_PACKAGE_VERSION}`).update(files.map((file) => `${file.hash}:${file.role}`).sort().join("|")).digest("hex");
+      const hit = cachedEntry(key);
+      progress(readTogether, hit ? "cached" : "reading");
+      if (hit) {
+        console.log(`[API /api/parse-plan] CACHE HIT for the RFP reading of ${files.length} file(s).`);
+        return { placements: hit.placements, rfpAnalysis: hit.rfpAnalysis ?? null, cached: true };
+      }
+      const instructions = files.length === 1
+        ? rfpParseInstructions(`The uploaded file is named: "${cleanName(primary.name)}"`)
+        : rfpParseInstructions(`The RFP file is named: "${cleanName(primary.name)}"`) + rfpPackageInstructions(packageFiles);
+      const fileIds = await Promise.all(readTogether.map(uploadToOpenai));
+      const outputText = await runPlanParse(openai, fileIds, instructions, files.length === 1 ? SINGLE_FILE_REQUEST : PACKAGE_REQUEST);
+      const parsed = parseModelJson(outputText, primary.name);
+      const placements: any[] = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.placements) ? parsed.placements : [];
+      const rfpAnalysis = normalizeRfpAnalysis(parsed, packageFiles, placements.length);
+      remember(key, primary.name, placements, rfpAnalysis);
+      progress(readTogether, "done");
+      console.log(`[API /api/parse-plan] Read the RFP from ${readTogether.length} file(s): ${placements.length} placements, ${rfpAnalysis ? "RFP analyzed" : "no RFP analysis"}.`);
+      return { placements, rfpAnalysis, cached: false };
+    };
+
+    console.log(`[API /api/parse-plan] Requesting parsing from gpt-5.6 with code_interpreter...`);
+    const mediaPlans = files.filter((file) => file.role === "media_plan");
+    const [planResults, rfpResult] = await Promise.all([
+      Promise.all(mediaPlans.map(extractPlacements)),
+      readTogether.length > 0 ? analyzeRfp() : Promise.resolve(null),
+    ]);
+
+    // Two media plans can both have a sheet called "Media Plan", so each keeps its file's name.
+    const placements = [
+      ...(rfpResult?.placements ?? []),
+      ...planResults.flatMap((result, index) => mediaPlans.length > 1
+        ? result.placements.map((placement: any) => ({ ...placement, planName: `${path.parse(mediaPlans[index].name).name} - ${placement?.planName || "Main Plan"}` }))
+        : result.placements),
+    ];
+    const cached = planResults.every((result) => result.cached) && (rfpResult?.cached ?? true);
+    res.json({ success: true, placements, rfpAnalysis: rfpResult?.rfpAnalysis ?? null, cached, files: packageFiles });
+  } catch (error: any) {
+    if (error instanceof PlanParseError) {
+      res.status(500).json({ error: error.message, details: error.details });
+    } else {
+      console.error("Error in /api/parse-plan:", error);
+      res.status(500).json({ error: "Failed to parse media plan.", details: error.message || error });
+    }
+  } finally {
+    await cleanUp(openai);
   }
 });
 

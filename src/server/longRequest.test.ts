@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
 import type { AddressInfo } from "node:net";
-import { holdOpenForLongRequest } from "./longRequest";
-import { readHeldOpenResult } from "../api/client";
+import { holdOpenForLongRequest, sendLongRequestProgress } from "./longRequest";
+import { readHeldOpenResult, readHeldOpenText } from "../api/client";
 
 // A route that answers after `delayMs`, like a recap waiting on the model.
 async function serve(delayMs: number, status: number, body: unknown) {
@@ -55,4 +55,43 @@ test("a client that does not ask for it gets the plain JSON response as before",
 test("a response cut off before its result is reported as missing, not as success", () => {
   assert.equal(readHeldOpenResult('{"type":"heartbeat"}\n{"type":"heartbeat"}\n'), null);
   assert.equal(readHeldOpenResult('{"type":"heartbeat"}\n{"type":"resu'), null);
+});
+
+test("progress lines reach the client while the request is still running, and the result still arrives", async () => {
+  const app = express();
+  app.post("/steps", (req, res) => {
+    holdOpenForLongRequest(req, res, 1000);
+    sendLongRequestProgress(res, { file: "RFP.pdf", status: "reading" });
+    setTimeout(() => sendLongRequestProgress(res, { file: "RFP.pdf", status: "done" }), 20);
+    setTimeout(() => res.json({ ok: true }), 60);
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const seen: Array<{ status: string; at: number }> = [];
+    const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/steps`, { method: "POST", headers: { Accept: "application/x-ndjson" } });
+    const text = await readHeldOpenText(res, (event) => seen.push({ status: event.status, at: Date.now() }));
+
+    assert.deepEqual(seen.map((event) => event.status), ["reading", "done"]);
+    assert.deepEqual(readHeldOpenResult(text), { status: 200, body: { ok: true } });
+  } finally {
+    server.close();
+  }
+});
+
+test("a plain JSON response has nowhere to put progress, so it is left out", async () => {
+  const app = express();
+  app.post("/plain", (req, res) => {
+    holdOpenForLongRequest(req, res);
+    sendLongRequestProgress(res, { file: "RFP.pdf", status: "reading" });
+    res.json({ ok: true });
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/plain`, { method: "POST" });
+    assert.deepEqual(await res.json(), { ok: true });
+  } finally {
+    server.close();
+  }
 });

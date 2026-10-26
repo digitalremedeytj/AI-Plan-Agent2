@@ -18,8 +18,10 @@ const SYMBOLS: Record<string, string> = {
 };
 
 // \'hh escapes are bytes in the document's ANSI code page; Windows-1252 is what Word and
-// TextEdit write for Western text, and its 0x80-0x9F range is where curly quotes live.
-const cp1252 = new TextDecoder("windows-1252");
+// TextEdit write for Western text. It is Latin-1 except 0x80-0x9F, where curly quotes and dashes
+// live. Mapped here rather than with TextDecoder, which Node 22 decodes as plain Latin-1.
+const CP1252_HIGH = "€\u0081‚ƒ„…†‡ˆ‰Š‹Œ\u008DŽ\u008F\u0090‘’“”•–—˜™š›œ\u009DžŸ";
+const cp1252 = (byte: number) => (byte >= 0x80 && byte <= 0x9f ? CP1252_HIGH[byte - 0x80] : String.fromCharCode(byte));
 
 /**
  * The document body as lines: one per paragraph, and one per table row with its cells joined
@@ -74,7 +76,7 @@ export function rtfLines(rtf: string): string[] {
         if (next === "'") {
           const byte = parseInt(rtf.slice(i + 1, i + 3), 16);
           i += 2;
-          if (Number.isFinite(byte)) emit(cp1252.decode(new Uint8Array([byte])));
+          if (Number.isFinite(byte)) emit(cp1252(byte));
         } else if (next === "*") state.skip = true;
         // A backslash before a line break is a paragraph mark; TextEdit writes them this way.
         else if (next === "\n" || next === "\r") emit("\n");
