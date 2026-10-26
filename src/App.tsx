@@ -62,7 +62,7 @@ import { AudienceProfile, type AudienceNarrowing, type Persona, PersonaAvatarVer
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { docxLines } from "./utils/docxText";
 import { rtfLines } from "./utils/rtfText";
-import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, PACKAGE_ACCEPT, PACKAGE_ROLE_LABELS, fileExtension, guessFileRoles, isPackageFileType, packageLabel, suggestGeoTargets, uploadBriefText } from "./research/rfpPackage";
+import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, PACKAGE_ACCEPT, PACKAGE_ROLE_LABELS, fileExtension, guessFileRoles, isPackageFileType, packageLabel, plannerNotesLimit, suggestGeoTargets, uploadBriefText, uploadBriefWithNotes } from "./research/rfpPackage";
 import { asWebsiteUrl } from "./utils/websiteUrl";
 import { asAdvertiserName } from "./utils/advertiserName";
 import { jsPDF } from "jspdf";
@@ -991,7 +991,6 @@ export default function App() {
   };
 
   // Media plan upload states
-  const [briefMode, setBriefMode] = useState<"text" | "upload">("text");
   const [uploadedFileName, setUploadedFileName] = useState<string>("");
   const [uploadedFileText, setUploadedFileText] = useState<string>("");
   const [parsedSheetsData, setParsedSheetsData] = useState<PreviewSheet[]>([]);
@@ -1004,6 +1003,11 @@ export default function App() {
   // The uploaded package's files, in memory only: a File cannot be saved, so a reopened plan
   // keeps its parsed results but has no files to re-run.
   const [packageFiles, setPackageFiles] = useState<PackageEntry[]>([]);
+  // The brief is one field that also takes files, so the mode follows what is attached: an RFP
+  // cannot steer a run from behind a tab the planner has switched away from. A saved plan
+  // restores its reading but not its files, and reopens as a text brief, as it always has.
+  const briefMode: "text" | "upload" = packageFiles.length > 0 ? "upload" : "text";
+  const [isBriefDragOver, setIsBriefDragOver] = useState<boolean>(false);
   const packageUploadRunRef = React.useRef(0);
   const attachmentInputRef = React.useRef<HTMLInputElement | null>(null);
   // The location list whose states or DMAs the planner applied to the brief's geography.
@@ -3091,7 +3095,7 @@ export default function App() {
 
     if (briefMode === "upload") {
       if (!uploadedFileText && !rfpAnalysis && extractedPlacements.length === 0) {
-        setError("Please upload a media plan or RFP file first.");
+        setError("The attached files have not been read yet. Wait for them, or remove them to run from the text alone.");
         return;
       }
       if (!url) {
@@ -3167,7 +3171,7 @@ export default function App() {
         body: JSON.stringify({
           advertiserName,
           kpis: kpis.filter((k) => k.trim().length > 0),
-          audienceDescription: briefMode === "upload" ? uploadBriefText(uploadedFileName, rfpAnalysis, uploadedFileText || "") : audienceDescription,
+          audienceDescription: briefMode === "upload" ? uploadBriefWithNotes(uploadBriefText(uploadedFileName, rfpAnalysis, uploadedFileText || ""), audienceDescription) : audienceDescription,
           url,
           geography,
           campaignFocus,
@@ -3677,7 +3681,6 @@ export default function App() {
     setTargetPersonas(["", "", "", ""]);
 
     // Reset media plan upload & parsing states
-    setBriefMode("text");
     setUploadedFileName("");
     setUploadedFileText("");
     setParsedSheetsData([]);
@@ -4975,98 +4978,92 @@ export default function App() {
           {!isShareView && leftTab === "brief" ? (
             <form onSubmit={(e) => handleGenerate(e)} className="flex flex-col flex-1 min-h-0">
               <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
-                <div className="flex items-center gap-2 mb-1">
+                <div className="flex items-center gap-2 mb-3">
                   <Target className="w-4 h-4 text-indigo-600" />
                   <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Media Brief Parameters</h2>
                 </div>
 
-                <div className="flex bg-slate-100 p-1 rounded-xl gap-1 mb-2">
-                  <button
-                    type="button"
-                    onClick={() => setBriefMode("text")}
-                    className={`flex-1 text-center py-1.5 px-2 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
-                      briefMode === "text"
-                        ? "bg-white text-slate-800 shadow-xs"
-                        : "text-slate-500 hover:text-slate-800"
+                {/* Input 1: the brief, typed, uploaded as an RFP with its attachments, or both */}
+                <div>
+                  <label htmlFor="brief-text" className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                    <FileText className="w-3.5 h-3.5 text-slate-400" />
+                    Brief
+                  </label>
+                  <textarea
+                    id="brief-text"
+                    value={audienceDescription}
+                    onChange={(e) => setAudienceDescription(e.target.value)}
+                    placeholder="Add notes about the plan or audience (Optional)"
+                    className="w-full h-20 text-sm px-3 py-2 border border-slate-200 rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-none placeholder:text-slate-400"
+                  />
+                  {briefMode === "upload" && audienceDescription.trim().length > plannerNotesLimit(uploadBriefText(uploadedFileName, rfpAnalysis, uploadedFileText || "")) && (
+                    <p className="text-[10px] text-amber-700 mt-1 leading-normal">
+                      Only the first {plannerNotesLimit(uploadBriefText(uploadedFileName, rfpAnalysis, uploadedFileText || "")).toLocaleString()} characters of your notes fit beside the RFP. Put longer guidance in Additional Context.
+                    </p>
+                  )}
+
+                  <div
+                    // The file input over the zone takes the drop itself; these only light the zone up
+                    // while a file is held over it, which the input gives no sign of on its own.
+                    onDragEnter={(e) => { if (e.dataTransfer.types.includes("Files")) setIsBriefDragOver(true); }}
+                    onDragLeave={() => setIsBriefDragOver(false)}
+                    onDrop={() => setIsBriefDragOver(false)}
+                    className={`relative mt-2 border border-dashed rounded-xl px-3 py-2.5 flex items-center gap-2.5 transition group ${
+                      isParsingPlan || packageFiles.length >= MAX_PACKAGE_FILES
+                        ? "border-slate-200 bg-slate-50/50 opacity-60"
+                        : isBriefDragOver
+                          ? "border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100"
+                          : "border-slate-200 bg-slate-50/50 hover:border-indigo-400 hover:bg-slate-50 cursor-pointer"
                     }`}
                   >
-                    Text Brief
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setBriefMode("upload")}
-                    className={`flex-1 text-center py-1.5 px-2 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
-                      briefMode === "upload"
-                        ? "bg-white text-slate-800 shadow-xs"
-                        : "text-slate-500 hover:text-slate-800"
-                    }`}
-                  >
-                    Upload
-                  </button>
-                </div>
-
-                {briefMode === "text" ? (
-                  /* Input 1: Audience Description */
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                      <FileText className="w-3.5 h-3.5 text-slate-400" />
-                      Audience Description
-                    </label>
-                    <textarea
-                      value={audienceDescription}
-                      onChange={(e) => setAudienceDescription(e.target.value)}
-                      placeholder="Describe your ideal audience (e.g. 'Luxury travelers', 'B2B IT decision-makers')"
-                      className="w-full h-20 text-sm px-3 py-2 border border-slate-200 rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-none placeholder:text-slate-400"
-                    />
-                  </div>
-                ) : (
-                  /* Input 1b: Document / Media Plan Upload Card */
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                      <FileText className="w-3.5 h-3.5 text-slate-400" />
-                      Upload Media Plan / RFP
-                    </label>
-                    <div className="relative border border-dashed border-slate-200 hover:border-indigo-400 bg-slate-50/50 hover:bg-slate-50 rounded-xl p-4 text-center cursor-pointer transition min-h-[110px] flex flex-col justify-center items-center group">
-                      <input
-                        ref={mediaPlanFileInputRef}
-                        type="file"
-                        accept={PACKAGE_ACCEPT}
-                        multiple
-                        // With files already uploaded, more files join them: a planner dropping an attachment
-                        // in expects it beside the RFP, not in place of it. Remove starts over.
-                        onChange={(e) => { handleFilesChosen(e.target.files, packageFiles.length > 0 ? "add" : "replace"); e.target.value = ""; }}
-                        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
-                      />
-                      <div className="flex flex-col items-center space-y-2">
-                        <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 group-hover:scale-110 transition-transform">
-                          <Download className="w-4 h-4 transform rotate-180" />
-                        </div>
-                        {uploadedFileName ? (
-                          <div className="space-y-1">
-                            <div className="inline-flex items-center space-x-1.5 bg-emerald-50 border border-emerald-100 text-emerald-800 px-2.5 py-1 rounded-lg">
-                              <span className="text-xs font-semibold truncate max-w-[200px]">{uploadedFileName}</span>
-                            </div>
-                            <p className="text-[10px] text-slate-400">
-                              {packageFiles.length >= MAX_PACKAGE_FILES ? `${MAX_PACKAGE_FILES} files is the limit; remove one to add another` : "Tap or drag to add attachments"}
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="flex flex-col items-center space-y-1">
-                            <span className="text-xs font-semibold text-slate-600">Drag & drop or tap to select files</span>
-                            <span className="text-[10px] text-slate-400">An RFP and up to {MAX_PACKAGE_FILES - 1} attachments: .pdf, .docx, .rtf, .xlsx, .xls, .csv, .txt</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
                     <input
-                      ref={attachmentInputRef}
+                      ref={mediaPlanFileInputRef}
                       type="file"
                       accept={PACKAGE_ACCEPT}
                       multiple
-                      className="hidden"
-                      onChange={(e) => { handleFilesChosen(e.target.files, "add"); e.target.value = ""; }}
+                      disabled={isParsingPlan || packageFiles.length >= MAX_PACKAGE_FILES}
+                      aria-label="Upload an RFP or media plan"
+                      // With files already uploaded, more files join them: a planner dropping an attachment
+                      // in expects it beside the RFP, not in place of it. Remove starts over.
+                      onChange={(e) => { handleFilesChosen(e.target.files, packageFiles.length > 0 ? "add" : "replace"); e.target.value = ""; }}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10 disabled:cursor-not-allowed"
                     />
+                    <div className={`w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-transform group-hover:scale-110 ${isBriefDragOver ? "bg-indigo-600 text-white scale-110" : "bg-indigo-50 text-indigo-600"}`}>
+                      <Download className="w-3.5 h-3.5 transform rotate-180" />
+                    </div>
+                    <div className="min-w-0 text-left">
+                      <p className="text-xs font-semibold text-slate-600">
+                        {packageFiles.length >= MAX_PACKAGE_FILES
+                          ? `${MAX_PACKAGE_FILES} files is the limit; remove one to add another`
+                          : isBriefDragOver ? "Drop to upload"
+                          : packageFiles.length > 0 ? "Drag & drop or tap to add attachments" : "Drag & drop or tap to upload an RFP / media plan"}
+                      </p>
+                      <p className="text-[10px] text-slate-400">.pdf, .docx, .rtf, .xlsx, .xls, .csv, .txt · up to {MAX_PACKAGE_FILES} files</p>
+                    </div>
+                  </div>
+                  <input
+                    ref={attachmentInputRef}
+                    type="file"
+                    accept={PACKAGE_ACCEPT}
+                    multiple
+                    className="hidden"
+                    onChange={(e) => { handleFilesChosen(e.target.files, "add"); e.target.value = ""; }}
+                  />
+
+                  {/* Shown with no files attached too: a rejected file never joins the package. */}
+                  {parsingError && !isParsingPlan && (
+                    <div className="mt-3 p-3 bg-rose-50 border border-rose-100 rounded-xl text-xs text-rose-700 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold text-xs">Plan Parsing Error</p>
+                        <p className="text-[11px] text-rose-600 mt-0.5">{parsingError}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {briefMode === "upload" && (
+                  <div>
                     {packageFiles.length > 0 && (
                       <RfpPackageFileList
                         files={packageFiles.map(({ file, role }) => ({ name: file.name, role }))}
@@ -5169,16 +5166,6 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Parsing Error Message */}
-                    {parsingError && !isParsingPlan && (
-                      <div className="mt-3 p-3 bg-rose-50 border border-rose-100 rounded-xl text-xs text-rose-700 flex items-start gap-2">
-                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                        <div>
-                          <p className="font-semibold text-xs">Plan Parsing Error</p>
-                          <p className="text-[11px] text-rose-600 mt-0.5">{parsingError}</p>
-                        </div>
-                      </div>
-                    )}
 
                     {/* Media Plan Option Selector */}
                     {planOptions.length > 0 && !isParsingPlan && (
@@ -5314,13 +5301,15 @@ export default function App() {
                             <div className="space-y-2 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
                               {rfpAnalysis.digitalRemedyCapabilityMatches.map((match, idx) => (
                                 <div key={idx} className="bg-slate-800/80 p-2.5 rounded-lg border border-slate-700/80 text-xs space-y-1">
-                                  <div className="flex items-start justify-between gap-2">
+                                  {/* As in the upload preview: the solution tag sits above the ask, since beside it a long
+                                      tag squeezed the ask into a narrow column and ran past the card's edge. */}
+                                  <div className="flex flex-col items-start gap-1.5">
+                                    <span className="max-w-full text-[10px] font-bold px-2 py-0.5 rounded-xl bg-emerald-950 text-emerald-300 border border-emerald-700/50 flex items-start gap-1">
+                                      <Check className="w-3 h-3 mt-px text-emerald-400 shrink-0" />
+                                      <span className="min-w-0 break-words">{match.digitalRemedySolution}</span>
+                                    </span>
                                     <span className="font-semibold text-slate-200 text-[11px] leading-snug">
                                       Ask: {match.rfpAsk}
-                                    </span>
-                                    <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700/50 flex items-center gap-1">
-                                      <Check className="w-3 h-3 text-emerald-400" />
-                                      {match.digitalRemedySolution}
                                     </span>
                                   </div>
                                   <p className="text-[11px] text-slate-400 leading-normal">

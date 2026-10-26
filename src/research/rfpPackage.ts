@@ -189,6 +189,28 @@ export function uploadBriefText(label: string, analysis: RfpAnalysis | null | un
   return `[RFP: ${name}]\n\n${lines.join("\n")}`.slice(0, BRIEF_TEXT_CHARS);
 }
 
+const PLANNER_NOTES_LABEL = "\n\nPlanner notes: ";
+// The upload's text keeps at least this much when notes are long, so a note cannot push the RFP
+// out of the brief entirely; short upload text leaves its unused room to the notes.
+const BRIEF_UPLOAD_MIN_CHARS = 750;
+
+/** How many characters of the planner's own notes fit beside this upload's brief text. */
+export function plannerNotesLimit(uploadText: string): number {
+  return BRIEF_TEXT_CHARS - PLANNER_NOTES_LABEL.length - Math.min(uploadText.length, BRIEF_UPLOAD_MIN_CHARS);
+}
+
+/**
+ * The upload's brief text with what the planner typed beside it. Both share the 1,500 characters
+ * the server keeps, so the notes are fitted here rather than appended past the cap and cut off.
+ */
+export function uploadBriefWithNotes(uploadText: string, notes: string): string {
+  const trimmed = notes.trim();
+  if (!trimmed) return uploadText;
+  const kept = trimmed.slice(0, plannerNotesLimit(uploadText));
+  const upload = uploadText.slice(0, BRIEF_TEXT_CHARS - PLANNER_NOTES_LABEL.length - kept.length).trimEnd();
+  return `${upload}${PLANNER_NOTES_LABEL}${kept}`;
+}
+
 /**
  * States or DMAs a location list could be targeted at, whichever matches more of its rows, or
  * null when it matches neither (a port or venue list without a state column, say). The planner

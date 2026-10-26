@@ -8,6 +8,8 @@ import {
   packageLabel,
   suggestGeoTargets,
   uploadBriefText,
+  uploadBriefWithNotes,
+  plannerNotesLimit,
 } from "./rfpPackage";
 import type { RfpAnalysis, RfpPackageFile } from "../types";
 
@@ -136,6 +138,33 @@ test("a long location list is cut short in the brief text so it cannot crowd out
 
 test("a media plan with no RFP reading still sends its own text, as before", () => {
   assert.equal(uploadBriefText("Plan.xlsx", null, "Hulu | CTV | $50,000"), "[Media Plan / RFP: Plan.xlsx]\n\nHulu | CTV | $50,000");
+});
+
+test("what the planner types beside an upload reaches the brief as their notes", () => {
+  const brief = uploadBriefWithNotes("[RFP: RFP.pdf]\n\nSummary: S", "  Skew toward fleet managers  ");
+
+  assert.equal(brief, "[RFP: RFP.pdf]\n\nSummary: S\n\nPlanner notes: Skew toward fleet managers");
+});
+
+test("an upload with nothing typed beside it sends its brief text unchanged", () => {
+  assert.equal(uploadBriefWithNotes("[RFP: RFP.pdf]\n\nSummary: S", "   "), "[RFP: RFP.pdf]\n\nSummary: S");
+});
+
+test("long notes and a long RFP both fit in the characters the server keeps", () => {
+  const upload = `[RFP: RFP.pdf]\n\n${"r".repeat(1500)}`.slice(0, 1500);
+  const brief = uploadBriefWithNotes(upload, "n".repeat(2000));
+
+  assert.ok(brief.length <= 1500);
+  assert.ok(brief.startsWith("[RFP: RFP.pdf]"));
+  assert.match(brief, /Planner notes: n+$/);
+  assert.equal(brief.split("Planner notes: ")[1].length, plannerNotesLimit(upload));
+});
+
+test("a short RFP reading leaves its unused room to the planner's notes", () => {
+  const upload = "[RFP: RFP.pdf]\n\nSummary: S";
+  const notes = "n".repeat(1200);
+
+  assert.ok(uploadBriefWithNotes(upload, notes).endsWith(notes));
 });
 
 test("a location list with a state column suggests those states", () => {
