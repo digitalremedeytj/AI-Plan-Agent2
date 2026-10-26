@@ -1386,7 +1386,7 @@ PACKAGE RULES:
 3. Add these fields to the JSON object:
   "referencedAttachments": every attachment, appendix, exhibit, schedule or separate document any file refers to: [{"name": "Attachment B (Port List)", "foundInFile": "<the listed file that is it, or null when none of them is>"}]. An empty array when no file refers to another.
   "metadataSources": for each extractedMetadata field you filled, the listed file it came from, e.g. {"budget": "<file>", "geographies": "<file>"}.
-  "conflicts": only when two files state different values for the same field: [{"field": "advertiserName" | "websiteUrl" | "budget" | "flightDates" | "submissionDueDate", "values": [{"value": "...", "sourceFile": "<file>"}]}]. Use the RFP's value in extractedMetadata. An empty array when the files agree.
+  "conflicts": only when two files state different values for the same field: [{"field": "advertiserName" | "websiteUrl" | "budget" | "flightDates" | "submissionDueDate" | "geographies", "values": [{"value": "...", "sourceFile": "<file>"}]}]. For "geographies", each value is that file's locations in one line, e.g. "Boston, Providence" or "MA, NH, RI"; a list that only adds detail to the RFP's places is agreement. Use the RFP's value in extractedMetadata. An empty array when the files agree.
 4. Add "sourceFile" (a listed file name) to each digitalRemedyCapabilityMatches item: the file the ask came from.`;
 }
 

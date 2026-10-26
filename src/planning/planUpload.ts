@@ -42,7 +42,7 @@ export interface BriefChange {
   to: string;
 }
 
-const NATIONAL = /\b(national|nationwide|united states|usa|u\.s\.a?\.?|all (us )?markets)\b/i;
+export const NATIONAL = /\b(national|nationwide|united states|usa|u\.s\.a?\.?|all (us )?markets)\b/i;
 
 /** The brief's one-line geography, as saved on a plan and sent to the engine. */
 export function describeGeography(type: GeographyType, targets: string[]): string {

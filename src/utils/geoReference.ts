@@ -378,6 +378,38 @@ export function normalizeDma(input: string): string | null {
   return null;
 }
 
+/** Only an exact state name or code: "Washington Metro" is not Washington state. */
+export function exactState(input: string): StateRecord | null {
+  const trimmed = input.trim().replace(/\s+state$/i, '');
+  return stateByCode.get(trimmed.toUpperCase()) ?? stateByName.get(trimmed.toLowerCase()) ?? null;
+}
+
+// Longest first, so "Washington DC" is consumed before "Washington" can match on its own.
+const dmaTextKeys = Array.from(dmaLookup.keys())
+  .filter((key) => key.length >= 4 && !/^\d+$/.test(key))
+  .sort((a, b) => b.length - a.length);
+
+/**
+ * The DMAs a free-text location names, e.g. "Greater Boston Area (Boston + 30 mi)" gives Boston.
+ * Stricter than normalizeDma, which also matches when a market name merely contains the text
+ * ("ports" is Portsmouth there): here a market counts only when its name or alias appears as
+ * whole words. Short aliases ("LA", "ATL") count only as the whole text.
+ */
+export function dmasNamedIn(text: string): string[] {
+  const cleaned = cleanDmaKey(text.replace(/^dma[\s:-]+/i, ''));
+  const direct = dmaLookup.get(cleaned);
+  if (direct) return [direct.canonical];
+  const found = new Set<string>();
+  let rest = ` ${cleaned} `;
+  for (const key of dmaTextKeys) {
+    const at = rest.indexOf(` ${key} `);
+    if (at === -1) continue;
+    found.add(dmaLookup.get(key)!.canonical);
+    rest = `${rest.slice(0, at)} | ${rest.slice(at + key.length + 2)}`;
+  }
+  return Array.from(found);
+}
+
 /**
  * Parse comma-separated or newline-separated text into matched targets and unparsed strings.
  */

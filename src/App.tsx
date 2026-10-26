@@ -62,7 +62,7 @@ import { AudienceProfile, type AudienceNarrowing, type Persona, PersonaAvatarVer
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
 import { docxLines } from "./utils/docxText";
 import { rtfLines } from "./utils/rtfText";
-import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, PACKAGE_ACCEPT, PACKAGE_ROLE_LABELS, fileExtension, guessFileRoles, isPackageFileType, packageLabel, plannerNotesLimit, suggestGeoTargets, uploadBriefText, uploadBriefWithNotes } from "./research/rfpPackage";
+import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, PACKAGE_ACCEPT, PACKAGE_ROLE_LABELS, fileExtension, guessFileRoles, isPackageFileType, packageLabel, plannerNotesLimit, rfpGeography, sameGeography, suggestGeoTargets, uploadBriefText, uploadBriefWithNotes, type BriefGeography, type GeographySource } from "./research/rfpPackage";
 import { asWebsiteUrl } from "./utils/websiteUrl";
 import { asAdvertiserName } from "./utils/advertiserName";
 import { jsPDF } from "jspdf";
@@ -109,7 +109,7 @@ import {
 } from "./research/segmentRecommendations";
 import type { SegmentRecommendation } from "./types";
 import type { PackageFileRole, RfpConflictField } from "./types";
-import { RfpPackageFileList, RfpPackageNotices, type PackageFileStatus } from "./components/RfpPackagePanel";
+import { RfpGeographyNotice, RfpPackageFileList, RfpPackageNotices, type PackageFileStatus } from "./components/RfpPackagePanel";
 import { captureElementToCanvas } from "./utils/html2canvasPolyfill";
 import { CtvPublisherRecommendation } from "./types";
 import { groupPlacementsIntoPlanOptions } from "./utils/planPromptOptimizer";
@@ -658,6 +658,15 @@ export default function App() {
   const [isGeoFileDragging, setIsGeoFileDragging] = useState(false);
   const [geoCopiedNotice, setGeoCopiedNotice] = useState(false);
   const geoFileInputRef = React.useRef<HTMLInputElement | null>(null);
+  // Read through the ref in effects, which would otherwise see the value from their render.
+  const [geographySource, setGeographySourceState] = useState<GeographySource>("default");
+  const geographySourceRef = React.useRef<GeographySource>("default");
+  const setGeographySource = (source: GeographySource) => {
+    geographySourceRef.current = source;
+    setGeographySourceState(source);
+  };
+  // The difference from the RFP's geography the planner chose to keep, so it is not raised again.
+  const [keptGeographyMismatch, setKeptGeographyMismatch] = useState<string | null>(null);
   const [campaignFocus, setCampaignFocus] = useState("Full-funnel digital media plan");
   // Brief-level media-type picks (product ids). Empty means ScoutAI chooses the mix.
   const [briefMediaTypes, setBriefMediaTypes] = useState<string[]>([]);
@@ -787,6 +796,7 @@ export default function App() {
     const parsed = parseGeoTextInput(geoRawInput, geographyType as "State" | "DMA");
     if (parsed.valid.length > 0) {
       setGeoTargets((prev) => Array.from(new Set([...prev, ...parsed.valid])));
+      setGeographySource("planner");
     }
     if (parsed.unrecognized.length > 0) {
       setGeoUnrecognized(parsed.unrecognized);
@@ -798,6 +808,7 @@ export default function App() {
 
   const handleRemoveGeoTarget = (target: string) => {
     setGeoTargets((prev) => prev.filter((t) => t !== target));
+    setGeographySource("planner");
   };
 
   const processGeoSpreadsheet = (file: File) => {
@@ -816,6 +827,7 @@ export default function App() {
 
         if (result.valid.length > 0) {
           setGeoTargets((prev) => Array.from(new Set([...prev, ...result.valid])));
+          setGeographySource("planner");
           setGeoUploadNotice(
             `Added ${result.valid.length} ${geographyType === "State" ? "states" : "DMAs"} from "${file.name}"${result.detectedColumnName ? ` (${result.detectedColumnName})` : ""}.`,
           );
@@ -2383,6 +2395,7 @@ export default function App() {
    */
   /** The geography picker's state from a saved payload: its structured config, or else the text. */
   const restoreGeographyFromPayload = (body: any) => {
+      setGeographySource("planner");
       if (body.geographyConfig) {
         setGeographyType(body.geographyConfig.type || "National");
         setGeoTargets(Array.isArray(body.geographyConfig.targets) ? body.geographyConfig.targets : []);
@@ -3037,15 +3050,53 @@ export default function App() {
   };
 
   // The planner's pick between two files that disagree becomes the RFP's value.
+  // The geography the attached RFP states, as the Geography field can hold it. Only while the files
+  // are attached: a reopened plan keeps its reading, but its geography was settled when it ran.
+  const rfpGeo = React.useMemo(
+    () => (briefMode === "upload" && rfpAnalysis ? rfpGeography(rfpAnalysis.extractedMetadata?.geographies) : null),
+    [briefMode, rfpAnalysis],
+  );
+  const rfpGeoKey = rfpGeo?.suggestion ? `${rfpGeo.suggestion.type}:${rfpGeo.suggestion.targets.join("|")}` : "";
+
+  const applyRfpGeography = (suggestion: BriefGeography) => {
+    setGeographyType(suggestion.type);
+    setGeoTargets(suggestion.targets);
+    setGeoRawInput("");
+    setGeoUnrecognized([]);
+    setGeoUploadNotice(null);
+    setAppliedGeoFile(null);
+    setGeographySource("rfp");
+  };
+
+  // Keyed on the places rather than the reading, so a re-read that finds the same places is a no-op.
+  React.useEffect(() => {
+    if (rfpGeo?.suggestion && geographySourceRef.current !== "planner") applyRfpGeography(rfpGeo.suggestion);
+  }, [rfpGeoKey]);
+
+  // A plan sized to the wrong places is wrong in every number, so a difference from the RFP is
+  // raised until the planner either takes the RFP's geography or keeps their own.
+  const geoDifference = React.useMemo(() => {
+    const suggestion = rfpGeo?.suggestion;
+    if (!suggestion || sameGeography(suggestion, { type: geographyType, targets: geoTargets })) return null;
+    const key = `${rfpGeoKey}>${geographyType}:${[...geoTargets].sort().join("|")}`;
+    return { key, rfp: describeGeography(suggestion.type, suggestion.targets), brief: geography, kept: key === keptGeographyMismatch };
+  }, [rfpGeo, rfpGeoKey, geographyType, geoTargets, keptGeographyMismatch, geography]);
+  const geoMismatch = geoDifference && !geoDifference.kept ? geoDifference : null;
+
   const handlePickRfpConflict = (field: RfpConflictField, value: string) => {
     setRfpAnalysis((prev) => prev && {
       ...prev,
       extractedMetadata: {
         ...prev.extractedMetadata,
-        [field]: field === "budget" ? Number(value.replace(/[^\d.]/g, "")) || prev.extractedMetadata?.budget : value,
+        [field]: field === "budget" ? Number(value.replace(/[^\d.]/g, "")) || prev.extractedMetadata?.budget : field === "geographies" ? [value] : value,
       },
       conflicts: (prev.conflicts || []).filter((conflict) => conflict.field !== field),
     });
+    // Picking a file's locations is the planner's answer, so it applies over their own pick too.
+    if (field === "geographies") {
+      const suggestion = rfpGeography([value]).suggestion;
+      if (suggestion) applyRfpGeography(suggestion);
+    }
     if (field === "advertiserName") {
       const advertiser = asAdvertiserName(value);
       if (advertiser) setAdvertiserName(advertiser);
@@ -3077,6 +3128,7 @@ export default function App() {
     setGeoRawInput("");
     setGeoUnrecognized([]);
     setAppliedGeoFile(suggestion.fileName);
+    setGeographySource("planner");
   };
 
   // Re-run parsing on the uploaded package
@@ -3111,6 +3163,15 @@ export default function App() {
         setError("Please provide at least an Audience Description or a Website URL.");
         return;
       }
+    }
+
+    // Asked once more here, since a run takes minutes and every number in it is sized to the geography.
+    if (!typeOverride && geoMismatch) {
+      if (!window.confirm(`The RFP targets ${geoMismatch.rfp}, but this plan is set to ${geoMismatch.brief}. Generate for ${geoMismatch.brief} anyway?`)) {
+        document.getElementById("brief-geography")?.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      setKeptGeographyMismatch(geoMismatch.key);
     }
 
     setLoading(true);
@@ -3672,6 +3733,8 @@ export default function App() {
     setGeoRawInput("");
     setGeoUnrecognized([]);
     setGeoUploadNotice(null);
+    setGeographySource("default");
+    setKeptGeographyMismatch(null);
     setCampaignFocus("Full-funnel digital media plan");
     setBriefMediaTypes([]);
     setIsPickingMediaTypes(false);
@@ -3926,6 +3989,7 @@ export default function App() {
     setGeoTargets(geo.targets);
     setGeoRawInput("");
     setGeoUnrecognized([]);
+    setGeographySource("planner");
     setBudgetStrategyMode(upload.mode);
     setAdditionalBudgetInput(upload.additionalBudget > 0 ? Math.round(upload.additionalBudget).toLocaleString() : "");
     // Undo covers the channel plan only; History holds the whole plan from before the upload.
@@ -5503,7 +5567,7 @@ export default function App() {
                 </div>
 
                 {/* Geography & Goal */}
-                <div className="grid grid-cols-2 gap-3">
+                <div id="brief-geography" className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
                       <MapPin className="w-3.5 h-3.5 text-slate-400" />
@@ -5514,6 +5578,7 @@ export default function App() {
                       onChange={(e) => {
                         const nextType = e.target.value as GeographyType;
                         setGeographyType(nextType);
+                        setGeographySource("planner");
                         if (nextType === "National") {
                           setGeoTargets([]);
                           setGeoRawInput("");
@@ -5550,6 +5615,19 @@ export default function App() {
                     </p>
                   </div>
                 </div>
+
+                {rfpGeo && (
+                  <RfpGeographyNotice
+                    geo={rfpGeo}
+                    source={geographySource}
+                    current={geography}
+                    mismatch={geoMismatch}
+                    keptOver={geoDifference?.kept ? geoDifference.rfp : null}
+                    sourceFile={rfpAnalysis?.metadataSources?.geographies}
+                    onUseRfp={() => rfpGeo.suggestion && applyRfpGeography(rfpGeo.suggestion)}
+                    onKeep={() => geoMismatch && setKeptGeographyMismatch(geoMismatch.key)}
+                  />
+                )}
 
                 {/* Optional media-type picker: planner-required channels, optionally exclusive.
                     Collapsed under "Let AI pick" by default to keep the brief short. */}
@@ -5650,6 +5728,7 @@ export default function App() {
                               setGeoRawInput("");
                               setGeoUnrecognized([]);
                               setGeoUploadNotice(null);
+                              setGeographySource("planner");
                             }}
                             className="text-[10px] text-slate-400 hover:text-rose-600 hover:underline cursor-pointer font-medium"
                           >

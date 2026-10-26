@@ -10,6 +10,8 @@ import {
   uploadBriefText,
   uploadBriefWithNotes,
   plannerNotesLimit,
+  rfpGeography,
+  sameGeography,
 } from "./rfpPackage";
 import type { RfpAnalysis, RfpPackageFile } from "../types";
 
@@ -177,4 +179,55 @@ test("a location list with a state column suggests those states", () => {
 
 test("a list with no states or DMAs suggests nothing", () => {
   assert.equal(suggestGeoTargets([["Venue"], ["Pier 39"], ["Terminal 5"]]), null);
+});
+
+test("an RFP's Boston tiers set the geography to the Boston DMA even when it also names the country", () => {
+  const geo = rfpGeography([
+    "Greater Boston Area (Boston + 30 mi)",
+    "Boston Urban Dwellers (Boston + 8 mi)",
+    "Prudential Vicinity (Building + 2 mi)",
+    "National (US)",
+  ]);
+
+  assert.deepEqual(geo.suggestion, { type: "DMA", targets: ["Boston (Manchester), MA"] });
+  assert.deepEqual(geo.approximate, ["Greater Boston Area (Boston + 30 mi)", "Boston Urban Dwellers (Boston + 8 mi)"]);
+  assert.deepEqual(geo.unmapped, ["Prudential Vicinity (Building + 2 mi)"]);
+  assert.equal(geo.alsoNational, true);
+});
+
+test("an RFP that names only the country suggests National", () => {
+  assert.deepEqual(rfpGeography(["Nationwide"]).suggestion, { type: "National", targets: [] });
+});
+
+test("states listed in one line are read as states", () => {
+  const geo = rfpGeography(["MA, NH, RI", "Connecticut"]);
+
+  assert.equal(geo.suggestion?.type, "State");
+  assert.deepEqual(geo.suggestion?.targets, ["Massachusetts (MA)", "New Hampshire (NH)", "Rhode Island (RI)", "Connecticut (CT)"]);
+});
+
+test("the scope the RFP names more of wins, and the other scope's places are reported rather than dropped", () => {
+  const geo = rfpGeography(["Dallas", "Houston", "Oklahoma"]);
+
+  assert.equal(geo.suggestion?.type, "DMA");
+  assert.equal(geo.suggestion?.targets.length, 2);
+  assert.deepEqual(geo.unmapped, ["Oklahoma"]);
+});
+
+test("a name that is both a state and a market follows the RFP's other places", () => {
+  assert.equal(rfpGeography(["New York", "New Jersey"]).suggestion?.type, "State");
+  assert.equal(rfpGeography(["New York", "Chicago"]).suggestion?.type, "DMA");
+  assert.deepEqual(rfpGeography(["Washington State"]).suggestion, { type: "State", targets: ["Washington (WA)"] });
+});
+
+test("a summarized port list is not mistaken for Portsmouth", () => {
+  const geo = rfpGeography(["47 ports (full list in Attachment B - Port List.csv)"]);
+
+  assert.equal(geo.suggestion, null);
+  assert.deepEqual(geo.unmapped, ["47 ports (full list in Attachment B - Port List.csv)"]);
+});
+
+test("the same places in a different order are the same geography", () => {
+  assert.equal(sameGeography({ type: "DMA", targets: ["Boston (Manchester), MA", "Providence-New Bedford, RI"] }, { type: "DMA", targets: ["Providence-New Bedford, RI", "Boston (Manchester), MA"] }), true);
+  assert.equal(sameGeography({ type: "National", targets: [] }, { type: "DMA", targets: [] }), false);
 });

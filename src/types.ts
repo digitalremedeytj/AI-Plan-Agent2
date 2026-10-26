@@ -300,7 +300,7 @@ export interface RfpReferencedAttachment {
   foundInFile: string | null;
 }
 
-export type RfpConflictField = "advertiserName" | "websiteUrl" | "budget" | "flightDates" | "submissionDueDate";
+export type RfpConflictField = "advertiserName" | "websiteUrl" | "budget" | "flightDates" | "submissionDueDate" | "geographies";
 
 /** Two uploaded files that state different values for the same brief field. */
 export interface RfpFieldConflict {

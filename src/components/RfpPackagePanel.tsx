@@ -1,7 +1,7 @@
 import React from 'react';
 import { AlertTriangle, Check, FileText, Loader2, MapPin, Paperclip, Plus, X } from 'lucide-react';
 import type { PackageFileRole, RfpAnalysis, RfpConflictField, RfpPackageFile } from '../types';
-import { PACKAGE_ROLE_LABELS, missingAttachments } from '../research/rfpPackage';
+import { PACKAGE_ROLE_LABELS, missingAttachments, type GeographySource, type RfpGeography } from '../research/rfpPackage';
 
 const ROLE_ORDER: PackageFileRole[] = ['rfp', 'reference', 'geo_list', 'media_plan'];
 
@@ -87,6 +87,7 @@ const CONFLICT_LABELS: Record<RfpConflictField, string> = {
   budget: 'budget',
   flightDates: 'flight dates',
   submissionDueDate: 'due date',
+  geographies: 'geography',
 };
 
 function conflictValue(field: RfpConflictField, value: string): string {
@@ -184,6 +185,90 @@ export const RfpPackageNotices: React.FC<RfpPackageNoticesProps> = ({ analysis, 
           </div>
         );
       })}
+    </div>
+  );
+};
+
+interface RfpGeographyNoticeProps {
+  geo: RfpGeography;
+  source: GeographySource;
+  /** The brief's geography as the plan will use it, e.g. "National". */
+  current: string;
+  /** Set while the RFP's geography differs from the brief's and the planner has not kept theirs. */
+  mismatch: { rfp: string; brief: string } | null;
+  /** The RFP's geography when it differs and the planner chose to keep their own. */
+  keptOver: string | null;
+  sourceFile?: string;
+  onUseRfp: () => void;
+  onKeep: () => void;
+}
+
+/**
+ * The RFP's geography beside the brief's Geography field: what was filled in from it, what it
+ * says that the field cannot hold, and a difference from the planner's own pick. What the field
+ * cannot hold still reaches the research, through the RFP's lines in the brief text.
+ */
+export const RfpGeographyNotice: React.FC<RfpGeographyNoticeProps> = ({ geo, source, current, mismatch, keptOver, sourceFile, onUseRfp, onKeep }) => {
+  const local = geo.suggestion !== null && geo.suggestion.type !== 'National';
+  const from = sourceFile ? ` (${sourceFile})` : '';
+  const details = [
+    geo.approximate.length > 0 ? `Read as the nearest ${geo.suggestion?.type === 'State' ? 'state' : 'DMA'}: ${geo.approximate.join('; ')}.` : '',
+    local && geo.alsoNational ? 'The RFP also mentions national coverage; the plan targets its local places.' : '',
+    geo.unmapped.length > 0
+      ? `Not in the plan's numbers: ${geo.unmapped.join('; ')}. The research still reads ${geo.unmapped.length === 1 ? 'it' : 'them'} in the brief.`
+      : '',
+  ].filter(Boolean);
+  const detailList = details.length > 0 && (
+    <ul className="mt-1 ml-5 list-disc space-y-0.5 text-[11px]">
+      {details.map((detail) => <li key={detail}>{detail}</li>)}
+    </ul>
+  );
+
+  if (mismatch) {
+    return (
+      <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-900">
+        <p className="flex items-start gap-1.5 text-xs font-bold">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          The RFP targets {mismatch.rfp}{from}, but this plan is set to {mismatch.brief}
+        </p>
+        <div className="text-amber-800">{detailList}</div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <button type="button" onClick={onUseRfp} className="rounded-lg border border-amber-300 bg-white px-2 py-1 text-[11px] font-bold text-amber-900 hover:bg-amber-100 cursor-pointer">
+            Use the RFP's geography
+          </button>
+          <button type="button" onClick={onKeep} className="rounded-lg px-2 py-1 text-[11px] font-medium text-amber-800 hover:underline cursor-pointer">
+            Keep {mismatch.brief}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!geo.suggestion) {
+    if (geo.unmapped.length === 0) return null;
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-900">
+        <p className="flex items-start gap-1.5 text-xs font-bold">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          The RFP's locations{from} are not states or DMAs, so the plan is sized to {current}
+        </p>
+        <p className="mt-0.5 ml-5 text-[11px] text-amber-800">
+          {geo.unmapped.join('; ')}. The research still reads {geo.unmapped.length === 1 ? 'it' : 'them'} in the brief; pick states or DMAs above to size the plan to {geo.unmapped.length === 1 ? 'it' : 'them'}.
+        </p>
+      </div>
+    );
+  }
+
+  if (source !== 'rfp' && !keptOver && details.length === 0) return null;
+  return (
+    <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-3 text-indigo-900">
+      <p className="flex items-start gap-1.5 text-xs font-bold">
+        <MapPin className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+        {keptOver
+          ? `Kept ${current}; the RFP targets ${keptOver}${from}.`
+          : source === 'rfp' ? `Geography set from the RFP${from}. Change it above to override.` : `Matches the RFP's geography${from}.`}
+      </p>
+      <div className="text-indigo-800">{detailList}</div>
     </div>
   );
 };

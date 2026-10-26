@@ -5,6 +5,7 @@
 // the brief text built from the analysis, and the clean-up of what the model returned.
 
 import type {
+  GeographyType,
   PackageFileRole,
   RfpAnalysis,
   RfpConflictField,
@@ -12,7 +13,8 @@ import type {
   RfpPackageFile,
   RfpReferencedAttachment,
 } from "../types";
-import { extractGeoFromSpreadsheetRows } from "../utils/geoReference";
+import { dmasNamedIn, exactState, extractGeoFromSpreadsheetRows } from "../utils/geoReference";
+import { NATIONAL } from "../planning/planUpload";
 
 export const MAX_PACKAGE_FILES = 5;
 // Each file is sent to OpenAI whole; the whole package has to read inside the parse request.
@@ -84,7 +86,7 @@ export function matchUploadedName(reported: unknown, uploadedNames: string[]): s
   return uploadedNames.find((name) => nameKey(name) === key) ?? null;
 }
 
-const CONFLICT_FIELDS: RfpConflictField[] = ["advertiserName", "websiteUrl", "budget", "flightDates", "submissionDueDate"];
+const CONFLICT_FIELDS: RfpConflictField[] = ["advertiserName", "websiteUrl", "budget", "flightDates", "submissionDueDate", "geographies"];
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : typeof value === "number" && Number.isFinite(value) ? String(value) : "");
 const strings = (value: unknown) => (Array.isArray(value) ? value.map(text).filter(Boolean) : []);
 
@@ -228,4 +230,74 @@ export function suggestGeoTargets(rows: any[][]): { type: "State" | "DMA"; targe
   const best = dmas && dmas.valid.length > (states?.valid.length ?? 0) ? { type: "DMA" as const, result: dmas } : states ? { type: "State" as const, result: states } : null;
   if (!best) return null;
   return { type: best.type, targets: best.result.valid, detectedColumnName: best.result.detectedColumnName };
+}
+
+/**
+ * Where the brief's geography came from. An RFP reading fills it only while nobody has chosen
+ * one; a planner's pick, or a reopened plan's, is never overwritten by a reading.
+ */
+export type GeographySource = "default" | "rfp" | "planner";
+
+export interface BriefGeography {
+  type: GeographyType;
+  targets: string[];
+}
+
+export interface RfpGeography {
+  /** What the brief's Geography field should be, or null when the RFP names nothing it can hold. */
+  suggestion: BriefGeography | null;
+  /** RFP locations read as the nearest market or state, e.g. "Boston + 30 mi" as the Boston DMA. */
+  approximate: string[];
+  /** RFP locations the field cannot hold: a radius round a building, a ZIP list, the other scope's places. */
+  unmapped: string[];
+  /** The RFP names the whole country beside the local places it targets. */
+  alsoNational: boolean;
+}
+
+// A radius or ZIP is narrower than the DMA it falls in, so reading one as its DMA is approximate.
+const RADIUS_OR_ZIP = /\d\s*(mi|mile|miles|km)\b|\bradius\b|\bzips?\b|\bzip codes?\b|\bpostal\b/i;
+
+/**
+ * The RFP's stated locations as the brief's Geography field. The field holds one scope, so the
+ * states or the DMAs win, whichever the RFP names more of; the rest is reported, never guessed.
+ * A "National (US)" line beside local markets does not win, as it does for an uploaded media
+ * plan's lines: an RFP that lists Boston tiers and then the country is a Boston campaign.
+ * "LA", "Washington" and "New York" are both a state and a market, so they follow the others.
+ */
+export function rfpGeography(geographies: unknown): RfpGeography {
+  const items = Array.from(new Set(strings(geographies)));
+  const read = items.map((item) => {
+    const whole = exactState(item);
+    const parts = item.split(/\s*(?:[,;/&]|\band\b)\s*/i).filter(Boolean);
+    const listed = parts.length > 1 ? parts.map(exactState) : [];
+    const states = whole ? [whole] : listed.length > 0 && listed.every(Boolean) ? listed.map((state) => state!) : [];
+    // "Washington State" says which it is; the DMA list would read it as Washington, DC.
+    const dmas = whole && /\sstate$/i.test(item) ? [] : dmasNamedIn(item);
+    return { item, states: Array.from(new Set(states.map((state) => `${state.name} (${state.code})`))), dmas };
+  });
+
+  // Only places that are one or the other decide the scope.
+  const distinct = (key: "states" | "dmas", other: "states" | "dmas") =>
+    new Set(read.filter((entry) => entry[key].length > 0 && entry[other].length === 0).flatMap((entry) => entry[key])).size;
+  const type: "State" | "DMA" = distinct("states", "dmas") > distinct("dmas", "states") ? "State" : "DMA";
+  const key = type === "State" ? "states" : "dmas";
+  const targets = Array.from(new Set(read.flatMap((entry) => entry[key])));
+  const mapped = read.filter((entry) => entry[key].length > 0);
+  const rest = read.filter((entry) => entry[key].length === 0);
+  const national = rest.filter((entry) => entry.states.length === 0 && entry.dmas.length === 0 && NATIONAL.test(entry.item));
+
+  return {
+    suggestion: targets.length > 0 ? { type, targets } : national.length > 0 ? { type: "National", targets: [] } : null,
+    approximate: mapped.filter((entry) => RADIUS_OR_ZIP.test(entry.item)).map((entry) => entry.item),
+    unmapped: rest.filter((entry) => !national.includes(entry)).map((entry) => entry.item),
+    alsoNational: targets.length > 0 && national.length > 0,
+  };
+}
+
+/** Whether two geographies target the same places, whatever order the targets were added in. */
+export function sameGeography(a: BriefGeography, b: BriefGeography): boolean {
+  if (a.type !== b.type) return false;
+  if (a.type === "National") return true;
+  const left = new Set(a.targets);
+  return left.size === new Set(b.targets).size && b.targets.every((target) => left.has(target));
 }
