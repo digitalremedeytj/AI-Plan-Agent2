@@ -15,6 +15,7 @@ import { isCustomProductId, plannerGuidanceField, resolveEffectiveProducts } fro
 import { ctvMissingAlerts, plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { normalizeBudgetStrategyMode, resolveStrategyBudget, type BudgetStrategyMode } from "./src/planning/budgetStrategy";
 import { geographyForPrompt } from "./src/planning/reach/briefGeography";
+import { geoSnapshotFromBrief } from "./src/planning/geoFootprint";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, displaySettingsOf, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
@@ -6137,6 +6138,11 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     delete finalProfile.executiveSummary;
     for (const alert of reportChartsNotFound(finalProfile, generationAlerts)) pushAlert(generationAlerts, alert);
     finalProfile.generationAlerts = generationAlerts;
+    // The footprint as it was sized, frozen with the plan: the Geo Footprint section and reach read
+    // this, so a later change to the household data cannot move a saved plan's numbers.
+    const geoSnapshot = geoSnapshotFromBrief(draft?.geographyConfig);
+    if (geoSnapshot) finalProfile.geoTargeting = geoSnapshot;
+    else delete finalProfile.geoTargeting;
 
     // The research the plan was built from, kept with the plan so a later audit can check its
     // figures against the dossiers rather than the auditor's memory. Each dossier is capped so

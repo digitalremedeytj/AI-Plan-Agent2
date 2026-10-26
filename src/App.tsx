@@ -168,6 +168,9 @@ import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorB
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
 import { mediaTypeCapFor, modeNeedsAdditionalBudget, normalizeBudgetStrategyMode, BUDGET_STRATEGY_LABELS, type BudgetStrategyMode } from "./planning/budgetStrategy";
 import { combinedPlan } from "./planning/planChannels";
+import { buildGeoFootprint, geoSnapshotFromBrief } from "./planning/geoFootprint";
+import { GeoFootprintSection } from "./components/GeoFootprintSection";
+import { NATIONAL_TV_HOUSEHOLDS } from "./planning/knowledge/stateHouseholds";
 import { BudgetStrategyControl } from "./components/BudgetStrategyControl";
 
 const getPublisherLogo = (name: string, customPublishers?: CtvPublisherSetting[]): string => {
@@ -1916,6 +1919,19 @@ export default function App() {
   const isBriefStale = Boolean(profileData?.executiveBrief && profileData.executiveBrief.inputFingerprint !== liveBriefFingerprint);
   // "Add on top of RFP" keeps RFP media types outside mediaPlan.channels; the brief shows the whole plan.
   const briefPlan = React.useMemo(() => combinedPlan(profileData?.channelStrategy), [profileData?.channelStrategy]);
+  // The plan's frozen footprint; a plan saved before snapshots existed reads the brief, as reach does.
+  const planGeoFootprint = React.useMemo(() => {
+    if (!profileData) return null;
+    const geofenceChannels = briefPlan.channels
+      .filter((channel) => /^geofence_/.test(channel.canonicalId || "") && (channel.allocationDollars || 0) > 0)
+      .map((channel) => channel.channelName);
+    return buildGeoFootprint({
+      targeting: profileData.geoTargeting ?? geoSnapshotFromBrief(overviewGeography),
+      plannedBudget: briefPlan.total,
+      notes: geoRawInput,
+      geofenceChannels,
+    });
+  }, [profileData, briefPlan, overviewGeography, geoRawInput]);
   const briefLivePercents = React.useMemo(
     () => Object.fromEntries(briefPlan.channels.map((c) => [c.channelId, Math.round(c.allocationPercent * 10) / 10])),
     [briefPlan],
@@ -1933,6 +1949,7 @@ export default function App() {
     return facts;
   }, [profileData?.channelStrategy?.mediaPlan, briefPlan, profileData?.briefOfRecord, kpis, geography]);
   const isSourcesHidden = hiddenSections.has("sources");
+  const isGeoHidden = hiddenSections.has("geo");
 
   const markPlanPersisted = (plan: api.StoredPlan) => {
     // The server re-checks the Campaign Recap's proposed changes on every save, so the saved recap
@@ -7343,6 +7360,16 @@ export default function App() {
                   onToggle={handleToggleSectionActive}
                 />
 
+                {planGeoFootprint && (!isShareView || !isGeoHidden) && (
+                  <GeoFootprintSection
+                    view={planGeoFootprint}
+                    insight={profileData.demographics?.geographyNotes}
+                    isHidden={isGeoHidden}
+                    isShareView={isShareView}
+                    onToggleHidden={handleToggleSectionActive}
+                  />
+                )}
+
                 {/* Dynamic Domain Affinity & CTV Publishers Bento Rows */}
                 {/* Case 1: CTV-First - SHOW CTV Publishers and REPLACE Domains */}
                 {campaignFocus === "CTV-first digital media plan" && (!isShareView || !isDomainAffinityHidden) && (
@@ -7885,46 +7912,22 @@ export default function App() {
                             />
                           </div>
 
-                          {/* Geographic Concentration Notes & Market Footprint */}
-                          {(profileData.demographics.geographyNotes || geoTargets.length > 0) && (
-                            <div className="bg-slate-50 rounded-xl border border-slate-100/80 p-4 text-[11px] text-slate-500 space-y-3">
+                          {/* National plans: the Geo Footprint section is for State and DMA plans, so the
+                              geography note stays here with the scope beside it. */}
+                          {!planGeoFootprint && profileData.demographics.geographyNotes && (
+                            <div className="bg-slate-50 rounded-xl border border-slate-100/80 p-4 text-[11px] text-slate-500 space-y-2">
                               <div className="flex items-center justify-between">
                                 <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold flex items-center gap-1.5">
                                   <MapPin className="w-3.5 h-3.5" />
-                                  Geographic Footprint & Market Targeting
+                                  Geographic Footprint
                                 </span>
-                                {geoTargets.length > 0 && (
-                                  <span className="text-[10px] font-semibold bg-white border border-slate-200 px-2 py-0.5 rounded-full text-indigo-700 shadow-2xs">
-                                    {geoTargets.length} {geographyType === "State" ? (geoTargets.length === 1 ? "State" : "States") : (geoTargets.length === 1 ? "DMA" : "DMAs")} Targeted
-                                  </span>
-                                )}
+                                <span className="text-[10px] font-semibold bg-white border border-slate-200 px-2 py-0.5 rounded-full text-indigo-700 shadow-2xs">
+                                  National · {(NATIONAL_TV_HOUSEHOLDS / 1_000_000).toFixed(0)}M TV Households
+                                </span>
                               </div>
-
-                              {geoTargets.length > 0 && (
-                                <div className="space-y-1.5">
-                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-600">
-                                    <span>Target Market Coverage:</span>
-                                    {parseCurrencyInput(budget) > 0 && (
-                                      <span className="text-slate-400 font-mono text-[9px]">
-                                        ~${Math.round(parseCurrencyInput(budget) / geoTargets.length).toLocaleString()} / market
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto custom-scrollbar p-2 bg-white rounded-lg border border-slate-200/60">
-                                    {geoTargets.map((market, i) => (
-                                      <span key={i} className="px-2 py-0.5 bg-indigo-50 border border-indigo-100/60 text-indigo-700 text-[10px] font-medium rounded-md">
-                                        {market}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-
-                              {profileData.demographics.geographyNotes && (
-                                <p className="leading-relaxed text-slate-600">
-                                  {profileData.demographics.geographyNotes}
-                                </p>
-                              )}
+                              <p className="leading-relaxed text-slate-600">
+                                {profileData.demographics.geographyNotes}
+                              </p>
                             </div>
                           )}
                         </div>

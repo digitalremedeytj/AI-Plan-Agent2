@@ -48,7 +48,7 @@ export const narrativeSchema = {
       },
     },
     demographicsOverview: { type: "string", description: "At most 90 words, consistent with the age, gender and income charts." },
-    geographyNotes: { type: "string", description: "At most 60 words on regional footprint for the plan's geography." },
+    geographyNotes: { type: "string", description: "At most two sentences (40 words) on where the audience concentrates within the plan's geography. Do not restate household counts, shares or the market list; the plan shows them beside this note." },
     browserOverview: { type: "string", description: "At most 90 words, consistent with the domain affinity chart." },
     deviceOverview: { type: "string", description: "At most 90 words, consistent with the device chart." },
     temporalOverview: { type: "string", description: "At most 90 words, consistent with the day and hour charts and what they measure." },

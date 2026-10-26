@@ -7,6 +7,7 @@
 
 import { AUDIENCE_TYPES, FUNNEL_EMPHASES, PRICE_TIERS } from "../research/briefOfRecord";
 import { SEGMENT_TIERS, coerceDimension, segmentKey, MAX_SEGMENT_JUSTIFICATION_LENGTH, MAX_SEGMENT_NAME_LENGTH, MAX_TOTAL_SEGMENTS } from "../research/segmentRecommendations";
+import { geoSnapshotFromBrief } from "../planning/geoFootprint";
 import type { AssistantOp, ProposalChange, RejectedOp } from "./operations";
 
 export const PERSONA_FIELDS = ["name", "age", "income", "gender", "watch", "browse", "buy", "narrative"] as const;
@@ -296,6 +297,11 @@ export function applyBriefOps(payload: any, ops: AssistantOp[]): OpOutcome {
       // The structured picker state described the old geography; the form rebuilds it from the text.
       if (op.config) payload.geographyConfig = op.config;
       else delete payload.geographyConfig;
+      // The saved footprint described the old geography too; without a picker config the plan
+      // falls back to the brief, as plans from before the snapshot do.
+      const snapshot = geoSnapshotFromBrief(payload.geographyConfig);
+      if (snapshot) profile.geoTargeting = snapshot;
+      else delete profile.geoTargeting;
       out.applied.push(op);
     }
   }

@@ -132,6 +132,17 @@ test("KPI and geography changes update the brief inputs and a revert restores th
   assert.deepEqual(reverted.payload.geographyConfig, before.geographyConfig);
 });
 
+test("a geography change replaces the plan's saved footprint, and a revert brings the old one back", () => {
+  const before = payload();
+  const boston = { type: "DMA" as const, targets: ["Boston (Manchester), MA"] };
+  const changed = applyOps(before, [{ type: "set_geography", value: "DMA (Boston)", config: boston }]);
+  assert.deepEqual(changed.payload.profile.geoTargeting.entries.map((entry: { id: string }) => entry.id), ["506"]);
+
+  const reverted = applyOps(changed.payload, parseOps(changed.revertOps, { allowRestore: true }).ops);
+  // The original plan was national, which has no saved footprint.
+  assert.equal(reverted.payload.profile.geoTargeting, undefined);
+});
+
 test("persona text goes through update_persona, and restores are refused outside a revert", () => {
   const viaText = applyOps(payload(), [{ type: "edit_text", path: "personas[0].narrative", value: "New." }]);
   assert.match(viaText.rejected[0].reason, /update_persona/);
