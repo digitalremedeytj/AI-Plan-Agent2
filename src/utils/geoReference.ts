@@ -411,6 +411,63 @@ export function dmasNamedIn(text: string): string[] {
 }
 
 /**
+ * A note that is only a place: "Boston", "New York, NY", "501", or the start of a market name
+ * ("San Fran"). Unlike normalizeDma, a place mentioned inside a sentence ("exclude Boston") is
+ * not one, since the rest of the sentence is the planner's instruction about it.
+ */
+function placeOnly(text: string, type: 'State' | 'DMA'): string | null {
+  if (type === 'State') {
+    const coded = text.match(/^(.+?)\s*\(([A-Za-z]{2})\)$/);
+    const state = coded ? (exactState(coded[1])?.code === coded[2].toUpperCase() ? exactState(coded[1]) : null) : exactState(text);
+    return state ? `${state.name} (${state.code})` : null;
+  }
+  const cleaned = cleanDmaKey(text.replace(/^dma[\s:-]+/i, ''));
+  const direct = dmaLookup.get(cleaned);
+  if (direct) return direct.canonical;
+  if (cleaned.length < 4) return null;
+  for (const [key, entry] of dmaLookup.entries()) {
+    if (` ${key}`.includes(` ${cleaned}`)) return entry.canonical;
+  }
+  return null;
+}
+
+/**
+ * The geography notes box takes both places to target and instructions the picker cannot hold
+ * ("Boston + 30 mi", "exclude Manhattan"). Places come out as targets; everything else stays
+ * in the notes as written, line by line.
+ */
+export function splitPlacesFromNotes(text: string, type: 'State' | 'DMA'): { places: string[]; notes: string } {
+  const places = new Set<string>();
+  const lines = text.split('\n').map((line) => {
+    const kept: string[] = [];
+    for (const segment of line.split(';').map((part) => part.trim()).filter(Boolean)) {
+      const whole = placeOnly(segment, type);
+      if (whole) {
+        places.add(whole);
+        continue;
+      }
+      const parts = segment.split(',').map((part) => part.trim()).filter(Boolean);
+      const left: string[] = [];
+      for (let i = 0; i < parts.length; i += 1) {
+        // "Boston, MA" is one market, not Boston and Massachusetts.
+        const pair = i + 1 < parts.length ? placeOnly(`${parts[i]}, ${parts[i + 1]}`, type) : null;
+        if (pair) {
+          places.add(pair);
+          i += 1;
+          continue;
+        }
+        const single = placeOnly(parts[i], type);
+        if (single) places.add(single);
+        else left.push(parts[i]);
+      }
+      if (left.length > 0) kept.push(left.join(', '));
+    }
+    return kept.join('; ');
+  });
+  return { places: Array.from(places), notes: lines.filter(Boolean).join('\n') };
+}
+
+/**
  * Parse comma-separated or newline-separated text into matched targets and unparsed strings.
  */
 export function parseGeoTextInput(

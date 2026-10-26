@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NIELSEN_DMAS, US_STATES as PICKER_STATES } from "../../utils/geoReference";
-import { geoTargetingFromBrief, resolvePickerDma, resolvePickerState } from "./briefGeography";
+import { footprintReadout, geoTargetingFromBrief, geographyForPrompt, resolvePickerDma, resolvePickerState } from "./briefGeography";
 import { resolveHouseholdUniverse } from "./universe";
 
 test("every DMA in the brief's picker resolves to one market in the household data", () => {
@@ -45,4 +45,29 @@ test("national or an empty pick measures against the whole country, and unknown 
   const universe = resolveHouseholdUniverse(geoTargetingFromBrief({ type: "DMA", targets: ["Washington, DC (Hag, Wsh)", "Atlantis"] }));
   assert.equal(universe.households, 2_476_680);
   assert.deepEqual(universe.unresolved, ["Atlantis"]);
+});
+
+test("the footprint under the picker uses the households the plan's reach is sized to", () => {
+  const config = { type: "DMA" as const, targets: ["Boston (Manchester), MA"] };
+  const readout = footprintReadout(config);
+  const universe = resolveHouseholdUniverse(geoTargetingFromBrief(config));
+
+  assert.ok(readout?.line.startsWith("Boston"));
+  assert.ok(readout?.line.includes(`${(universe.households / 1_000_000).toFixed(1)}M TV households`));
+  assert.ok(readout?.detail.startsWith("Delivers into"));
+  assert.equal(footprintReadout({ type: "National", targets: [] }), null);
+});
+
+test("state targeting reports the markets that spill past the chosen states", () => {
+  const readout = footprintReadout({ type: "State", targets: ["New Jersey (NJ)"] });
+
+  assert.match(readout?.detail || "", /^Served by \d+ DMAs; \d+ of them also deliver into .*NY/);
+});
+
+test("the research prompts get the computed footprint and the planner's notes, never the bare scope", () => {
+  const line = geographyForPrompt("DMA (Boston (Manchester))", { type: "DMA", targets: ["Boston (Manchester), MA"], rawInput: "Boston + 30 mi\nexclude Cambridge" });
+
+  assert.match(line, /^DMA targeting within United States: 1 markets covering [\d,]+ TV households/);
+  assert.ok(line.endsWith("Boston + 30 mi; exclude Cambridge"));
+  assert.equal(geographyForPrompt("National", { type: "National", targets: [] }), "National (United States).");
 });

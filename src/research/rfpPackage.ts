@@ -252,6 +252,8 @@ export interface RfpGeography {
   unmapped: string[];
   /** The RFP names the whole country beside the local places it targets. */
   alsoNational: boolean;
+  /** The RFP's lines that say more than the field holds, for the geography notes. */
+  notes: string[];
 }
 
 // A radius or ZIP is narrower than the DMA it falls in, so reading one as its DMA is approximate.
@@ -286,11 +288,16 @@ export function rfpGeography(geographies: unknown): RfpGeography {
   const rest = read.filter((entry) => entry[key].length === 0);
   const national = rest.filter((entry) => entry.states.length === 0 && entry.dmas.length === 0 && NATIONAL.test(entry.item));
 
+  const approximate = mapped.filter((entry) => RADIUS_OR_ZIP.test(entry.item)).map((entry) => entry.item);
+  const unmapped = rest.filter((entry) => !national.includes(entry)).map((entry) => entry.item);
+  const alsoNational = targets.length > 0 && national.length > 0;
   return {
     suggestion: targets.length > 0 ? { type, targets } : national.length > 0 ? { type: "National", targets: [] } : null,
-    approximate: mapped.filter((entry) => RADIUS_OR_ZIP.test(entry.item)).map((entry) => entry.item),
-    unmapped: rest.filter((entry) => !national.includes(entry)).map((entry) => entry.item),
-    alsoNational: targets.length > 0 && national.length > 0,
+    approximate,
+    unmapped,
+    alsoNational,
+    // "National (US) for travel intenders only" is an instruction once the plan is local.
+    notes: [...approximate, ...unmapped, ...(alsoNational ? national.map((entry) => entry.item) : [])],
   };
 }
 

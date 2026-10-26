@@ -206,7 +206,7 @@ interface RfpGeographyNoticeProps {
 /**
  * The RFP's geography beside the brief's Geography field: what was filled in from it, what it
  * says that the field cannot hold, and a difference from the planner's own pick. What the field
- * cannot hold still reaches the research, through the RFP's lines in the brief text.
+ * cannot hold still reaches the research, through the brief text and the geography notes.
  */
 export const RfpGeographyNotice: React.FC<RfpGeographyNoticeProps> = ({ geo, source, current, mismatch, keptOver, sourceFile, onUseRfp, onKeep }) => {
   const local = geo.suggestion !== null && geo.suggestion.type !== 'National';
@@ -215,7 +215,7 @@ export const RfpGeographyNotice: React.FC<RfpGeographyNoticeProps> = ({ geo, sou
     geo.approximate.length > 0 ? `Read as the nearest ${geo.suggestion?.type === 'State' ? 'state' : 'DMA'}: ${geo.approximate.join('; ')}.` : '',
     local && geo.alsoNational ? 'The RFP also mentions national coverage; the plan targets its local places.' : '',
     geo.unmapped.length > 0
-      ? `Not in the plan's numbers: ${geo.unmapped.join('; ')}. The research still reads ${geo.unmapped.length === 1 ? 'it' : 'them'} in the brief.`
+      ? `Not in the plan's numbers: ${geo.unmapped.join('; ')}. The research still reads ${geo.unmapped.length === 1 ? 'it' : 'them'}.`
       : '',
   ].filter(Boolean);
   const detailList = details.length > 0 && (
@@ -253,7 +253,7 @@ export const RfpGeographyNotice: React.FC<RfpGeographyNoticeProps> = ({ geo, sou
           The RFP's locations{from} are not states or DMAs, so the plan is sized to {current}
         </p>
         <p className="mt-0.5 ml-5 text-[11px] text-amber-800">
-          {geo.unmapped.join('; ')}. The research still reads {geo.unmapped.length === 1 ? 'it' : 'them'} in the brief; pick states or DMAs above to size the plan to {geo.unmapped.length === 1 ? 'it' : 'them'}.
+          {geo.unmapped.join('; ')}. The research still reads {geo.unmapped.length === 1 ? 'it' : 'them'}; pick states or DMAs above to size the plan to {geo.unmapped.length === 1 ? 'it' : 'them'}.
         </p>
       </div>
     );

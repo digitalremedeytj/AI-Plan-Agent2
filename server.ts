@@ -14,6 +14,7 @@ import { validateProductRegistry } from "./src/planning/knowledge/registry";
 import { isCustomProductId, plannerGuidanceField, resolveEffectiveProducts } from "./src/planning/effectiveProducts";
 import { ctvMissingAlerts, plannerPickAlerts } from "./src/planning/briefMediaTypes";
 import { normalizeBudgetStrategyMode, resolveStrategyBudget, type BudgetStrategyMode } from "./src/planning/budgetStrategy";
+import { geographyForPrompt } from "./src/planning/reach/briefGeography";
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, displaySettingsOf, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
@@ -5054,6 +5055,9 @@ app.post("/api/generate-profile", async (req, res) => {
     draft,
   } = req.body;
   const quickMode = req.body?.quickMode === true;
+  // Prompts get the computed footprint and the planner's notes; the engine keeps `geography`,
+  // which gates product eligibility and must stay a scope it knows.
+  const promptGeography = geographyForPrompt(geography, draft?.geographyConfig);
   // The brief's media-type picker. Only ids from the live catalog survive buildCampaignFacts.
   const briefMediaTypeIds: string[] = Array.isArray(req.body?.requiredChannelIds)
     ? req.body.requiredChannelIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 50)
@@ -5215,7 +5219,7 @@ app.post("/api/generate-profile", async (req, res) => {
           targetPersonas: cleanTargetPersonas,
           kpis: cleanKpis,
           campaignFocus: campaignFocus || "",
-          geography: geography || "United States",
+          geography: promptGeography,
           additionalContext: cleanAdditionalContext,
           crawlText: crawledPageText.slice(0, 6000),
           searchSummary,
@@ -5265,7 +5269,7 @@ app.post("/api/generate-profile", async (req, res) => {
 Advertiser Name: ${cleanAdvertiserName || "Not specified"}
 Target Campaign KPIs (Goals): ${cleanKpis.length > 0 ? cleanKpis.join("; ") : "Not specified"}
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geography}
+Geography/Market: ${promptGeography}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -5286,7 +5290,7 @@ INSTRUCTIONS:
     // 2. Browser & Domain Affinity Sub-Call Prompt
     const promptWebAffinity = `Research and compile digital touchpoints, web traffic, and domain affinities for this target audience.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geography}
+Geography/Market: ${promptGeography}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -5305,7 +5309,7 @@ INSTRUCTIONS:
     // 3. CTV & Devices Sub-Call Prompt
     const promptDevices = `Research and compile Connected TV (CTV) viewing, video streaming, and hardware device usage patterns for this target audience.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geography}
+Geography/Market: ${promptGeography}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -5327,7 +5331,7 @@ INSTRUCTIONS:
     // and display from it. It now asks for the advertiser's category and labels general data.
     const promptTemporalPurchase = `Research and compile when this target audience researches, shops and buys in the advertiser's category, when it watches streaming TV, and its purchase triggers.
 Target Audience Description: ${cleanAudienceDesc || "Inferred from Brand Website"}
-Geography/Market: ${geography}
+Geography/Market: ${promptGeography}
 Campaign Focus/Goal: ${campaignFocus}
 Brand Website (if any): ${cleanUrl || "None provided"}
 ${cleanUrl ? `Direct website crawled snippet: "${cleanCrawledText}"` : ""}
@@ -5576,7 +5580,7 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 4. Be highly precise with definitions: composition vs index vs reach vs penetration. Clearly distinguish percentage split from activity index (average = 100).
 5. Do not call an audience segment "affluent", "young", "tech-savvy", etc. unless the research supportively proves it with metrics.
 6. Ensure demographic charts, device charts, web share charts, and day/hour charts are fully populated with exact numbers. Percentage charts MUST sum to approximately 100 (except index charts which represent index scores). For 'browserAndReach.chartData' (Top Domain Affinity Index), all items MUST represent an Affinity Index % where 100% is the national average likelihood, and metricType MUST be strictly set to 'Affinity Index'. Provide realistic index values (e.g. 120%, 150%, 210%, 280% depending on target audience domain affinity).
-7. Use current ${currentYear} data. Match geography: ${geography}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
+7. Use current ${currentYear} data. Match geography: ${promptGeography}. If exact geographic data is sparse, adapt it using a realistic 'Modeled Planning Proxy' or 'Directional Estimate', and clearly label the source property as such.
 7b. REALISTIC, LABELLED ESTIMATES: Where a chart value comes from a dossier, copy it as reported and name that source. Where the dossiers have no figure and you estimate one, set 'isModeled' to true and make the source say it is an estimate (e.g. 'ScoutAI estimate informed by Nielsen 2025'). Estimates must look like real audience data, not a formula: day-of-week and hour-of-day series are uneven (hour-of-day has an early-morning low, a smaller daytime bump, a prime-time peak and an audience-specific late-night tail - never a straight climb; adjacent days never rise in a straight line), domain affinity indices have uneven gaps and precise values (e.g. 312, 287, 243 - never all multiples of 5 or 10), and shares are precise numbers (e.g. 43, 27, 14) rather than multiples of 5. The server checks for straight runs, even spacing, round numbers and repeated values and sends offending charts back for revision.
 7c. NATIONAL-BASELINE CHARTS: For 'demographics.ageChartData', 'demographics.genderChartData', 'demographics.incomeChartData', 'temporalPatterns.dayOfWeekChartData' and 'temporalPatterns.hourOfDayChartData', use figures only if a dossier reports THIS audience's split, and copy them as reported. If it does not, return that chart as an EMPTY array and do not quote numbers for it in the narrative: the server builds it from U.S. Census and BLS national baselines adjusted for this audience. The narrative may still describe the audience's skew qualitatively (e.g. "skews younger than the U.S. adult population").
 8. STRICT ANTI-HALLUCINATION & ZERO-FABRICATION RULE (MANDATORY):
@@ -5644,7 +5648,7 @@ You are provided with a pool of real URLs discovered during search research. You
 
 ADVERTISER NAME: ${cleanAdvertiserName || "None provided"}
 	TARGET CAMPAIGN KPIS (GOALS): ${cleanKpis.length > 0 ? cleanKpis.join("; ") : "None provided"}
-	GEOGRAPHY: ${geography}
+	GEOGRAPHY: ${promptGeography}
 	CAMPAIGN FOCUS: ${campaignFocus}
 	WORKING MEDIA BUDGET: $${Number(workingMediaBudget || 0).toLocaleString()}
 	CAMPAIGN FLIGHT DAYS: ${campaignFlightDays || "Unknown"}
@@ -5863,7 +5867,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       try {
         const skews: any = await generateStructuredJson(ai, {
           systemInstruction: "You estimate how a target audience differs from the U.S. national population. For each bracket or time period you give an index: 100 = same as the national baseline, 150 = 1.5x as likely, 60 = 0.6x. Base every skew on the research and on well-established facts about this kind of audience; where there is no reason to differ, use 100 and say so. Do not flatten differences that the research supports, and do not invent sharp skews it does not. Use the exact labels given.",
-          input: `AUDIENCE: ${audienceLine}\nGEOGRAPHY: ${geography}\nCAMPAIGN FOCUS: ${campaignFocus}\n\nNATIONAL BASELINES TO ADJUST:\n${describeBaselines(baselineIds)}\n\nFor day-of-week and hour-of-day, skew each period for this audience's own routine (work schedule, life stage, when they stream or browse) - the baseline is national TV viewing.\n\nRESEARCH - DEMOGRAPHICS:\n${dossierExcerpt("Demographics")}\n\nRESEARCH - TEMPORAL & PURCHASE:\n${dossierExcerpt("Temporal & Purchase")}\n\nReturn one index per label for each chart listed.`,
+          input: `AUDIENCE: ${audienceLine}\nGEOGRAPHY: ${promptGeography}\nCAMPAIGN FOCUS: ${campaignFocus}\n\nNATIONAL BASELINES TO ADJUST:\n${describeBaselines(baselineIds)}\n\nFor day-of-week and hour-of-day, skew each period for this audience's own routine (work schedule, life stage, when they stream or browse) - the baseline is national TV viewing.\n\nRESEARCH - DEMOGRAPHICS:\n${dossierExcerpt("Demographics")}\n\nRESEARCH - TEMPORAL & PURCHASE:\n${dossierExcerpt("Temporal & Purchase")}\n\nReturn one index per label for each chart listed.`,
           schema: audienceSkewSchema(baselineIds),
           // Low: at medium this call hit its 45s budget in a live run; it is a small, structured
           // judgement per bracket, and the revision calls at low returned in 2-4s.
@@ -5910,7 +5914,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         try {
           const revision: any = await generateStructuredJson(ai, {
             systemInstruction: "You revise one chart in a media-planning audience profile so its estimated values look like real audience data. Keep the same items in the same order. Points marked isModeled true are estimates: change them as the required fixes say. Keep a point marked isModeled false only if the research below states that exact figure; otherwise treat it as an estimate. Mark every estimated point isModeled true with a source that says it is an estimate.",
-            input: `AUDIENCE: ${audienceLine}\nGEOGRAPHY: ${geography}\n\nCHART: ${chart.label}\nCURRENT VALUES:\n${JSON.stringify(current, null, 2)}\n\nWHY IT LOOKS GENERATED: ${problems.join("; ")}.\n\nREQUIRED FIXES:\n${realismFixes(problems).map((fix) => `- ${fix}`).join("\n")}\n\nWHAT REALISTIC DATA LOOKS LIKE: ${CHART_SHAPE_GUIDANCE[chart.id] || ""}\n\nRESEARCH FOR THIS TOPIC (excerpt, for context):\n${(dossier && !dossier.failed ? dossier.text : "").slice(0, 3000)}\n\nReturn the revised chart as 'chartData'.`,
+            input: `AUDIENCE: ${audienceLine}\nGEOGRAPHY: ${promptGeography}\n\nCHART: ${chart.label}\nCURRENT VALUES:\n${JSON.stringify(current, null, 2)}\n\nWHY IT LOOKS GENERATED: ${problems.join("; ")}.\n\nREQUIRED FIXES:\n${realismFixes(problems).map((fix) => `- ${fix}`).join("\n")}\n\nWHAT REALISTIC DATA LOOKS LIKE: ${CHART_SHAPE_GUIDANCE[chart.id] || ""}\n\nRESEARCH FOR THIS TOPIC (excerpt, for context):\n${(dossier && !dossier.failed ? dossier.text : "").slice(0, 3000)}\n\nReturn the revised chart as 'chartData'.`,
             schema: { type: "object", properties: { chartData: itemSchema }, required: ["chartData"] },
             thinkingLevel: "low",
             timeoutMs: TIMEOUT_CHART_REVISION_MS,

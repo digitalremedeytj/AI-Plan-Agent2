@@ -5,6 +5,7 @@ import {
   normalizeDma,
   parseGeoTextInput,
   extractGeoFromSpreadsheetRows,
+  splitPlacesFromNotes,
   NIELSEN_DMAS,
 } from './geoReference.js';
 import { DMA_MARKETS, findDmaByCode } from '../planning/knowledge/dmaMarkets.js';
@@ -100,4 +101,23 @@ test('the merged second spellings still normalize to their market', () => {
   assert.equal(normalizeDma('Grand Junction, CO'), 'Grand Junction-Montrose, CO');
   assert.equal(normalizeDma('Panama City-Destin, FL'), 'Panama City, FL');
   assert.equal(normalizeDma('Quincy-Hannibal, IL-MO'), 'Quincy-Hannibal-Keokuk, IL');
+});
+
+test('places typed into the geography notes become targets and the instructions stay as notes', () => {
+  const { places, notes } = splitPlacesFromNotes('Boston, MA\nChicago, Atlanta, heavier weight on Atlanta\nexclude Manhattan; Boston + 30 mi', 'DMA');
+
+  assert.deepEqual(places, ['Boston (Manchester), MA', 'Chicago, IL', 'Atlanta, GA']);
+  assert.equal(notes, 'heavier weight on Atlanta\nexclude Manhattan; Boston + 30 mi');
+});
+
+test('a place named inside a sentence is left in the notes rather than targeted', () => {
+  assert.deepEqual(splitPlacesFromNotes('exclude Boston', 'DMA'), { places: [], notes: 'exclude Boston' });
+  assert.deepEqual(splitPlacesFromNotes('Washington metro only', 'State'), { places: [], notes: 'Washington metro only' });
+});
+
+test('states come out of the notes by name, code or the picker\'s own label', () => {
+  const { places, notes } = splitPlacesFromNotes('CA, Texas, Florida (FL)\nBoston', 'State');
+
+  assert.deepEqual(places, ['California (CA)', 'Texas (TX)', 'Florida (FL)']);
+  assert.equal(notes, 'Boston');
 });

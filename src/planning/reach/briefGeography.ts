@@ -9,7 +9,9 @@
  * drift between the two lists fails loudly.
  */
 import type { GeoEntry, GeoTargeting, GeographyTargetConfig } from "../../types";
-import { dmaEntry, parseGeoList, stateEntry } from "../geoTargeting";
+import { dmaEntry, geoCoverage, geoSummaryForPrompt, parseGeoList, stateEntry } from "../geoTargeting";
+import { NATIONAL_TV_HOUSEHOLDS } from "../knowledge/stateHouseholds";
+import { resolveHouseholdUniverse } from "./universe";
 
 /** Picker names the household file spells too differently to match, mapped to its codes. */
 const PICKER_DMA_CODES: Record<string, string> = {
@@ -69,4 +71,42 @@ export function geoTargetingFromBrief(config: GeographyTargetConfig | null | und
     unresolved: [],
     inputMethod: "select",
   };
+}
+
+/** The brief's geography notes ride in every research prompt, so they are kept to a paragraph. */
+export const GEOGRAPHY_NOTES_MAX_CHARS = 1000;
+
+function compactHouseholds(households: number): string {
+  return households >= 1_000_000 ? `${(households / 1_000_000).toFixed(1)}M` : `${Math.round(households / 1000)}K`;
+}
+
+/**
+ * The footprint under the brief's picker, from the same households the plan's reach is sized
+ * to, so what the planner sees before generating is what the numbers will use. Null for national.
+ */
+export function footprintReadout(config: GeographyTargetConfig | null | undefined): { line: string; detail: string; unsized: string[] } | null {
+  const targeting = geoTargetingFromBrief(config);
+  if (!targeting) return null;
+  const universe = resolveHouseholdUniverse(targeting);
+  if (universe.scope === "national") return { line: "Not sized: none of these matched the household data", detail: "", unsized: universe.unresolved };
+  const share = ((universe.households / NATIONAL_TV_HOUSEHOLDS) * 100).toFixed(1);
+  const coverage = geoCoverage(targeting);
+  const detail = coverage?.scope === "dma"
+    ? `Delivers into ${coverage.states.join(", ")}`
+    : coverage?.scope === "state"
+      ? `Served by ${coverage.overlappingDmaCount} DMAs${coverage.spillMarketCount > 0 ? `; ${coverage.spillMarketCount} of them also deliver into ${coverage.spillStates.join(", ")}` : ""}`
+      : "";
+  return { line: `${universe.label} · ${compactHouseholds(universe.households)} TV households · ${share}% of US`, detail, unsized: universe.unresolved };
+}
+
+/**
+ * The geography the research prompts see: the footprint as code computed it, and the planner's
+ * notes for what the picker cannot hold. The engine is given the plain geography instead, since
+ * it gates product eligibility on it.
+ */
+export function geographyForPrompt(geography: string | undefined, config: GeographyTargetConfig | null | undefined): string {
+  const targeting = geoTargetingFromBrief(config);
+  const footprint = targeting ? geoSummaryForPrompt(targeting) : geography && !/^(national|united states)$/i.test(geography.trim()) ? geography : "National (United States).";
+  const notes = typeof config?.rawInput === "string" ? config.rawInput.trim().slice(0, GEOGRAPHY_NOTES_MAX_CHARS) : "";
+  return notes ? `${footprint}\nPlanner's geography notes (instructions the targeting above cannot hold, e.g. a radius, ZIPs, exclusions): ${notes.replace(/\s*\n\s*/g, "; ")}` : footprint;
 }

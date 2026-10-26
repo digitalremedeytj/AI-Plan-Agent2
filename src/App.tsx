@@ -59,7 +59,8 @@ import {
 import Markdown from "react-markdown";
 
 import { AudienceProfile, type AudienceNarrowing, type Persona, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
-import { parseGeoTextInput, extractGeoFromSpreadsheetRows } from "./utils/geoReference";
+import { parseGeoTextInput, extractGeoFromSpreadsheetRows, splitPlacesFromNotes } from "./utils/geoReference";
+import { GEOGRAPHY_NOTES_MAX_CHARS, footprintReadout } from "./planning/reach/briefGeography";
 import { docxLines } from "./utils/docxText";
 import { rtfLines } from "./utils/rtfText";
 import { MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, PACKAGE_ACCEPT, PACKAGE_ROLE_LABELS, fileExtension, guessFileRoles, isPackageFileType, packageLabel, plannerNotesLimit, rfpGeography, sameGeography, suggestGeoTargets, uploadBriefText, uploadBriefWithNotes, type BriefGeography, type GeographySource } from "./research/rfpPackage";
@@ -745,6 +746,7 @@ export default function App() {
   );
 
   const geography = React.useMemo(() => describeGeography(geographyType, geoTargets), [geographyType, geoTargets]);
+  const geoFootprint = React.useMemo(() => footprintReadout({ type: geographyType, targets: geoTargets }), [geographyType, geoTargets]);
 
   const briefMediaTypeChoices = React.useMemo(() => briefMediaTypeOptions(planningSettings), [planningSettings]);
   // A pick a later settings change disabled would make every portfolio infeasible in the engine
@@ -765,25 +767,9 @@ export default function App() {
     return { minimumTotal, minimumMonthly };
   }, [briefMediaTypeChoices, activeBriefMediaTypes, budgetNormalization]);
 
-  const geographyOptions = React.useMemo(() => {
-    const base: string[] = ["National", "State", "DMA"];
-    const configured = Array.from(
-      new Set(
-        planningSettings.products
-          .filter(
-            (product) =>
-              product.digitalRemedyExecutable &&
-              product.recommendationEligible &&
-              product.status === "live",
-          )
-          .flatMap((product) => product.supportedGeographies),
-      ),
-    );
-    const extras = configured.filter(
-      (g) => !["united states", "us", "usa", "national"].includes(g.trim().toLowerCase()),
-    );
-    return [...base, ...extras];
-  }, [planningSettings]);
+  // US only: the engine gates every product on the market, and a market outside it belongs in the
+  // geography notes. The scope picks where in the US, never which country.
+  const geographyOptions = React.useMemo(() => ["National", "State", "DMA"], []);
 
   React.useEffect(() => {
     if (!geographyOptions.includes(geographyType)) {
@@ -791,19 +777,22 @@ export default function App() {
     }
   }, [geographyOptions, geographyType]);
 
+  // Places in the notes become targets; what is left is the planner's note and stays as written.
   const handleApplyGeoRawInput = () => {
-    if (!geoRawInput.trim()) return;
-    const parsed = parseGeoTextInput(geoRawInput, geographyType as "State" | "DMA");
-    if (parsed.valid.length > 0) {
-      setGeoTargets((prev) => Array.from(new Set([...prev, ...parsed.valid])));
+    if (!geoRawInput.trim() || (geographyType !== "State" && geographyType !== "DMA")) return;
+    const { places, notes } = splitPlacesFromNotes(geoRawInput, geographyType);
+    const kind = geographyType === "State" ? "states" : "DMAs";
+    if (places.length > 0) {
+      setGeoTargets((prev) => Array.from(new Set([...prev, ...places])));
       setGeographySource("planner");
     }
-    if (parsed.unrecognized.length > 0) {
-      setGeoUnrecognized(parsed.unrecognized);
-    } else {
-      setGeoUnrecognized([]);
-    }
-    setGeoRawInput("");
+    setGeoRawInput(notes);
+    setGeoUnrecognized([]);
+    setGeoUploadNotice(
+      places.length === 0
+        ? `No ${kind} found on their own in the notes, so nothing was added. A place inside a sentence stays a note.`
+        : `Added ${places.length} ${places.length === 1 ? kind.slice(0, -1) : kind}${notes ? "; the rest stays in the notes" : ""}.`,
+    );
   };
 
   const handleRemoveGeoTarget = (target: string) => {
@@ -3058,10 +3047,12 @@ export default function App() {
   );
   const rfpGeoKey = rfpGeo?.suggestion ? `${rfpGeo.suggestion.type}:${rfpGeo.suggestion.targets.join("|")}` : "";
 
-  const applyRfpGeography = (suggestion: BriefGeography) => {
+  const applyRfpGeography = (suggestion: BriefGeography, notes: string[]) => {
     setGeographyType(suggestion.type);
     setGeoTargets(suggestion.targets);
-    setGeoRawInput("");
+    // A radius or an exclusion the RFP states is kept where the planner can see and edit it, but
+    // never over notes they wrote.
+    if (notes.length > 0) setGeoRawInput((prev) => (prev.trim() ? prev : notes.join("\n").slice(0, GEOGRAPHY_NOTES_MAX_CHARS)));
     setGeoUnrecognized([]);
     setGeoUploadNotice(null);
     setAppliedGeoFile(null);
@@ -3070,7 +3061,7 @@ export default function App() {
 
   // Keyed on the places rather than the reading, so a re-read that finds the same places is a no-op.
   React.useEffect(() => {
-    if (rfpGeo?.suggestion && geographySourceRef.current !== "planner") applyRfpGeography(rfpGeo.suggestion);
+    if (rfpGeo?.suggestion && geographySourceRef.current !== "planner") applyRfpGeography(rfpGeo.suggestion, rfpGeo.notes);
   }, [rfpGeoKey]);
 
   // A plan sized to the wrong places is wrong in every number, so a difference from the RFP is
@@ -3094,8 +3085,8 @@ export default function App() {
     });
     // Picking a file's locations is the planner's answer, so it applies over their own pick too.
     if (field === "geographies") {
-      const suggestion = rfpGeography([value]).suggestion;
-      if (suggestion) applyRfpGeography(suggestion);
+      const picked = rfpGeography([value]);
+      if (picked.suggestion) applyRfpGeography(picked.suggestion, picked.notes);
     }
     if (field === "advertiserName") {
       const advertiser = asAdvertiserName(value);
@@ -3125,7 +3116,6 @@ export default function App() {
   const handleApplyPackageGeo = (suggestion: { fileName: string; type: "State" | "DMA"; targets: string[] }) => {
     setGeographyType(suggestion.type);
     setGeoTargets(suggestion.targets);
-    setGeoRawInput("");
     setGeoUnrecognized([]);
     setAppliedGeoFile(suggestion.fileName);
     setGeographySource("planner");
@@ -3987,7 +3977,6 @@ export default function App() {
     setCampaignLength(nextLength);
     setGeographyType(geo.type);
     setGeoTargets(geo.targets);
-    setGeoRawInput("");
     setGeoUnrecognized([]);
     setGeographySource("planner");
     setBudgetStrategyMode(upload.mode);
@@ -5579,9 +5568,10 @@ export default function App() {
                         const nextType = e.target.value as GeographyType;
                         setGeographyType(nextType);
                         setGeographySource("planner");
-                        if (nextType === "National") {
+                        // DMA names are not states, so a target list does not carry across scopes;
+                        // the notes do.
+                        if (nextType !== geographyType) {
                           setGeoTargets([]);
-                          setGeoRawInput("");
                           setGeoUnrecognized([]);
                           setGeoUploadNotice(null);
                         }
@@ -5624,76 +5614,10 @@ export default function App() {
                     mismatch={geoMismatch}
                     keptOver={geoDifference?.kept ? geoDifference.rfp : null}
                     sourceFile={rfpAnalysis?.metadataSources?.geographies}
-                    onUseRfp={() => rfpGeo.suggestion && applyRfpGeography(rfpGeo.suggestion)}
+                    onUseRfp={() => rfpGeo.suggestion && applyRfpGeography(rfpGeo.suggestion, rfpGeo.notes)}
                     onKeep={() => geoMismatch && setKeptGeographyMismatch(geoMismatch.key)}
                   />
                 )}
-
-                {/* Optional media-type picker: planner-required channels, optionally exclusive.
-                    Collapsed under "Let AI pick" by default to keep the brief short. */}
-                <div className="rounded-xl border border-slate-200 bg-white">
-                  <div className="flex items-center justify-between gap-3 px-3 py-2">
-                    <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center gap-1">
-                      <Layers className="w-3.5 h-3.5 text-slate-400" />
-                      Media Types
-                    </span>
-                    <select
-                      value={isPickingMediaTypes ? "pick" : "ai"}
-                      onChange={(e) => setIsPickingMediaTypes(e.target.value === "pick")}
-                      aria-label="How media types are chosen"
-                      className="text-xs px-2 py-1.5 border border-slate-200 bg-white rounded-lg focus:outline-hidden focus:border-indigo-500 cursor-pointer font-medium text-slate-700"
-                    >
-                      <option value="ai">Let AI pick</option>
-                      <option value="pick">I want to pick</option>
-                    </select>
-                  </div>
-                  {!isPickingMediaTypes ? (
-                    <p className="px-3 pb-2 -mt-1 text-[10px] leading-4 text-slate-400">
-                      ScoutAI chooses up to {appliedBudgetTier.maxChannels} media types for this budget.
-                    </p>
-                  ) : (
-                    <div className="border-t border-slate-100 px-3 py-2.5">
-                      <div className="flex flex-wrap gap-1.5">
-                        {briefMediaTypeChoices.map((option) => {
-                          const picked = briefMediaTypes.includes(option.id);
-                          return (
-                            <button
-                              key={option.id}
-                              type="button"
-                              aria-pressed={picked}
-                              onClick={() => setBriefMediaTypes((prev) => picked ? prev.filter((id) => id !== option.id) : [...prev, option.id])}
-                              className={`text-[11px] px-2.5 py-1 rounded-full border font-medium transition-colors cursor-pointer ${picked ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:border-indigo-300"}`}
-                            >
-                              {option.displayName}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <label className={`mt-2 flex items-center gap-2 text-xs ${activeBriefMediaTypes.length === 0 ? "text-slate-400" : "text-slate-700 cursor-pointer"}`}>
-                        <input
-                          type="checkbox"
-                          checked={briefMediaTypesOnly && activeBriefMediaTypes.length > 0}
-                          disabled={activeBriefMediaTypes.length === 0}
-                          onChange={(e) => setBriefMediaTypesOnly(e.target.checked)}
-                          className="accent-indigo-600"
-                        />
-                        Use only these media types
-                      </label>
-                      <p className="mt-1 text-[10px] leading-4 text-slate-400">
-                        {activeBriefMediaTypes.length === 0
-                          ? `None picked yet: ScoutAI will choose up to ${appliedBudgetTier.maxChannels} media types.`
-                          : briefMediaTypesOnly
-                            ? "The plan will contain exactly the media types you picked."
-                            : `Picked media types are always included; ScoutAI may add others up to the ${appliedBudgetTier.maxChannels}-type cap.`}
-                      </p>
-                      {briefMediaTypeShortfall && (
-                        <p className="mt-1 text-[10px] leading-4 text-amber-700">
-                          The budget is below the combined product minimums for these picks (${briefMediaTypeShortfall.minimumTotal.toLocaleString()} total, ${briefMediaTypeShortfall.minimumMonthly.toLocaleString()} per 30 days). They will still be planned, below minimum, and flagged in the plan.
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
 
                 {/* Conditional Geo-Targeting Panel for State or DMA */}
                 {(geographyType === "State" || geographyType === "DMA") && (
@@ -5710,8 +5634,8 @@ export default function App() {
                           </h4>
                           <p className="text-[10px] text-slate-400">
                             {geographyType === "State"
-                              ? "Type state names or 2-letter codes, or upload a CSV / XLSX list."
-                              : "Type Nielsen DMA names or codes, or upload a CSV / XLSX list."}
+                              ? "Add them in the notes below, or upload a CSV / XLSX list."
+                              : "Add Nielsen DMA names or codes in the notes below, or upload a CSV / XLSX list."}
                           </p>
                         </div>
                       </div>
@@ -5725,7 +5649,6 @@ export default function App() {
                             type="button"
                             onClick={() => {
                               setGeoTargets([]);
-                              setGeoRawInput("");
                               setGeoUnrecognized([]);
                               setGeoUploadNotice(null);
                               setGeographySource("planner");
@@ -5735,40 +5658,6 @@ export default function App() {
                             Clear all
                           </button>
                         )}
-                      </div>
-                    </div>
-
-                    {/* Comma-separated Text Input */}
-                    <div>
-                      <textarea
-                        value={geoRawInput}
-                        onChange={(e) => setGeoRawInput(e.target.value)}
-                        onBlur={handleApplyGeoRawInput}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            handleApplyGeoRawInput();
-                          }
-                        }}
-                        placeholder={
-                          geographyType === "State"
-                            ? "Type or paste comma-separated states (e.g. CA, NY, TX, Florida, Washington)..."
-                            : "Type or paste comma-separated DMAs (e.g. New York, Los Angeles, Chicago, Atlanta, DFW)..."
-                        }
-                        className="w-full h-16 text-xs px-3 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-none placeholder:text-slate-400"
-                      />
-                      <div className="flex items-center justify-between mt-1">
-                        <span className="text-[10px] text-slate-400">
-                          Press <kbd className="px-1 py-0.5 bg-slate-100 border border-slate-200 rounded text-[9px] font-mono">Enter</kbd> or click Apply to add
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleApplyGeoRawInput}
-                          disabled={!geoRawInput.trim()}
-                          className="text-[10px] font-semibold px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg transition-colors cursor-pointer"
-                        >
-                          + Add Targets
-                        </button>
                       </div>
                     </div>
 
@@ -5880,6 +5769,17 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* The footprint the plan's reach will be sized to */}
+                    {geoFootprint && (
+                      <div className="px-1 text-[11px] leading-4">
+                        <p className="font-semibold text-slate-700">{geoFootprint.line}</p>
+                        {geoFootprint.detail && <p className="text-slate-500">{geoFootprint.detail}</p>}
+                        {geoFootprint.unsized.length > 0 && (
+                          <p className="text-amber-700">Not in the household count: {geoFootprint.unsized.join(", ")}</p>
+                        )}
+                      </div>
+                    )}
+
                     {/* Market Budget Density & Fragmentation Advisory */}
                     {geoTargets.length > 0 && parseCurrencyInput(budget) > 0 && (
                       <div className="pt-1">
@@ -5902,6 +5802,116 @@ export default function App() {
                     )}
                   </div>
                 )}
+
+                {/* One box for where to run: places to add, and what the picker cannot hold */}
+                <div>
+                  <label htmlFor="geo-notes" className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                    <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                    Locations &amp; Notes
+                  </label>
+                  <textarea
+                    id="geo-notes"
+                    value={geoRawInput}
+                    maxLength={GEOGRAPHY_NOTES_MAX_CHARS}
+                    onChange={(e) => setGeoRawInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        handleApplyGeoRawInput();
+                      }
+                    }}
+                    placeholder={
+                      geographyType === "State"
+                        ? "Paste states to add them (CA, NY, Florida), or note what the picker can't hold: a radius, ZIPs, exclusions"
+                        : geographyType === "DMA"
+                          ? "Paste DMAs to add them (New York, Chicago, DFW), or note what the picker can't hold: a radius, ZIPs, exclusions"
+                          : "Optional: a radius, ZIPs, exclusions or markets to weight up"
+                    }
+                    className="w-full h-16 text-xs px-3 py-2 border border-slate-200 bg-white rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all resize-none placeholder:text-slate-400"
+                  />
+                  <div className="flex items-start justify-between gap-2 mt-1">
+                    <span className="text-[10px] leading-4 text-slate-400">
+                      The research reads these notes as written; {geographyType === "National" ? "the plan is sized to the whole US." : `only the ${geographyType === "State" ? "states" : "DMAs"} above size the plan.`}
+                    </span>
+                    {(geographyType === "State" || geographyType === "DMA") && (
+                      <button
+                        type="button"
+                        onClick={handleApplyGeoRawInput}
+                        disabled={!geoRawInput.trim()}
+                        title="Moves the places in the notes into the target list (Cmd/Ctrl+Enter)"
+                        className="shrink-0 text-[10px] font-semibold px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg transition-colors cursor-pointer"
+                      >
+                        + Add {geographyType === "State" ? "states" : "DMAs"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Optional media-type picker: planner-required channels, optionally exclusive.
+                    Collapsed under "Let AI pick" by default to keep the brief short. */}
+                <div className="rounded-xl border border-slate-200 bg-white">
+                  <div className="flex items-center justify-between gap-3 px-3 py-2">
+                    <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                      <Layers className="w-3.5 h-3.5 text-slate-400" />
+                      Media Types
+                    </span>
+                    <select
+                      value={isPickingMediaTypes ? "pick" : "ai"}
+                      onChange={(e) => setIsPickingMediaTypes(e.target.value === "pick")}
+                      aria-label="How media types are chosen"
+                      className="text-xs px-2 py-1.5 border border-slate-200 bg-white rounded-lg focus:outline-hidden focus:border-indigo-500 cursor-pointer font-medium text-slate-700"
+                    >
+                      <option value="ai">Let AI pick</option>
+                      <option value="pick">I want to pick</option>
+                    </select>
+                  </div>
+                  {!isPickingMediaTypes ? (
+                    <p className="px-3 pb-2 -mt-1 text-[10px] leading-4 text-slate-400">
+                      ScoutAI chooses up to {appliedBudgetTier.maxChannels} media types for this budget.
+                    </p>
+                  ) : (
+                    <div className="border-t border-slate-100 px-3 py-2.5">
+                      <div className="flex flex-wrap gap-1.5">
+                        {briefMediaTypeChoices.map((option) => {
+                          const picked = briefMediaTypes.includes(option.id);
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              aria-pressed={picked}
+                              onClick={() => setBriefMediaTypes((prev) => picked ? prev.filter((id) => id !== option.id) : [...prev, option.id])}
+                              className={`text-[11px] px-2.5 py-1 rounded-full border font-medium transition-colors cursor-pointer ${picked ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:border-indigo-300"}`}
+                            >
+                              {option.displayName}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <label className={`mt-2 flex items-center gap-2 text-xs ${activeBriefMediaTypes.length === 0 ? "text-slate-400" : "text-slate-700 cursor-pointer"}`}>
+                        <input
+                          type="checkbox"
+                          checked={briefMediaTypesOnly && activeBriefMediaTypes.length > 0}
+                          disabled={activeBriefMediaTypes.length === 0}
+                          onChange={(e) => setBriefMediaTypesOnly(e.target.checked)}
+                          className="accent-indigo-600"
+                        />
+                        Use only these media types
+                      </label>
+                      <p className="mt-1 text-[10px] leading-4 text-slate-400">
+                        {activeBriefMediaTypes.length === 0
+                          ? `None picked yet: ScoutAI will choose up to ${appliedBudgetTier.maxChannels} media types.`
+                          : briefMediaTypesOnly
+                            ? "The plan will contain exactly the media types you picked."
+                            : `Picked media types are always included; ScoutAI may add others up to the ${appliedBudgetTier.maxChannels}-type cap.`}
+                      </p>
+                      {briefMediaTypeShortfall && (
+                        <p className="mt-1 text-[10px] leading-4 text-amber-700">
+                          The budget is below the combined product minimums for these picks (${briefMediaTypeShortfall.minimumTotal.toLocaleString()} total, ${briefMediaTypeShortfall.minimumMonthly.toLocaleString()} per 30 days). They will still be planned, below minimum, and flagged in the plan.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
 
                 {/* Input 3: Additional Context */}
                 <div>

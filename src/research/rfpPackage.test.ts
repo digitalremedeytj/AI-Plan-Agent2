@@ -193,6 +193,12 @@ test("an RFP's Boston tiers set the geography to the Boston DMA even when it als
   assert.deepEqual(geo.approximate, ["Greater Boston Area (Boston + 30 mi)", "Boston Urban Dwellers (Boston + 8 mi)"]);
   assert.deepEqual(geo.unmapped, ["Prudential Vicinity (Building + 2 mi)"]);
   assert.equal(geo.alsoNational, true);
+  assert.deepEqual(geo.notes, [
+    "Greater Boston Area (Boston + 30 mi)",
+    "Boston Urban Dwellers (Boston + 8 mi)",
+    "Prudential Vicinity (Building + 2 mi)",
+    "National (US)",
+  ]);
 });
 
 test("an RFP that names only the country suggests National", () => {
