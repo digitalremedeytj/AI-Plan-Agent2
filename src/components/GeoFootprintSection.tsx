@@ -3,17 +3,8 @@ import { Ban, ChevronDown, ChevronUp, Crosshair, Hash, Home, Info, Map as MapIco
 import type { GeoFootprintView, PrecisionKind } from "../planning/geoFootprint";
 import { DMA_SOURCE_LABEL } from "../planning/knowledge/dmaMarkets";
 import { STATE_HOUSEHOLDS_SOURCE_LABEL } from "../planning/knowledge/stateHouseholds";
+import { FootprintMap } from "./FootprintMap";
 import { SectionVisibilityButton } from "./SectionVisibilityButton";
-
-/** One square per state, laid out roughly where it sits on the map. Needs no boundary data. */
-const STATE_TILES: Record<string, [number, number]> = {
-  AK: [0, 0], ME: [0, 10], WI: [1, 5], VT: [1, 9], NH: [1, 10], WA: [2, 0], ID: [2, 1], MT: [2, 2], ND: [2, 3],
-  MN: [2, 4], IL: [2, 5], MI: [2, 6], NY: [2, 8], MA: [2, 9], OR: [3, 0], NV: [3, 1], WY: [3, 2], SD: [3, 3],
-  IA: [3, 4], IN: [3, 5], OH: [3, 6], PA: [3, 7], NJ: [3, 8], CT: [3, 9], RI: [3, 10], CA: [4, 0], UT: [4, 1],
-  CO: [4, 2], NE: [4, 3], MO: [4, 4], KY: [4, 5], WV: [4, 6], VA: [4, 7], MD: [4, 8], DE: [4, 9], AZ: [5, 1],
-  NM: [5, 2], KS: [5, 3], AR: [5, 4], TN: [5, 5], NC: [5, 6], SC: [5, 7], DC: [5, 8], OK: [6, 3], LA: [6, 4],
-  MS: [6, 5], AL: [6, 6], GA: [6, 7], HI: [7, 0], TX: [7, 3], FL: [7, 8],
-};
 
 const PRECISION_ICONS: Record<PrecisionKind, React.ComponentType<{ className?: string }>> = {
   radius: Crosshair,
@@ -51,8 +42,6 @@ interface GeoFootprintSectionProps {
 export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, insight, isHidden, isShareView, onToggleHidden }) => {
   const [expanded, setExpanded] = React.useState(true);
   const isDma = view.scope === "dma";
-  const covered = new Set(view.coveredStates);
-  const alsoReached = new Set(view.alsoReachedStates);
   const showBudget = view.rows.some((row) => row.budget !== undefined);
 
   const chips = [
@@ -115,37 +104,10 @@ export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, 
         <div className="border-t border-slate-100 p-5 md:p-6 bg-slate-50/30 space-y-5">
           {insight && insight.trim() && <p className="text-xs text-slate-600 leading-relaxed">{insight}</p>}
 
-          <div className="grid grid-cols-1 md:grid-cols-[auto_minmax(0,1fr)] gap-5 items-start">
-            <div className="bg-white rounded-xl border border-slate-100 p-4">
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] gap-5 items-start">
+            <div className="bg-white rounded-xl border border-slate-100 p-4 min-w-0">
               <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-3">Coverage Map</span>
-              <div
-                className="grid gap-[2px]"
-                style={{ gridTemplateColumns: "repeat(11, 19px)", gridAutoRows: "19px" }}
-                role="img"
-                aria-label={`States covered: ${view.coveredStates.join(", ")}`}
-              >
-                {Object.entries(STATE_TILES).map(([code, [row, col]]) => (
-                  <div
-                    key={code}
-                    style={{ gridRow: row + 1, gridColumn: col + 1 }}
-                    className={`rounded flex items-center justify-center text-[8px] font-semibold ${
-                      covered.has(code)
-                        ? "bg-indigo-600 text-white"
-                        : alsoReached.has(code)
-                          ? "bg-indigo-200 text-indigo-700"
-                          : "bg-slate-100 text-slate-300"
-                    }`}
-                  >
-                    {code}
-                  </div>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500 mt-3">
-                <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-600" />{isDma ? "Reached by these markets" : "Targeted"}</span>
-                {view.alsoReachedStates.length > 0 && (
-                  <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-200" />Also reached</span>
-                )}
-              </div>
+              <FootprintMap view={view} />
             </div>
 
             <div className="bg-white rounded-xl border border-slate-100 p-4 min-w-0">
@@ -163,7 +125,7 @@ export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, 
                 <tbody>
                   {view.rows.map((row) => (
                     <tr key={row.id} className="border-t border-slate-100">
-                      <td className="py-2 font-semibold text-slate-800 truncate" title={row.name}>{row.name}</td>
+                      <td className="py-2 pr-2 font-semibold text-slate-800 leading-snug">{row.name}</td>
                       <td className="py-2 font-mono text-[10px] text-slate-400">{row.detail}</td>
                       <td className="py-2 text-right text-slate-600">{compactHouseholds(row.households)}</td>
                       <td className="py-2 pl-3">
@@ -208,7 +170,7 @@ export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, 
           )}
 
           <p className="text-[10px] text-slate-400">
-            Household data: {isDma ? DMA_SOURCE_LABEL : STATE_HOUSEHOLDS_SOURCE_LABEL}
+            Household data: {isDma ? DMA_SOURCE_LABEL : STATE_HOUSEHOLDS_SOURCE_LABEL} · Map: U.S. Census Bureau
             {showBudget && " · Budget split by TV households"}
             {/* Planner-only: a prospect has no use for which picks failed to size. */}
             {!isShareView && view.unsized.length > 0 && ` · Not sized: ${view.unsized.join(", ")}`}

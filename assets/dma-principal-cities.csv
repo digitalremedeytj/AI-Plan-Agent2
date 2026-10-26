@@ -1,0 +1,211 @@
+code,market,city,state,lat,lon
+501,New York,New York city,NY,40.6627,-73.9387
+803,Los Angeles,Los Angeles city,CA,34.0194,-118.4108
+602,Chicago,Chicago city,IL,41.8370,-87.6849
+504,Philadelphia,Philadelphia city,PA,40.0094,-75.1333
+623,Dallas-Fort Worth,Dallas city,TX,32.7933,-96.7665
+807,San Francisco-Oak-San Jose,San Francisco city,CA,37.7272,-123.0322
+511,Washington Dc (Hagrstwn),Washington city,DC,38.9042,-77.0165
+618,Houston,Houston city,TX,29.7857,-95.3888
+506,Boston (Manchester),Boston city,MA,42.3386,-71.0183
+524,Atlanta,Atlanta city,GA,33.7629,-84.4227
+539,Tampa-St. Pete (Sarasota),Tampa city,FL,27.9701,-82.4797
+753,Phoenix,Phoenix city,AZ,33.5722,-112.0901
+505,Detroit,Detroit city,MI,42.3830,-83.1022
+819,Seattle-Tacoma,Seattle city,WA,47.6193,-122.3515
+613,Minneapolis-St. Paul,Minneapolis city,MN,44.9633,-93.2683
+528,Miami-Ft. Lauderdale,Miami city,FL,25.7752,-80.2086
+751,Denver,Denver city,CO,39.7619,-104.8811
+534,Orlando-Daytona Bch-Melbrn,Orlando city,FL,28.4087,-81.2548
+510,Cleveland-Akron (Canton),Cleveland city,OH,41.4785,-81.6794
+862,Sacramnto-Stkton-Modesto,Sacramento city,CA,38.5677,-121.4682
+609,St. Louis,St. Louis city,MO,38.6357,-90.2446
+517,Charlotte,Charlotte city,NC,35.2090,-80.8310
+508,Pittsburgh,Pittsburgh city,PA,40.4399,-79.9757
+560,Raleigh-Durham (Fayetvlle),Raleigh city,NC,35.8319,-78.6410
+820,Portland Or,Portland city,OR,45.5370,-122.6500
+512,Baltimore,Baltimore city,MD,39.3000,-76.6105
+527,Indianapolis,Indianapolis city (balance),IN,39.7767,-86.1459
+825,San Diego,San Diego city,CA,32.8150,-117.1356
+659,Nashville,Nashville-Davidson metropolitan government (balance),TN,36.1718,-86.7850
+533,Hartford & New Haven,Hartford city,CT,41.7659,-72.6816
+641,San Antonio,San Antonio city,TX,29.4628,-98.5246
+535,Columbus Oh,Columbus city,OH,39.9839,-82.9849
+616,Kansas City,Kansas City city,MO,39.1252,-94.5503
+770,Salt Lake City,Salt Lake City city,UT,40.7769,-111.9310
+617,Milwaukee,Milwaukee city,WI,43.0633,-87.9667
+515,Cincinnati,Cincinnati city,OH,39.1402,-84.5058
+567,Greenvll-Spart-Ashevll-And,Greenville city,SC,34.8369,-82.3630
+548,West Palm Beach-Ft. Pierce,West Palm Beach city,FL,26.7451,-80.1270
+635,Austin,Austin city,TX,30.2986,-97.7541
+839,Las Vegas,Las Vegas city,NV,36.2335,-115.2640
+650,Oklahoma City,Oklahoma City city,OK,35.4671,-97.5137
+544,Norfolk-Portsmth-Newpt Nws,Norfolk city,VA,36.9230,-76.2446
+566,Harrisburg-Lncstr-Leb-York,Harrisburg city,PA,40.2759,-76.8850
+563,Grand Rapids-Kalmzoo-B.Crk,Grand Rapids city,MI,42.9612,-85.6556
+630,Birmingham (Ann Tusc),Birmingham city,AL,33.5272,-86.7970
+518,Greensboro-H.Point-W.Salem,Greensboro city,NC,36.0949,-79.8236
+561,Jacksonville,Jacksonville city,FL,30.3369,-81.6616
+790,Albuquerque-Santa Fe,Albuquerque city,NM,35.1048,-106.6468
+529,Louisville,Louisville city,KY,38.2247,-85.7406
+622,New Orleans,New Orleans city,LA,30.0534,-89.9345
+640,Memphis,Memphis city,TN,35.1092,-89.9685
+521,Providence-New Bedford,Providence city,RI,41.8231,-71.4188
+514,Buffalo,Buffalo city,NY,42.8925,-78.8597
+866,Fresno-Visalia,Fresno city,CA,36.7827,-119.7934
+556,Richmond-Petersburg,Richmond city,VA,37.5314,-77.4760
+577,Wilkes Barre-Scranton,Wilkes-Barre city,PA,41.2466,-75.8757
+693,Little Rock-Pine Bluff,Little Rock city,AR,34.7254,-92.3586
+671,Tulsa,Tulsa city,OK,36.1279,-95.9023
+532,Albany-Schenectady-Troy,Albany city,NY,42.6657,-73.7984
+686,Mobile-Pensacola (Ft Walt),Mobile city,AL,30.6682,-88.1079
+571,Ft. Myers-Naples,Fort Myers city,FL,26.6198,-81.8317
+557,Knoxville,Knoxville city,TN,35.9707,-83.9493
+541,Lexington,Lexington-Fayette urban county,KY,38.0407,-84.4583
+542,Dayton,Dayton city,OH,39.7847,-84.1996
+744,Honolulu,Urban Honolulu CDP,HI,21.3243,-157.8476
+678,Wichita-Hutchinson Plus,Wichita city,KS,37.6906,-97.3458
+573,Roanoke-Lynchburg,Roanoke city,VA,37.2785,-79.9582
+658,Green Bay-Appleton,Green Bay city,WI,44.5215,-87.9866
+679,Des Moines-Ames,Des Moines city,IA,41.5726,-93.6102
+564,Charleston-Huntington,Charleston city,WV,38.3487,-81.6323
+789,Tucson (Sierra Vista),Tucson city,AZ,32.1530,-110.8708
+513,Flint-Saginaw-Bay City,Flint city,MI,43.0244,-83.6920
+881,Spokane,Spokane city,WA,47.6669,-117.4333
+652,Omaha,Omaha city,NE,41.2627,-96.0535
+619,Springfield Mo,Springfield city,MO,37.1942,-93.2926
+538,Rochester Ny,Rochester city,NY,43.1699,-77.6169
+546,Columbia Sc,Columbia city,SC,34.0405,-80.9061
+547,Toledo,Toledo city,OH,41.6641,-83.5819
+691,Huntsville-Decatur (Flor),Huntsville city,AL,34.6977,-86.6767
+669,Madison,Madison city,WI,43.0878,-89.4299
+500,Portland-Auburn,Portland city,ME,43.6332,-70.1853
+612,Shreveport,Shreveport city,LA,32.4669,-93.7922
+632,Paducah-C.Gird-Harbg-Mt Vn,Paducah city,KY,37.0709,-88.6445
+636,Harlingen-Wslco-Brnsvl-Mca,Harlingen city,TX,26.1912,-97.6974
+555,Syracuse,Syracuse city,NY,43.0410,-76.1436
+648,Champaign&Sprngfld-Decatur,Champaign city,IL,40.1141,-88.2746
+625,Waco-Temple-Bryan,Waco city,TX,31.5580,-97.1898
+752,Colorado Springs-Pueblo,Colorado Springs city,CO,38.8673,-104.7607
+575,Chattanooga,Chattanooga city,TN,35.0660,-85.2484
+637,Cedar Rapids-Wtrlo-Iwc&Dub,Cedar Rapids city,IA,41.9642,-91.6792
+507,Savannah,Savannah city,GA,32.0180,-81.1965
+765,El Paso,El Paso city,TX,31.8478,-106.4311
+716,Baton Rouge,Baton Rouge city,LA,30.4404,-91.1332
+519,Charleston Sc,Charleston city,SC,32.8280,-79.9729
+718,Jackson Ms,Jackson city,MS,32.3158,-90.2129
+588,South Bend-Elkhart,South Bend city,IN,41.6766,-86.2688
+523,Burlington-Plattsburgh,Burlington city,VT,44.4919,-73.2389
+531,Tri-Cities Tn-Va,Johnson City city,TN,36.3423,-82.3809
+670,Ft. Smith-Fay-Sprngdl-Rgrs,Fort Smith city,AR,35.3493,-94.3709
+545,Greenville-N.Bern-Washngtn,Greenville city,NC,35.5964,-77.3753
+682,Davenport-R.Island-Moline,Davenport city,IA,41.5568,-90.6039
+570,Myrtle Beach-Florence,Myrtle Beach city,SC,33.7104,-78.8860
+649,Evansville,Evansville city,IN,37.9877,-87.5347
+574,Johnstown-Altoona,Johnstown city,PA,40.3261,-78.9191
+722,Lincoln & Hastings-Krny,Lincoln city,NE,40.8103,-96.6749
+757,Boise,Boise City city,ID,43.5993,-116.2298
+530,Tallahassee-Thomasville,Tallahassee city,FL,30.4535,-84.2523
+709,Tyler-Longview(Lfkn&Ncgd),Tyler city,TX,32.3173,-95.3059
+725,Sioux Falls(Mitchell),Sioux Falls city,SD,43.5407,-96.7320
+509,Ft. Wayne,Fort Wayne city,IN,41.0882,-85.1428
+520,Augusta,Augusta-Richmond County consolidated government (balance),GA,33.3655,-82.0734
+811,Reno,Reno city,NV,39.5491,-119.8499
+551,Lansing,Lansing city,MI,42.7143,-84.5609
+543,Springfield-Holyoke,Springfield city,MA,42.1155,-72.5400
+536,Youngstown,Youngstown city,OH,41.0991,-80.6459
+724,Fargo-Valley City,Fargo city,ND,46.8647,-96.8291
+801,Eugene,Eugene city,OR,44.0568,-123.1190
+675,Peoria-Bloomington,Peoria city,IL,40.7516,-89.6172
+540,Traverse City-Cadillac,Traverse City city,MI,44.7543,-85.6030
+642,Lafayette La,Lafayette city,LA,30.2056,-92.0281
+503,Macon,Macon-Bibb County,GA,32.8090,-83.6941
+810,Yakima-Pasco-Rchlnd-Knnwck,Yakima city,WA,46.5909,-120.5494
+698,Montgomery-Selma,Montgomery city,AL,32.3485,-86.2673
+855,Santabarbra-Sanmar-Sanluob,Santa Barbara city,CA,34.4036,-119.7137
+828,Monterey-Salinas,Monterey city,CA,36.6012,-121.8831
+800,Bakersfield,Bakersfield city,CA,35.3532,-119.0379
+522,Columbus Ga,Columbus city,GA,32.5102,-84.8749
+600,Corpus Christi,Corpus Christi city,TX,27.7543,-97.1734
+702,La Crosse-Eau Claire,La Crosse city,WI,43.8247,-91.2246
+550,Wilmington,Wilmington city,NC,34.2092,-77.8858
+634,Amarillo,Amarillo city,TX,35.1981,-101.8331
+868,Chico-Redding,Chico city,CA,39.7590,-121.8177
+673,Columbus-Tupelo-West Point,Columbus city,MS,33.5082,-88.4071
+705,Wausau-Rhinelander,Wausau city,WI,44.9618,-89.6465
+605,Topeka,Topeka city,KS,39.0347,-95.6962
+604,Columbia-Jefferson City,Columbia city,MO,38.9473,-92.3264
+628,Monroe-El Dorado,Monroe city,LA,32.5190,-92.0772
+610,Rockford,Rockford city,IL,42.2593,-89.0635
+813,Medford-Klamath Falls,Medford city,OR,42.3360,-122.8518
+687,Minot-Bismarck-Dickinson,Minot city,ND,48.2361,-101.2775
+692,Beaumont-Port Arthur,Beaumont city,TX,30.0849,-94.1453
+676,Duluth-Superior,Duluth city,MN,46.7745,-92.1341
+633,Odessa-Midland,Odessa city,TX,31.8805,-102.3453
+576,Salisbury,Salisbury city,MD,38.3753,-75.5859
+651,Lubbock,Lubbock city,TX,33.5619,-101.8889
+804,Palm Springs,Palm Springs city,CA,33.8034,-116.5383
+743,Anchorage,Anchorage municipality,AK,61.1743,-149.2843
+627,Wichita Falls & Lawton,Wichita Falls city,TX,33.9067,-98.5258
+624,Sioux City,Sioux City city,IA,42.4954,-96.3895
+516,Erie,Erie city,PA,42.1166,-80.0735
+603,Joplin-Pittsburg,Joplin city,MO,37.0752,-94.5013
+525,Albany Ga,Albany city,GA,31.5781,-84.1762
+611,Rochestr-Mason City-Austin,Rochester city,MN,44.0143,-92.4786
+656,Panama City,Panama City city,FL,30.1663,-85.6702
+581,Terre Haute,Terre Haute city,IN,39.4642,-87.3760
+537,Bangor,Bangor city,ME,44.8296,-68.7888
+746,Biloxi-Gulfport,Biloxi city,MS,30.4267,-88.9358
+554,Wheeling-Steubenville,Wheeling city,WV,40.0738,-80.6960
+559,Bluefield-Beckley-Oak Hill,Bluefield city,WV,37.2628,-81.2113
+502,Binghamton,Binghamton city,NY,42.1013,-75.9094
+592,Gainesville,Gainesville city,FL,29.6795,-82.3468
+657,Sherman-Ada,Sherman city,TX,33.6286,-96.6267
+758,Idaho Falls-Pocatello,Idaho Falls city,ID,43.4896,-112.0353
+762,Missoula,Missoula city,MT,46.8744,-114.0261
+662,Abilene-Sweetwater,Abilene city,TX,32.4545,-99.7381
+756,Billings,Billings city,MT,45.7885,-108.5525
+771,Yuma-El Centro,Yuma city,AZ,32.5163,-114.5218
+710,Hattiesburg-Laurel,Hattiesburg city,MS,31.3073,-89.3174
+598,Clarksburg-Weston,Clarksburg city,WV,39.2703,-80.3618
+717,Quincy-Hannibal-Keokuk,Quincy city,IL,39.9337,-91.3793
+526,Utica,Utica city,NY,43.0964,-75.2260
+764,Rapid City,Rapid City city,SD,44.0711,-103.2179
+606,Dothan,Dothan city,AL,31.2337,-85.4068
+643,Lake Charles,Lake Charles city,LA,30.1990,-93.2108
+565,Elmira,Elmira city,NY,42.0934,-76.8096
+639,Jackson Tn,Jackson city,TN,35.6542,-88.8353
+569,Harrisonburg,Harrisonburg city,VA,38.4363,-78.8733
+549,Watertown,Watertown city,NY,43.9733,-75.9100
+644,Alexandria La,Alexandria city,LA,31.2934,-92.4702
+553,Marquette,Marquette city,MI,46.5507,-87.3958
+736,Bowling Green,Bowling Green city,KY,36.9768,-86.4337
+734,Jonesboro,Jonesboro city,AR,35.8198,-90.6790
+584,Charlottesville,Charlottesville city,VA,38.0377,-78.4854
+749,Laredo,Laredo city,TX,27.5604,-99.4892
+754,Butte-Bozeman,Butte-Silver Bow (balance),MT,45.8962,-112.6601
+773,Grand Junction-Montrose,Grand Junction city,CO,39.0891,-108.5675
+582,Lafayette In,Lafayette city,IN,40.3994,-86.8628
+821,Bend Or,Bend city,OR,44.0567,-121.3080
+558,Lima,Lima city,OH,40.7407,-84.1121
+711,Meridian,Meridian city,MS,32.3842,-88.6894
+760,Twin Falls,Twin Falls city,ID,42.5638,-114.4606
+755,Great Falls,Great Falls city,MT,47.5025,-111.3000
+647,Greenwood-Greenville,Greenwood city,MS,33.5125,-90.1990
+597,Parkersburg,Parkersburg city,WV,39.2613,-81.5434
+802,Eureka,Eureka city,CA,40.7976,-124.1542
+661,San Angelo,San Angelo city,TX,31.4411,-100.4505
+767,Casper-Riverton,Casper city,WY,42.8421,-106.3213
+759,Cheyenne-Scottsbluf,Cheyenne city,WY,41.1287,-104.7908
+737,Mankato,Mankato city,MN,44.1711,-93.9764
+631,Ottumwa-Kirksville,Ottumwa city,IA,41.0223,-92.4233
+638,St. Joseph,St. Joseph city,MO,39.7595,-94.8211
+745,Fairbanks,Fairbanks city,AK,64.8365,-147.6517
+626,Victoria,Victoria city,TX,28.8285,-96.9860
+596,Zanesville,Zanesville city,OH,39.9560,-82.0135
+766,Helena,Helena city,MT,46.5966,-112.0218
+552,Presque Isle,Presque Isle city,ME,46.6884,-67.9933
+747,Juneau,Juneau city and borough,AK,58.3729,-134.1784
+583,Alpena,Alpena city,MI,45.0745,-83.4436
+740,North Platte,North Platte city,NE,41.1250,-100.7504
+798,Glendive,Glendive city,MT,47.1065,-104.7109
