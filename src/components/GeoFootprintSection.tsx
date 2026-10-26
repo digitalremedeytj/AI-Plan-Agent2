@@ -4,6 +4,8 @@ import type { GeoFootprintView, PrecisionKind } from "../planning/geoFootprint";
 import { DMA_SOURCE_LABEL } from "../planning/knowledge/dmaMarkets";
 import { STATE_HOUSEHOLDS_SOURCE_LABEL } from "../planning/knowledge/stateHouseholds";
 import { FootprintMap } from "./FootprintMap";
+import { MatchedMarketCard } from "./MatchedMarketCard";
+import type { MatchedMarketDesign } from "../planning/matchedMarkets";
 import { SectionVisibilityButton } from "./SectionVisibilityButton";
 
 const PRECISION_ICONS: Record<PrecisionKind, React.ComponentType<{ className?: string }>> = {
@@ -33,13 +35,17 @@ interface GeoFootprintSectionProps {
   isHidden: boolean;
   isShareView: boolean;
   onToggleHidden: (sectionKey: string, inactive: boolean) => void;
+  /** A matched-market lift test for the footprint; null when none can be designed. */
+  testDesign?: MatchedMarketDesign | null;
+  kpi?: string;
+  isTestHidden?: boolean;
 }
 
 /**
  * Open by default: the PDF export captures the live page, so a collapsed panel would be missing
  * from the exported plan.
  */
-export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, insight, isHidden, isShareView, onToggleHidden }) => {
+export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, insight, isHidden, isShareView, onToggleHidden, testDesign, kpi, isTestHidden = false }) => {
   const [expanded, setExpanded] = React.useState(true);
   const isDma = view.scope === "dma";
   const showBudget = view.rows.some((row) => row.budget !== undefined);
@@ -160,6 +166,10 @@ export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, 
                 })}
               </div>
             </div>
+          )}
+
+          {testDesign && (!isShareView || !isTestHidden) && (
+            <MatchedMarketCard design={testDesign} kpi={kpi} isHidden={isTestHidden} isShareView={isShareView} onToggleHidden={onToggleHidden} />
           )}
 
           {view.coverageNote && (

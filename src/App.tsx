@@ -170,6 +170,7 @@ import { mediaTypeCapFor, modeNeedsAdditionalBudget, normalizeBudgetStrategyMode
 import { combinedPlan } from "./planning/planChannels";
 import { buildGeoFootprint, footprintSummary, geoPlanFacts, geoSnapshotFromBrief } from "./planning/geoFootprint";
 import { GeoFootprintSection } from "./components/GeoFootprintSection";
+import { matchedMarketDesign } from "./planning/matchedMarkets";
 import { NATIONAL_TV_HOUSEHOLDS } from "./planning/knowledge/stateHouseholds";
 import { BudgetStrategyControl } from "./components/BudgetStrategyControl";
 
@@ -1935,6 +1936,10 @@ export default function App() {
   const briefLivePercents = React.useMemo(
     () => Object.fromEntries(briefPlan.channels.map((c) => [c.channelId, Math.round(c.allocationPercent * 10) / 10])),
     [briefPlan],
+  );
+  const geoTestDesign = React.useMemo(
+    () => (planGeoFootprint ? matchedMarketDesign(profileData?.geoTargeting ?? geoSnapshotFromBrief(overviewGeography)) : null),
+    [planGeoFootprint, profileData?.geoTargeting, overviewGeography],
   );
   // The footprint in one line for the slides, which go to the client: shown only while the Geo
   // Footprint section is; otherwise the brief's own geography.
@@ -7373,6 +7378,9 @@ export default function App() {
                     isHidden={isGeoHidden}
                     isShareView={isShareView}
                     onToggleHidden={handleToggleSectionActive}
+                    testDesign={geoTestDesign}
+                    kpi={kpis.find((k) => k.trim())}
+                    isTestHidden={hiddenSections.has("geoTest")}
                   />
                 )}
 
