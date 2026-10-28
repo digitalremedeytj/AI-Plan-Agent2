@@ -16,6 +16,7 @@
 
 import type { AudienceProfile, ChannelPanelOverride } from "../types";
 import { combinedPlan } from "../planning/planChannels";
+import { isPersonaShared } from "./personaVisibility";
 import { catalogRecordName, currentCatalogLabel } from "../planning/knowledge/normalizeWorkbook";
 import { GEOFENCE_CLAIM, NATIONAL_CLAIM, footprintSummary, geoPlanFacts } from "../planning/geoFootprint";
 
@@ -316,7 +317,7 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
     .filter(Boolean)));
 
   const personas = hidden.has("personas") ? [] : (Array.isArray(p.personas) ? p.personas : [])
-    .filter((persona: any) => persona?.name)
+    .filter((persona: any) => persona?.name && isPersonaShared(persona))
     .slice(0, 8)
     .map((persona: any) => ({
       name: clip(persona.name, 80),
@@ -325,7 +326,8 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
       income: clip(persona.income, 60),
       narrative: clip(persona.narrative, 350),
     }));
-  const personaNames: string[] = (Array.isArray(p.personas) ? p.personas : []).map((persona: any) => clip(persona?.name, 80));
+  // A persona hidden from the share link is not named as a segment's audience either.
+  const personaNames: string[] = (Array.isArray(p.personas) ? p.personas : []).map((persona: any) => isPersonaShared(persona) ? clip(persona?.name, 80) : "");
 
   const segments = hidden.has("segments") ? [] : (Array.isArray(p.segmentRecommendations) ? p.segmentRecommendations : [])
     .filter((s: any) => s?.name)

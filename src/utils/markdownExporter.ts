@@ -4,6 +4,7 @@ import { catalogRecordName, currentCatalogLabel } from "../planning/knowledge/no
 import { buildAllocationView, type AllocationRow } from "../planning/allocationRows";
 import { BUDGET_STRATEGY_LABELS, normalizeBudgetStrategyMode } from "../planning/budgetStrategy";
 import { effectiveBriefSections } from "../research/executiveBriefSlides";
+import { isPersonaShared } from "../research/personaVisibility";
 
 export function exportProfileToMarkdown(
   profile: AudienceProfile,
@@ -50,7 +51,7 @@ export function exportProfileToMarkdown(
     if (profile.expansionReachPercent) {
       markdown += `> **ScoutAI Expansion Audience Note**: Personas marked ScoutAI are recommended expansion audiences, estimated to increase addressable reach by approximately ${profile.expansionReachPercent}%.\n\n`;
     }
-    profile.personas.forEach((persona, idx) => {
+    profile.personas.filter(isPersonaShared).forEach((persona, idx) => {
       const label = persona.sourceType ? ` [${persona.sourceType}]` : "";
       markdown += `### Persona ${idx + 1}: ${persona.name}${label}\n`;
       markdown += `- **Demographics**: Age ${persona.age} | ${persona.gender} | Income ${persona.income}\n`;

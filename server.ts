@@ -75,6 +75,7 @@ import {
   type AuditInputs,
 } from "./src/qa/auditRunner";
 import { PORTRAIT_SYSTEM_INSTRUCTION, applyPortraits, buildPortraitInput, buildPortraitResponseSchema } from "./src/research/personaPortraits";
+import { briefForShare, personasForShare } from "./src/research/personaVisibility";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeChannelKey, narrativeSchema, planNarrativeNote } from "./src/research/planNarrative";
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
@@ -3672,15 +3673,17 @@ app.post("/api/plans/:id/restore", async (req, res) => {
 // Public, unauthenticated view of an actively shared plan
 // Sections built from the client's campaign data are left out of a share link while the planner
 // has them switched off. Hiding is otherwise display-only, which is not enough for these: the
-// share response would still carry them.
+// share response would still carry them. Hidden personas and headshots are emptied the same way.
 function withoutHiddenClientSections<T extends { payload: any }>(plan: T): T {
   const profile = plan.payload?.profile;
   const hidden: string[] = Array.isArray(profile?.hiddenSections) ? profile.hiddenSections : [];
   const drop = [[RECAP_SECTION, "campaignRecap"], [LEARNINGS_SECTION, "performanceLearnings"]].filter(([section, key]) => hidden.includes(section) && profile?.[key] !== undefined);
   // Detail blocks hidden inside a shown recap go the same way.
   const recap = hasCampaignRecap(profile) && !drop.some(([, key]) => key === "campaignRecap") ? clientRecap(profile.campaignRecap) : null;
-  if (drop.length === 0 && (!recap || recap === profile.campaignRecap)) return plan;
-  const nextProfile = { ...profile, ...(recap ? { campaignRecap: recap } : {}) };
+  const personas = Array.isArray(profile?.personas) ? personasForShare(profile.personas) : null;
+  const executiveBrief = profile?.executiveBrief ? briefForShare(profile.executiveBrief, profile.personas) : null;
+  if (drop.length === 0 && (!recap || recap === profile.campaignRecap) && !personas && !executiveBrief) return plan;
+  const nextProfile = { ...profile, ...(recap ? { campaignRecap: recap } : {}), ...(personas ? { personas } : {}), ...(executiveBrief ? { executiveBrief } : {}) };
   for (const [, key] of drop) delete nextProfile[key];
   return { ...plan, payload: { ...plan.payload, profile: nextProfile } };
 }

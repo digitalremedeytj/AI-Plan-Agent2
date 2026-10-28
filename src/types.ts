@@ -47,6 +47,13 @@ export interface Persona {
   isExpansion?: boolean;
   /** Hidden casting brief for the headshot, written by synthesis. Plans made before it have none. */
   portrait?: PersonaPortrait;
+  /**
+   * Planner's share-link switches. Kept on the persona rather than in hiddenSections by index,
+   * because ScoutAI can add and remove personas and an index would then point at the wrong one.
+   * See src/research/personaVisibility.ts.
+   */
+  hiddenFromShare?: boolean;
+  avatarHiddenFromShare?: boolean;
 }
 
 export interface PersonaPortrait {

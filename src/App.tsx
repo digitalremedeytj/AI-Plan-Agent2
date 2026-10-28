@@ -41,6 +41,7 @@ import {
   Lock,
   Eye,
   EyeOff,
+  ImageOff,
   Plus,
   X,
   Building2,
@@ -110,6 +111,7 @@ import {
   topUpCount,
 } from "./research/segmentRecommendations";
 import type { SegmentRecommendation } from "./types";
+import { isPersonaAvatarShared, isPersonaShared } from "./research/personaVisibility";
 import type { PackageFileRole, RfpConflictField } from "./types";
 import { RfpGeographyNotice, RfpPackageFileList, RfpPackageNotices, type PackageFileStatus } from "./components/RfpPackagePanel";
 import { captureElementToCanvas } from "./utils/html2canvasPolyfill";
@@ -1860,6 +1862,22 @@ export default function App() {
     });
   };
 
+  // Per-persona share switches live on the persona (see src/research/personaVisibility.ts); they
+  // save with the section switches.
+  const handleTogglePersonaShare = (index: number, field: "hiddenFromShare" | "avatarHiddenFromShare", hidden: boolean) => {
+    hiddenSectionsDirtyRef.current = true;
+    setProfileData((prev) => {
+      if (!prev?.personas?.[index]) return prev;
+      const personas = prev.personas.map((persona, i) => {
+        if (i !== index) return persona;
+        const next = { ...persona };
+        if (hidden) next[field] = true; else delete next[field];
+        return next;
+      });
+      return { ...prev, personas };
+    });
+  };
+
   // The picker's state is restored from the plan on load (shared links included), so it is
   // the plan's geography unless the planner edits the brief afterwards.
   const overviewGeography = React.useMemo<GeographyTargetConfig>(
@@ -1887,7 +1905,8 @@ export default function App() {
 
   const hiddenSections = new Set(profileData?.hiddenSections || []);
   const isIntroHidden = hiddenSections.has("intro");
-  const isPersonasHidden = hiddenSections.has("personas");
+  // A share link with every persona hidden one by one shows no persona section at all.
+  const isPersonasHidden = hiddenSections.has("personas") || (isShareView && !(profileData?.personas || []).some(isPersonaShared));
   const isSegmentsHidden = hiddenSections.has("segments");
   const isInsightsHidden = hiddenSections.has("insights");
   const isDomainAffinityHidden = hiddenSections.has("domainAffinity");
@@ -1904,7 +1923,8 @@ export default function App() {
     if (!isShareView) return alignment;
     return {
       ...alignment,
-      personas: isPersonasHidden ? [] : alignment.personas.map((persona) => (isInsightsHidden ? { ...persona, because: [] } : persona)),
+      // A persona hidden on its own reaches the link emptied, so it has no name to show.
+      personas: isPersonasHidden ? [] : alignment.personas.filter((persona) => persona.name).map((persona) => (isInsightsHidden ? { ...persona, because: [] } : persona)),
       cautions: [],
     };
   }, [profileData, isShareView, isPersonasHidden, isInsightsHidden]);
@@ -6988,6 +7008,11 @@ export default function App() {
 
                   {(() => {
                     const personas = profileData.personas || [];
+                    // A share link drops personas hidden on their own and numbers the rest from 1;
+                    // `globalIndex` stays the persona's real position, which segments refer to.
+                    const shownPersonas = personas
+                      .map((persona, globalIndex) => ({ persona, globalIndex }))
+                      .filter(({ persona }) => !isShareView || isPersonaShared(persona));
                     // Derived from the live segment list rather than written into persona.buy, so
                     // removing or adding a segment updates the card and the narrative/audit inputs stay clean.
                     // A share link only shows them when the segments section itself is shared.
@@ -7013,13 +7038,17 @@ export default function App() {
                         )}
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                          {personas.map((persona, globalIndex) => {
+                          {shownPersonas.map(({ persona, globalIndex }, shownIndex) => {
+                            // Card rows and archetype numbers follow what is on screen.
+                            const slot = isShareView ? shownIndex : globalIndex;
+                            const isPersonaHiddenFromShare = !isPersonaShared(persona);
+                            const isAvatarHiddenFromShare = !isPersonaHiddenFromShare && !isPersonaAvatarShared(persona);
                             const isGeneratingThis = generatingAvatarIndices.includes(globalIndex);
                             const avatarFailed = failedAvatarIndices.includes(globalIndex);
                             const hasValidAvatar = Boolean(persona.avatarUrl && !persona.avatarUrl.includes("example.com"));
                             const isUserTarget = persona.sourceType === 'User';
                             const isRfp = persona.sourceType === 'RFP';
-                            const rowIndex = Math.floor(globalIndex / 2);
+                            const rowIndex = Math.floor(slot / 2);
                             const firstInRow = rowIndex * 2;
                             const secondInRow = firstInRow + 1;
                             const isExpanded =
@@ -7034,7 +7063,7 @@ export default function App() {
                               : "";
 
                             return (
-                              <div key={globalIndex} className={`bg-white rounded-2xl border border-slate-100 p-4 sm:p-5 shadow-xs flex flex-col hover:shadow-md transition-all duration-200 ${segmentHighlight}`}>
+                              <div key={globalIndex} className={`group/persona rounded-2xl border p-4 sm:p-5 flex flex-col transition-all duration-200 ${isPersonaHiddenFromShare ? "border-dashed border-slate-300 bg-slate-100/70 opacity-50 hover:opacity-80" : "bg-white border-slate-100 shadow-xs hover:shadow-md"} ${segmentHighlight}`}>
                                 {/* Main Persona Row */}
                                 <div className="flex items-start gap-3.5 sm:gap-4">
                                   {/* Left: 100x100 Avatar + Archetype Label below */}
@@ -7046,7 +7075,7 @@ export default function App() {
                                             <Loader2 className="w-5 h-5 animate-spin mb-1 text-indigo-600" />
                                             <span className="text-[9px] font-bold tracking-tight text-indigo-700">Creating...</span>
                                           </div>
-                                        ) : hasValidAvatar && !avatarFailed ? (
+                                        ) : hasValidAvatar && !avatarFailed && !(isShareView && isAvatarHiddenFromShare) ? (
                                           <img
                                             src={persona.avatarUrl}
                                             alt={persona.name}
@@ -7069,6 +7098,15 @@ export default function App() {
                                         )}
                                       </div>
 
+                                      {!isShareView && isAvatarHiddenFromShare && (
+                                        <div
+                                          className="absolute inset-0 rounded-full bg-slate-900/45 flex items-center justify-center pointer-events-none"
+                                          title="Photo hidden from share link"
+                                        >
+                                          <ImageOff className="w-6 h-6 text-white" />
+                                        </div>
+                                      )}
+
                                       {!isShareView && !isGeneratingThis && hasValidAvatar && (
                                         <button
                                           onClick={() => handleOpenAvatarModal(globalIndex)}
@@ -7083,9 +7121,43 @@ export default function App() {
                                     {/* Archetype label moved under the image */}
                                     <div className="mt-2 text-center w-full">
                                       <span className="inline-block text-[10px] uppercase font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md font-bold border border-indigo-100 tracking-wide text-center">
-                                        Archetype 0{globalIndex + 1}
+                                        Archetype 0{slot + 1}
                                       </span>
                                     </div>
+
+                                    {!isShareView && (
+                                      <div className="mt-1.5 flex flex-col items-center w-full">
+                                        <div className="flex items-center gap-0.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTogglePersonaShare(globalIndex, "hiddenFromShare", !isPersonaHiddenFromShare)}
+                                            className={`p-1 rounded-lg transition-all cursor-pointer ${isPersonaHiddenFromShare ? "bg-amber-100 text-amber-700 hover:bg-amber-200" : "text-slate-400 opacity-0 group-hover/persona:opacity-100 focus:opacity-100 hover:bg-slate-100 hover:text-slate-700"}`}
+                                            title={isPersonaHiddenFromShare ? "Persona hidden from share link — click to show" : "Hide this persona from the share link"}
+                                            aria-label={isPersonaHiddenFromShare ? "Show persona in share view" : "Hide persona from share view"}
+                                            aria-pressed={isPersonaHiddenFromShare}
+                                          >
+                                            {isPersonaHiddenFromShare ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                          </button>
+                                          {!isPersonaHiddenFromShare && hasValidAvatar && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleTogglePersonaShare(globalIndex, "avatarHiddenFromShare", !isAvatarHiddenFromShare)}
+                                              className={`p-1 rounded-lg transition-all cursor-pointer ${isAvatarHiddenFromShare ? "bg-amber-100 text-amber-700 hover:bg-amber-200" : "text-slate-400 opacity-0 group-hover/persona:opacity-100 focus:opacity-100 hover:bg-slate-100 hover:text-slate-700"}`}
+                                              title={isAvatarHiddenFromShare ? "Photo hidden from share link — click to show" : "Hide this photo from the share link"}
+                                              aria-label={isAvatarHiddenFromShare ? "Show photo in share view" : "Hide photo from share view"}
+                                              aria-pressed={isAvatarHiddenFromShare}
+                                            >
+                                              <ImageOff className="w-3.5 h-3.5" />
+                                            </button>
+                                          )}
+                                        </div>
+                                        {(isPersonaHiddenFromShare || isAvatarHiddenFromShare) && (
+                                          <span className="mt-0.5 text-[9px] font-bold text-amber-700 text-center leading-tight">
+                                            {isPersonaHiddenFromShare ? "Hidden from share link" : "Photo hidden from share link"}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
                                   </div>
 
                                   {/* Right: Persona Name, Badges, Caret & Demographics */}
@@ -7117,7 +7189,7 @@ export default function App() {
                                       {/* Caret in upper right to expand/collapse */}
                                       <button
                                         type="button"
-                                        onClick={() => togglePersonaExpanded(globalIndex)}
+                                        onClick={() => togglePersonaExpanded(slot)}
                                         className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors cursor-pointer shrink-0 ml-1"
                                         title={isExpanded ? "Collapse habits & narrative" : "View habits & narrative"}
                                         aria-label={isExpanded ? "Collapse habits & narrative" : "View habits & narrative"}
