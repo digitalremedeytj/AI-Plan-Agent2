@@ -29,6 +29,7 @@ export const PLAN_SECTIONS: Record<string, { label: string; aliases: string[] }>
   sources: { label: "Sources", aliases: [] },
   performanceLearnings: { label: "Built on your campaign history", aliases: [] },
   campaignRecap: { label: "Campaign recap", aliases: [] },
+  geo: { label: "Geo footprint", aliases: [] },
 };
 
 export interface ListOutcome {

@@ -20,6 +20,8 @@ import { plannerGuidanceField } from "../planning/effectiveProducts";
 import { hasPublisherHighlights, publisherHighlightFields } from "../planning/publisherHighlights";
 import { RECAP_BLOCKS } from "../performance/recap";
 import { KPI_METRICS } from "../performance/recapKpi";
+import { buildGeoFootprint, rehydrateGeoSnapshot } from "../planning/geoFootprint";
+import { incrementalityView } from "../planning/incrementality";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -160,6 +162,30 @@ export function buildPlanContext(
     }
   } else {
     out.push("MEDIA PLAN: this plan has no channel plan, so allocations and channels cannot be edited.");
+  }
+
+  const geo = buildGeoFootprint({ targeting: rehydrateGeoSnapshot(profile.geoTargeting), plannedBudget: plan ? combinedPlan(strategy).total : 0 });
+  if (geo) {
+    out.push([
+      `GEO FOOTPRINT SECTION (${hidden.has("geo") ? "hidden from" : "shown on"} the share link; computed from the targeting, read-only): ${geo.title}, ${geo.scope === "dma" ? "DMA" : "State"} targeting, ${geo.households.toLocaleString("en-US")} TV households (${geo.usSharePct.toFixed(1)}% of US).`,
+      ...geo.rows.map((row) => `* ${row.name}: ${row.households.toLocaleString("en-US")} TV households, ${row.sharePct}% of the footprint${row.budget !== undefined ? `, ${money(row.budget)} (budget split by households)` : ""}`),
+      geo.scope === "dma" ? `- States the markets deliver into: ${geo.coveredStates.join(", ")}` : "- Delivery is limited to the targeted states.",
+      ...geo.precision.map((target) => `- Precision targeting: ${target.label} -> ${target.action}`),
+      "- There is no matched-market or holdout-state test design in this plan.",
+    ].join("\n"));
+  }
+
+  const incrementality = incrementalityView({ strategy, kpis: list(payload.kpis), ctvPublishers: profile.ctvPublishers, threshold: planningSettings?.incrementalityMinMonthlySpend });
+  if (incrementality?.metric) {
+    out.push([
+      `INCREMENTALITY MEASUREMENT (Digital Remedy's measurement product, not yet released. ${profile.shareIncrementality === true ? "A planner has turned it on for the share link" : "Shown to planners only; hidden from the share link"}. Explain it when asked; never write it into plan text or the executive summary, and never name its data vendors):`,
+      `- ${incrementality.eligible ? "This plan qualifies, so it is included at no cost." : `This plan does not qualify yet: it spends ${money(incrementality.monthlySpend)}/mo and plans need ${money(incrementality.threshold)}/mo or more (${money(incrementality.shortfall)}/mo short).`} Qualifying plans have a performance KPI and spend at least the threshold per month (the whole plan's spend).`,
+      "- How it works: every exposure is tied to a household across devices; lift compares exposed households with matched control households modeled from pre-campaign attributes, so it needs no PSA impressions, no ghost bids and no held-out markets; path analysis then splits the lift across media combinations, publisher order, frequency and timing.",
+      `- The plan's KPI ${incrementality.kpi} is reported as ${incrementality.metric}; also reported: ${incrementality.otherMetrics.join(", ")}.`,
+      `- Measured: ${incrementality.measured.map((line) => `${line.name} (${line.sharePct}%)`).join(", ") || "none"}; outside the measurement: ${incrementality.notMeasured.map((line) => `${line.name} (${line.sharePct}%)`).join(", ") || "none"}.`,
+      ...incrementality.questions.map((question) => `- Question it will answer: ${question.text}`),
+      "- No readouts exist yet: never state or estimate a lift, an incremental ROAS or any other result.",
+    ].join("\n"));
   }
 
   const publishers: any[] = Array.isArray(profile.ctvPublishers) ? profile.ctvPublishers : [];

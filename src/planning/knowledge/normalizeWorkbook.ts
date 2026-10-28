@@ -102,6 +102,15 @@ const measurementAliases: Record<string, string> = {
   "CPG Sales Validation (Circana / MarketLift)": "CPG Sales Validation (Circana)",
 };
 
+/**
+ * Names shown in place of the workbook's. The id still comes from the workbook label, so saved
+ * plans and settings rows that reference the record keep matching it. Outcome Path Attribution
+ * is now part of Incrementality Measurement, so the journey product no longer carries its name.
+ */
+const measurementDisplayNames: Record<string, string> = {
+  "Consumer Journey Analytics (OPA)": "Consumer Journey Analytics",
+};
+
 function normalizeStatus(value: CellValue): ProductStatus {
   const status = String(value || "live").toLowerCase();
   if (status === "beta" || status === "future" || status === "retired") return status;
@@ -170,7 +179,7 @@ function buildMeasurements(): NormalizedKnowledgeRecord[] {
       const trigger = String(record["Include When (KPI/Goal)"] || master?.["Include When / Trigger (short)"] || "");
       return {
         id: `measurement.${slugify(sourceLabel)}`,
-        displayName: sourceLabel,
+        displayName: measurementDisplayNames[sourceLabel] || sourceLabel,
         recordType: "measurement",
         sourceLabel,
         status,

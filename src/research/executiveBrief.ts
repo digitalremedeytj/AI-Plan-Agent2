@@ -199,7 +199,8 @@ const ADVANCED_MEASUREMENT: Array<{ label: string; pattern: RegExp }> = [
   { label: "Incrementality", pattern: /\bincrementality\b|\bincremental(ity)? (lift|study|test)\b/i },
   { label: "Halo effect", pattern: /\bhalo\b/i },
   { label: "Consumer journey", pattern: /\bconsumer journey\b|\bjourney analytics\b/i },
-  { label: "Consumer journey", pattern: /\bOPA\b/ },
+  // Outcome Path Attribution is part of Incrementality Measurement, not the journey product.
+  { label: "Incrementality", pattern: /\bOPA\b|\boutcome path\b/i },
 ];
 
 /**
@@ -211,7 +212,7 @@ const GUARDED_MEASUREMENT: Array<{ label: string; pattern: RegExp }> = [
   { label: "Incrementality", pattern: /\bincrementality\b|\bincremental(ity)? (lift|study|test)\b/i },
   { label: "Halo effect", pattern: /\bhalo\b/i },
   { label: "Consumer journey analytics", pattern: /\bconsumer journey (analytics|study|measurement)\b|\bjourney analytics\b/i },
-  { label: "Consumer journey analytics", pattern: /\bOPA\b/ },
+  { label: "Incrementality", pattern: /\bOPA\b|\boutcome path\b/i },
   { label: "Brand lift", pattern: /\bbrand lift\b/i },
   { label: "Foot traffic", pattern: /\bfoot traffic\b|\bstore visit (study|attribution|lift)\b/i },
   { label: "Sales lift", pattern: /\bsales lift\b/i },

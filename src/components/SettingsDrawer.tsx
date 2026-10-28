@@ -37,6 +37,7 @@ import {
   CUSTOM_PRODUCT_ID_PREFIX,
   DEFAULT_PLANNING_SETTINGS,
   EnhancementPlanningSetting,
+  incrementalityMinMonthlySpendOf,
   InternalOnlySettingId,
   MEASUREMENT_DATA_REQUIREMENTS,
   MeasurementAvailability,
@@ -2522,6 +2523,35 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                   When the brief says the client does not have a required item (for example &ldquo;cannot place pixels&rdquo;),
                   that product is not recommended. If the brief says nothing about the data, the product can still be recommended.
                 </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-bold text-slate-900">Incrementality Measurement threshold</p>
+                    <p className="mt-0.5 text-xs leading-5 text-slate-500">
+                      Plans with a performance KPI that spend at least this much per month include Incrementality Measurement at no cost.
+                      Saved plans keep the threshold they were built with.
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100">
+                    <span className="text-slate-400">$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1000}
+                      aria-label="Incrementality Measurement monthly spend threshold"
+                      value={incrementalityMinMonthlySpendOf(draftSettings.incrementalityMinMonthlySpend)}
+                      disabled={readOnly}
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        setDraftSettings((curr) => ({ ...curr, incrementalityMinMonthlySpend: Number.isFinite(value) && value >= 0 ? Math.round(value) : 0 }));
+                      }}
+                      className="w-28 bg-transparent text-right text-slate-900 focus:outline-none disabled:text-slate-500"
+                    />
+                    <span className="text-slate-400">/ mo</span>
+                  </label>
+                </div>
               </div>
 
               <div className="relative my-3">

@@ -325,6 +325,17 @@ export interface PlanningSettings {
   reach: ReachSettings;
   /** One row per live workbook measurement product. See mergeMeasurementSettings. */
   measurement: MeasurementPlanningSetting[];
+  /**
+   * Monthly plan spend at which Incrementality Measurement is included at no cost. Optional so
+   * settings revisions saved before it existed, which saved plans are pinned to, read the default.
+   */
+  incrementalityMinMonthlySpend?: number;
+}
+
+export const DEFAULT_INCREMENTALITY_MIN_MONTHLY_SPEND = 100_000;
+
+export function incrementalityMinMonthlySpendOf(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : DEFAULT_INCREMENTALITY_MIN_MONTHLY_SPEND;
 }
 
 export interface SettingsValidationResult {
@@ -481,6 +492,7 @@ function buildDefaultSettings(): PlanningSettings {
     ctvTier3TargetPercent: 20,
     reach: buildDefaultReachSettings(),
     measurement: defaultMeasurementSettings(),
+    incrementalityMinMonthlySpend: DEFAULT_INCREMENTALITY_MIN_MONTHLY_SPEND,
   };
 }
 
@@ -544,6 +556,7 @@ export function clonePlanningSettings(settings: PlanningSettings): PlanningSetti
       : 20,
     reach: settings.reach ? cloneReachSettings(mergeReachSettings(settings.reach)) : buildDefaultReachSettings(),
     measurement: mergeMeasurementSettings(settings.measurement),
+    incrementalityMinMonthlySpend: incrementalityMinMonthlySpendOf(settings.incrementalityMinMonthlySpend),
   };
 }
 
@@ -727,6 +740,11 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
     });
   }
   const measurement = mergeMeasurementSettings(candidate.measurement);
+  const rawThreshold = candidate.incrementalityMinMonthlySpend;
+  if (rawThreshold !== undefined && !(typeof rawThreshold === "number" && Number.isFinite(rawThreshold) && rawThreshold >= 0)) {
+    errors.push("The Incrementality Measurement threshold must be a dollar amount of zero or more.");
+  }
+  const incrementalityMinMonthlySpend = incrementalityMinMonthlySpendOf(rawThreshold);
 
   if (errors.length > 0) return { valid: false, errors };
   return {
@@ -748,6 +766,7 @@ export function validatePlanningSettings(value: unknown): SettingsValidationResu
       ctvTier3TargetPercent,
       reach,
       measurement,
+      incrementalityMinMonthlySpend,
     },
   };
 }

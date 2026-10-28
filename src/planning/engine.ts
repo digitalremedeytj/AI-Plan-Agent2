@@ -849,6 +849,13 @@ function channelLabels(product: MediaProductRecord): string[] {
   return labels[product.id] || [product.displayName, "Any channel"];
 }
 
+/** Whether a workbook measurement product reads this media type, by the rule that offers it on the channel. */
+export function measurementCovers(measurementId: string, channelId: string): boolean {
+  const record = planningKnowledgeBase.measurementCapabilities.find((candidate) => candidate.id === measurementId);
+  const product = findProductByAnyId(channelId);
+  return Boolean(record && product && attachmentMatches(record.attachesTo, product));
+}
+
 function attachmentMatches(attachesTo: string[], product: MediaProductRecord): boolean {
   const labels = channelLabels(product).map((label) => label.toLowerCase());
   return attachesTo.some((target) => labels.some((label) => target.toLowerCase().includes(label) || label.includes(target.toLowerCase())));

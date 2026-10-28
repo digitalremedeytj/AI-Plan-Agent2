@@ -274,6 +274,26 @@ test("version 6 settings keep their edits and gain the measurement defaults the 
   assert.deepEqual(opa?.dataRequirements, ["sitePixel", "conversionEvents"]);
 });
 
+test("the Incrementality Measurement threshold defaults to $100K/mo, also for revisions saved before it existed", () => {
+  assert.equal(DEFAULT_PLANNING_SETTINGS.incrementalityMinMonthlySpend, 100_000);
+  const { incrementalityMinMonthlySpend: _threshold, ...older } = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
+  const result = validatePlanningSettings(older);
+  assert.equal(result.valid, true, result.errors.join("; "));
+  assert.equal(result.settings?.incrementalityMinMonthlySpend, 100_000);
+});
+
+test("an edited threshold is kept, and a negative one is refused", () => {
+  const settings = { ...clonePlanningSettings(DEFAULT_PLANNING_SETTINGS), incrementalityMinMonthlySpend: 75_000 };
+  assert.equal(validatePlanningSettings(settings).settings?.incrementalityMinMonthlySpend, 75_000);
+  assert.equal(clonePlanningSettings(settings).incrementalityMinMonthlySpend, 75_000);
+  assert.equal(validatePlanningSettings({ ...settings, incrementalityMinMonthlySpend: -1 }).valid, false);
+});
+
+test("the journey product no longer carries the Outcome Path Attribution name, and keeps its id", () => {
+  const journey = DEFAULT_PLANNING_SETTINGS.measurement.find((row) => row.measurementId === "measurement.consumer_journey_analytics_opa");
+  assert.equal(journey?.displayName, "Consumer Journey Analytics");
+});
+
 test("a planner's measurement edits survive save and reload", () => {
   const storage = new MemoryStorage();
   const settings = clonePlanningSettings(DEFAULT_PLANNING_SETTINGS);
