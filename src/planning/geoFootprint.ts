@@ -96,8 +96,6 @@ export interface GeoFootprintView {
   usSharePct: number;
   /** States the footprint targets (state scope) or delivers into (DMA scope). */
   coveredStates: string[];
-  /** State scope only: neighbouring states the serving markets also reach. */
-  alsoReachedStates: string[];
   coverageNote: string;
   precision: PrecisionTarget[];
   /** Picks that could not be sized and are not in the numbers. */
@@ -186,8 +184,9 @@ function titleFor(scope: "state" | "dma", rows: GeoFootprintRow[]): string {
 }
 
 /**
- * Written for the client, since the share link shows it: spill is what the buy delivers, not a
- * caveat. The planner-facing detail (how many markets spill) is still stated plainly.
+ * Written for the client, since the share link shows it. State plans get none: the TV markets a
+ * state's DMAs spill into only matter to a buy made by DMA, and streaming and digital target the
+ * state itself, so listing them told prospects the plan ran in states the RFP never asked for.
  */
 function coverageNoteFor(targeting: GeoTargeting, rows: GeoFootprintRow[]): string {
   const coverage = geoCoverage(targeting);
@@ -196,14 +195,6 @@ function coverageNoteFor(targeting: GeoTargeting, rows: GeoFootprintRow[]): stri
     if (names.length === 0) return "";
     if (names.length === 1) return `${rows.length === 1 ? "This market sits" : `All ${rows.length} markets sit`} within ${names[0]}.`;
     return `${rows.length === 1 ? "This market reaches" : "These markets reach"} viewers across ${names.length} states: ${joinNames(names)}.`;
-  }
-  if (coverage?.scope === "state") {
-    const markets = `${coverage.overlappingDmaCount} TV market${coverage.overlappingDmaCount === 1 ? "" : "s"}`;
-    const served = `${rows.length === 1 ? "This state is" : "These states are"} served by ${markets}`;
-    if (coverage.spillMarketCount === 0) return `${served}, all within the targeted ${rows.length === 1 ? "state" : "states"}.`;
-    const spill = joinNames(coverage.spillStates.map(stateName));
-    const some = coverage.spillMarketCount === coverage.overlappingDmaCount ? "All of them" : `${coverage.spillMarketCount} of them`;
-    return `${served}. ${some} also reach parts of ${spill}, so some streaming impressions will land just over state lines.`;
   }
   return "";
 }
@@ -247,7 +238,6 @@ export function buildGeoFootprint(input: GeoFootprintInput): GeoFootprintView | 
     households: total,
     usSharePct: (total / NATIONAL_TV_HOUSEHOLDS) * 100,
     coveredStates: coverage?.scope === "dma" ? coverage.states : rows.map((row) => row.id),
-    alsoReachedStates: coverage?.scope === "state" ? coverage.spillStates : [],
     coverageNote: coverageNoteFor({ ...targeting, entries: sized.map((item) => item.entry) }, rows),
     // The notes saved with the plan, so the chips match what it was generated from; a plan from
     // before notes were saved reads the brief's.

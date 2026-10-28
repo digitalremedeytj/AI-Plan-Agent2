@@ -51,11 +51,10 @@ test("DMA coverage names every state the markets deliver into", () => {
   assert.match(view.coverageNote, /These markets reach viewers across 5 states/);
 });
 
-test("state coverage reads spill as reach over the state line, not as a warning", () => {
+test("a state plan shows only the states the brief asked for, never the ones its DMAs spill into", () => {
   const view = buildGeoFootprint({ targeting: geoSnapshotFromBrief({ type: "State", targets: ["Virginia (VA)", "Maryland (MD)"] }), plannedBudget: 0 })!;
   assert.deepEqual(view.coveredStates, ["VA", "MD"]);
-  assert.ok(view.alsoReachedStates.includes("WV"));
-  assert.match(view.coverageNote, /served by \d+ TV markets\..*also reach parts of .*West Virginia/);
+  assert.equal(view.coverageNote, "");
   assert.match(view.rows[0].detail, /^\d+ DMAs?$/);
 });
 

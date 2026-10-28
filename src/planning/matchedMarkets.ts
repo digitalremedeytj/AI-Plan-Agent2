@@ -13,6 +13,7 @@ import { MAP_MARKETS } from "./knowledge/geoMap";
 import { STATE_HOUSEHOLDS } from "./knowledge/stateHouseholds";
 import { NIELSEN_DMAS } from "../utils/geoReference";
 import { buildGeoFootprint } from "./geoFootprint";
+import { geoCoverage } from "./geoTargeting";
 import { resolvePickerDma } from "./reach/briefGeography";
 
 const DIVISIONS: Record<string, string[]> = {
@@ -106,8 +107,10 @@ export function matchedMarketDesign(targeting: GeoTargeting | undefined | null):
     }).filter((unit): unit is Unit => Boolean(unit));
     pool = DMA_MARKETS.filter((market) => !targeted.has(market.code)).map((market) => dmaUnit(market.code)).filter((unit): unit is Unit => Boolean(unit));
   } else {
-    // A state the targeted markets spill into receives some of the campaign, so it cannot be a control.
-    const exposed = new Set([...targeted, ...view.alsoReachedStates]);
+    // A state the serving markets spill into would see any part of the buy made by DMA, so it is
+    // held out of the controls even though the section no longer shows it.
+    const coverage = geoCoverage(targeting!);
+    const exposed = new Set([...targeted, ...(coverage?.scope === "state" ? coverage.spillStates : [])]);
     tests = view.rows.map((row) => ({ id: row.id, name: row.name, households: row.households, state: row.id }));
     pool = STATE_HOUSEHOLDS.filter((state) => !exposed.has(state.code))
       .map((state) => ({ id: state.code, name: state.name, households: state.tvHouseholds, state: state.code }));

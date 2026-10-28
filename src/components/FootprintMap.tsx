@@ -6,7 +6,6 @@ import { MAP_MARKETS, MAP_STATES, footprintViewBox } from "../planning/knowledge
 // through currentColor without a class per state.
 const FILL = {
   targeted: "#4f46e5",
-  reached: "#c7d2fe",
   dmaStates: "#c7d2fe",
   other: "#e2e8f0",
   stroke: "#ffffff",
@@ -51,14 +50,13 @@ function placeLabels(items: Array<{ id: string; text: string; x: number; y: numb
 
 /**
  * The footprint on a real map, framed to the states involved. State plans shade the targeted
- * states and those the serving markets spill into; DMA plans shade the states the markets reach
+ * states only; DMA plans shade the states the markets reach
  * and put a dot at each market's main city, sized by its households.
  */
 export const FootprintMap: React.FC<{ view: GeoFootprintView }> = ({ view }) => {
   const isDma = view.scope === "dma";
   const covered = new Set(view.coveredStates);
-  const alsoReached = new Set(view.alsoReachedStates);
-  const [minX, minY, width, height] = footprintViewBox([...view.coveredStates, ...view.alsoReachedStates]);
+  const [minX, minY, width, height] = footprintViewBox(view.coveredStates);
 
   const maxHouseholds = Math.max(...view.rows.map((row) => row.households), 1);
   const dots = isDma
@@ -91,7 +89,7 @@ export const FootprintMap: React.FC<{ view: GeoFootprintView }> = ({ view }) => 
           <path
             key={state.code}
             d={state.d}
-            fill={covered.has(state.code) ? (isDma ? FILL.dmaStates : FILL.targeted) : alsoReached.has(state.code) ? FILL.reached : FILL.other}
+            fill={covered.has(state.code) ? (isDma ? FILL.dmaStates : FILL.targeted) : FILL.other}
             stroke={FILL.stroke}
             strokeWidth={1}
             vectorEffect="non-scaling-stroke"
@@ -150,12 +148,7 @@ export const FootprintMap: React.FC<{ view: GeoFootprintView }> = ({ view }) => 
             <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-200" />States reached</span>
           </>
         ) : (
-          <>
-            <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-600" />Targeted</span>
-            {view.alsoReachedStates.length > 0 && (
-              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-200" />Also reached</span>
-            )}
-          </>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-600" />Targeted</span>
         )}
       </div>
     </div>

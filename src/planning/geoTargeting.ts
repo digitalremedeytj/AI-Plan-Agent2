@@ -412,11 +412,11 @@ export function geoSummaryForPrompt(targeting: GeoTargeting | undefined, market 
 
   if (coverage?.scope === "state") {
     const names = targeting.entries.map((entry) => `${entry.name} (${entry.id})`).join(", ");
+    // No spill states: streaming and digital target the state itself, and naming them led the
+    // narrative to describe the plan as running in states the brief never asked for.
     return [
       `State targeting within ${market}: ${coverage.stateCount} states - ${names}.`,
-      `These states are served by ${coverage.overlappingDmaCount} DMAs;`,
-      `${coverage.spillMarketCount} of those markets also deliver into ${coverage.spillStates.length} neighbouring states`,
-      `(${coverage.spillStates.join(", ")}).`,
+      `Delivery is limited to these states; they are served by ${coverage.overlappingDmaCount} DMAs.`,
     ].join(" ");
   }
 

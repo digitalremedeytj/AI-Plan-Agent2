@@ -189,9 +189,6 @@ export function exportProfileToMarkdown(
     } else {
       markdown += `**${geoCoverageSummary.stateCount} states**, served by ${geoCoverageSummary.overlappingDmaCount} DMAs.\n\n`;
       markdown += `States: ${geoTargeting.entries.map(entry => `${entry.name} (${entry.id})`).join(", ")}\n\n`;
-      if (geoCoverageSummary.spillMarketCount > 0) {
-        markdown += `*Market spill: ${geoCoverageSummary.spillMarketCount} of those markets also deliver into ${geoCoverageSummary.spillStates.length} neighbouring states (${geoCoverageSummary.spillStates.join(", ")}).*\n\n`;
-      }
     }
     if (profile.geoInsights && profile.geoInsights.trim().length > 0) {
       markdown += `#### Geo Insights\n`;

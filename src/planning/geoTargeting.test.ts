@@ -142,6 +142,7 @@ test("the prompt summary states coverage for DMAs and spill for states", () => {
   assert.match(state, /2 states/);
   assert.match(state, /served by \d+ DMAs/);
   assert.doesNotMatch(state, /% of US/, "state scope must not imply a household share");
+  assert.doesNotMatch(state, /neighbou?ring|PA|CT/, "spill states would be read as places the plan runs");
 });
 
 test("a national brief summarises as national", () => {
