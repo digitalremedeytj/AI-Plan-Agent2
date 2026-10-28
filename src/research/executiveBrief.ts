@@ -16,6 +16,7 @@
 
 import type { AudienceProfile, ChannelPanelOverride } from "../types";
 import { combinedPlan } from "../planning/planChannels";
+import { catalogRecordName, currentCatalogLabel } from "../planning/knowledge/normalizeWorkbook";
 import { GEOFENCE_CLAIM, NATIONAL_CLAIM, footprintSummary, geoPlanFacts } from "../planning/geoFootprint";
 
 // --- types ------------------------------------------------------------------------------
@@ -241,11 +242,11 @@ function channelField(override: ChannelPanelOverride | undefined, key: string, f
   return edited !== undefined ? edited : fallback;
 }
 
-function channelList(override: ChannelPanelOverride | undefined, key: string, records: Array<{ displayName: string }> | undefined): string[] {
+function channelList(override: ChannelPanelOverride | undefined, key: string, records: Array<{ id?: string; displayName: string }> | undefined): string[] {
   if (override?.hiddenPanels?.includes(key)) return [];
   const edited = override?.fieldEdits?.[key]?.content;
   if (edited !== undefined) return editedList(edited);
-  return (records || []).map((record) => record.displayName).filter(Boolean);
+  return (records || []).map((record) => catalogRecordName(record)).filter(Boolean);
 }
 
 /**
@@ -294,7 +295,7 @@ export function buildBriefSnapshot(profile: AudienceProfile | null | undefined, 
       const key = name.toLowerCase();
       const entry = measurementByName.get(key) || { name, advanced: isAdvancedMeasurement(name), channels: [], rationale: "" };
       if (!entry.channels.includes(channel.name)) entry.channels.push(channel.name);
-      if (!entry.rationale) entry.rationale = clip(records.find((r) => String(r?.displayName || "").toLowerCase() === key)?.rationale, 300);
+      if (!entry.rationale) entry.rationale = clip(records.find((r) => catalogRecordName(r).toLowerCase() === key)?.rationale, 300);
       measurementByName.set(key, entry);
     }
   }
@@ -870,7 +871,7 @@ export function sectionToEditText(section: BriefSection, livePercents: Record<st
     const percent = livePercents[c.channelId] ?? c.allocationPercent;
     lines.push(`- ${c.channelName} (${percent}%, ${c.funnelRole}): ${c.role}`);
   }
-  for (const m of section.measurement || []) lines.push(`- ${m.capability}: ${m.proves}${m.kpi ? ` (${m.kpi})` : ""}`);
+  for (const m of section.measurement || []) lines.push(`- ${currentCatalogLabel(m.capability)}: ${m.proves}${m.kpi ? ` (${m.kpi})` : ""}`);
   return lines.join("\n");
 }
 

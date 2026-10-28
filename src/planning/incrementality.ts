@@ -3,8 +3,7 @@
  * measurement section says. Everything here is computed from the plan, so nothing about the
  * offer is model-written and the section cannot promise a result.
  *
- * Not yet released: the section is off the share link until a planner turns it on, and the
- * share link says nothing about it otherwise (see AudienceProfile.shareIncrementality).
+ * Not yet live: the section is shown to planners only, and a share link never mentions it.
  */
 import type { ChannelStrategyData, CtvPublisherRecommendation } from "../types";
 import { measurementCovers } from "./engine";
@@ -131,9 +130,4 @@ export function incrementalityView({ strategy, kpis, ctvPublishers = [], thresho
     measuredPct: share(measuredDollars),
     publishers,
   };
-}
-
-/** The geo section's one line on measurement, for a plan whose measurement section is shown. */
-export function footprintMeasurementNote(places: string): string {
-  return `Lift is measured against matched households inside ${places}, so no market is held dark.`;
 }

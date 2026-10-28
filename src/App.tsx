@@ -171,7 +171,7 @@ import { combinedPlan } from "./planning/planChannels";
 import { buildGeoFootprint, footprintSummary, geoPlanFacts, geoSnapshotFromBrief } from "./planning/geoFootprint";
 import { GeoFootprintSection } from "./components/GeoFootprintSection";
 import { IncrementalityMeasurementSection, IncrementalityThresholdNote } from "./components/IncrementalityMeasurementSection";
-import { footprintMeasurementNote, incrementalityView } from "./planning/incrementality";
+import { incrementalityView } from "./planning/incrementality";
 import { NATIONAL_TV_HOUSEHOLDS } from "./planning/knowledge/stateHouseholds";
 import { BudgetStrategyControl } from "./components/BudgetStrategyControl";
 
@@ -1866,15 +1866,6 @@ export default function App() {
     [geographyType, geoTargets],
   );
 
-  const handleShareIncrementalityChange = (shared: boolean) => {
-    hiddenSectionsDirtyRef.current = true;
-    setProfileData((prev) => {
-      if (!prev) return prev;
-      const { shareIncrementality: _previous, ...rest } = prev;
-      return shared ? { ...rest, shareIncrementality: true } : rest;
-    });
-  };
-
   const handleShareReachDetailsChange = (shared: boolean) => {
     reachPrefsDirtyRef.current = true;
     setProfileData((prev) => {
@@ -1954,15 +1945,6 @@ export default function App() {
     }),
     [profileData?.channelStrategy, profileData?.ctvPublishers, kpis, planningSettings.incrementalityMinMonthlySpend],
   );
-  const isIncrementalityShared = profileData?.shareIncrementality === true;
-  const geoMeasurementNote = React.useMemo(() => {
-    if (!incrementality?.eligible || !isIncrementalityShared || !planGeoFootprint) return undefined;
-    const { scope, rows } = planGeoFootprint;
-    const places = rows.length === 1
-      ? (scope === "dma" ? `the ${rows[0].name} market` : rows[0].name)
-      : `the ${rows.length} targeted ${scope === "dma" ? "markets" : "states"}`;
-    return footprintMeasurementNote(places);
-  }, [incrementality, isIncrementalityShared, planGeoFootprint]);
   const briefLivePercents = React.useMemo(
     () => Object.fromEntries(briefPlan.channels.map((c) => [c.channelId, Math.round(c.allocationPercent * 10) / 10])),
     [briefPlan],
@@ -7404,7 +7386,6 @@ export default function App() {
                     isHidden={isGeoHidden}
                     isShareView={isShareView}
                     onToggleHidden={handleToggleSectionActive}
-                    measurementNote={geoMeasurementNote}
                   />
                 )}
 
@@ -8110,14 +8091,8 @@ export default function App() {
                   />
                 )}
 
-                {incrementality?.eligible && (!isShareView || isIncrementalityShared) && (
-                  <IncrementalityMeasurementSection
-                    view={incrementality}
-                    isShared={isIncrementalityShared}
-                    isShareView={isShareView}
-                    onToggleShared={handleShareIncrementalityChange}
-                  />
-                )}
+                {/* Planner-only until the product is live: never rendered on a share link. */}
+                {incrementality?.eligible && !isShareView && <IncrementalityMeasurementSection view={incrementality} />}
                 {!isShareView && incrementality && !incrementality.eligible && incrementality.metric && incrementality.measured.length > 0 && (
                   <IncrementalityThresholdNote view={incrementality} />
                 )}

@@ -8,6 +8,7 @@
 // (fewer bullets, then fewer rows and details) rather than hoping the renderer copes. After rendering,
 // the server reads the image back and compares it with this text (the proofread).
 
+import { currentCatalogLabel } from "../planning/knowledge/normalizeWorkbook";
 import { BRIEF_SECTION_LABELS, parseEditText, type BriefBullet, type BriefSection, type BriefSectionKey, type ExecutiveBrief } from "./executiveBrief";
 
 export type BriefSlideVariant = "highlights" | "full";
@@ -116,7 +117,7 @@ function channelRows(section: EffectiveSection, context: BriefSlideContext, opts
 function measurementRows(section: EffectiveSection, opts: { limit?: number; proves?: boolean }) {
   const all = [...(section.structured?.measurement || [])].sort((a, b) => Number(b.advanced) - Number(a.advanced));
   const shown = all.slice(0, opts.limit ?? all.length);
-  const rows = shown.map((m) => `  - ${m.capability}${m.advanced ? ` ${IMPACT_TAG}` : ""}${opts.proves && m.proves ? ` | ${trimWords(m.proves, 30)}` : ""}${opts.proves && m.kpi ? ` | KPI: ${m.kpi}` : ""}`);
+  const rows = shown.map((m) => `  - ${currentCatalogLabel(m.capability)}${m.advanced ? ` ${IMPACT_TAG}` : ""}${opts.proves && m.proves ? ` | ${trimWords(m.proves, 30)}` : ""}${opts.proves && m.kpi ? ` | KPI: ${m.kpi}` : ""}`);
   if (all.length > shown.length) rows.push(`  - + ${all.length - shown.length} more`);
   return rows;
 }

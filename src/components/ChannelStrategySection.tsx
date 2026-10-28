@@ -21,6 +21,7 @@ import { PlanAlignmentPanel } from './PlanAlignmentPanel';
 import type { PlanAlignment } from '../planning/planAlignment';
 import { BUDGET_STRATEGY_LABELS, modeNeedsAdditionalBudget, normalizeBudgetStrategyMode, type BudgetStrategyMode } from '../planning/budgetStrategy';
 import { parseCurrencyInput } from '../planning/settings';
+import { catalogRecordName } from '../planning/knowledge/normalizeWorkbook';
 import { BudgetStrategyControl } from './BudgetStrategyControl';
 
 export interface ChannelStrategySectionProps {
@@ -144,7 +145,7 @@ interface MediaTypeDetailsProps {
 }
 
 const planningRecordNames = (records: AttachedPlanningRecord[] | undefined, fallback: string) =>
-  records?.map((item) => item.displayName).join(', ') || fallback;
+  records?.map((item) => catalogRecordName(item)).join(', ') || fallback;
 
 export const MediaTypeDetails: React.FC<MediaTypeDetailsProps> = ({
   channelId,

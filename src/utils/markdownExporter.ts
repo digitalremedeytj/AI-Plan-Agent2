@@ -1,5 +1,6 @@
 import { AudienceProfile, GeoTargeting } from "../types";
 import { geoCoverage } from "../planning/geoTargeting";
+import { catalogRecordName, currentCatalogLabel } from "../planning/knowledge/normalizeWorkbook";
 import { buildAllocationView, type AllocationRow } from "../planning/allocationRows";
 import { BUDGET_STRATEGY_LABELS, normalizeBudgetStrategyMode } from "../planning/budgetStrategy";
 import { effectiveBriefSections } from "../research/executiveBriefSlides";
@@ -272,7 +273,7 @@ export function exportProfileToMarkdown(
 
         if (!hidden.includes('measurementCapabilities')) {
           const measTitle = edits['measurementCapabilities']?.title ?? 'Measurement';
-          const measContent = edits['measurementCapabilities']?.content ?? (channel.measurementCapabilities.map(item => item.displayName).join(', ') || 'Confirm eligible measurement');
+          const measContent = edits['measurementCapabilities']?.content ?? (channel.measurementCapabilities.map(item => catalogRecordName(item)).join(', ') || 'Confirm eligible measurement');
           markdown += `  - **${measTitle}**: ${measContent}\n`;
         }
 
@@ -328,7 +329,7 @@ export function exportProfileToMarkdown(
         if (section.headline) markdown += `**${section.headline}**\n\n`;
         for (const b of section.bullets) markdown += `- ${b.lead ? `**${b.lead}**: ` : ""}${b.text}\n`;
         for (const c of section.structured?.channels || []) markdown += `- ${c.channelName} (${c.allocationPercent}%, ${c.funnelRole}): ${c.role}\n`;
-        for (const m of section.structured?.measurement || []) markdown += `- ${m.capability}${m.proves ? `: ${m.proves}` : ""}\n`;
+        for (const m of section.structured?.measurement || []) markdown += `- ${currentCatalogLabel(m.capability)}${m.proves ? `: ${m.proves}` : ""}\n`;
         markdown += `\n`;
       }
     } else if (profile.executiveSummary) {

@@ -1,5 +1,5 @@
 import React from "react";
-import { Ban, ChevronDown, ChevronUp, Crosshair, Hash, Home, Info, Map as MapIcon, MapPin, PieChart, Target } from "lucide-react";
+import { Ban, ChevronDown, ChevronUp, Crosshair, Hash, Home, Info, Map as MapIcon, MapPin, PieChart } from "lucide-react";
 import type { GeoFootprintView, PrecisionKind } from "../planning/geoFootprint";
 import { DMA_SOURCE_LABEL } from "../planning/knowledge/dmaMarkets";
 import { STATE_HOUSEHOLDS_SOURCE_LABEL } from "../planning/knowledge/stateHouseholds";
@@ -33,15 +33,13 @@ interface GeoFootprintSectionProps {
   isHidden: boolean;
   isShareView: boolean;
   onToggleHidden: (sectionKey: string, inactive: boolean) => void;
-  /** How lift is measured inside the footprint; given only while the measurement section is shown. */
-  measurementNote?: string;
 }
 
 /**
  * Open by default: the PDF export captures the live page, so a collapsed panel would be missing
  * from the exported plan.
  */
-export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, insight, isHidden, isShareView, onToggleHidden, measurementNote }) => {
+export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, insight, isHidden, isShareView, onToggleHidden }) => {
   const [expanded, setExpanded] = React.useState(true);
   const isDma = view.scope === "dma";
   const showBudget = view.rows.some((row) => row.budget !== undefined);
@@ -164,12 +162,6 @@ export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, 
             </div>
           )}
 
-          {measurementNote && (
-            <div className="flex gap-2 bg-indigo-50/60 rounded-xl border border-indigo-100 p-4 text-xs text-slate-600 leading-relaxed">
-              <Target className="w-4 h-4 text-indigo-600 shrink-0 mt-px" />
-              <span>{measurementNote}</span>
-            </div>
-          )}
 
           {view.coverageNote && (
             <div className="flex gap-2 bg-white rounded-xl border border-slate-100 p-4 text-xs text-slate-600 leading-relaxed">

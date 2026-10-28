@@ -16,6 +16,7 @@ import {
   validatePlanningSettings,
 } from "./settings";
 import { plannerGuidanceField } from "./effectiveProducts";
+import { catalogRecordName } from "./knowledge/normalizeWorkbook";
 
 class MemoryStorage {
   private values = new Map<string, string>();
@@ -292,6 +293,8 @@ test("an edited threshold is kept, and a negative one is refused", () => {
 test("the journey product no longer carries the Outcome Path Attribution name, and keeps its id", () => {
   const journey = DEFAULT_PLANNING_SETTINGS.measurement.find((row) => row.measurementId === "measurement.consumer_journey_analytics_opa");
   assert.equal(journey?.displayName, "Consumer Journey Analytics");
+  // A plan saved before the rename shows the current name too.
+  assert.equal(catalogRecordName({ id: "measurement.consumer_journey_analytics_opa", displayName: "Consumer Journey Analytics (OPA)" }), "Consumer Journey Analytics");
 });
 
 test("a planner's measurement edits survive save and reload", () => {

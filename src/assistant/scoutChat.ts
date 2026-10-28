@@ -22,6 +22,7 @@ import { RECAP_BLOCKS } from "../performance/recap";
 import { KPI_METRICS } from "../performance/recapKpi";
 import { buildGeoFootprint, rehydrateGeoSnapshot } from "../planning/geoFootprint";
 import { incrementalityView } from "../planning/incrementality";
+import { catalogRecordName } from "../planning/knowledge/normalizeWorkbook";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -178,7 +179,7 @@ export function buildPlanContext(
   const incrementality = incrementalityView({ strategy, kpis: list(payload.kpis), ctvPublishers: profile.ctvPublishers, threshold: planningSettings?.incrementalityMinMonthlySpend });
   if (incrementality?.metric) {
     out.push([
-      `INCREMENTALITY MEASUREMENT (Digital Remedy's measurement product, not yet released. ${profile.shareIncrementality === true ? "A planner has turned it on for the share link" : "Shown to planners only; hidden from the share link"}. Explain it when asked; never write it into plan text or the executive summary, and never name its data vendors):`,
+      `INCREMENTALITY MEASUREMENT (Digital Remedy's measurement product, not live yet and in testing: shown to planners only and never on the share link. Explain it when asked; never write it into plan text or the executive summary, and never name its data vendors):`,
       `- ${incrementality.eligible ? "This plan qualifies, so it is included at no cost." : `This plan does not qualify yet: it spends ${money(incrementality.monthlySpend)}/mo and plans need ${money(incrementality.threshold)}/mo or more (${money(incrementality.shortfall)}/mo short).`} Qualifying plans have a performance KPI and spend at least the threshold per month (the whole plan's spend).`,
       "- How it works: every exposure is tied to a household across devices; lift compares exposed households with matched control households modeled from pre-campaign attributes, so it needs no PSA impressions, no ghost bids and no held-out markets; path analysis then splits the lift across media combinations, publisher order, frequency and timing.",
       `- The plan's KPI ${incrementality.kpi} is reported as ${incrementality.metric}; also reported: ${incrementality.otherMetrics.join(", ")}.`,
@@ -274,7 +275,7 @@ export function buildPlanContext(
   return out.join("\n\n");
 }
 
-const records = (list: unknown) => (Array.isArray(list) ? list : []).map((r: any) => `${clip(r?.displayName, 80)} [${r?.id}]`).join("; ") || "none";
+const records = (list: unknown) => (Array.isArray(list) ? list : []).map((r: any) => `${clip(catalogRecordName(r), 80)} [${r?.id}]`).join("; ") || "none";
 
 /** A media type's attached records, what could be attached, and its detail panels' text. */
 function channelDetailLines(channel: any, plan: MediaRecommendationPlan, strategy: any, settings: PlanningSettings | undefined): string[] {

@@ -72,7 +72,7 @@ test("ScoutAI sees the geo footprint and whether the plan qualifies for Incremen
   assert.match(context, /GEO FOOTPRINT SECTION \(shown on the share link/);
   assert.match(context, /\* California: [\d,]+ TV households/);
   assert.match(context, /no matched-market or holdout-state test design/);
-  assert.match(context, /INCREMENTALITY MEASUREMENT \(.*Shown to planners only; hidden from the share link/);
+  assert.match(context, /INCREMENTALITY MEASUREMENT \(.*shown to planners only and never on the share link/);
   assert.match(context, /This plan qualifies, so it is included at no cost/);
   assert.match(context, /ROAS is reported as Incremental ROAS/);
   assert.doesNotMatch(context, /Tapad|Experian/);

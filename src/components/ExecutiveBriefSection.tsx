@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { currentCatalogLabel } from '../planning/knowledge/normalizeWorkbook';
 import {
   AlertTriangle,
   Award,
@@ -141,7 +142,7 @@ const StructuredView: React.FC<{ section: BriefSection; livePercents: Record<str
         {section.measurement.map((item) => (
           <div key={item.capability} className="flex flex-col gap-1 rounded-lg border border-slate-100 bg-white px-3 py-2 sm:flex-row sm:items-start sm:gap-3">
             <div className="flex shrink-0 items-center gap-1.5 sm:w-52">
-              <span className="text-xs font-bold text-slate-900">{item.capability}</span>
+              <span className="text-xs font-bold text-slate-900">{currentCatalogLabel(item.capability)}</span>
               {item.advanced && (
                 <span className="rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-700">
                   Business impact

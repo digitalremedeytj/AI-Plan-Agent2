@@ -341,3 +341,19 @@ export function validatePlanningKnowledgeBase(kb: PlanningKnowledgeBase = planni
   });
   return errors;
 }
+
+const currentMeasurementNames = new Map(planningKnowledgeBase.measurementCapabilities.map((record) => [record.id, record.displayName]));
+
+/**
+ * A record's name as the catalog spells it now. Plans store the name a record had when it was
+ * attached, so a plan saved before a rename (Consumer Journey Analytics losing "(OPA)") would
+ * otherwise keep showing the old one, share links included.
+ */
+export function catalogRecordName(record: { id?: string; displayName?: string } | null | undefined): string {
+  return (record?.id && currentMeasurementNames.get(record.id)) || currentCatalogLabel(record?.displayName || "");
+}
+
+/** The same for text that kept only the name, such as a saved executive brief's measurement list. */
+export function currentCatalogLabel(name: string): string {
+  return measurementDisplayNames[name.trim()] || name;
+}

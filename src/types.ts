@@ -463,11 +463,6 @@ export interface AudienceProfile {
    * which are shown until hidden.
    */
   shareReachDetails?: boolean;
-  /**
-   * Opt-in: show the Incrementality Measurement section on the share link. Absent means hidden,
-   * because the product is not released yet; planners can still see and test it.
-   */
-  shareIncrementality?: boolean;
   hiddenSections?: string[];
   /** "Built on your campaign history": learnings from the client's past campaigns, added through ScoutAI. */
   performanceLearnings?: Array<{ campaignId: string; campaignName: string; findingId: string; learning: string; action: string }>;

@@ -1,7 +1,6 @@
 import React from "react";
-import { ArrowRight, ChevronDown, ChevronUp, Clock, Gift, Info, Merge, PieChart, Repeat, Route, Target } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronUp, Clock, EyeOff, FlaskConical, Gift, Info, Merge, PieChart, Repeat, Route, Target } from "lucide-react";
 import type { IncrementalityView } from "../planning/incrementality";
-import { SectionVisibilityButton } from "./SectionVisibilityButton";
 
 const QUESTION_ICONS = { combination: Merge, sequence: Route, frequency: Repeat, timing: Clock } as const;
 
@@ -22,29 +21,23 @@ export const IncrementalityThresholdNote: React.FC<{ view: IncrementalityView }>
   </div>
 );
 
-interface IncrementalityMeasurementSectionProps {
-  view: IncrementalityView;
-  /** Off until a planner turns it on: the product is not released, so it starts off the share link. */
-  isShared: boolean;
-  isShareView: boolean;
-  onToggleShared: (shared: boolean) => void;
-}
-
 /**
- * Open by default: the PDF export captures the live page, so a collapsed panel would be missing
- * from the exported plan.
+ * Planner-only while the product is in testing: the page never renders it on a share link, and
+ * its eye is locked off rather than offered, so no planner can put it in front of a client.
  */
-export const IncrementalityMeasurementSection: React.FC<IncrementalityMeasurementSectionProps> = ({ view, isShared, isShareView, onToggleShared }) => {
+export const IncrementalityMeasurementSection: React.FC<{ view: IncrementalityView }> = ({ view }) => {
   const [expanded, setExpanded] = React.useState(true);
-  const isHidden = !isShared;
   const measuredWidth = Math.min(100, view.measuredPct);
 
   return (
-    <div className={`group relative rounded-2xl border shadow-xs overflow-hidden transition-all duration-200 ${
-      isHidden
-        ? "border-dashed border-slate-300 bg-slate-100/70 opacity-40 hover:opacity-70"
-        : "border-slate-100 bg-white hover:border-slate-200"
-    }`}>
+    <div className="group relative rounded-2xl border border-dashed border-slate-300 bg-white shadow-xs overflow-hidden">
+      <div className="flex items-start gap-2.5 border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900">
+        <FlaskConical className="w-4 h-4 shrink-0 mt-px text-amber-700" />
+        <span>
+          <strong>In testing: Incrementality Measurement (OPA) is not live yet.</strong> This section is for planners to review and
+          give feedback on. It is not ready for clients, so it never appears on share links.
+        </span>
+      </div>
       <div className="w-full p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left">
         <button
           type="button"
@@ -74,14 +67,13 @@ export const IncrementalityMeasurementSection: React.FC<IncrementalityMeasuremen
         </div>
 
         <div className="flex items-center gap-2 self-end md:self-center shrink-0">
-          {!isShareView && (
-            <SectionVisibilityButton
-              sectionKey="incrementality"
-              isInactive={isHidden}
-              onToggle={(_key, inactive) => onToggleShared(!inactive)}
-              badgeLabel="Not released · hidden from share link"
-            />
-          )}
+          <span
+            className="inline-flex items-center gap-1.5 rounded-md bg-amber-100/90 px-2 py-0.5 text-[10px] font-bold text-amber-800 border border-amber-200/80"
+            title="Not live yet: this section cannot be shown on share links"
+          >
+            <EyeOff className="w-3 h-3" />
+            Hidden from share link
+          </span>
           <button
             type="button"
             onClick={() => setExpanded((prev) => !prev)}
