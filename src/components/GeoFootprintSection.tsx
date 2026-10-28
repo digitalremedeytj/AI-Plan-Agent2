@@ -112,6 +112,10 @@ export const GeoFootprintSection: React.FC<GeoFootprintSectionProps> = ({ view, 
 
             <div className="bg-white rounded-xl border border-slate-100 p-4 min-w-0">
               <span className="text-[10px] uppercase font-mono text-indigo-600 font-bold block mb-2">Market Breakdown</span>
+              <div className="flex gap-2 mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+                <Info className="w-3.5 h-3.5 shrink-0 mt-px text-amber-700" />
+                <span>This market breakdown is a recommendation example. Actual metrics may vary depending on final plan details.</span>
+              </div>
               <table className="w-full text-xs table-fixed">
                 <thead>
                   <tr className="text-[10px] text-slate-400 font-semibold text-left">

@@ -3861,6 +3861,9 @@ app.post("/api/generate-persona-avatar", async (req, res) => {
 // profile has rendered - like the headshots - so the final, post-remediation personas are
 // the input and none of this time lands on the generate-profile deadline.
 app.post("/api/generate-segments", async (req, res) => {
+  // High thinking can run 90s and its fallback another 60s, past Cloudflare's 100-second limit
+  // on a silent request (a 524 in production).
+  holdOpenForLongRequest(req, res);
   logUsageOnFinish(req, res, "segments_generate", { advertiserName: typeof req.body?.advertiserName === "string" ? req.body.advertiserName : undefined });
   try {
     const request = sanitizeSegmentRequest(req.body);
@@ -3913,6 +3916,8 @@ app.post("/api/generate-segments", async (req, res) => {
 // stands. The model writes the words; normalizeBrief fills the facts back in from the plan.
 app.post("/api/executive-brief", async (req, res) => {
   req.socket.setTimeout(0);
+  // Same attempts as segments (90s, then 60s): held open so Cloudflare does not end it with a 524.
+  holdOpenForLongRequest(req, res);
   logUsageOnFinish(req, res, "exec_brief", { advertiserName: typeof req.body?.snapshot?.advertiserName === "string" ? req.body.snapshot.advertiserName : undefined });
   try {
     const snapshot = sanitizeBriefSnapshot(req.body?.snapshot);

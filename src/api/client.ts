@@ -490,6 +490,16 @@ export interface PlanAuditResponse {
   auditModel: string;
 }
 
+/** Segment recommendations for the plan; a model call that can outlast Cloudflare's 100 seconds. */
+export async function generateSegments<T = { segments: unknown[] }>(body: unknown): Promise<T> {
+  return longRequest<T>("/api/generate-segments", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** The executive brief, written from the plan snapshot; held open for the same reason. */
+export async function generateExecutiveBrief<T = { brief: unknown }>(body: unknown): Promise<T> {
+  return longRequest<T>("/api/executive-brief", { method: "POST", body: JSON.stringify(body) });
+}
+
 /** Audits the saved plan and proposes fixes. Changes nothing. Takes a few minutes. */
 export async function auditPlan(id: string): Promise<PlanAuditResponse> {
   return longRequest<PlanAuditResponse>(`/api/plans/${encodeURIComponent(id)}/audit`, { method: "POST" });

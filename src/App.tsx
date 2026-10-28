@@ -2019,36 +2019,29 @@ export default function App() {
     setSegmentError(null);
 
     try {
-      const response = await api.authFetch("/api/generate-segments", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode,
-          count,
-          advertiserName,
-          audienceDescription,
-          url,
-          geography,
-          campaignFocus,
-          kpis: kpis.filter((k) => k.trim().length > 0),
-          // Headshots and avatar history are large data URLs and say nothing about targeting.
-          personas: (profile.personas || []).map(({ avatarUrl: _avatar, avatarHistory: _history, ...persona }) => persona),
-          profileContext: {
-            intro: profile.intro,
-            executiveSummary: profile.executiveSummary,
-            takeaways: profile.takeaways,
-            recommendations: (profile.recommendations || []).map((r) => r.title),
-          },
-          planAudiences: extractPlanAudiences((planOptions || []).filter((p) => p.selected)),
-          existingSegments: existing.map(({ name, dimension }) => ({ name, dimension })),
-          removedNames: removedSegmentsRef.current.map((entry) => entry.segment.name),
-        }),
+      const data = await api.generateSegments<{ segments?: SegmentRecommendation[] }>({
+        mode,
+        count,
+        advertiserName,
+        audienceDescription,
+        url,
+        geography,
+        campaignFocus,
+        kpis: kpis.filter((k) => k.trim().length > 0),
+        // Headshots and avatar history are large data URLs and say nothing about targeting.
+        personas: (profile.personas || []).map(({ avatarUrl: _avatar, avatarHistory: _history, ...persona }) => persona),
+        profileContext: {
+          intro: profile.intro,
+          executiveSummary: profile.executiveSummary,
+          takeaways: profile.takeaways,
+          recommendations: (profile.recommendations || []).map((r) => r.title),
+        },
+        planAudiences: extractPlanAudiences((planOptions || []).filter((p) => p.selected)),
+        existingSegments: existing.map(({ name, dimension }) => ({ name, dimension })),
+        removedNames: removedSegmentsRef.current.map((entry) => entry.segment.name),
       });
-      const data = await response.json().catch(() => ({}));
       if (token !== segmentRequestTokenRef.current) return;
-      if (!response.ok || !Array.isArray(data.segments)) {
-        throw new Error(data.error || "Segment recommendations could not be generated.");
-      }
+      if (!Array.isArray(data.segments)) throw new Error("Segment recommendations could not be generated.");
 
       updateSegments((current) => {
         // Planner edits made while the request was in flight win over the response.
@@ -2088,16 +2081,9 @@ export default function App() {
     setBriefStatus("loading");
     setBriefError(null);
     try {
-      const response = await api.authFetch("/api/executive-brief", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ snapshot, instructions }),
-      });
-      const data = await response.json().catch(() => ({}));
+      const data = await api.generateExecutiveBrief<{ brief?: ExecutiveBrief }>({ snapshot, instructions });
       if (token !== briefRequestTokenRef.current) return;
-      if (!response.ok || !data.brief) {
-        throw new Error(data.error || "The executive summary could not be written.");
-      }
+      if (!data.brief) throw new Error("The executive summary could not be written.");
       const generated = data.brief as ExecutiveBrief;
       executiveBriefDirtyRef.current = true;
       setProfileData((prev) => {
@@ -8091,12 +8077,6 @@ export default function App() {
                   />
                 )}
 
-                {/* Planner-only until the product is live: never rendered on a share link. */}
-                {incrementality?.eligible && !isShareView && <IncrementalityMeasurementSection view={incrementality} />}
-                {!isShareView && incrementality && !incrementality.eligible && incrementality.metric && incrementality.measured.length > 0 && (
-                  <IncrementalityThresholdNote view={incrementality} />
-                )}
-
                 {/* Executive Summary Blueprint (placed after Channel Strategy) */}
                 {(!isShareView || !isExecutiveSummaryHidden) && (
                   <ExecutiveBriefSection
@@ -8659,6 +8639,13 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+              )}
+
+              {/* Planner-only while in testing, so it sits with the other internal tools at the bottom
+                  and never renders on a share link. */}
+              {incrementality?.eligible && !isShareView && <IncrementalityMeasurementSection view={incrementality} />}
+              {!isShareView && incrementality && !incrementality.eligible && incrementality.metric && incrementality.measured.length > 0 && (
+                <IncrementalityThresholdNote view={incrementality} />
               )}
             </div>
           )}

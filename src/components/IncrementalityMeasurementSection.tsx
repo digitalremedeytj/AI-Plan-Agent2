@@ -26,7 +26,8 @@ export const IncrementalityThresholdNote: React.FC<{ view: IncrementalityView }>
  * its eye is locked off rather than offered, so no planner can put it in front of a client.
  */
 export const IncrementalityMeasurementSection: React.FC<{ view: IncrementalityView }> = ({ view }) => {
-  const [expanded, setExpanded] = React.useState(true);
+  // Collapsed while in testing: it sits under the QA audit, out of the way of the plan itself.
+  const [expanded, setExpanded] = React.useState(false);
   const measuredWidth = Math.min(100, view.measuredPct);
 
   return (
