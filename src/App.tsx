@@ -589,6 +589,7 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authConfig, setAuthConfig] = useState<api.AuthConfig | null>(null);
+  const [usePasswordLogin, setUsePasswordLogin] = useState(false);
 
   // Ask the server who we are on load, rather than trusting anything client-side.
   React.useEffect(() => {
@@ -4651,7 +4652,49 @@ export default function App() {
             <p className="text-xs text-slate-500 font-medium">Sign in to AI Plan Agent</p>
           </div>
 
-          {(!authConfig?.googleClientId || authConfig.passwordLogin) && (
+          {/* Google is the way in; the team password stays one click away until PASSWORD_LOGIN_ENABLED=false. */}
+          {authConfig?.googleClientId && (
+            <div className="space-y-3">
+              {loginError && !usePasswordLogin && (
+                <div className="bg-rose-50 border border-rose-100 text-rose-700 p-3 rounded-xl text-xs font-medium flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{loginError}</span>
+                </div>
+              )}
+              {isLoggingIn && !usePasswordLogin ? (
+                <div className="flex min-h-[44px] items-center justify-center gap-2 text-sm text-slate-500">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Signing in...
+                </div>
+              ) : (
+                <GoogleSignInButton
+                  clientId={authConfig.googleClientId}
+                  hostedDomain={authConfig.allowedDomains[0]}
+                  onCredential={(credential) => void handleGoogleCredential(credential)}
+                  onError={setLoginError}
+                />
+              )}
+              <p className="text-center text-[11px] text-slate-400">
+                Use your {authConfig.allowedDomains.map((d) => `@${d}`).join(" or ")} Google account.
+              </p>
+              {authConfig.passwordLogin && (
+                <div className="text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUsePasswordLogin((open) => !open);
+                      setLoginError(null);
+                    }}
+                    aria-expanded={usePasswordLogin}
+                    className="text-[11px] font-semibold text-slate-400 hover:text-indigo-600 hover:underline cursor-pointer"
+                  >
+                    {usePasswordLogin ? "Hide the team password sign-in" : "Use the team password instead"}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {(!authConfig?.googleClientId || (authConfig.passwordLogin && usePasswordLogin)) && (
           <form onSubmit={handleLogin} className="space-y-4">
             {loginError && (
               <div className="bg-rose-50 border border-rose-100 text-rose-700 p-3 rounded-xl text-xs font-medium flex items-center gap-2">
@@ -4766,40 +4809,6 @@ export default function App() {
             </button>
           </form>
           )}
-
-          {/* While Google sign-in is being validated it sits behind "Sign in as an administrator", so
-              everyone else keeps the team password. It leads once PASSWORD_LOGIN_ENABLED=false. */}
-          {authConfig?.googleClientId && (!authConfig.passwordLogin || showAdminField) && (
-            <div className="space-y-3">
-              {authConfig.passwordLogin && (
-                <div className="flex items-center gap-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  <span className="h-px flex-1 bg-slate-100" /> or <span className="h-px flex-1 bg-slate-100" />
-                </div>
-              )}
-              {loginError && !authConfig.passwordLogin && (
-                <div className="bg-rose-50 border border-rose-100 text-rose-700 p-3 rounded-xl text-xs font-medium flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>{loginError}</span>
-                </div>
-              )}
-              {isLoggingIn ? (
-                <div className="flex min-h-[44px] items-center justify-center gap-2 text-sm text-slate-500">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Signing in...
-                </div>
-              ) : (
-                <GoogleSignInButton
-                  clientId={authConfig.googleClientId}
-                  hostedDomain={authConfig.allowedDomains[0]}
-                  onCredential={(credential) => void handleGoogleCredential(credential)}
-                  onError={setLoginError}
-                />
-              )}
-              <p className="text-center text-[11px] text-slate-400">
-                Use your {authConfig.allowedDomains.map((d) => `@${d}`).join(" or ")} Google account.
-              </p>
-            </div>
-          )}
-
 
           <div className="text-center pt-4 border-t border-slate-100">
             <span className="text-[11px] text-slate-400 font-sans tracking-wide">AI Plan Agent Intelligence</span>
