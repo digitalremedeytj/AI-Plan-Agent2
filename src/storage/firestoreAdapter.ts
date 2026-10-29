@@ -33,6 +33,7 @@ import {
   type PlanVersion,
   type PlanVersionSummary,
 } from "./types";
+import { EMPTY_PEOPLE, type Person, type PeopleRecord } from "../people/people";
 
 /**
  * Production driver: Firestore in Native mode, over the REST API.
@@ -47,6 +48,7 @@ import {
  *   usage_events/{id}           append-only usage log for the admin Usage report
  *   dashboard_links/{token}     view-only links to the leadership dashboard
  *   dashboard_config/current    hours-per-plan and excluded test accounts
+ *   people/current              the people directory: emails, display names, old names
  *
  * Concurrency is compare-and-swap: every write carries a currentDocument precondition
  * on the updateTime we read, so two people saving the same plan cannot silently clobber
@@ -65,6 +67,7 @@ const USAGE_EVENTS = "usage_events";
 const SCOUT_LOGS = "scout_logs";
 const DASHBOARD_LINKS = "dashboard_links";
 const DASHBOARD_CONFIG = "dashboard_config";
+const PEOPLE = "people";
 
 const PLAN_VERSIONS = "versions";
 const PLAN_VERSION_SUMMARY_FIELDS = ["id", "planId", "reason", "createdAt", "createdBy", "planRevision", "savedAt", "savedBy", "title"];
@@ -760,6 +763,42 @@ export class FirestoreAdapter implements StorageAdapter {
   async saveDashboardConfig(config: DashboardConfig): Promise<DashboardConfig> {
     await this.putDocument(DASHBOARD_CONFIG, CURRENT_DOC, { ...config });
     return config;
+  }
+
+  // --- people directory -----------------------------------------------------------
+
+  async getPeople(): Promise<PeopleRecord> {
+    const doc = await this.getDocument(PEOPLE, CURRENT_DOC);
+    return doc ? this.documentToPeople(doc) : { ...EMPTY_PEOPLE };
+  }
+
+  async savePeople(people: Person[], actor: string, expectedRevision: number): Promise<PeopleRecord> {
+    const currentDoc = await this.getDocument(PEOPLE, CURRENT_DOC);
+    const currentRevision = currentDoc ? this.documentToPeople(currentDoc).revision : 0;
+    if (currentRevision !== expectedRevision) throw new RevisionConflictError(currentRevision, "The people list was changed by someone else.");
+    const record: PeopleRecord = { revision: currentRevision + 1, people, updatedAt: new Date().toISOString(), updatedBy: actor };
+    try {
+      await this.putDocument(
+        PEOPLE,
+        CURRENT_DOC,
+        { revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy, peopleJson: JSON.stringify(people) },
+        currentDoc ? { expectedUpdateTime: currentDoc.updateTime } : { requireAbsent: true },
+      );
+    } catch (err) {
+      if (this.isPreconditionFailure(err)) throw new RevisionConflictError(currentRevision + 1, "The people list was changed by someone else.");
+      throw err;
+    }
+    return record;
+  }
+
+  private documentToPeople(doc: FirestoreDocument): PeopleRecord {
+    const fields = decodeFields(doc.fields || {}) as Record<string, any>;
+    try {
+      return { revision: Number(fields.revision) || 0, people: JSON.parse(fields.peopleJson), updatedAt: fields.updatedAt, updatedBy: fields.updatedBy };
+    } catch (err) {
+      // Refuse rather than return an empty list: saving over it would drop everyone.
+      throw new Error(`The people directory could not be read: ${(err as Error)?.message || err}`);
+    }
   }
 
   // Lists and files are JSON strings for the same reason plan payloads are: Firestore refuses

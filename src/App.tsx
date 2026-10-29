@@ -84,6 +84,7 @@ import { TaxonomyVerificationBadge } from "./components/TaxonomyVerificationBadg
 import { ALL_INTERNAL_VISIBLE, ChannelStrategySection, type InternalOnlyVisibility } from "./components/ChannelStrategySection";
 import { SectionVisibilityButton } from "./components/SectionVisibilityButton";
 import { PerformanceLearningsSection } from "./components/PerformanceLearningsSection";
+import { disableGoogleAutoSelect, GoogleSignInButton } from "./components/GoogleSignInButton";
 import { PastCampaignPicker } from "./components/PastCampaignPicker";
 import { PastPerformanceModal } from "./components/PastPerformanceModal";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
@@ -587,15 +588,31 @@ export default function App() {
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authConfig, setAuthConfig] = useState<api.AuthConfig | null>(null);
+  const [usePasswordLogin, setUsePasswordLogin] = useState(false);
 
   // Ask the server who we are on load, rather than trusting anything client-side.
   React.useEffect(() => {
-    api
-      .fetchSession()
-      .then(setSession)
-      .catch((err) => console.warn("Could not check session:", err))
-      .finally(() => setIsSessionChecked(true));
+    Promise.all([
+      api.fetchSession().then(setSession).catch((err) => console.warn("Could not check session:", err)),
+      api.fetchAuthConfig().then(setAuthConfig),
+    ]).finally(() => setIsSessionChecked(true));
   }, []);
+
+  const handleGoogleCredential = async (credential: string) => {
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      const user = await api.loginWithGoogle(credential);
+      setSession(user);
+      track("login", { method: "google" });
+    } catch (err: any) {
+      console.error("Google sign-in failed:", err);
+      setLoginError(err instanceof ApiError ? err.message : "Connection error. Please try again.");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -638,6 +655,7 @@ export default function App() {
 
   const handleLogout = async () => {
     track("logout");
+    disableGoogleAutoSelect();
     try {
       await api.logout();
     } catch (err) {
@@ -4634,6 +4652,47 @@ export default function App() {
             <p className="text-xs text-slate-500 font-medium">Sign in to AI Plan Agent</p>
           </div>
 
+          {authConfig?.googleClientId && (
+            <div className="space-y-3">
+              {loginError && !usePasswordLogin && (
+                <div className="bg-rose-50 border border-rose-100 text-rose-700 p-3 rounded-xl text-xs font-medium flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{loginError}</span>
+                </div>
+              )}
+              {isLoggingIn && !usePasswordLogin ? (
+                <div className="flex min-h-[44px] items-center justify-center gap-2 text-sm text-slate-500">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Signing in...
+                </div>
+              ) : (
+                <GoogleSignInButton
+                  clientId={authConfig.googleClientId}
+                  hostedDomain={authConfig.allowedDomains[0]}
+                  onCredential={(credential) => void handleGoogleCredential(credential)}
+                  onError={setLoginError}
+                />
+              )}
+              <p className="text-center text-[11px] text-slate-400">
+                Use your {authConfig.allowedDomains.map((d) => `@${d}`).join(" or ")} Google account.
+              </p>
+              {authConfig.passwordLogin && !usePasswordLogin && (
+                <div className="text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUsePasswordLogin(true);
+                      setLoginError(null);
+                    }}
+                    className="text-[11px] font-semibold text-slate-400 hover:text-indigo-600 hover:underline cursor-pointer"
+                  >
+                    Use the team password instead
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {(!authConfig?.googleClientId || (authConfig.passwordLogin && usePasswordLogin)) && (
           <form onSubmit={handleLogin} className="space-y-4">
             {loginError && (
               <div className="bg-rose-50 border border-rose-100 text-rose-700 p-3 rounded-xl text-xs font-medium flex items-center gap-2">
@@ -4751,6 +4810,7 @@ export default function App() {
               )}
             </button>
           </form>
+          )}
 
           <div className="text-center pt-4 border-t border-slate-100">
             <span className="text-[11px] text-slate-400 font-sans tracking-wide">AI Plan Agent Intelligence</span>

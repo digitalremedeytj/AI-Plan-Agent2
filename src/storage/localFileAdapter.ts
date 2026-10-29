@@ -32,6 +32,7 @@ import {
   type PlanVersion,
   type PlanVersionSummary,
 } from "./types";
+import { EMPTY_PEOPLE, type Person, type PeopleRecord } from "../people/people";
 
 /**
  * Development driver. Writes the same records the Firestore driver writes, but to
@@ -497,6 +498,21 @@ export class LocalFileAdapter implements StorageAdapter {
     await this.init();
     writeJsonAtomic(path.join(this.dashboardDir, "config.json"), config);
     return config;
+  }
+
+  // --- people directory -----------------------------------------------------------
+
+  async getPeople(): Promise<PeopleRecord> {
+    await this.init();
+    return readJson<PeopleRecord>(path.join(this.dashboardDir, "people.json")) ?? { ...EMPTY_PEOPLE };
+  }
+
+  async savePeople(people: Person[], actor: string, expectedRevision: number): Promise<PeopleRecord> {
+    const current = await this.getPeople();
+    if (current.revision !== expectedRevision) throw new RevisionConflictError(current.revision, "The people list was changed by someone else.");
+    const record: PeopleRecord = { revision: current.revision + 1, people, updatedAt: new Date().toISOString(), updatedBy: actor };
+    writeJsonAtomic(path.join(this.dashboardDir, "people.json"), record);
+    return record;
   }
 
   private campaignPath(id: string): string {

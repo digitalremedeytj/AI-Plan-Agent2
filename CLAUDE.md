@@ -74,6 +74,8 @@ src/planning/           Deterministic planning engine + knowledge base
                         (settings, product registry, CTV publishers).
 src/storage/            Shared server-side persistence. See below.
 src/server/session.ts   Signed-cookie auth, requireAuth / requireAdmin middleware.
+src/server/googleIdToken.ts  Verifies "Sign in with Google" ID tokens.
+src/people/             The people directory: Google emails and the old names merged into them.
 src/server/geminiInteractions.ts  Every Gemini text call goes through here (3.8, Interactions API).
 src/qa/                 Plan QA. Deterministic chart guardrails (chartSanity, chartRealism,
                         baselineEstimates; read their header comments before editing), the
@@ -142,17 +144,27 @@ Rules that follow from this:
 
 ## Auth
 
-One shared `TEST_USER`/`TEST_PASSWORD`, plus a per-person **display name** carried in an
-HMAC-signed, HTTP-only cookie. The name is what gets recorded on writes — never trust an
-actor from a request body.
+Two ways in, both producing the same HMAC-signed, HTTP-only session cookie
+(`src/server/session.ts`). The session's name is what gets recorded on writes — never trust
+an actor from a request body.
 
+- **Sign in with Google** (`POST /api/auth/google`): the browser sends Google's ID token and
+  the server verifies it (`src/server/googleIdToken.ts`, `node:crypto`, no npm package),
+  requiring a verified account in `ALLOWED_EMAIL_DOMAINS` (default `digitalremedy.com`). The
+  OAuth client is Internal to the Workspace; the domain check still runs server-side.
+- **Team password** (`TEST_USER`/`TEST_PASSWORD` + a typed display name): the fallback while
+  Google sign-in is new. `PASSWORD_LOGIN_ENABLED=false` turns it off.
+- **People directory** (`src/people/people.ts`, Settings -> People): a person is their Google
+  email; old typed names are aliases. Records are never rewritten — anything that groups or
+  filters by person resolves names through the directory when it reads them
+  (`withCanonicalActors` / `withCanonicalAuthors` in `server.ts`). Do the same for any new
+  per-person view, or a merged person splits again.
 - All `/api/*` routes require a session except `/api/health` and `/api/auth/*`.
   This matters: the Cloud Run service is public (`invoker-iam-disabled: true`), so an
   unguarded route is open to the internet.
-- `ADMIN_PASSWORD` gates global settings writes (`requireAdmin`). If it is unset,
-  every signed-in user can write — deliberate, so deploying cannot brick settings.
-- `src/server/session.ts` is a thin seam. Swapping in Google Sign-In means changing only
-  how a `SessionUser` is produced at login; routes keep calling `getSession()`.
+- `ADMIN_EMAILS` (Google sign-ins) and `ADMIN_PASSWORD` (team-password sign-ins) gate global
+  settings writes (`requireAdmin`). If both are unset, every signed-in user can write —
+  deliberate, so deploying cannot brick settings.
 
 ## Deployment
 

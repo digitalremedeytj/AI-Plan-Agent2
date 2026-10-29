@@ -9,8 +9,8 @@ import type { Request, Response, NextFunction } from "express";
  * HTTP-only cookie so the server can attribute plan writes without trusting anything
  * the client sends in a request body.
  *
- * This is deliberately a thin seam: swapping in Google Sign-In later means changing
- * only how `SessionUser` is produced at login - every route keeps calling getSession().
+ * Google sign-in (POST /api/auth/google) produces the same SessionUser with an email added,
+ * and the name taken from the people directory, so every route keeps calling getSession().
  */
 
 export const SESSION_COOKIE = "apa_session";
@@ -18,8 +18,10 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // matches the previous 24h client-s
 const MAX_NAME_LENGTH = 60;
 
 export interface SessionUser {
-  /** Display name typed at login, used for plan attribution. */
+  /** Display name typed at login, or the people directory's name for a Google sign-in. Recorded on writes. */
   name: string;
+  /** Set only for Google sign-ins: the verified Workspace email. */
+  email?: string;
   /** True when the user also supplied the admin password. Gates settings writes. */
   isAdmin: boolean;
   /** Epoch ms the session was issued; used for expiry. */
@@ -41,6 +43,29 @@ function getSigningKey(): string {
 /** True when an admin password is configured; see isAdminRequestAllowed for why it matters. */
 export function isAdminPasswordConfigured(): boolean {
   return Boolean((process.env.ADMIN_PASSWORD || "").trim());
+}
+
+/** Google accounts that are administrators, from ADMIN_EMAILS (comma-separated). */
+export function adminEmails(): string[] {
+  return (process.env.ADMIN_EMAILS || "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+}
+
+/** Workspace domains allowed to sign in with Google, from ALLOWED_EMAIL_DOMAINS. */
+export function allowedEmailDomains(): string[] {
+  const configured = (process.env.ALLOWED_EMAIL_DOMAINS || "").split(",").map((d) => d.trim().toLowerCase().replace(/^@/, "")).filter(Boolean);
+  return configured.length ? configured : ["digitalremedy.com"];
+}
+
+export function googleClientId(): string {
+  return (process.env.GOOGLE_CLIENT_ID || "").trim();
+}
+
+/**
+ * Whether the shared username/password form is offered. On by default while Google sign-in is
+ * new, so a misconfigured OAuth client after a Publish never locks everyone out.
+ */
+export function isPasswordLoginEnabled(): boolean {
+  return (process.env.PASSWORD_LOGIN_ENABLED || "").trim().toLowerCase() !== "false";
 }
 
 export function sanitizeDisplayName(raw: unknown): string {
@@ -66,7 +91,7 @@ export function verifySessionToken(token: string | undefined): SessionUser | nul
     const user = JSON.parse(Buffer.from(payload, "base64url").toString("utf-8")) as SessionUser;
     if (!user?.name || typeof user.issuedAt !== "number") return null;
     if (Date.now() - user.issuedAt > SESSION_TTL_MS) return null;
-    return { name: user.name, isAdmin: Boolean(user.isAdmin), issuedAt: user.issuedAt };
+    return { name: user.name, ...(typeof user.email === "string" && user.email ? { email: user.email } : {}), isAdmin: Boolean(user.isAdmin), issuedAt: user.issuedAt };
   } catch {
     return null;
   }
@@ -78,8 +103,9 @@ export function verifySessionToken(token: string | undefined): SessionUser | nul
  * to the same id across devices, and the id cannot be reversed without the signing key.
  * Names are only attached to usage in the server-side usage log.
  */
-export function analyticsIdFor(name: string): string {
-  const normalized = name.trim().toLowerCase().replace(/\s+/g, " ");
+export function analyticsIdFor(name: string, email?: string): string {
+  // An email is the steadier identity; GA history from before Google sign-in starts over once.
+  const normalized = email ? `email:${email.toLowerCase()}` : name.trim().toLowerCase().replace(/\s+/g, " ");
   return crypto.createHmac("sha256", getSigningKey()).update(`analytics:${normalized}`).digest("hex").slice(0, 32);
 }
 
@@ -190,23 +216,25 @@ export function setStaffDeviceCookie(res: Response, name: string): void {
 }
 
 export function clearSessionCookie(res: Response): void {
+  // A partitioned cookie is only cleared by a Set-Cookie that is partitioned too; without the
+  // attribute the browser kept the session and signing out undid itself on the next load.
   res.clearCookie(SESSION_COOKIE, {
     path: "/",
     sameSite: "none",
     secure: true,
-  });
+    partitioned: true,
+  } as any);
 }
 
 /**
  * Whether this request may write global settings.
  *
- * If ADMIN_PASSWORD is not configured, every signed-in user may write - that is exactly
- * today's behaviour, so adding sessions cannot brick settings editing on first deploy.
- * Setting ADMIN_PASSWORD is what actually locks settings down.
+ * If neither ADMIN_PASSWORD nor ADMIN_EMAILS is configured, every signed-in user may write,
+ * so deploying cannot brick settings editing. Setting either one locks settings down.
  */
 export function isAdminRequestAllowed(user: SessionUser | null): boolean {
   if (!user) return false;
-  if (!isAdminPasswordConfigured()) return true;
+  if (!isAdminPasswordConfigured() && adminEmails().length === 0) return true;
   return user.isAdmin;
 }
 

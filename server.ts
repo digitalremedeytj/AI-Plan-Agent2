@@ -30,14 +30,21 @@ import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest, sendLongRequestProgress } from "./src/server/longRequest";
 import { knownPeople, suggestNames, type KnownPerson } from "./src/usage/knownPeople";
+import { applyPeopleEdit, canonicalName, ensurePerson, indexPeople, withCanonicalActors, withCanonicalAuthors, type PeopleIndex } from "./src/people/people";
+import { GoogleTokenError, verifyGoogleIdToken } from "./src/server/googleIdToken";
 import {
   actorName,
+  adminEmails,
+  allowedEmailDomains,
   analyticsIdFor,
   clearSessionCookie,
   createSessionToken,
   getSession,
+  googleClientId,
   isAdminPasswordConfigured,
   isAdminRequestAllowed,
+  isPasswordLoginEnabled,
+  type SessionUser,
   requireAdmin,
   requireAuth,
   sanitizeDisplayName,
@@ -408,7 +415,9 @@ async function getStorage(): Promise<StorageAdapter> {
 // internet on a service deployed with invoker-iam-disabled.
 const PUBLIC_API_PATHS = new Set([
   "/api/health",
+  "/api/auth/config",
   "/api/auth/login",
+  "/api/auth/google",
   "/api/auth/me",
   "/api/auth/logout",
   // Answers only when the shared username and password are right.
@@ -441,11 +450,39 @@ app.get("/api/health", async (_req, res) => {
       storageDriver: storage.name,
       shared: storage.name !== "local-file",
       adminPasswordConfigured: isAdminPasswordConfigured(),
+      googleSignIn: Boolean(googleClientId()),
+      passwordLogin: isPasswordLoginEnabled(),
     });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });
+
+// ---- People directory ----
+// Old typed names resolve to the person's current display name wherever records are grouped or
+// filtered by person (src/people/people.ts). Read on every plan list and dashboard load, so it is
+// cached briefly; another instance's edit shows up here within PEOPLE_CACHE_MS.
+const PEOPLE_CACHE_MS = 30_000;
+let peopleCache: { at: number; index: PeopleIndex } | null = null;
+
+async function loadPeopleIndex(): Promise<PeopleIndex> {
+  if (!peopleCache || Date.now() - peopleCache.at > PEOPLE_CACHE_MS) {
+    peopleCache = { at: Date.now(), index: indexPeople((await (await getStorage()).getPeople()).people) };
+  }
+  return peopleCache.index;
+}
+
+function forgetPeopleCaches(): void {
+  peopleCache = null;
+  knownPeopleCache = null;
+}
+
+/** Whether two recorded names are the same person, through the directory. */
+async function samePerson(a: string, b: string): Promise<boolean> {
+  const index = await loadPeopleIndex();
+  const key = (name: string) => toPersonKey(index.byName.get(toPersonKey(name))?.email ?? name);
+  return key(a) === key(b);
+}
 
 // ---- Usage log ----
 type UsageExtra = {
@@ -559,7 +596,7 @@ app.get("/api/usage/summary", requireAdmin, async (req, res) => {
     const days = Math.min(365, Math.max(1, Math.round(Number(req.query.days) || 30)));
     const until = new Date();
     const since = new Date(until.getTime() - days * 24 * 60 * 60 * 1000);
-    const events = await (await getStorage()).listUsageEvents(since.toISOString());
+    const events = withCanonicalActors(await (await getStorage()).listUsageEvents(since.toISOString()), await loadPeopleIndex());
     res.json({ success: true, days, summary: summarizeUsage(events, since.toISOString(), until.toISOString()) });
   } catch (err: any) {
     console.error("[USAGE] Could not build the usage summary:", err);
@@ -601,7 +638,10 @@ app.get("/api/dashboard/data", async (req, res) => {
       return;
     }
     const storage = await getStorage();
-    const [events, config] = await Promise.all([storage.listUsageEvents(""), storage.getDashboardConfig()]);
+    const [rawEvents, config, people] = await Promise.all([storage.listUsageEvents(""), storage.getDashboardConfig(), loadPeopleIndex()]);
+    const events = withCanonicalActors(rawEvents, people);
+    // Excluding any of a person's names excludes the person.
+    config.excludedNames = config.excludedNames.map((name) => people.byName.get(toPersonKey(name))?.displayName ?? name);
     const tz = Math.max(-840, Math.min(840, Math.round(Number(req.query.tz) || 0)));
     // Repeated ?user= params, since names can contain commas.
     const users = ([] as unknown[]).concat(req.query.user ?? []).map((u) => sanitizeDisplayName(u)).filter(Boolean).slice(0, 200);
@@ -633,7 +673,8 @@ app.get("/api/dashboard/data", async (req, res) => {
 app.get("/api/dashboard/links", async (_req, res) => {
   try {
     const storage = await getStorage();
-    const [links, config] = await Promise.all([storage.listDashboardLinks(), storage.getDashboardConfig()]);
+    const [rawLinks, config, people] = await Promise.all([storage.listDashboardLinks(), storage.getDashboardConfig(), loadPeopleIndex()]);
+    const links = rawLinks.map((link) => ({ ...link, createdBy: canonicalName(people, link.createdBy) }));
     links.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
     res.json({ success: true, links, config });
   } catch (err: any) {
@@ -670,7 +711,7 @@ app.post("/api/dashboard/links/revoke", async (req, res) => {
       res.status(404).json({ error: "That dashboard link was not found.", code: "NOT_FOUND" });
       return;
     }
-    if (!isAdminRequestAllowed(getSession(req)) && toPersonKey(link.createdBy) !== toPersonKey(actorName(req))) {
+    if (!isAdminRequestAllowed(getSession(req)) && !(await samePerson(link.createdBy, actorName(req)))) {
       res.status(403).json({ error: "Only the person who created this link, or an administrator, can turn it off.", code: "FORBIDDEN" });
       return;
     }
@@ -2300,19 +2341,22 @@ const KNOWN_PEOPLE_TTL_MS = 60_000;
 
 app.post("/api/auth/name-suggestions", async (req, res) => {
   const { username, password, query } = req.body || {};
-  if (!sharedCredentialsMatch(username, password)) {
+  if (!isPasswordLoginEnabled() || !sharedCredentialsMatch(username, password)) {
     res.json({ names: [] });
     return;
   }
   try {
     if (!knownPeopleCache || Date.now() - knownPeopleCache.at > KNOWN_PEOPLE_TTL_MS) {
       const storage = await getStorage();
-      const [plans, events, config] = await Promise.all([
+      const [plans, events, config, people] = await Promise.all([
         storage.listPlans({ includeArchived: true }),
         storage.listUsageEvents(""),
         storage.getDashboardConfig(),
+        loadPeopleIndex(),
       ]);
-      knownPeopleCache = { at: Date.now(), people: knownPeople(plans, events.filter((e) => e.action === "login"), config.excludedNames) };
+      // Suggest each person's current name, so a merged person is not offered under an old one.
+      const logins = withCanonicalActors(events.filter((e) => e.action === "login"), people);
+      knownPeopleCache = { at: Date.now(), people: knownPeople(withCanonicalAuthors(plans, people), logins, config.excludedNames) };
     }
     const names = suggestNames(knownPeopleCache.people, typeof query === "string" ? query.slice(0, 60) : "");
     res.json({ names: names.map(({ name, plans }) => ({ name, plans })) });
@@ -2325,6 +2369,10 @@ app.post("/api/auth/name-suggestions", async (req, res) => {
 
 app.post("/api/auth/login", (req, res) => {
   try {
+    if (!isPasswordLoginEnabled()) {
+      res.status(403).json({ success: false, error: "Sign in with your Google account." });
+      return;
+    }
     const { username, password, displayName, adminPassword } = req.body || {};
     const configuredUser = (process.env.TEST_USER || "").trim();
     const configuredPassword = (process.env.TEST_PASSWORD || "").trim();
@@ -2373,11 +2421,25 @@ app.post("/api/auth/login", (req, res) => {
 
 // API: Who am I? The client uses this instead of a localStorage timestamp, so a session
 // cannot be resurrected by editing browser storage.
-app.get("/api/auth/me", (req, res) => {
-  const user = getSession(req);
+app.get("/api/auth/me", async (req, res) => {
+  let user = getSession(req);
   if (!user) {
     res.status(401).json({ authenticated: false });
     return;
+  }
+  if (user.email) {
+    // A Google session picks up a rename in the people directory and a change to ADMIN_EMAILS on
+    // the next app load, rather than when it expires.
+    try {
+      const current = (await loadPeopleIndex()).byEmail.get(user.email);
+      const fresh: SessionUser = { ...user, name: current?.displayName ?? user.name, isAdmin: adminEmails().includes(user.email) };
+      if (fresh.name !== user.name || fresh.isAdmin !== user.isAdmin) {
+        user = fresh;
+        setSessionCookie(res, user);
+      }
+    } catch (err: any) {
+      console.error("[AUTH] Could not refresh the session from the people directory:", err?.message || err);
+    }
   }
   const token = createSessionToken(user);
   // Renewed on every app load, so planners already signed in when this shipped get the mark too.
@@ -2385,9 +2447,108 @@ app.get("/api/auth/me", (req, res) => {
   res.json({
     authenticated: true,
     token,
-    user: { name: user.name, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user), analyticsId: analyticsIdFor(user.name) },
+    user: { name: user.name, email: user.email, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user), analyticsId: analyticsIdFor(user.name, user.email) },
     adminPasswordConfigured: isAdminPasswordConfigured(),
   });
+});
+
+// What the sign-in screen offers. The client id is public by design: Google sign-in runs in the browser.
+app.get("/api/auth/config", (_req, res) => {
+  res.json({ googleClientId: googleClientId() || null, passwordLogin: isPasswordLoginEnabled(), allowedDomains: allowedEmailDomains() });
+});
+
+// API: Sign in with Google. The browser sends the ID token Google gave it; the server verifies it
+// (src/server/googleIdToken.ts) and takes the name from the people directory, adding the person
+// on their first sign-in. The OAuth client is Internal to the Workspace, and the domain is checked
+// here as well, so a misconfigured client can never let an outside account in.
+const PEOPLE_SAVE_ATTEMPTS = 3;
+app.post("/api/auth/google", async (req, res) => {
+  const clientId = googleClientId();
+  if (!clientId) {
+    res.status(503).json({ success: false, error: "Google sign-in is not configured on the server." });
+    return;
+  }
+  let identity;
+  try {
+    identity = await verifyGoogleIdToken(req.body?.credential, { clientId, allowedDomains: allowedEmailDomains() });
+  } catch (err: any) {
+    if (!(err instanceof GoogleTokenError)) console.error("[AUTH] Google sign-in could not be verified:", err);
+    res.status(err instanceof GoogleTokenError ? 401 : 502).json({ success: false, error: err instanceof GoogleTokenError ? err.message : "Google sign-in could not be checked just now. Try again." });
+    return;
+  }
+  try {
+    const storage = await getStorage();
+    let person;
+    // Two people signing in for the first time at once both write the directory; the loser re-reads.
+    for (let attempt = 1; ; attempt++) {
+      const record = await storage.getPeople();
+      const result = ensurePerson(record.people, identity.email, identity.name, new Date().toISOString());
+      person = result.person;
+      if (!result.added) break;
+      try {
+        await storage.savePeople(result.people, person.displayName, record.revision);
+        forgetPeopleCaches();
+        console.log(`[AUTH] Added ${person.email} to the people directory as '${person.displayName}'.`);
+        break;
+      } catch (err) {
+        if (!(err instanceof RevisionConflictError) || attempt >= PEOPLE_SAVE_ATTEMPTS) throw err;
+      }
+    }
+    const user: SessionUser = { name: person.displayName, email: person.email, isAdmin: adminEmails().includes(person.email), issuedAt: Date.now() };
+    const token = createSessionToken(user);
+    setSessionCookie(res, user);
+    setStaffDeviceCookie(res, user.name);
+    logUsage(req, "login", { actor: user.name, kind: "google" });
+    console.log(`[AUTH] '${user.name}' <${user.email}> signed in with Google${user.isAdmin ? " as an administrator" : ""}.`);
+    res.json({
+      success: true,
+      token,
+      user: { name: user.name, email: user.email, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user), analyticsId: analyticsIdFor(user.name, user.email) },
+    });
+  } catch (err: any) {
+    console.error("[AUTH ERROR] Google sign-in failed:", err);
+    res.status(500).json({ success: false, error: "Internal authentication error." });
+  }
+});
+
+// The people directory, for Settings -> People. Every name ever recorded comes with it, so an
+// admin can give the names someone typed before Google sign-in to that person.
+app.get("/api/people", requireAdmin, async (_req, res) => {
+  try {
+    const storage = await getStorage();
+    const [record, plans, events] = await Promise.all([storage.getPeople(), storage.listPlans({ includeArchived: true }), storage.listUsageEvents("")]);
+    const names = knownPeople(plans, events).map(({ name, plans, lastSeenAt }) => ({ name, plans, lastSeenAt }));
+    res.json({ success: true, people: record.people, revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy, names });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to load people", details: err?.message || String(err) });
+  }
+});
+
+app.put("/api/people", requireAdmin, async (req, res) => {
+  const expectedRevision = Number(req.body?.revision);
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+    res.status(400).json({ error: "The people list's revision is missing." });
+    return;
+  }
+  try {
+    const storage = await getStorage();
+    const current = await storage.getPeople();
+    const edit = applyPeopleEdit(current.people, req.body?.people);
+    if ("error" in edit) {
+      res.status(400).json({ error: edit.error });
+      return;
+    }
+    const record = await storage.savePeople(edit.people, actorName(req), expectedRevision);
+    forgetPeopleCaches();
+    console.log(`[PEOPLE] Directory saved by '${actorName(req)}' (r${record.revision}).`);
+    res.json({ success: true, people: record.people, revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy });
+  } catch (err: any) {
+    if (err instanceof RevisionConflictError) {
+      res.status(409).json({ error: "Someone else changed the people list. Reload it and make your change again.", code: "REVISION_CONFLICT", currentRevision: err.currentRevision });
+      return;
+    }
+    res.status(500).json({ error: "Failed to save people", details: err?.message || String(err) });
+  }
 });
 
 app.post("/api/auth/logout", (_req, res) => {
@@ -2443,7 +2604,7 @@ function respondToStorageError(res: any, err: any, context: string) {
 app.get("/api/plans", async (req, res) => {
   try {
     const includeArchived = req.query.includeArchived === "true";
-    const plans = await (await getStorage()).listPlans({ includeArchived });
+    const plans = withCanonicalAuthors(await (await getStorage()).listPlans({ includeArchived }), await loadPeopleIndex());
     res.json({ success: true, plans });
   } catch (err: any) {
     respondToStorageError(res, err, "list plans");
@@ -2457,7 +2618,7 @@ app.get("/api/plans/:id", async (req, res) => {
       res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
       return;
     }
-    res.json({ success: true, plan });
+    res.json({ success: true, plan: withCanonicalAuthors([plan], await loadPeopleIndex())[0] });
   } catch (err: any) {
     respondToStorageError(res, err, "load plan");
   }
@@ -2919,7 +3080,7 @@ app.post("/api/scout-logs/:id/feedback", async (req, res) => {
       res.status(404).json({ error: "That answer is no longer on record.", code: "NOT_FOUND" });
       return;
     }
-    if (toPersonKey(log.actor) !== toPersonKey(actorName(req))) {
+    if (!(await samePerson(log.actor, actorName(req)))) {
       res.status(403).json({ error: "Only the person who asked can rate this answer.", code: "FORBIDDEN" });
       return;
     }
@@ -2954,7 +3115,7 @@ app.get("/api/scout-logs", requireAdmin, async (req, res) => {
   try {
     const { since, until } = scoutLogRange(req.query as Record<string, unknown>);
     const limit = Math.min(SCOUT_REVIEW_LIMIT, Math.max(1, Math.round(Number(req.query.limit) || 200)));
-    const logs = await (await getStorage()).listScoutLogs({ sinceIso: since, untilIso: until, limit });
+    const logs = withCanonicalActors(await (await getStorage()).listScoutLogs({ sinceIso: since, untilIso: until, limit }), await loadPeopleIndex());
     res.json({ success: true, logs, since, until });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to load ScoutAI logs", details: err?.message || String(err) });
@@ -2998,7 +3159,7 @@ app.post("/api/scout-logs/ask", requireAdmin, async (req, res) => {
     }
     const { since, until } = scoutLogRange(req.body ?? {});
     const filters = sanitizeReviewFilters(req.body?.filters);
-    const all = await (await getStorage()).listScoutLogs({ sinceIso: since, untilIso: until, limit: SCOUT_REVIEW_LIMIT });
+    const all = withCanonicalActors(await (await getStorage()).listScoutLogs({ sinceIso: since, untilIso: until, limit: SCOUT_REVIEW_LIMIT }), await loadPeopleIndex());
     const logs = filterScoutLogs(all, filters);
     if (logs.length === 0) {
       res.status(400).json({ error: "No questions match the dates and filters, so there is nothing to ask about." });
@@ -6343,10 +6504,10 @@ async function init() {
     console.error("[STARTUP] Shared storage failed to initialize:", err);
   }
 
-  if (!isAdminPasswordConfigured()) {
+  if (!isAdminPasswordConfigured() && adminEmails().length === 0) {
     console.warn(
-      "[STARTUP] ADMIN_PASSWORD is not set, so every signed-in user can change global planning " +
-        "settings. Set it to restrict settings edits to administrators.",
+      "[STARTUP] Neither ADMIN_PASSWORD nor ADMIN_EMAILS is set, so every signed-in user can change " +
+        "global planning settings. Set one to restrict settings edits to administrators.",
     );
   }
 

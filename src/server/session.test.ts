@@ -137,3 +137,29 @@ test("the staff mark cannot be used as a session", () => {
   assert.equal(verifySessionToken(mark), null);
   assert.equal(getSession(withCookie(`apa_session=${mark}`)), null);
 });
+
+test("a Google sign-in's email survives the session token, and a forged one cannot be added", () => {
+  const token = createSessionToken({ name: "TJ Pascal", email: "tpascal@digitalremedy.com", isAdmin: true, issuedAt: now() });
+  assert.equal(verifySessionToken(token)?.email, "tpascal@digitalremedy.com");
+  const [payload, signature] = token.split(".");
+  const forged = Buffer.from(JSON.stringify({ name: "Ana", email: "boss@digitalremedy.com", isAdmin: true, issuedAt: now() })).toString("base64url");
+  assert.equal(verifySessionToken(`${forged}.${signature}`), null);
+  assert.equal(verifySessionToken(`${payload}.${signature}`)?.name, "TJ Pascal");
+});
+
+test("ADMIN_EMAILS alone locks settings to administrators", () => {
+  const user = { name: "Ana", isAdmin: false, issuedAt: now() };
+  delete process.env.ADMIN_PASSWORD;
+  process.env.ADMIN_EMAILS = "tpascal@digitalremedy.com";
+  try {
+    assert.equal(isAdminRequestAllowed(user), false);
+    assert.equal(isAdminRequestAllowed({ ...user, isAdmin: true }), true);
+  } finally {
+    delete process.env.ADMIN_EMAILS;
+  }
+});
+
+test("the analytics id for a Google sign-in follows the email, not the display name", () => {
+  assert.equal(analyticsIdFor("TJ Pascal", "tpascal@digitalremedy.com"), analyticsIdFor("Tj P.", "TPascal@digitalremedy.com"));
+  assert.notEqual(analyticsIdFor("TJ Pascal", "tpascal@digitalremedy.com"), analyticsIdFor("TJ Pascal"));
+});

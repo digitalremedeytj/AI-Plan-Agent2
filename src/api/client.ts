@@ -26,6 +26,8 @@ import type { ReviewFilters } from "../scoutReview/scoutReviewData";
 
 export interface SessionUser {
   name: string;
+  /** Set when signed in with Google. */
+  email?: string;
   isAdmin: boolean;
   /** True when this user may write global settings (see ADMIN_PASSWORD on the server). */
   canEditSettings: boolean;
@@ -305,6 +307,33 @@ export async function login(input: {
   return body.user;
 }
 
+export interface AuthConfig {
+  /** Null when Google sign-in is not configured on the server (e.g. local development). */
+  googleClientId: string | null;
+  passwordLogin: boolean;
+  allowedDomains: string[];
+}
+
+export async function fetchAuthConfig(): Promise<AuthConfig> {
+  try {
+    return await request<AuthConfig>("/api/auth/config");
+  } catch {
+    // Fall back to the form that has always worked rather than showing no way in.
+    return { googleClientId: null, passwordLogin: true, allowedDomains: [] };
+  }
+}
+
+export async function loginWithGoogle(credential: string): Promise<SessionUser> {
+  const body = await request<{ user: SessionUser; token?: string }>("/api/auth/google", {
+    method: "POST",
+    body: JSON.stringify({ credential }),
+  });
+  if (body.token) {
+    setAuthToken(body.token);
+  }
+  return body.user;
+}
+
 /**
  * Names already in use that match what is being typed at sign-in. The server answers only when
  * the team's username and password are right, so it returns nothing until those are filled in.
@@ -362,6 +391,32 @@ export async function getDashboardData(range: { from: string; to: string }, opti
   const query = new URLSearchParams({ from: range.from, to: range.to, tz: String(new Date().getTimezoneOffset()) });
   for (const user of options.users ?? []) query.append("user", user);
   return request(`/api/dashboard/data?${query.toString()}`, { headers });
+}
+
+// --- people directory (admin) --------------------------------------------------
+
+export interface DirectoryPerson {
+  email: string;
+  displayName: string;
+  aliases: string[];
+  firstSignInAt?: string;
+}
+
+export interface PeopleDirectory {
+  people: DirectoryPerson[];
+  revision: number;
+  updatedAt: string;
+  updatedBy: string;
+  /** Every name recorded on a plan or in the usage log, as typed. */
+  names?: Array<{ name: string; plans: number; lastSeenAt: string }>;
+}
+
+export async function fetchPeople(): Promise<PeopleDirectory> {
+  return request("/api/people");
+}
+
+export async function savePeople(people: DirectoryPerson[], revision: number): Promise<PeopleDirectory> {
+  return request("/api/people", { method: "PUT", body: JSON.stringify({ people, revision }) });
 }
 
 export async function listDashboardLinks(): Promise<{ links: DashboardLink[]; config: DashboardConfig }> {
