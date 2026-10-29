@@ -179,7 +179,8 @@ Notes:
 - A wrong administrator password rejects the **entire** login with a 401, rather than
   quietly downgrading you to a normal session. If you see "Invalid administrator
   password", the rest of your credentials were fine.
-- Sessions last 24 hours, admin status included.
+- Sessions last 30 days from sign-in, admin status included. A Google sign-in re-checks
+  `ADMIN_EMAILS` and the people directory each time the app loads.
 - Anyone with plans saved in a browser from before this change should **sign in once on
   that machine**. Their local plans import into the shared workspace automatically on
   first sign-in. Until they do, those plans stay stranded in that browser. The original

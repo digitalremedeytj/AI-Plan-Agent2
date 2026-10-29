@@ -50,9 +50,11 @@ test("a session signed with a different key is rejected", () => {
 });
 
 test("an expired session is rejected", () => {
-  const twentyFiveHoursAgo = Date.now() - 25 * 60 * 60 * 1000;
-  const token = createSessionToken({ name: "TJ", isAdmin: false, issuedAt: twentyFiveHoursAgo });
+  const thirtyOneDaysAgo = Date.now() - 31 * 24 * 60 * 60 * 1000;
+  const token = createSessionToken({ name: "TJ", isAdmin: false, issuedAt: thirtyOneDaysAgo });
   assert.equal(verifySessionToken(token), null);
+  const twentyNineDaysAgo = Date.now() - 29 * 24 * 60 * 60 * 1000;
+  assert.equal(verifySessionToken(createSessionToken({ name: "TJ", isAdmin: false, issuedAt: twentyNineDaysAgo }))?.name, "TJ");
 });
 
 test("malformed tokens are rejected without throwing", () => {
@@ -120,9 +122,9 @@ test("the analytics id is stable per person, ignores capitalisation, and does no
 const withCookie = (cookie: string) => ({ headers: { cookie } }) as any;
 
 test("a planner whose session has expired is still recognised on a share link they open", () => {
-  const twoDaysAgo = Date.now() - 2 * 24 * 60 * 60 * 1000;
-  const expired = createSessionToken({ name: "Ana", isAdmin: false, issuedAt: twoDaysAgo });
-  const cookie = `apa_session=${expired}; apa_staff=${createStaffDeviceToken("Ana", twoDaysAgo)}`;
+  const fortyDaysAgo = Date.now() - 40 * 24 * 60 * 60 * 1000;
+  const expired = createSessionToken({ name: "Ana", isAdmin: false, issuedAt: fortyDaysAgo });
+  const cookie = `apa_session=${expired}; apa_staff=${createStaffDeviceToken("Ana", fortyDaysAgo)}`;
   assert.equal(getSession(withCookie(cookie)), null);
   assert.equal(staffViewerName(withCookie(cookie)), "Ana");
 });

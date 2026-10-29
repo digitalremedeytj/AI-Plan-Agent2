@@ -14,7 +14,9 @@ import type { Request, Response, NextFunction } from "express";
  */
 
 export const SESSION_COOKIE = "apa_session";
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // matches the previous 24h client-side gate
+// Long enough that planners rarely see the sign-in screen. A Google session still picks up admin
+// changes on every app load (/api/auth/me), and rotating SESSION_SECRET signs everyone out.
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_NAME_LENGTH = 60;
 
 export interface SessionUser {
@@ -171,7 +173,7 @@ export function setSessionCookie(res: Response, user: SessionUser): void {
 
 /**
  * Marks a browser that a planner has signed in on, so a share link they open there is not
- * counted as a client view. It outlives the 24h session on purpose: planners double-check a
+ * counted as a client view. It outlives the 30-day session on purpose: planners double-check a
  * link before sending it, often long after they signed in, and signing out does not make them
  * the client. It is signed under its own prefix, so it can never pass as a session.
  */

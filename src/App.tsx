@@ -4747,10 +4747,6 @@ export default function App() {
               </button>
             )}
 
-            <div className="text-right text-[11px] text-slate-400 font-mono">
-              Session duration: 24 hours
-            </div>
-
             <button
               type="submit"
               disabled={isLoggingIn}
