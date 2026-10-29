@@ -2484,11 +2484,11 @@ app.post("/api/auth/google", async (req, res) => {
       const record = await storage.getPeople();
       const result = ensurePerson(record.people, identity.email, identity.name, new Date().toISOString());
       person = result.person;
-      if (!result.added) break;
+      if (!result.changed) break;
       try {
         await storage.savePeople(result.people, person.displayName, record.revision);
         forgetPeopleCaches();
-        console.log(`[AUTH] Added ${person.email} to the people directory as '${person.displayName}'.`);
+        console.log(`[AUTH] First Google sign-in for ${person.email} as '${person.displayName}'.`);
         break;
       } catch (err) {
         if (!(err instanceof RevisionConflictError) || attempt >= PEOPLE_SAVE_ATTEMPTS) throw err;
@@ -2533,7 +2533,7 @@ app.put("/api/people", requireAdmin, async (req, res) => {
   try {
     const storage = await getStorage();
     const current = await storage.getPeople();
-    const edit = applyPeopleEdit(current.people, req.body?.people);
+    const edit = applyPeopleEdit(current.people, req.body?.people, allowedEmailDomains());
     if ("error" in edit) {
       res.status(400).json({ error: edit.error });
       return;

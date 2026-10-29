@@ -1,10 +1,13 @@
 import React from "react";
-import { Loader2, Save, Users, X } from "lucide-react";
+import { Loader2, Plus, Save, Trash2, Users, X } from "lucide-react";
 import * as api from "../api/client";
+import { parsePeopleList } from "../people/people";
 import { toPersonKey } from "../usage/usageSummary";
 
-// Settings -> People (admins): everyone who has signed in with Google, and the names recorded
-// before Google sign-in, which an admin gives to the right person. Giving a name to someone merges
+// Settings -> People (admins): everyone who has signed in with Google or been added ahead of
+// their first sign-in, and the names recorded before Google sign-in, which an admin gives to the
+// right person. Adding people ahead of time means their old plans are already theirs the first
+// time they sign in. Giving a name to someone merges
 // their plans, usage and dashboard numbers under them; taking it away splits them back out. Stored
 // records are never changed (src/people/people.ts).
 
@@ -16,6 +19,7 @@ export function PeoplePanel() {
   const [busy, setBusy] = React.useState<"load" | "save" | null>("load");
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [pasted, setPasted] = React.useState("");
 
   const load = React.useCallback(() => {
     setBusy("load");
@@ -44,6 +48,20 @@ export function PeoplePanel() {
   };
   const giveName = (name: string, email: string) => update(email, (p) => ({ ...p, aliases: [...p.aliases, name] }));
   const takeName = (email: string, name: string) => update(email, (p) => ({ ...p, aliases: p.aliases.filter((a) => a !== name) }));
+  const removePerson = (email: string) => {
+    setNotice(null);
+    setDraft((list) => list.filter((p) => p.email !== email));
+  };
+
+  const addPasted = () => {
+    const { people, invalid } = parsePeopleList(pasted);
+    const known = new Set(draft.map((p) => p.email));
+    const added = people.filter((p) => !known.has(p.email) && (known.add(p.email), true));
+    setDraft((list) => [...list, ...added.map((p) => ({ ...p, aliases: [] }))]);
+    setPasted(invalid.join("\n"));
+    setError(invalid.length ? `No email address found on ${invalid.length === 1 ? "this line" : "these lines"}; they are left in the box.` : null);
+    setNotice(added.length ? `Added ${added.length} ${added.length === 1 ? "person" : "people"}${people.length > added.length ? ` (${people.length - added.length} already listed)` : ""}. Link their old names, then save.` : null);
+  };
 
   const save = async () => {
     setBusy("save");
@@ -69,8 +87,9 @@ export function PeoplePanel() {
         <div>
           <h3 className="flex items-center gap-2 text-base font-bold text-slate-900"><Users className="h-4 w-4 text-indigo-600" /> People</h3>
           <p className="mt-0.5 max-w-2xl text-xs text-slate-500">
-            Everyone who has signed in with Google. Give each person the names they used before Google sign-in, and their
-            plans, usage and dashboard numbers are counted under them. Nothing saved is changed: remove a name to undo.
+            Everyone who has signed in with Google, or been added ahead of time. Give each person the names they used before
+            Google sign-in, and their plans, usage and dashboard numbers are counted under them. Nothing saved is changed:
+            remove a name to undo.
           </p>
         </div>
         <button
@@ -92,7 +111,7 @@ export function PeoplePanel() {
         <>
           <ul className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
             {sortedPeople.length === 0 ? (
-              <li className="p-4 text-center text-xs text-slate-500">Nobody has signed in with Google yet.</li>
+              <li className="p-4 text-center text-xs text-slate-500">Nobody has signed in with Google or been added yet.</li>
             ) : (
               sortedPeople.map((person) => (
                 <li key={person.email} className="space-y-2 px-4 py-3">
@@ -105,7 +124,16 @@ export function PeoplePanel() {
                       className="w-56 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm font-semibold text-slate-900 focus:border-indigo-400 focus:outline-none"
                     />
                     <span className="text-xs text-slate-500">{person.email}</span>
-                    {person.firstSignInAt ? <span className="text-[11px] text-slate-400">since {fmt(person.firstSignInAt)}</span> : null}
+                    {person.firstSignInAt ? (
+                      <span className="text-[11px] text-slate-400">since {fmt(person.firstSignInAt)}</span>
+                    ) : (
+                      <>
+                        <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">Not signed in yet</span>
+                        <button type="button" onClick={() => removePerson(person.email)} aria-label={`Remove ${person.email}`} className="ml-auto inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50">
+                          <Trash2 className="h-3 w-3" /> Remove
+                        </button>
+                      </>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-[11px] font-semibold text-slate-500">Also recorded as:</span>
@@ -124,6 +152,30 @@ export function PeoplePanel() {
               ))
             )}
           </ul>
+
+          <div className="mt-4">
+            <label htmlFor="people-paste" className="text-xs font-bold text-slate-700">Add people before they sign in</label>
+            <p className="text-xs text-slate-500">
+              One per line: <span className="font-mono">Jane Doe, jane@digitalremedy.com</span>. Their first Google sign-in uses the name and
+              links you set here.
+            </p>
+            <textarea
+              id="people-paste"
+              value={pasted}
+              onChange={(e) => setPasted(e.target.value)}
+              rows={3}
+              placeholder={"Jane Doe, jane@digitalremedy.com\nChris Lee <chris@digitalremedy.com>"}
+              className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs focus:border-indigo-400 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={addPasted}
+              disabled={!pasted.trim() || busy !== null}
+              className="mt-1 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
+            >
+              <Plus className="h-3.5 w-3.5" /> Add to list
+            </button>
+          </div>
 
           <div className="mt-5">
             <p className="text-xs font-bold text-slate-700">Names not given to anyone yet</p>
