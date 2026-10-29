@@ -744,12 +744,13 @@ export default function DashboardPage() {
                 ) : (
                   // Scrolls past ~10 rows with the column headings pinned; printing shows every row.
                   <div className="-mx-5 max-h-[500px] overflow-auto print:max-h-none print:overflow-visible">
-                    <table className="w-full min-w-[560px] text-sm">
+                    <table className="w-full min-w-[640px] text-sm">
                       <thead className="sticky top-0 z-10 bg-white">
                         <tr className="border-b border-slate-100 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 shadow-[0_1px_0_#f1f5f9]">
                           <th className="w-10 px-5 py-2">#</th>
                           <th className="py-2">Name</th>
                           <th className="w-40 py-2">Plans generated</th>
+                          <th className="px-3 py-2 text-right" title="Days in this period on which they used the app">Active days</th>
                           <th className="px-3 py-2 text-right">Share links</th>
                           <th className="px-3 py-2 text-right">Client views</th>
                           <th className="px-5 py-2 text-right">Budget planned</th>
@@ -770,6 +771,7 @@ export default function DashboardPage() {
                                 <span className="w-8 text-right font-semibold tabular-nums">{u.plans}</span>
                               </div>
                             </td>
+                            <td className="px-3 py-2.5 text-right tabular-nums">{u.activeDays}</td>
                             <td className="px-3 py-2.5 text-right tabular-nums">{u.shareLinks}</td>
                             <td className="px-3 py-2.5 text-right tabular-nums">{u.shareViews}</td>
                             <td className="px-5 py-2.5 text-right tabular-nums text-slate-600">{u.budget ? formatMoney(u.budget) : "–"}</td>

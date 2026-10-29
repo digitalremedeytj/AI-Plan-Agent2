@@ -229,3 +229,15 @@ test("the ScoutAI outcome separates failures, proposals, applies and undos, and 
   assert.deepEqual(outcome, { "Answered": 2, "Failed or timed out": 1, "Answers proposing changes": 1, "Proposals applied": 1, "Applied changes undone": 1 });
   assert.deepEqual(scoutGroup(data, "Response time"), [{ label: "Median time to answer", text: "40 s" }], "failed answers do not count toward response time");
 });
+
+test("active days count each day a person did anything, in the viewer's timezone, but not clients opening their plans", () => {
+  const events = [
+    gen("2026-10-02T09:00:00.000Z", "Ana", { planId: "p1" }),
+    ev("2026-10-02T15:00:00.000Z", "Ana", "share_create", { planId: "p1" }),
+    ev("2026-10-03T01:30:00.000Z", "Ana", "plan_open", { planId: "p1" }),
+    ev("2026-10-06T10:00:00.000Z", SHARE_VIEWER_ACTOR, "share_view", { planId: "p1" }),
+  ];
+  assert.equal(build(events).users[0].activeDays, 2, "in UTC, the 1:30am open is its own day");
+  // New York is 240 minutes behind UTC in October: the 1:30am open is the evening of the 2nd.
+  assert.equal(buildDashboard(events, FROM, TO, DEFAULT_DASHBOARD_CONFIG, { tzOffsetMinutes: 240 }).users[0].activeDays, 1);
+});

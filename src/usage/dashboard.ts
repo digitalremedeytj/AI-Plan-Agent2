@@ -151,6 +151,8 @@ export interface DashboardUser {
   shareLinks: number;
   shareViews: number;
   budget: number;
+  /** Days in the period (the viewer's days) on which they did anything themselves; client views of their plans do not count. */
+  activeDays: number;
   lastActiveAt: string;
 }
 
@@ -360,9 +362,10 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
 
   // Per person.
   const users = new Map<string, DashboardUser>();
+  const activeDaysOf = new Map<string, Set<string>>();
   const userFor = (name: string, at: string) => {
     const key = toPersonKey(name);
-    const user = users.get(key) ?? { name: name.trim(), plans: 0, shareLinks: 0, shareViews: 0, budget: 0, lastActiveAt: at };
+    const user = users.get(key) ?? { name: name.trim(), plans: 0, shareLinks: 0, shareViews: 0, budget: 0, activeDays: 0, lastActiveAt: at };
     users.set(key, user);
     return user;
   };
@@ -371,6 +374,10 @@ export function buildDashboard(allEvents: UsageEvent[], fromIso: string, toIso: 
       const user = userFor(e.actor, e.at);
       user.name = e.actor.trim();
       user.lastActiveAt = e.at;
+      const days = activeDaysOf.get(toPersonKey(e.actor)) ?? new Set<string>();
+      days.add(localDay(e.at, tzOffsetMinutes));
+      activeDaysOf.set(toPersonKey(e.actor), days);
+      user.activeDays = days.size;
       if (isGenerated(e)) {
         user.plans += 1;
         if (countedForBudget.has(e.id)) user.budget += e.budget || 0;
