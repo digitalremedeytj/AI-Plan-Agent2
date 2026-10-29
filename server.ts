@@ -75,7 +75,7 @@ import {
   type AuditInputs,
 } from "./src/qa/auditRunner";
 import { PORTRAIT_SYSTEM_INSTRUCTION, applyPortraits, buildPortraitInput, buildPortraitResponseSchema } from "./src/research/personaPortraits";
-import { briefForShare, personasForShare } from "./src/research/personaVisibility";
+import { briefForShare, personasForShare, personasForSlides } from "./src/research/personaVisibility";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeChannelKey, narrativeSchema, planNarrativeNote } from "./src/research/planNarrative";
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
@@ -3971,7 +3971,7 @@ app.post("/api/personas/generate-slide", async (req, res) => {
     const {
       mode = "portfolio", // "portfolio" (4-in-1) | "spotlight" (1 persona)
       personaIndex = 0,
-      personas = [],
+      personas: requestedPersonas = [],
       advertiserName = "",
       campaignFocus = "",
       geography = "",
@@ -3980,7 +3980,9 @@ app.post("/api/personas/generate-slide", async (req, res) => {
       customNotes = "",
     } = req.body || {};
 
-    if (!Array.isArray(personas) || personas.length === 0) {
+    // Slides go to the client, so they follow the share link even if a client sends hidden ones.
+    const personas = personasForSlides(Array.isArray(requestedPersonas) ? requestedPersonas : []);
+    if (personas.length === 0) {
       res.status(400).json({ error: "Personas array is required to generate presentation slide." });
       return;
     }
@@ -4048,6 +4050,9 @@ CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
       const pIdx = Math.max(0, Math.min(personaIndex, personas.length - 1));
       const targetPersona = personas[pIdx] || personas[0];
       const personaName = targetPersona.name;
+      // The planner hid this headshot from the client: draw a placeholder, never an invented face.
+      const photoHidden = Boolean(targetPersona.avatarHiddenFromShare);
+      const noPhotoPortrait = "NO PHOTOGRAPH: in place of a portrait, a plain teal (#0e8f86) panel holding a simple white person-silhouette icon. Do NOT draw a face, a person, or any photograph.";
       const roleTag = targetPersona.sourceType === "User"
         ? "Target Specific Persona"
         : targetPersona.sourceType === "RFP"
@@ -4075,7 +4080,7 @@ The entire image consists purely of the vertically stacked spotlight body cards 
 
 TOP SECTION:
 - Prominent Persona Portrait & Demographics:
-  • Photographic Studio Portrait: A large, high-definition photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}). Warm, approachable studio lighting. No border around the photo (completely borderless photo with no stroke, outline, or border ring).
+  • ${photoHidden ? `Portrait Placeholder: ${noPhotoPortrait}` : `Photographic Studio Portrait: A large, high-definition photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}). Warm, approachable studio lighting. No border around the photo (completely borderless photo with no stroke, outline, or border ring).`}
   • Eyebrow Label: "${roleTag.toUpperCase()}" in teal #0e8f86 (Lexend SemiBold)
   • Persona Name: "${personaName}" (Lexend Bold)
   • Demographic Pill Badges: Age: ${targetPersona.age} (teal #0e8f86) | Gender: ${targetPersona.gender} (indigo #6b63e6) | HHI: ${targetPersona.income} (lime #a6cf56)
@@ -4102,8 +4107,8 @@ BOTTOM SECTION:
 The entire image consists purely of the balanced spotlight presentation cards:
 
 LEFT SECTION:
-- Photographic Studio Portrait & Demographics:
-  • Photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}) with natural soft corners and NO border.
+- ${photoHidden ? "Portrait Placeholder" : "Photographic Studio Portrait"} & Demographics:
+  • ${photoHidden ? noPhotoPortrait : `Photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}) with natural soft corners and NO border.`}
   • Eyebrow Label: "${roleTag.toUpperCase()}" (Lexend SemiBold in teal #0e8f86)
   • Persona Name: "${personaName}" (Lexend Bold)
   • Demographic Badges: Age: ${targetPersona.age} | Gender: ${targetPersona.gender} | HHI: ${targetPersona.income}
@@ -4120,7 +4125,7 @@ RIGHT SECTION:
 The entire image consists purely of the two-column slide body cards:
 
 LEFT COLUMN (~38% of width):
-- Photographic Studio Portrait: A large, high-definition photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}). Warm, approachable, professional studio portrait lighting, facing camera. CRITICAL: For this spotlight layout, the persona image MUST NOT BE ROUND — instead, use what framing works best for the layout (e.g., an elegant vertical portrait or rectangular studio framing with natural soft corners that fills the top of the card). There must be NO border around the persona image (completely borderless, seamless photo placement with no stroke, outline, or border ring).
+- ${photoHidden ? `Portrait Placeholder (fills the top of the card): ${noPhotoPortrait}` : `Photographic Studio Portrait: A large, high-definition photorealistic studio headshot portrait of ${personaName} (${targetPersona.age} year old ${targetPersona.gender}). Warm, approachable, professional studio portrait lighting, facing camera. CRITICAL: For this spotlight layout, the persona image MUST NOT BE ROUND — instead, use what framing works best for the layout (e.g., an elegant vertical portrait or rectangular studio framing with natural soft corners that fills the top of the card). There must be NO border around the persona image (completely borderless, seamless photo placement with no stroke, outline, or border ring).`}
 - Demographic Card directly beneath the portrait:
   • Eyebrow Label: "${roleTag.toUpperCase()}" (Lexend SemiBold in uppercase, 0.08em tracking, in teal #0e8f86)
   • Persona Name: "${personaName}" (Lexend Bold with tight 1.05 leading and -0.02em tracking, prominent title in card)
@@ -4160,7 +4165,7 @@ ${layoutSection}
 
 DESIGN & EXECUTION DIRECTIVES:
 - Follow all directives in the CORE BRAND DESIGN GUIDE above.
-- Borderless persona imagery (NOT round): For this individual spotlight slide, the persona portrait photo MUST NOT BE ROUND; instead, use whatever framing works best for the layout (e.g. natural vertical rectangular/portrait studio framing) with absolutely NO border around it (borderless photo with no stroke, outline, or framing ring).
+${photoHidden ? "- No photograph of any person anywhere on this slide: the portrait area is the silhouette placeholder described above." : "- Borderless persona imagery (NOT round): For this individual spotlight slide, the persona portrait photo MUST NOT BE ROUND; instead, use whatever framing works best for the layout (e.g. natural vertical rectangular/portrait studio framing) with absolutely NO border around it (borderless photo with no stroke, outline, or framing ring)."}
 - Clean graphic card containers with subtle 1px border outlines (#E2E8F0) and rounded corners (12px) on a pure white (#FFFFFF) background.
 - Generous whitespace throughout ensuring an uncluttered, high-end presentation feel.
 - Razor-sharp, high-contrast, perfectly legible Lexend typography.
@@ -4170,6 +4175,11 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     } else {
       // 4-in-1 Portfolio mode
       const candidatePersonas = personas.slice(0, 4);
+      const cardCount = candidatePersonas.length;
+      // A headshot the planner hid from the client becomes a placeholder, never an invented face.
+      const cardPortrait = (p: any, placement: string) => p.avatarHiddenFromShare
+        ? `• Portrait Placeholder (NO PHOTOGRAPH): ${placement}, a plain ROUND teal (#0e8f86) circle holding a simple white person-silhouette icon. Do NOT draw a face, a person, or any photograph on this card.`
+        : `• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait ${placement} showing a realistic ${p.age} year old ${p.gender} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).`;
 
       // Collect avatar references if available
       for (let i = 0; i < candidatePersonas.length; i++) {
@@ -4193,14 +4203,14 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
       if (ratioInfo.type === "vertical") {
         // Vertical format: 4 personas vertically stacked as 4 rows from top to bottom
         layoutSection = `LAYOUT DIRECTIVE: VERTICAL STACK FORMAT (${aspectRatio} ratio, ${targetSize}).
-The entire image consists purely of exactly 4 distinct, equal horizontal persona cards vertically stacked one above the other in a single vertical column running from top to bottom across the canvas:
+The entire image consists purely of exactly ${cardCount} distinct, equal horizontal persona cards vertically stacked one above the other in a single vertical column running from top to bottom across the canvas:
 Each stacked card is a full-width horizontal card container featuring:
-- On the left: A crisp ROUND (circular) borderless headshot portrait
+- On the left: A crisp ROUND (circular) borderless headshot portrait (or the silhouette placeholder where a card says so)
 - In the center and right: Eyebrow tag, Persona Name, Demographics pill badges, 3 Key Media & Purchasing Behaviors (Watch / Browse / Buy), and summary highlight.
 
 ${candidatePersonas.map((p: any, idx: number) => `
 STACKED ROW CARD ${idx + 1}:
-• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait on the left side of the card showing a realistic ${p.age} year old ${p.gender} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).
+${cardPortrait(p, "on the left side of the card")}
 • Eyebrow Tag: "${p.sourceType === "User" ? "TARGET SPECIFIC PERSONA" : p.sourceType === "RFP" ? "CORE RFP TARGET" : "SCOUTAI GROWTH SEGMENT"}" in teal #0e8f86 (Lexend SemiBold in uppercase with 0.08em tracking).
 • Persona Name: "${p.name}" (Lexend Bold with tight 1.05 leading and -0.02em tracking).
 • Demographic Pills: "${p.gender} | Age ${p.age} | HHI ${p.income}" (Teal #0e8f86, secondary indigo #6b63e6, and subtle lime #a6cf56 accents).
@@ -4212,15 +4222,15 @@ STACKED ROW CARD ${idx + 1}:
 `).join("\n")}`;
       } else if (ratioInfo.type === "square") {
         // Square format: 2x2 balanced grid
-        layoutSection = `LAYOUT DIRECTIVE: 2x2 BALANCED GRID FORMAT (1:1 ratio, ${targetSize}).
-The entire image consists purely of exactly 4 distinct persona cards arranged in a clean, balanced 2x2 grid (2 columns by 2 rows) filling the square canvas with clean margins and equal quadrants:
+        layoutSection = `LAYOUT DIRECTIVE: ${cardCount === 4 ? "2x2 BALANCED GRID" : "BALANCED CARD"} FORMAT (1:1 ratio, ${targetSize}).
+The entire image consists purely of exactly ${cardCount} distinct persona card${cardCount === 1 ? "" : "s"} ${cardCount === 4 ? "arranged in a clean, balanced 2x2 grid (2 columns by 2 rows) filling the square canvas with clean margins and equal quadrants" : "arranged in a clean, balanced layout filling the square canvas with clean margins and equal card sizes"}:
 Each quadrant card features:
-- A crisp ROUND (circular) borderless headshot portrait at the top
+- A crisp ROUND (circular) borderless headshot portrait at the top (or the silhouette placeholder where a card says so)
 - Eyebrow tag, Persona Name, Demographics pill badges, 3 Key Media & Purchasing Behaviors (Watch / Browse / Buy), and summary highlight.
 
 ${candidatePersonas.map((p: any, idx: number) => `
-QUADRANT CARD ${idx + 1} (Quadrant ${idx === 0 ? "Top-Left" : idx === 1 ? "Top-Right" : idx === 2 ? "Bottom-Left" : "Bottom-Right"}):
-• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait at the top showing a realistic ${p.age} year old ${p.gender} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).
+${cardCount === 4 ? `QUADRANT CARD ${idx + 1} (Quadrant ${idx === 0 ? "Top-Left" : idx === 1 ? "Top-Right" : idx === 2 ? "Bottom-Left" : "Bottom-Right"}):` : `CARD ${idx + 1}:`}
+${cardPortrait(p, "at the top")}
 • Eyebrow Tag: "${p.sourceType === "User" ? "TARGET SPECIFIC PERSONA" : p.sourceType === "RFP" ? "CORE RFP TARGET" : "SCOUTAI GROWTH SEGMENT"}" in teal #0e8f86 (Lexend SemiBold in uppercase with 0.08em tracking).
 • Persona Name: "${p.name}" (Lexend Bold with tight 1.05 leading and -0.02em tracking).
 • Demographic Pills: "${p.gender} | Age ${p.age} | HHI ${p.income}" (Teal #0e8f86, secondary indigo #6b63e6, and subtle lime #a6cf56 accents).
@@ -4232,12 +4242,12 @@ QUADRANT CARD ${idx + 1} (Quadrant ${idx === 0 ? "Top-Left" : idx === 1 ? "Top-R
 `).join("\n")}`;
       } else {
         // Horizontal format: 4 cards side-by-side
-        layoutSection = `LAYOUT DIRECTIVE: HORIZONTAL 4-COLUMN FORMAT (${aspectRatio} ratio, ${targetSize}).
-The entire image consists purely of exactly 4 distinct, equal vertical persona cards arranged horizontally side-by-side across the slide:
+        layoutSection = `LAYOUT DIRECTIVE: HORIZONTAL ${cardCount}-COLUMN FORMAT (${aspectRatio} ratio, ${targetSize}).
+The entire image consists purely of exactly ${cardCount} distinct, equal vertical persona card${cardCount === 1 ? "" : "s"} arranged horizontally side-by-side across the slide:
 
 ${candidatePersonas.map((p: any, idx: number) => `
 CARD ${idx + 1}:
-• Photographic Studio Portrait: A crisp ROUND (circular) headshot portrait at the top showing a realistic ${p.age} year old ${p.gender} with friendly confident expression and professional studio lighting. CRITICAL: The persona image must be ROUND (a perfect circle avatar cutout) and there must be NO border around the persona image (completely borderless circular photo with no stroke, outline, or border ring).
+${cardPortrait(p, "at the top")}
 • Eyebrow Tag: "${p.sourceType === "User" ? "TARGET SPECIFIC PERSONA" : p.sourceType === "RFP" ? "CORE RFP TARGET" : "SCOUTAI GROWTH SEGMENT"}" in teal #0e8f86 (Lexend SemiBold in uppercase with 0.08em tracking).
 • Persona Name: "${p.name}" (Lexend Bold with tight 1.05 leading and -0.02em tracking).
 • Demographic Pills: "${p.gender} | Age ${p.age} | HHI ${p.income}" (Teal #0e8f86, secondary indigo #6b63e6, and subtle lime #a6cf56 accents).
@@ -4249,7 +4259,7 @@ CARD ${idx + 1}:
 `).join("\n")}`;
       }
 
-      prompt = `A modern, modular slide body graphic in ${aspectRatio} format (${targetSize}) showcasing 4 audience persona cards, designed to be placed directly onto a white background presentation slide.
+      prompt = `A modern, modular slide body graphic in ${aspectRatio} format (${targetSize}) showcasing ${cardCount} audience persona card${cardCount === 1 ? "" : "s"}, designed to be placed directly onto a white background presentation slide.
 
 CRITICAL PRESENTATION INTEGRATION DIRECTIVES (SLIDE DECK READY):
 - ABSOLUTELY NO SLIDE HEADER: Do NOT include any main slide title, do NOT include any slide subtitle, subhead, category banner, or top header text.
@@ -4263,13 +4273,13 @@ ${layoutSection}
 
 DESIGN & EXECUTION DIRECTIVES:
 - Follow all directives in the CORE BRAND DESIGN GUIDE above.
-- Round persona images with no border: All 4 persona portrait photos MUST BE ROUND (perfect circular avatars) with absolutely NO border around them (completely borderless circular photos with no outer stroke, ring, or outline).
+- Round persona images with no border: Every persona portrait photo MUST BE ROUND (perfect circular avatars) with absolutely NO border around them (completely borderless circular photos with no outer stroke, ring, or outline). A card marked NO PHOTOGRAPH shows only its silhouette placeholder.
 - Clean card containers with cool slate-tinted neutral backgrounds (#F8FAFC), subtle 1px cool borders (#E2E8F0), and cool-tinted low-contrast shadows on a pure white (#FFFFFF) canvas.
 - Deep teal #0e3b42 used for prominent card accents or dark surfaces, primary teal #0e8f86 for active tags, indigo #6b63e6 for secondary badges, and lime #a6cf56 for limited high-impact accents.
 - All body copy strictly in #0c1e24.
 - Generous whitespace between cards and within containers ensuring an uncluttered, high-end executive look.
 - Razor-sharp, high-contrast, perfectly legible Lexend typography throughout.
-- STRICT REMINDER: ONLY produce the 4 persona cards. NO top slide title, NO subhead, NO logo, NO footer text.
+- STRICT REMINDER: ONLY produce the ${cardCount} persona card${cardCount === 1 ? "" : "s"}. NO top slide title, NO subhead, NO logo, NO footer text.
 ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
     }
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { briefForShare, isPersonaAvatarShared, isPersonaShared, personasForShare } from "./personaVisibility";
+import { briefForShare, isPersonaAvatarShared, isPersonaShared, personasForShare, personasForSlides } from "./personaVisibility";
 import { buildBriefSnapshot } from "./executiveBrief";
 import { exportProfileToMarkdown } from "../utils/markdownExporter";
 
@@ -62,4 +62,17 @@ test("a brief written before a persona was hidden loses that persona's audience 
   const shared = briefForShare(brief, [persona("Weekend Anglers", { hiddenFromShare: true }), persona("Pet Parents")])!;
   assert.deepEqual(shared.sections![0].audienceMatches!.map((m) => m.audience), ["Pet Parents"]);
   assert.equal(shared.previous, undefined, "the replaced version is the planner's undo, not the client's");
+});
+
+test("slides leave out a hidden persona and never get a headshot the planner hid", () => {
+  const slides = personasForSlides([
+    persona("Road Trip Families"),
+    persona("Weekend Anglers", { hiddenFromShare: true }),
+    persona("Pet Parents", { avatarHiddenFromShare: true }),
+  ]);
+  assert.deepEqual(slides.map((p) => p.name), ["Road Trip Families", "Pet Parents"]);
+  assert.equal(slides[0].avatarUrl, "data:image/png;base64,Road Trip Families");
+  assert.equal(slides[1].avatarUrl, undefined);
+  assert.equal(slides[1].avatarHiddenFromShare, true, "the slide prompt draws a placeholder rather than inventing a face");
+  assert.equal(slides[0].avatarHistory, undefined);
 });

@@ -178,7 +178,7 @@ export function exportProfileToMarkdown(
   // targeting gets market overlap, because rolling multi-state markets up to states would
   // count the same households several times.
   const geoCoverageSummary = geoTargeting ? geoCoverage(geoTargeting) : null;
-  if (!hidden.has("geoFootprint") && geoTargeting && geoCoverageSummary) {
+  if (!hidden.has("geo") && geoTargeting && geoCoverageSummary) {
     markdown += `## Geo Targeting Footprint\n\n`;
     if (geoCoverageSummary.scope === "dma") {
       markdown += `**${geoCoverageSummary.marketCount} DMAs** covering ${geoCoverageSummary.tvHouseholds.toLocaleString()} TV households (${geoCoverageSummary.usSharePct.toFixed(1)}% of US), delivering into ${geoCoverageSummary.states.length} states.\n\n`;
@@ -234,7 +234,8 @@ export function exportProfileToMarkdown(
       row.rfpDollars !== null ? `RFP ${money(row.rfpDollars)}${row.changeDollars ? ` (${row.changeDollars > 0 ? '+' : '−'}${money(Math.abs(row.changeDollars))})` : ''}` : '',
       row.audienceFit !== null ? `Audience Fit ${row.audienceFit}/100, Goal Match ${row.goalMatch}/100` : '',
     ].filter(Boolean).join('; ');
-    const rowReasons = (row: AllocationRow) => `${row.evidence ? `  - **Media Consumption Evidence**: ${row.evidence}\n` : ''}${row.why ? `  - **${row.whyLabel}**: ${row.why}\n` : ''}`;
+    const evidenceHidden = (channelId: string) => Boolean(profile.channelStrategy?.channelOverrides?.[channelId]?.hiddenPanels?.includes('evidence'));
+    const rowReasons = (row: AllocationRow) => `${row.evidence && !evidenceHidden(row.channelId) ? `  - **Media Consumption Evidence**: ${row.evidence}\n` : ''}${row.why ? `  - **${row.whyLabel}**: ${row.why}\n` : ''}`;
     if (mediaPlan) {
       markdown += `### Planning Summary\n`;
       markdown += `- **Working Media Budget**: ${money(allocationView.planTotal)}\n`;
@@ -254,11 +255,13 @@ export function exportProfileToMarkdown(
         const row = [...allocationView.rfpRows, ...allocationView.addedRows].find((item) => item.channelId === channel.channelId);
         const percent = row?.percentOfTotal ?? channel.allocationPercent;
         markdown += `- **${channel.channelName}** — ${percent.toFixed(0)}% ($${channel.allocationDollars.toLocaleString()}); ${displayedStatus}, score ${channel.recommendationScore}/100, ${channel.confidence} confidence${row && rowFacts(row) ? `; ${rowFacts(row)}` : ''}\n`;
-        if (row?.evidence) markdown += `  - **Media Consumption Evidence**: ${row.evidence}\n`;
 
         const overrides = channelOverrides?.[channel.channelId];
         const hidden = overrides?.hiddenPanels || [];
         const edits = overrides?.fieldEdits || {};
+
+        // The channel's Evidence panel can be switched off like the others.
+        if (row?.evidence && !evidenceHidden(channel.channelId)) markdown += `  - **Media Consumption Evidence**: ${row.evidence}\n`;
 
         if (!hidden.includes('gapAddressed')) {
           const gapTitle = edits['gapAddressed']?.title ?? 'Role / Gap';

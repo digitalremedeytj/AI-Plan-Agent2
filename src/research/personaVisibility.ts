@@ -54,3 +54,22 @@ export function briefForShare<T extends { sections?: Array<{ audienceMatches?: A
       : section),
   } as T;
 }
+
+/**
+ * The personas Slide Studio may draw. Slides go to the client, so they follow the share link:
+ * hidden personas are left out, and a hidden headshot is dropped and flagged so the slide prompt
+ * draws a placeholder instead of inventing a face. The portfolio slide holds four at most.
+ */
+export function personasForSlides<T extends Partial<Persona>>(personas: T[] | null | undefined): T[] {
+  if (!Array.isArray(personas)) return [];
+  return personas
+    .filter((persona) => persona && typeof persona === "object" && isPersonaShared(persona))
+    .map((persona) => {
+      const { avatarHistory: _history, portrait: _portrait, ...rest } = persona;
+      if (!isPersonaAvatarShared(persona)) {
+        delete (rest as Partial<Persona>).avatarUrl;
+        (rest as Partial<Persona>).avatarHiddenFromShare = true;
+      }
+      return rest as T;
+    });
+}

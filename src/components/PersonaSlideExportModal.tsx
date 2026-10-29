@@ -27,6 +27,7 @@ import type { ChannelStrategyData, SegmentRecommendation } from "../types";
 import type { MediaRecommendationPlan, ChannelPlanRecommendation } from "../planning/types";
 import { isNonMediaItem } from "../utils/mediaTaxonomy";
 import { combinedPlan } from "../planning/planChannels";
+import { personasForSlides } from "../research/personaVisibility";
 
 export type SlideAspectRatio = "21:9" | "2:1" | "16:9" | "3:2" | "4:3" | "1:1" | "3:4" | "2:3" | "9:16";
 
@@ -212,8 +213,12 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
 
   if (!isOpen) return null;
 
-  // Active Personas (up to 4)
-  const candidatePersonas = (personas || []).slice(0, 4);
+  // Active Personas (up to 4). Slides go to the client, so personas hidden from the share link
+  // are left out and hidden headshots are not drawn.
+  const shareablePersonas = personasForSlides(personas);
+  const candidatePersonas = shareablePersonas.slice(0, 4);
+  const hiddenPersonaCount = (personas || []).length - shareablePersonas.length;
+  const personaCountLabel = candidatePersonas.length === 1 ? "1 Persona" : `${candidatePersonas.length} Personas`;
 
   // Active Channels in Plan ONLY (strictly excluding "Media types not in plan")
   const effectiveMediaPlan = mediaPlan || channelStrategy?.mediaPlan;
@@ -287,7 +292,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             id: `${Date.now()}-portfolio`,
             section: "personas",
             mode: "portfolio",
-            personaName: "All 4 Personas",
+            personaName: `All ${personaCountLabel}`,
             imageUrl: data.imageUrl,
             style,
             aspectRatio,
@@ -894,14 +899,14 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                         <div className={`p-1.5 rounded-lg ${personaMode === "portfolio" ? "bg-[#0e8f86] text-white" : "bg-slate-100 text-slate-600"}`}>
                           <LayoutGrid className="w-4 h-4" />
                         </div>
-                        <span className="text-sm font-bold text-slate-900">All 4 Personas on 1 Slide</span>
+                        <span className="text-sm font-bold text-slate-900">All {personaCountLabel} on 1 Slide</span>
                       </div>
                       <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[#0e8f86]/10 text-[#0e8f86]">
-                        1 Slide (All 4)
+                        1 Slide (All {candidatePersonas.length})
                       </span>
                     </div>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Presents all 4 consumer archetypes side-by-side in 4 body cards with round portraits, demographics, and Watch/Browse/Buy habits. Styled with the Teal &amp; Indigo design system on a clean white deck canvas.
+                      Presents {candidatePersonas.length === 1 ? "the consumer archetype" : `all ${candidatePersonas.length} consumer archetypes side-by-side`} in body cards with round portraits, demographics, and Watch/Browse/Buy habits. Styled with the Teal &amp; Indigo design system on a clean white deck canvas.
                     </p>
                   </div>
 
@@ -913,7 +918,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   </div>
                 </div>
 
-                {/* Option 2: 4 Individual Spotlight Slides */}
+                {/* Option 2: One Spotlight Slide per Persona */}
                 <div
                   id="card-mode-persona-spotlight"
                   onClick={() => !isGenerating && setPersonaMode("spotlight")}
@@ -929,25 +934,30 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                         <div className={`p-1.5 rounded-lg ${personaMode === "spotlight" ? "bg-[#0e8f86] text-white" : "bg-slate-100 text-slate-600"}`}>
                           <User className="w-4 h-4" />
                         </div>
-                        <span className="text-sm font-bold text-slate-900">4 Individual Spotlight Slides</span>
+                        <span className="text-sm font-bold text-slate-900">{candidatePersonas.length} Individual Spotlight Slide{candidatePersonas.length === 1 ? "" : "s"}</span>
                       </div>
                       <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[#6b63e6]/10 text-[#6b63e6]">
-                        4 Slides (1 per Persona)
+                        {candidatePersonas.length} Slide{candidatePersonas.length === 1 ? "" : "s"} (1 per Persona)
                       </span>
                     </div>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Generates all 4 spotlight slides at once (1 detailed slide per persona archetype), automatically tabbed for quick navigation and review. Ready for your white slide deck.
+                      Generates every spotlight slide at once (1 detailed slide per persona archetype), automatically tabbed for quick navigation and review. Ready for your white slide deck.
                     </p>
                   </div>
 
                   <div className="mt-3 pt-3 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-500">
-                    <span>Creates 4 separate 16:9 slides</span>
+                    <span>Creates {candidatePersonas.length} separate {aspectRatio} slide{candidatePersonas.length === 1 ? "" : "s"}</span>
                     <span className={`font-semibold ${personaMode === "spotlight" ? "text-[#0e8f86]" : "text-slate-400"}`}>
                       {personaMode === "spotlight" ? "Selected" : "Select"}
                     </span>
                   </div>
                 </div>
               </div>
+              {hiddenPersonaCount > 0 && (
+                <p className="text-xs text-amber-700">
+                  {hiddenPersonaCount === 1 ? "1 persona is" : `${hiddenPersonaCount} personas are`} hidden from the client and left off these slides.
+                </p>
+              )}
             </div>
           )}
 
@@ -1125,9 +1135,9 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
             <div className="text-xs text-slate-500">
               {section === "personas" ? (
                 personaMode === "portfolio" ? (
-                  <span>Creates 1 comprehensive {aspectRatio} slide with all 4 personas</span>
+                  <span>Creates 1 comprehensive {aspectRatio} slide with {personaCountLabel.toLowerCase()}</span>
                 ) : (
-                  <span>Creates 4 individual {aspectRatio} spotlight slides tabbed side-by-side</span>
+                  <span>Creates {candidatePersonas.length} individual {aspectRatio} spotlight slide{candidatePersonas.length === 1 ? "" : "s"} tabbed side-by-side</span>
                 )
               ) : section === "channels" ? (
                 channelMode === "overview" ? (
@@ -1157,8 +1167,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   <span>
                     {section === "personas"
                       ? personaMode === "spotlight"
-                        ? `Generating All 4 Spotlight Slides... (${completedCount}/${totalToGenerate || candidatePersonas.length})`
-                        : "Generating All 4 Personas Slide..."
+                        ? `Generating All ${candidatePersonas.length} Spotlight Slides... (${completedCount}/${totalToGenerate || candidatePersonas.length})`
+                        : `Generating All ${personaCountLabel} Slide...`
                       : section === "channels"
                         ? channelMode === "spotlight"
                           ? `Generating All ${fundedChannels.length} Channel Slides... (${completedCount}/${totalToGenerate || fundedChannels.length})`
@@ -1172,8 +1182,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   <span>
                     {section === "personas"
                       ? personaMode === "spotlight"
-                        ? (personaSlides.length > 0 ? "Regenerate All 4 Spotlight Slides" : `Generate All 4 Spotlight Slides (${aspectRatio})`)
-                        : (personaSlides.length > 0 ? "Regenerate All 4 Personas on 1 Slide" : `Generate All 4 Personas on 1 Slide (${aspectRatio})`)
+                        ? (personaSlides.length > 0 ? `Regenerate All ${candidatePersonas.length} Spotlight Slides` : `Generate All ${candidatePersonas.length} Spotlight Slides (${aspectRatio})`)
+                        : (personaSlides.length > 0 ? `Regenerate All ${personaCountLabel} on 1 Slide` : `Generate All ${personaCountLabel} on 1 Slide (${aspectRatio})`)
                       : section === "channels"
                         ? channelMode === "spotlight"
                           ? (channelSlides.length > 0 ? `Regenerate All ${fundedChannels.length} Channel Slides` : `Generate All ${fundedChannels.length} Channel Slides (${aspectRatio})`)
@@ -1194,8 +1204,8 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                   <span>
                     {section === "personas"
                       ? personaMode === "spotlight"
-                        ? `Rendering 4 Spotlight Slides in parallel (${completedCount}/${totalToGenerate || candidatePersonas.length} completed)...`
-                        : "AI Rendering All 4 Personas on 1 Slide..."
+                        ? `Rendering ${candidatePersonas.length} Spotlight Slides in parallel (${completedCount}/${totalToGenerate || candidatePersonas.length} completed)...`
+                        : `AI Rendering All ${personaCountLabel} on 1 Slide...`
                       : section === "channels"
                         ? channelMode === "spotlight"
                           ? `Rendering ${fundedChannels.length} Channel Slides in parallel (${completedCount}/${totalToGenerate || fundedChannels.length} completed)...`
@@ -1259,7 +1269,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                       let tabLabel = "Slide";
                       if (s.section === "personas") {
                         tabLabel = s.mode === "portfolio"
-                          ? "All 4 Personas"
+                          ? "All Personas"
                           : s.personaIndex !== undefined
                             ? `${s.personaIndex + 1}. ${s.personaName}`
                             : s.personaName || `Persona ${idx + 1}`;
@@ -1351,7 +1361,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
                     <div className="text-xs text-slate-600">
                       <span className="font-semibold text-slate-900">
                         {activeSlide.section === "personas"
-                          ? (activeSlide.mode === "portfolio" ? "All 4 Personas on 1 Slide" : `Spotlight: ${activeSlide.personaName}`)
+                          ? (activeSlide.mode === "portfolio" ? "All Personas on 1 Slide" : `Spotlight: ${activeSlide.personaName}`)
                           : activeSlide.section === "channels"
                             ? (activeSlide.mode === "overview" ? "Media Mix Overview" : `Spotlight: ${activeSlide.channelName}`)
                             : "Audience Segments Matrix"}
@@ -1427,7 +1437,7 @@ export const PresentationSlideStudioModal: React.FC<PresentationSlideStudioModal
           <div className="flex items-center justify-between pb-3 text-white">
             <span className="text-sm font-semibold">
               {activeSlide.section === "personas"
-                ? (activeSlide.mode === "portfolio" ? "All 4 Personas" : `Spotlight: ${activeSlide.personaName}`)
+                ? (activeSlide.mode === "portfolio" ? "All Personas" : `Spotlight: ${activeSlide.personaName}`)
                 : activeSlide.section === "channels"
                   ? (activeSlide.mode === "overview" ? "Media Mix Overview" : `Spotlight: ${activeSlide.channelName}`)
                   : "Audience Segments Matrix"} ({activeSlide.aspectRatio || aspectRatio})
