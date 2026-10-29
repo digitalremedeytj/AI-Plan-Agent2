@@ -414,6 +414,9 @@ export interface DirectoryPerson {
   role?: Role;
   department?: string;
   offDashboardByDefault?: boolean;
+  /** Set while their access is removed; the server records when and by whom. */
+  accessRemovedAt?: string;
+  accessRemovedBy?: string;
 }
 
 export interface PeopleDirectory {

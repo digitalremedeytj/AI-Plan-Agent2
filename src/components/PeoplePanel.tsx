@@ -1,5 +1,5 @@
 import React from "react";
-import { Building2, Loader2, Plus, Save, Trash2, Users, X } from "lucide-react";
+import { Building2, Loader2, Plus, RotateCcw, Save, ShieldOff, Trash2, Users, X } from "lucide-react";
 import * as api from "../api/client";
 import { parsePeopleList } from "../people/people";
 import { toPersonKey } from "../usage/usageSummary";
@@ -60,6 +60,11 @@ export function PeoplePanel() {
   };
   const giveName = (name: string, email: string) => update(email, (p) => ({ ...p, aliases: [...p.aliases, name] }));
   const takeName = (email: string, name: string) => update(email, (p) => ({ ...p, aliases: p.aliases.filter((a) => a !== name) }));
+  // Takes effect on save. The server records when and by whom; the date here is only for display.
+  const setAccess = (person: api.DirectoryPerson, removed: boolean) => {
+    if (removed && !confirm(`Remove ${person.displayName}'s access? They are signed out within a minute and cannot sign in again until you restore it. Their plans stay as they are.`)) return;
+    update(person.email, (p) => ({ ...p, accessRemovedAt: removed ? new Date().toISOString() : undefined, accessRemovedBy: removed ? p.accessRemovedBy : undefined }));
+  };
   const removePerson = (email: string) => {
     setNotice(null);
     setDraft((list) => list.filter((p) => p.email !== email));
@@ -175,7 +180,7 @@ export function PeoplePanel() {
               <li className="p-4 text-center text-xs text-slate-500">Nobody has signed in with Google or been added yet.</li>
             ) : (
               sortedPeople.map((person) => (
-                <li key={person.email} className="space-y-2 px-4 py-3">
+                <li key={person.email} className={`space-y-2 px-4 py-3 ${person.accessRemovedAt ? "bg-rose-50/40" : ""}`}>
                   <div className="flex flex-wrap items-center gap-2">
                     <input
                       value={person.displayName}
@@ -185,8 +190,24 @@ export function PeoplePanel() {
                       className="w-56 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm font-semibold text-slate-900 focus:border-indigo-400 focus:outline-none"
                     />
                     <span className="text-xs text-slate-500">{person.email}</span>
-                    {person.firstSignInAt ? (
-                      <span className="text-[11px] text-slate-400">since {fmt(person.firstSignInAt)}</span>
+                    {person.accessRemovedAt ? (
+                      <>
+                        <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-800">
+                          Access removed {fmt(person.accessRemovedAt)}{person.accessRemovedBy ? ` by ${person.accessRemovedBy}` : ""}
+                        </span>
+                        <button type="button" onClick={() => setAccess(person, false)} className="ml-auto inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50">
+                          <RotateCcw className="h-3 w-3" /> Restore access
+                        </button>
+                      </>
+                    ) : person.firstSignInAt ? (
+                      <>
+                        <span className="text-[11px] text-slate-400">since {fmt(person.firstSignInAt)}</span>
+                        {lockedAdmins.has(person.email) ? null : (
+                          <button type="button" onClick={() => setAccess(person, true)} className="ml-auto inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50">
+                            <ShieldOff className="h-3 w-3" /> Remove access
+                          </button>
+                        )}
+                      </>
                     ) : (
                       <>
                         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">Not signed in yet</span>

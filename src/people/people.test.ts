@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDashboard } from "../usage/dashboard";
 import { DEFAULT_DASHBOARD_CONFIG, SHARE_VIEWER_ACTOR, type UsageEvent } from "../storage/types";
-import { applyPeopleEdit as applyEdit, ensurePerson, indexPeople, parsePeopleList, roleFor, withCanonicalActors, withCanonicalAuthors, type Person } from "./people";
+import { applyPeopleEdit as applyEdit, ensurePerson, indexPeople, parsePeopleList, removedPersonNamed, roleFor, withCanonicalActors, withCanonicalAuthors, type Person } from "./people";
 
 const applyPeopleEdit = (stored: Person[], edited: unknown) => applyEdit(stored, edited, ["digitalremedy.com"]);
 
@@ -149,4 +149,28 @@ test("setting someone back to user stores no role at all", () => {
   const edit = applyEdit([ana], [{ ...ana, role: "user", department: "" }], ["digitalremedy.com"], ["Sales"]);
   assert.ok("people" in edit);
   assert.deepEqual(edit.people[0], { email: "ana@digitalremedy.com", displayName: "Ana Smith", aliases: [] });
+});
+
+test("removing access records who and when on the server's clock, not the browser's", () => {
+  const ana: Person = { email: "ana@digitalremedy.com", displayName: "Ana Smith", aliases: [], firstSignInAt: NOW };
+  const stamp = { by: "TJ Pascal", at: "2026-11-01T09:00:00.000Z" };
+  const removed = applyEdit([ana], [{ ...ana, accessRemovedAt: "1999-01-01", accessRemovedBy: "someone else" }], ["digitalremedy.com"], [], stamp);
+  assert.ok("people" in removed);
+  assert.equal(removed.people[0].accessRemovedAt, stamp.at);
+  assert.equal(removed.people[0].accessRemovedBy, "TJ Pascal");
+
+  const again = applyEdit(removed.people, removed.people, ["digitalremedy.com"], [], { by: "Other Admin", at: "2026-12-01T00:00:00.000Z" });
+  assert.ok("people" in again);
+  assert.equal(again.people[0].accessRemovedBy, "TJ Pascal", "saving again keeps the original removal");
+
+  const restored = applyEdit(removed.people, [{ ...ana }], ["digitalremedy.com"], [], stamp);
+  assert.ok("people" in restored);
+  assert.equal(restored.people[0].accessRemovedAt, undefined);
+});
+
+test("a removed person is found under any of their names, so a typed old name cannot get back in", () => {
+  const ana: Person = { email: "ana@digitalremedy.com", displayName: "Ana Smith", aliases: ["ana"], accessRemovedAt: NOW };
+  const index = indexPeople([tj, ana]);
+  assert.equal(removedPersonNamed(index, " ANA ")?.email, "ana@digitalremedy.com");
+  assert.equal(removedPersonNamed(index, "TJ"), undefined);
 });

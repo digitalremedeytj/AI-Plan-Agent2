@@ -34,6 +34,12 @@ export interface Person {
   department?: string;
   /** Left unchecked when the dashboard opens (test and internal accounts). One click brings them back. */
   offDashboardByDefault?: boolean;
+  /**
+   * Set when an admin removes this person's access: they cannot sign in, and any session they
+   * already hold stops working on its next request. Their records stay theirs; restoring clears it.
+   */
+  accessRemovedAt?: string;
+  accessRemovedBy?: string;
 }
 
 export interface PeopleDirectory {
@@ -52,6 +58,12 @@ export const EMPTY_PEOPLE: PeopleRecord = { revision: 0, people: [], departments
 
 const MAX_DEPARTMENTS = 50;
 const MAX_DEPARTMENT_LENGTH = 40;
+
+/** The person whose access was removed under this recorded name, if any. */
+export function removedPersonNamed(index: PeopleIndex, name: string): Person | undefined {
+  const person = index.byName.get(toPersonKey(name));
+  return person?.accessRemovedAt ? person : undefined;
+}
 
 /** A person's role, with ADMIN_EMAILS taking precedence over what the directory says. */
 export function roleFor(email: string, person: Pick<Person, "role"> | undefined, adminEmails: string[]): Role {
@@ -171,6 +183,8 @@ export function applyPeopleEdit(
   edited: unknown,
   allowedDomains: string[],
   editedDepartments: unknown = [],
+  /** Who is saving, and when: stamped on anyone whose access this edit removes. */
+  stamp: { by: string; at: string } = { by: "", at: new Date().toISOString() },
 ): PeopleDirectory | { error: string } {
   if (!Array.isArray(edited)) return { error: "The people list is missing." };
   if (!Array.isArray(editedDepartments)) return { error: "The department list is missing." };
@@ -219,7 +233,11 @@ export function applyPeopleEdit(
     const department = departmentName ? departments.get(departmentName.toLowerCase()) : undefined;
     if (departmentName && !department) return { error: `${displayName}'s department "${departmentName}" is not in the department list.` };
 
-    const { role: _role, department: _department, offDashboardByDefault: _off, ...rest } = current;
+    const { role: _role, department: _department, offDashboardByDefault: _off, accessRemovedAt: _at, accessRemovedBy: _by, ...rest } = current;
+    // The client only says whether access is removed; when and by whom is the server's to record.
+    const removal = raw.accessRemovedAt
+      ? { accessRemovedAt: current.accessRemovedAt ?? stamp.at, accessRemovedBy: current.accessRemovedBy ?? stamp.by }
+      : {};
     people.push({
       ...rest,
       displayName,
@@ -227,6 +245,7 @@ export function applyPeopleEdit(
       ...(role !== "user" ? { role } : {}),
       ...(department ? { department } : {}),
       ...(raw.offDashboardByDefault === true ? { offDashboardByDefault: true } : {}),
+      ...removal,
     });
     byEmail.delete(email);
   }

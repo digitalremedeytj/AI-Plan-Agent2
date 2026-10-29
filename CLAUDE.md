@@ -167,6 +167,10 @@ an actor from a request body.
   `ADMIN_EMAILS` are always admins whatever the directory says, so nobody can lock the last
   admin out. A Google session's name and role are refreshed from the directory on every
   request (`setSessionRefresher`), so a role change applies within 30s, not at session end.
+  **Remove access** (`accessRemovedAt`) works the same way: the refresher returns no session,
+  so a removed person is signed out on their next request and refused at sign-in. A
+  team-password session can only be matched by its typed name; retiring the team password
+  closes that gap.
   A team-password sign-in is an admin only with `ADMIN_PASSWORD`. If neither `ADMIN_EMAILS`
   nor `ADMIN_PASSWORD` is set, every signed-in user can write — deliberate, so deploying
   cannot brick settings.

@@ -150,13 +150,14 @@ export function parseCookies(header: string | undefined): Record<string, string>
 }
 
 /**
- * Brings a Google session's name and role up to date with the people directory, so a rename or a
- * role change applies on the next request rather than when the 30-day session ends. Installed by
- * the server, which owns the directory cache; without one, the token is taken as issued.
+ * Brings a session up to date with the people directory, so a rename or a role change applies on
+ * the next request rather than when the 30-day session ends, and returns null for someone whose
+ * access was removed. Installed by the server, which owns the directory cache; without one, the
+ * token is taken as issued.
  */
-let sessionRefresher: ((user: SessionUser) => SessionUser) | null = null;
+let sessionRefresher: ((user: SessionUser) => SessionUser | null) | null = null;
 
-export function setSessionRefresher(refresh: (user: SessionUser) => SessionUser): void {
+export function setSessionRefresher(refresh: (user: SessionUser) => SessionUser | null): void {
   sessionRefresher = refresh;
 }
 

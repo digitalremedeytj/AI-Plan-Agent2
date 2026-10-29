@@ -30,7 +30,7 @@ import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest, sendLongRequestProgress } from "./src/server/longRequest";
 import { knownPeople, suggestNames, type KnownPerson } from "./src/usage/knownPeople";
-import { applyPeopleEdit, canonicalName, ensurePerson, indexPeople, roleFor, withCanonicalActors, withCanonicalAuthors, type PeopleIndex } from "./src/people/people";
+import { applyPeopleEdit, canonicalName, ensurePerson, indexPeople, removedPersonNamed, roleFor, withCanonicalActors, withCanonicalAuthors, type PeopleIndex } from "./src/people/people";
 import { GoogleTokenError, verifyGoogleIdToken } from "./src/server/googleIdToken";
 import {
   actorName,
@@ -436,8 +436,8 @@ const PUBLIC_API_PATHS = new Set([
 ]);
 
 app.use("/api", async (req, res, next) => {
-  // A Google session's role comes from the directory, so make sure it is loaded (cached) first.
-  if (readSession(req)?.email) await loadPeople().catch((err) => console.error("[PEOPLE] Directory could not be loaded:", err?.message || err));
+  // A session's role and access come from the directory, so make sure it is loaded (cached) first.
+  if (readSession(req)) await loadPeople().catch((err) => console.error("[PEOPLE] Directory could not be loaded:", err?.message || err));
   // req.path is relative to the "/api" mount point.
   if (PUBLIC_API_PATHS.has(`/api${req.path}`)) {
     next();
@@ -483,11 +483,15 @@ async function loadPeopleIndex(): Promise<PeopleIndex> {
   return (await loadPeople()).index;
 }
 
-// A Google session's name and role follow the directory (loaded for each request by the /api guard),
-// so a demoted editor loses settings access within PEOPLE_CACHE_MS, not when their session ends.
+// A session follows the directory (loaded for each request by the /api guard): a demoted editor
+// loses settings access, and someone whose access was removed is signed out, within
+// PEOPLE_CACHE_MS rather than when their session ends. A team-password session is matched by name,
+// which is as far as a typed name can be trusted; retiring the team password closes that gap.
 setSessionRefresher((user) => {
-  if (!user.email || !peopleCache) return user;
+  if (!peopleCache) return user;
+  if (!user.email) return removedPersonNamed(peopleCache.index, user.name) ? null : user;
   const person = peopleCache.index.byEmail.get(user.email);
+  if (person?.accessRemovedAt) return null;
   const role = roleFor(user.email, person, adminEmails());
   return { ...user, name: person?.displayName ?? user.name, role, isAdmin: role !== "user" };
 });
@@ -2411,7 +2415,7 @@ app.post("/api/auth/name-suggestions", async (req, res) => {
   }
 });
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   try {
     if (!isPasswordLoginEnabled()) {
       res.status(403).json({ success: false, error: "Sign in with your Google account." });
@@ -2445,6 +2449,10 @@ app.post("/api/auth/login", (req, res) => {
       return;
     }
     const isAdmin = Boolean(configuredAdminPassword) && suppliedAdminPassword === configuredAdminPassword;
+    if (removedPersonNamed(await loadPeopleIndex(), name)) {
+      res.status(403).json({ success: false, error: "Your access to AI Plan Agent has been removed. Ask an administrator." });
+      return;
+    }
 
     const user: SessionUser = { name, isAdmin, role: isAdmin ? "admin" : "user", issuedAt: Date.now() };
     const token = createSessionToken(user);
@@ -2519,6 +2527,11 @@ app.post("/api/auth/google", async (req, res) => {
         if (!(err instanceof RevisionConflictError) || attempt >= PEOPLE_SAVE_ATTEMPTS) throw err;
       }
     }
+    if (person.accessRemovedAt) {
+      console.log(`[AUTH] Refused Google sign-in for ${person.email}: access removed.`);
+      res.status(403).json({ success: false, error: "Your access to AI Plan Agent has been removed. Ask an administrator." });
+      return;
+    }
     const role = roleFor(person.email, person, adminEmails());
     const user: SessionUser = { name: person.displayName, email: person.email, role, isAdmin: role !== "user", issuedAt: Date.now() };
     const token = createSessionToken(user);
@@ -2555,9 +2568,19 @@ app.put("/api/people", requirePeopleAdmin, async (req, res) => {
   try {
     const storage = await getStorage();
     const current = await storage.getPeople();
-    const edit = applyPeopleEdit(current.people, req.body?.people, allowedEmailDomains(), req.body?.departments ?? current.departments);
+    const edit = applyPeopleEdit(current.people, req.body?.people, allowedEmailDomains(), req.body?.departments ?? current.departments, {
+      by: actorName(req),
+      at: new Date().toISOString(),
+    });
     if ("error" in edit) {
       res.status(400).json({ error: edit.error });
+      return;
+    }
+    // Neither an ADMIN_EMAILS account nor the admin saving can be locked out from here.
+    const me = getSession(req)?.email;
+    const lockedOut = edit.people.find((p) => p.accessRemovedAt && (adminEmails().includes(p.email) || p.email === me));
+    if (lockedOut) {
+      res.status(400).json({ error: lockedOut.email === me ? "You cannot remove your own access." : `${lockedOut.email} is in ADMIN_EMAILS, so their access cannot be removed here.` });
       return;
     }
     const record = await storage.savePeople(edit, actorName(req), expectedRevision);
