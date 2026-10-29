@@ -171,6 +171,10 @@ an actor from a request body.
   so a removed person is signed out on their next request and refused at sign-in. A
   team-password session can only be matched by its typed name; retiring the team password
   closes that gap.
+- **View as** (account menu, admins only): `viewAs` on the session narrows an admin to editor
+  or user, enforced by `getSession` (`applyViewAs`), so the server refuses what that role
+  cannot do. `getActualSession` ignores it, which is how "Return to Admin" works from any
+  view. The cookie always stores the real role; never write the narrowed session back.
   A team-password sign-in is an admin only with `ADMIN_PASSWORD`. If neither `ADMIN_EMAILS`
   nor `ADMIN_PASSWORD` is set, every signed-in user can write — deliberate, so deploying
   cannot brick settings.

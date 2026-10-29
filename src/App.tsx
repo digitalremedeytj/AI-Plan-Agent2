@@ -85,6 +85,7 @@ import { ALL_INTERNAL_VISIBLE, ChannelStrategySection, type InternalOnlyVisibili
 import { SectionVisibilityButton } from "./components/SectionVisibilityButton";
 import { PerformanceLearningsSection } from "./components/PerformanceLearningsSection";
 import { disableGoogleAutoSelect, GoogleSignInButton } from "./components/GoogleSignInButton";
+import { switchViewAs } from "./components/ViewAsBanner";
 import { PastCampaignPicker } from "./components/PastCampaignPicker";
 import { PastPerformanceModal } from "./components/PastPerformanceModal";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
@@ -4963,6 +4964,12 @@ export default function App() {
               </div>
             )}
 
+            {/* Stays in the sticky header after the amber banner scrolls away. */}
+            {!isShareView && session?.viewAs ? (
+              <span className="hidden rounded-full bg-amber-400 px-2.5 py-1 text-xs font-bold text-amber-950 sm:inline">
+                Viewing as {session.viewAs === "editor" ? "Editor" : "User"}
+              </span>
+            ) : null}
             {/* Menu button for authenticated planners; hidden for shared read-only link */}
             {!isShareView ? (
               <div className="relative">
@@ -4985,6 +4992,31 @@ export default function App() {
                           {canEditSettings ? "Can edit global settings" : "Settings are read-only"}
                         </p>
                       </div>
+                      {session?.canViewAs ? (
+                        <div className="px-3 py-2 border-b border-slate-100 mb-1">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">View as</p>
+                          <div className="mt-1.5 grid grid-cols-3 gap-1" role="group" aria-label="View the app as">
+                            {([null, "editor", "user"] as const).map((role) => {
+                              const current = (session.viewAs ?? null) === role;
+                              return (
+                                <button
+                                  key={role ?? "admin"}
+                                  type="button"
+                                  aria-pressed={current}
+                                  disabled={current}
+                                  onClick={() => {
+                                    setIsHeaderMenuOpen(false);
+                                    switchViewAs(role).catch((err) => alert(err?.message || "Could not switch view."));
+                                  }}
+                                  className={`rounded-md px-1.5 py-1 text-[11px] font-semibold transition ${current ? (role ? "bg-amber-400 text-amber-950" : "bg-indigo-600 text-white") : "bg-slate-100 text-slate-600 hover:bg-indigo-50 hover:text-indigo-700"}`}
+                                >
+                                  {role === null ? "Admin" : role === "editor" ? "Editor" : "User"}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
                       <a
                         href="https://forms.gle/Ug9JjxKt9RSCFkJv6"
                         target="_blank"

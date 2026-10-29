@@ -6,6 +6,7 @@ import {
   getSession,
   isAdminRequestAllowed,
   isPeopleAdminAllowed,
+  applyViewAs,
   parseCookies,
   createStaffDeviceToken,
   sanitizeDisplayName,
@@ -183,4 +184,34 @@ test("an editor may change settings but not manage people; an admin may do both"
 test("a session issued before roles existed keeps the access it had", () => {
   assert.equal(verifySessionToken(createSessionToken({ name: "TJ", isAdmin: true, issuedAt: now() }))?.role, "admin");
   assert.equal(verifySessionToken(createSessionToken({ name: "Ana", isAdmin: false, issuedAt: now() }))?.role, "user");
+});
+
+test("an admin viewing as a user is refused settings and people, as a real user would be", () => {
+  process.env.ADMIN_EMAILS = "tpascal@digitalremedy.com";
+  try {
+    const admin = { name: "TJ", email: "tpascal@digitalremedy.com", isAdmin: true, role: "admin" as const, issuedAt: now() };
+    const asUser = applyViewAs({ ...admin, viewAs: "user" });
+    assert.equal(isAdminRequestAllowed(asUser), false);
+    assert.equal(isPeopleAdminAllowed(asUser), false);
+    const asEditor = applyViewAs({ ...admin, viewAs: "editor" });
+    assert.equal(isAdminRequestAllowed(asEditor), true);
+    assert.equal(isPeopleAdminAllowed(asEditor), false);
+    assert.equal(asEditor.name, "TJ", "changes are still recorded as the admin");
+  } finally {
+    delete process.env.ADMIN_EMAILS;
+  }
+});
+
+test("view-as is ignored for anyone who is not really an admin, so it can never raise access", () => {
+  const editor = { name: "Ana", isAdmin: true, role: "editor" as const, viewAs: "editor" as const, issuedAt: now() };
+  const result = applyViewAs(editor);
+  assert.equal(result.role, "editor");
+  assert.equal(result.viewAs, undefined);
+});
+
+test("view-as survives the session token, and only as editor or user", () => {
+  const token = createSessionToken({ name: "TJ", isAdmin: true, role: "admin", viewAs: "user", issuedAt: now() });
+  assert.equal(verifySessionToken(token)?.viewAs, "user");
+  const odd = createSessionToken({ name: "TJ", isAdmin: true, role: "admin", viewAs: "superuser" as any, issuedAt: now() });
+  assert.equal(verifySessionToken(odd)?.viewAs, undefined);
 });

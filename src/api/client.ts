@@ -32,6 +32,10 @@ export interface SessionUser {
   isAdmin: boolean;
   /** Admins only: Settings -> People. */
   canManagePeople?: boolean;
+  /** Set while an admin is viewing the app as this role; the server enforces it. */
+  viewAs?: "editor" | "user";
+  /** Real admins, whatever they are viewing as. */
+  canViewAs?: boolean;
   /** True when this user may write global settings (see ADMIN_PASSWORD on the server). */
   canEditSettings: boolean;
   /** Pseudonymous Google Analytics user_id: a keyed hash of the name, never the name itself. */
@@ -351,6 +355,18 @@ export async function suggestNames(input: { username: string; password: string; 
   } catch {
     return [];
   }
+}
+
+/** Views the app as an editor or a user (enforced by the server), or null to return to admin. */
+export async function setViewAs(role: "editor" | "user" | null): Promise<SessionUser> {
+  const body = await request<{ user: SessionUser; token?: string }>("/api/auth/view-as", {
+    method: "POST",
+    body: JSON.stringify({ role }),
+  });
+  if (body.token) {
+    setAuthToken(body.token);
+  }
+  return body.user;
 }
 
 export async function logout(): Promise<void> {

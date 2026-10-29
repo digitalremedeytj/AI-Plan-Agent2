@@ -4,6 +4,7 @@ import App from './App.tsx';
 import DashboardPage from './dashboard/DashboardPage';
 import ScoutReviewPage from './scoutReview/ScoutReviewPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ViewAsBanner } from './components/ViewAsBanner';
 import './index.css';
 import { initAnalytics } from './analytics';
 
@@ -28,6 +29,8 @@ createRoot(document.getElementById('root')!).render(
     >
       {/* The leadership dashboard is its own page, reachable without the team login. ScoutAI
           review is its own page too, for admins only (the server refuses everyone else). */}
+      {/* Above every page while an admin is viewing the app as another role. */}
+      <ViewAsBanner />
       {page === '/dashboard' ? <DashboardPage /> : page === '/scout-review' ? <ScoutReviewPage /> : <App />}
     </ErrorBoundary>
   </StrictMode>,

@@ -2,6 +2,8 @@ import crypto from "crypto";
 import type { Request, Response, NextFunction } from "express";
 import type { Role } from "../people/people";
 
+export type ViewAsRole = Exclude<Role, "admin">;
+
 /**
  * Session identity for the shared-login model.
  *
@@ -32,6 +34,12 @@ export interface SessionUser {
    * Always set on a verified session; optional only so callers building one may leave it to isAdmin.
    */
   role?: Role;
+  /**
+   * Set while an admin is viewing the app as an editor or a user, to check what they get. The
+   * server enforces it (getSession), so what the admin sees is what that role is allowed. Only
+   * honoured for a real admin; dropped otherwise.
+   */
+  viewAs?: ViewAsRole;
   /** Epoch ms the session was issued; used for expiry. */
   issuedAt: number;
 }
@@ -102,7 +110,15 @@ export function verifySessionToken(token: string | undefined): SessionUser | nul
     const isAdmin = Boolean(user.isAdmin);
     // Tokens from before roles existed: an admin was the only kind of settings editor.
     const role: Role = user.role === "admin" || user.role === "editor" || user.role === "user" ? user.role : isAdmin ? "admin" : "user";
-    return { name: user.name, ...(typeof user.email === "string" && user.email ? { email: user.email } : {}), isAdmin, role, issuedAt: user.issuedAt };
+    const viewAs = user.viewAs === "editor" || user.viewAs === "user" ? user.viewAs : undefined;
+    return {
+      name: user.name,
+      ...(typeof user.email === "string" && user.email ? { email: user.email } : {}),
+      isAdmin,
+      role,
+      ...(viewAs ? { viewAs } : {}),
+      issuedAt: user.issuedAt,
+    };
   } catch {
     return null;
   }
@@ -161,9 +177,26 @@ export function setSessionRefresher(refresh: (user: SessionUser) => SessionUser 
   sessionRefresher = refresh;
 }
 
+/** The session every route acts on: brought up to date with the directory, then any "view as" applied. */
 export function getSession(req: Request): SessionUser | null {
+  const user = getActualSession(req);
+  return user ? applyViewAs(user) : null;
+}
+
+/** Who the person really is, ignoring "view as": for switching it off, which must work from any view. */
+export function getActualSession(req: Request): SessionUser | null {
   const user = readSession(req);
   return user && sessionRefresher ? sessionRefresher(user) : user;
+}
+
+/** Narrows an admin to the role they are viewing as. Anyone who is not really an admin keeps their own role. */
+export function applyViewAs(user: SessionUser): SessionUser {
+  if (!user.viewAs) return user;
+  if (user.role !== "admin") {
+    const { viewAs: _ignored, ...own } = user;
+    return own;
+  }
+  return { ...user, role: user.viewAs, isAdmin: user.viewAs === "editor" };
 }
 
 /** The session exactly as the token says, before any refresh. */

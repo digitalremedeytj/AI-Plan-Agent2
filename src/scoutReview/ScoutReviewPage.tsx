@@ -349,7 +349,7 @@ export default function ScoutReviewPage() {
           <h1 className="font-display text-xl font-bold text-slate-900">{status === "forbidden" ? "Administrators only" : "Sign in needed"}</h1>
           <p className="text-sm text-slate-500">
             {status === "forbidden"
-              ? "ScoutAI review shows every planner's questions, so it is limited to administrators. Sign in with the admin password to open it."
+              ? "ScoutAI review shows every planner's questions, so it is limited to admins and editors. Ask an admin for the Editor role to open it."
               : "Sign in to AI Plan Agent as an administrator to review ScoutAI answers."}
           </p>
           <a href="/" className="inline-block rounded-xl bg-brand-purple-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-purple-700">Go to AI Plan Agent</a>

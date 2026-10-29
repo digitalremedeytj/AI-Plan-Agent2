@@ -35,6 +35,8 @@ import { GoogleTokenError, verifyGoogleIdToken } from "./src/server/googleIdToke
 import {
   actorName,
   adminEmails,
+  applyViewAs,
+  getActualSession,
   allowedEmailDomains,
   analyticsIdFor,
   clearSessionCookie,
@@ -496,8 +498,8 @@ setSessionRefresher((user) => {
   return { ...user, name: person?.displayName ?? user.name, role, isAdmin: role !== "user" };
 });
 
-/** What the client is told about the signed-in person. */
-function sessionView(user: SessionUser) {
+/** What the client is told about the signed-in person: what they may do now, and who they really are. */
+function sessionView(user: SessionUser, actual: SessionUser = user) {
   return {
     name: user.name,
     email: user.email,
@@ -505,6 +507,8 @@ function sessionView(user: SessionUser) {
     isAdmin: user.isAdmin,
     canEditSettings: isAdminRequestAllowed(user),
     canManagePeople: isPeopleAdminAllowed(user),
+    viewAs: user.viewAs,
+    canViewAs: actual.role === "admin",
     analyticsId: analyticsIdFor(user.name, user.email),
   };
 }
@@ -2471,18 +2475,40 @@ app.post("/api/auth/login", async (req, res) => {
 // cannot be resurrected by editing browser storage.
 app.get("/api/auth/me", async (req, res) => {
   const issued = readSession(req);
-  const user = getSession(req);
-  if (!issued || !user) {
+  const actual = getActualSession(req);
+  if (!issued || !actual) {
     res.status(401).json({ authenticated: false });
     return;
   }
-  // A Google session picks up a rename or role change from the people directory; reissue the
-  // cookie so the token says so too.
-  if (user.name !== issued.name || user.role !== issued.role || user.isAdmin !== issued.isAdmin) setSessionCookie(res, user);
-  const token = createSessionToken(user);
+  // The cookie always holds the real role (plus any "view as"), never the narrowed one, or viewing
+  // as an editor would make the admin one. A Google session picks up a rename or role change from
+  // the people directory here, and someone no longer an admin loses "view as".
+  const next = applyViewAs(actual).viewAs ? actual : { ...actual, viewAs: undefined };
+  if (next.name !== issued.name || next.role !== issued.role || next.isAdmin !== issued.isAdmin || next.viewAs !== issued.viewAs) setSessionCookie(res, next);
+  const token = createSessionToken(next);
   // Renewed on every app load, so planners already signed in when this shipped get the mark too.
-  setStaffDeviceCookie(res, user.name);
-  res.json({ authenticated: true, token, user: sessionView(user), adminPasswordConfigured: isAdminPasswordConfigured() });
+  setStaffDeviceCookie(res, next.name);
+  res.json({ authenticated: true, token, user: sessionView(applyViewAs(next), next), adminPasswordConfigured: isAdminPasswordConfigured() });
+});
+
+// "View as": an admin sees the app as an editor or a user, enforced by the server, to check what
+// those roles get. Switching back reads the real session, so it works from any view.
+app.post("/api/auth/view-as", (req, res) => {
+  const actual = getActualSession(req);
+  if (!actual || actual.role !== "admin") {
+    res.status(403).json({ error: "Only administrators can view the app as another role.", code: "FORBIDDEN" });
+    return;
+  }
+  const role = req.body?.role ?? null;
+  if (role !== null && role !== "editor" && role !== "user") {
+    res.status(400).json({ error: "View as editor, user, or null to stop." });
+    return;
+  }
+  const { viewAs: _previous, ...own } = actual;
+  const next: SessionUser = role ? { ...own, viewAs: role } : own;
+  setSessionCookie(res, next);
+  console.log(`[AUTH] '${actual.name}' is ${role ? `viewing the app as ${role}` : "back to their own role"}.`);
+  res.json({ success: true, token: createSessionToken(next), user: sessionView(applyViewAs(next), next) });
 });
 
 // What the sign-in screen offers. The client id is public by design: Google sign-in runs in the browser.
