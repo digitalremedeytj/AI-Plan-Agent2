@@ -30,7 +30,7 @@ import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest, sendLongRequestProgress } from "./src/server/longRequest";
 import { knownPeople, suggestNames, type KnownPerson } from "./src/usage/knownPeople";
-import { applyPeopleEdit, canonicalName, ensurePerson, indexPeople, withCanonicalActors, withCanonicalAuthors, type PeopleIndex } from "./src/people/people";
+import { applyPeopleEdit, canonicalName, ensurePerson, indexPeople, roleFor, withCanonicalActors, withCanonicalAuthors, type PeopleIndex } from "./src/people/people";
 import { GoogleTokenError, verifyGoogleIdToken } from "./src/server/googleIdToken";
 import {
   actorName,
@@ -44,6 +44,10 @@ import {
   isAdminPasswordConfigured,
   isAdminRequestAllowed,
   isPasswordLoginEnabled,
+  isPeopleAdminAllowed,
+  readSession,
+  requirePeopleAdmin,
+  setSessionRefresher,
   type SessionUser,
   requireAdmin,
   requireAuth,
@@ -431,7 +435,9 @@ const PUBLIC_API_PATHS = new Set([
   "/api/segments/generate-slide",
 ]);
 
-app.use("/api", (req, res, next) => {
+app.use("/api", async (req, res, next) => {
+  // A Google session's role comes from the directory, so make sure it is loaded (cached) first.
+  if (readSession(req)?.email) await loadPeople().catch((err) => console.error("[PEOPLE] Directory could not be loaded:", err?.message || err));
   // req.path is relative to the "/api" mount point.
   if (PUBLIC_API_PATHS.has(`/api${req.path}`)) {
     next();
@@ -463,13 +469,40 @@ app.get("/api/health", async (_req, res) => {
 // filtered by person (src/people/people.ts). Read on every plan list and dashboard load, so it is
 // cached briefly; another instance's edit shows up here within PEOPLE_CACHE_MS.
 const PEOPLE_CACHE_MS = 30_000;
-let peopleCache: { at: number; index: PeopleIndex } | null = null;
+let peopleCache: { at: number; index: PeopleIndex; departments: string[] } | null = null;
+
+async function loadPeople(): Promise<{ index: PeopleIndex; departments: string[] }> {
+  if (!peopleCache || Date.now() - peopleCache.at > PEOPLE_CACHE_MS) {
+    const record = await (await getStorage()).getPeople();
+    peopleCache = { at: Date.now(), index: indexPeople(record.people), departments: record.departments };
+  }
+  return peopleCache;
+}
 
 async function loadPeopleIndex(): Promise<PeopleIndex> {
-  if (!peopleCache || Date.now() - peopleCache.at > PEOPLE_CACHE_MS) {
-    peopleCache = { at: Date.now(), index: indexPeople((await (await getStorage()).getPeople()).people) };
-  }
-  return peopleCache.index;
+  return (await loadPeople()).index;
+}
+
+// A Google session's name and role follow the directory (loaded for each request by the /api guard),
+// so a demoted editor loses settings access within PEOPLE_CACHE_MS, not when their session ends.
+setSessionRefresher((user) => {
+  if (!user.email || !peopleCache) return user;
+  const person = peopleCache.index.byEmail.get(user.email);
+  const role = roleFor(user.email, person, adminEmails());
+  return { ...user, name: person?.displayName ?? user.name, role, isAdmin: role !== "user" };
+});
+
+/** What the client is told about the signed-in person. */
+function sessionView(user: SessionUser) {
+  return {
+    name: user.name,
+    email: user.email,
+    role: user.role ?? (user.isAdmin ? "admin" : "user"),
+    isAdmin: user.isAdmin,
+    canEditSettings: isAdminRequestAllowed(user),
+    canManagePeople: isPeopleAdminAllowed(user),
+    analyticsId: analyticsIdFor(user.name, user.email),
+  };
 }
 
 function forgetPeopleCaches(): void {
@@ -638,7 +671,8 @@ app.get("/api/dashboard/data", async (req, res) => {
       return;
     }
     const storage = await getStorage();
-    const [rawEvents, config, people] = await Promise.all([storage.listUsageEvents(""), storage.getDashboardConfig(), loadPeopleIndex()]);
+    const [rawEvents, config, directory] = await Promise.all([storage.listUsageEvents(""), storage.getDashboardConfig(), loadPeople()]);
+    const people = directory.index;
     const events = withCanonicalActors(rawEvents, people);
     // Excluding any of a person's names excludes the person.
     config.excludedNames = config.excludedNames.map((name) => people.byName.get(toPersonKey(name))?.displayName ?? name);
@@ -658,9 +692,19 @@ app.get("/api/dashboard/data", async (req, res) => {
         .saveDashboardLink({ ...access.link, lastViewedAt: new Date().toISOString(), viewCount: (access.link.viewCount || 0) + 1 })
         .catch((err) => console.error("[DASHBOARD] Could not record a link view:", err?.message || err));
     }
+    // Each listed person's department and whether the dashboard opens with them unchecked, both
+    // set in Settings -> People. Names nobody claims have neither.
+    const peopleMeta: Record<string, { department?: string; offByDefault?: boolean }> = {};
+    for (const name of data.allUsers) {
+      const person = people.byName.get(toPersonKey(name));
+      if (person?.department || person?.offDashboardByDefault) {
+        peopleMeta[name] = { ...(person.department ? { department: person.department } : {}), ...(person.offDashboardByDefault ? { offByDefault: true } : {}) };
+      }
+    }
     res.json({
       success: true,
       data,
+      people: { departments: directory.departments, byName: peopleMeta },
       viewer: access.via === "link" ? { via: "link", label: access.link.label, sharedBy: access.link.createdBy } : { via: access.via, name: access.name },
     });
   } catch (err: any) {
@@ -2402,17 +2446,13 @@ app.post("/api/auth/login", (req, res) => {
     }
     const isAdmin = Boolean(configuredAdminPassword) && suppliedAdminPassword === configuredAdminPassword;
 
-    const user = { name, isAdmin, issuedAt: Date.now() };
+    const user: SessionUser = { name, isAdmin, role: isAdmin ? "admin" : "user", issuedAt: Date.now() };
     const token = createSessionToken(user);
     setSessionCookie(res, user);
     setStaffDeviceCookie(res, name);
     logUsage(req, "login", { actor: name });
     console.log(`[AUTH] '${name}' signed in${isAdmin ? " as an administrator" : ""}.`);
-    res.json({
-      success: true,
-      token,
-      user: { name, isAdmin, canEditSettings: isAdminRequestAllowed(user), analyticsId: analyticsIdFor(name) },
-    });
+    res.json({ success: true, token, user: sessionView(user) });
   } catch (err: any) {
     console.error("[AUTH ERROR] Error processing login:", err);
     res.status(500).json({ success: false, error: "Internal authentication error." });
@@ -2422,34 +2462,19 @@ app.post("/api/auth/login", (req, res) => {
 // API: Who am I? The client uses this instead of a localStorage timestamp, so a session
 // cannot be resurrected by editing browser storage.
 app.get("/api/auth/me", async (req, res) => {
-  let user = getSession(req);
-  if (!user) {
+  const issued = readSession(req);
+  const user = getSession(req);
+  if (!issued || !user) {
     res.status(401).json({ authenticated: false });
     return;
   }
-  if (user.email) {
-    // A Google session picks up a rename in the people directory and a change to ADMIN_EMAILS on
-    // the next app load, rather than when it expires.
-    try {
-      const current = (await loadPeopleIndex()).byEmail.get(user.email);
-      const fresh: SessionUser = { ...user, name: current?.displayName ?? user.name, isAdmin: adminEmails().includes(user.email) };
-      if (fresh.name !== user.name || fresh.isAdmin !== user.isAdmin) {
-        user = fresh;
-        setSessionCookie(res, user);
-      }
-    } catch (err: any) {
-      console.error("[AUTH] Could not refresh the session from the people directory:", err?.message || err);
-    }
-  }
+  // A Google session picks up a rename or role change from the people directory; reissue the
+  // cookie so the token says so too.
+  if (user.name !== issued.name || user.role !== issued.role || user.isAdmin !== issued.isAdmin) setSessionCookie(res, user);
   const token = createSessionToken(user);
   // Renewed on every app load, so planners already signed in when this shipped get the mark too.
   setStaffDeviceCookie(res, user.name);
-  res.json({
-    authenticated: true,
-    token,
-    user: { name: user.name, email: user.email, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user), analyticsId: analyticsIdFor(user.name, user.email) },
-    adminPasswordConfigured: isAdminPasswordConfigured(),
-  });
+  res.json({ authenticated: true, token, user: sessionView(user), adminPasswordConfigured: isAdminPasswordConfigured() });
 });
 
 // What the sign-in screen offers. The client id is public by design: Google sign-in runs in the browser.
@@ -2486,7 +2511,7 @@ app.post("/api/auth/google", async (req, res) => {
       person = result.person;
       if (!result.changed) break;
       try {
-        await storage.savePeople(result.people, person.displayName, record.revision);
+        await storage.savePeople({ people: result.people, departments: record.departments }, person.displayName, record.revision);
         forgetPeopleCaches();
         console.log(`[AUTH] First Google sign-in for ${person.email} as '${person.displayName}'.`);
         break;
@@ -2494,17 +2519,14 @@ app.post("/api/auth/google", async (req, res) => {
         if (!(err instanceof RevisionConflictError) || attempt >= PEOPLE_SAVE_ATTEMPTS) throw err;
       }
     }
-    const user: SessionUser = { name: person.displayName, email: person.email, isAdmin: adminEmails().includes(person.email), issuedAt: Date.now() };
+    const role = roleFor(person.email, person, adminEmails());
+    const user: SessionUser = { name: person.displayName, email: person.email, role, isAdmin: role !== "user", issuedAt: Date.now() };
     const token = createSessionToken(user);
     setSessionCookie(res, user);
     setStaffDeviceCookie(res, user.name);
     logUsage(req, "login", { actor: user.name, kind: "google" });
-    console.log(`[AUTH] '${user.name}' <${user.email}> signed in with Google${user.isAdmin ? " as an administrator" : ""}.`);
-    res.json({
-      success: true,
-      token,
-      user: { name: user.name, email: user.email, isAdmin: user.isAdmin, canEditSettings: isAdminRequestAllowed(user), analyticsId: analyticsIdFor(user.name, user.email) },
-    });
+    console.log(`[AUTH] '${user.name}' <${user.email}> signed in with Google as ${role}.`);
+    res.json({ success: true, token, user: sessionView(user) });
   } catch (err: any) {
     console.error("[AUTH ERROR] Google sign-in failed:", err);
     res.status(500).json({ success: false, error: "Internal authentication error." });
@@ -2513,18 +2535,18 @@ app.post("/api/auth/google", async (req, res) => {
 
 // The people directory, for Settings -> People. Every name ever recorded comes with it, so an
 // admin can give the names someone typed before Google sign-in to that person.
-app.get("/api/people", requireAdmin, async (_req, res) => {
+app.get("/api/people", requirePeopleAdmin, async (_req, res) => {
   try {
     const storage = await getStorage();
     const [record, plans, events] = await Promise.all([storage.getPeople(), storage.listPlans({ includeArchived: true }), storage.listUsageEvents("")]);
     const names = knownPeople(plans, events).map(({ name, plans, lastSeenAt }) => ({ name, plans, lastSeenAt }));
-    res.json({ success: true, people: record.people, revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy, names });
+    res.json({ success: true, ...record, names, adminEmails: adminEmails() });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to load people", details: err?.message || String(err) });
   }
 });
 
-app.put("/api/people", requireAdmin, async (req, res) => {
+app.put("/api/people", requirePeopleAdmin, async (req, res) => {
   const expectedRevision = Number(req.body?.revision);
   if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
     res.status(400).json({ error: "The people list's revision is missing." });
@@ -2533,15 +2555,15 @@ app.put("/api/people", requireAdmin, async (req, res) => {
   try {
     const storage = await getStorage();
     const current = await storage.getPeople();
-    const edit = applyPeopleEdit(current.people, req.body?.people, allowedEmailDomains());
+    const edit = applyPeopleEdit(current.people, req.body?.people, allowedEmailDomains(), req.body?.departments ?? current.departments);
     if ("error" in edit) {
       res.status(400).json({ error: edit.error });
       return;
     }
-    const record = await storage.savePeople(edit.people, actorName(req), expectedRevision);
+    const record = await storage.savePeople(edit, actorName(req), expectedRevision);
     forgetPeopleCaches();
     console.log(`[PEOPLE] Directory saved by '${actorName(req)}' (r${record.revision}).`);
-    res.json({ success: true, people: record.people, revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy });
+    res.json({ success: true, ...record, adminEmails: adminEmails() });
   } catch (err: any) {
     if (err instanceof RevisionConflictError) {
       res.status(409).json({ error: "Someone else changed the people list. Reload it and make your change again.", code: "REVISION_CONFLICT", currentRevision: err.currentRevision });

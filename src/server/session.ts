@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { Request, Response, NextFunction } from "express";
+import type { Role } from "../people/people";
 
 /**
  * Session identity for the shared-login model.
@@ -24,8 +25,13 @@ export interface SessionUser {
   name: string;
   /** Set only for Google sign-ins: the verified Workspace email. */
   email?: string;
-  /** True when the user also supplied the admin password. Gates settings writes. */
+  /** True when the user may change global settings: an admin or an editor. Gates requireAdmin. */
   isAdmin: boolean;
+  /**
+   * "admin" also manages people (requirePeopleAdmin). For Google sign-ins it follows the directory.
+   * Always set on a verified session; optional only so callers building one may leave it to isAdmin.
+   */
+  role?: Role;
   /** Epoch ms the session was issued; used for expiry. */
   issuedAt: number;
 }
@@ -93,7 +99,10 @@ export function verifySessionToken(token: string | undefined): SessionUser | nul
     const user = JSON.parse(Buffer.from(payload, "base64url").toString("utf-8")) as SessionUser;
     if (!user?.name || typeof user.issuedAt !== "number") return null;
     if (Date.now() - user.issuedAt > SESSION_TTL_MS) return null;
-    return { name: user.name, ...(typeof user.email === "string" && user.email ? { email: user.email } : {}), isAdmin: Boolean(user.isAdmin), issuedAt: user.issuedAt };
+    const isAdmin = Boolean(user.isAdmin);
+    // Tokens from before roles existed: an admin was the only kind of settings editor.
+    const role: Role = user.role === "admin" || user.role === "editor" || user.role === "user" ? user.role : isAdmin ? "admin" : "user";
+    return { name: user.name, ...(typeof user.email === "string" && user.email ? { email: user.email } : {}), isAdmin, role, issuedAt: user.issuedAt };
   } catch {
     return null;
   }
@@ -140,7 +149,24 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return jar;
 }
 
+/**
+ * Brings a Google session's name and role up to date with the people directory, so a rename or a
+ * role change applies on the next request rather than when the 30-day session ends. Installed by
+ * the server, which owns the directory cache; without one, the token is taken as issued.
+ */
+let sessionRefresher: ((user: SessionUser) => SessionUser) | null = null;
+
+export function setSessionRefresher(refresh: (user: SessionUser) => SessionUser): void {
+  sessionRefresher = refresh;
+}
+
 export function getSession(req: Request): SessionUser | null {
+  const user = readSession(req);
+  return user && sessionRefresher ? sessionRefresher(user) : user;
+}
+
+/** The session exactly as the token says, before any refresh. */
+export function readSession(req: Request): SessionUser | null {
   // 1. Authorization header: "Bearer <token>"
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
@@ -245,6 +271,31 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const user = getSession(req);
   if (!user) {
     res.status(401).json({ error: "Not signed in.", code: "UNAUTHENTICATED" });
+    return;
+  }
+  (req as any).user = user;
+  next();
+}
+
+/**
+ * Whether this request may manage people (roles, departments, old names). Admins only; editors
+ * change settings but not who may change them. Unlocked for everyone only when no admin is
+ * configured at all, as with settings.
+ */
+export function isPeopleAdminAllowed(user: SessionUser | null): boolean {
+  if (!user) return false;
+  if (!isAdminPasswordConfigured() && adminEmails().length === 0) return true;
+  return user.role === "admin";
+}
+
+export function requirePeopleAdmin(req: Request, res: Response, next: NextFunction): void {
+  const user = getSession(req);
+  if (!user) {
+    res.status(401).json({ error: "Not signed in.", code: "UNAUTHENTICATED" });
+    return;
+  }
+  if (!isPeopleAdminAllowed(user)) {
+    res.status(403).json({ error: "Only administrators can manage people.", code: "FORBIDDEN" });
     return;
   }
   (req as any).user = user;

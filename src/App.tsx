@@ -5040,6 +5040,7 @@ export default function App() {
         readOnly={!canEditSettings}
         saveError={settingsError}
         userName={session?.name ?? ""}
+        canManagePeople={session?.canManagePeople === true}
         initialTab={settingsInitialTab}
       />
 

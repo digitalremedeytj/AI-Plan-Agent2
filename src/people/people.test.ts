@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDashboard } from "../usage/dashboard";
 import { DEFAULT_DASHBOARD_CONFIG, SHARE_VIEWER_ACTOR, type UsageEvent } from "../storage/types";
-import { applyPeopleEdit as applyEdit, ensurePerson, indexPeople, parsePeopleList, withCanonicalActors, withCanonicalAuthors, type Person } from "./people";
+import { applyPeopleEdit as applyEdit, ensurePerson, indexPeople, parsePeopleList, roleFor, withCanonicalActors, withCanonicalAuthors, type Person } from "./people";
 
 const applyPeopleEdit = (stored: Person[], edited: unknown) => applyEdit(stored, edited, ["digitalremedy.com"]);
 
@@ -123,4 +123,30 @@ test("signing in again changes nothing", () => {
   const result = ensurePerson(people, "TPascal@digitalremedy.com", "Someone Else", NOW);
   assert.equal(result.changed, false);
   assert.equal(result.people, people);
+});
+
+test("ADMIN_EMAILS are always admins, whatever the directory says", () => {
+  assert.equal(roleFor("TPascal@digitalremedy.com", { role: "user" }, ["tpascal@digitalremedy.com"]), "admin");
+  assert.equal(roleFor("ana@digitalremedy.com", { role: "editor" }, ["tpascal@digitalremedy.com"]), "editor");
+  assert.equal(roleFor("ana@digitalremedy.com", undefined, []), "user");
+});
+
+test("roles, departments and the dashboard default are saved; a department must be on the list", () => {
+  const ana: Person = { email: "ana@digitalremedy.com", displayName: "Ana Smith", aliases: [] };
+  const edit = applyEdit([ana], [{ ...ana, role: "editor", department: "sales", offDashboardByDefault: true }], ["digitalremedy.com"], ["Sales", "sales", " Ops "]);
+  assert.ok("people" in edit);
+  assert.deepEqual(edit.departments, ["Ops", "Sales"]);
+  assert.deepEqual(edit.people[0], { ...ana, role: "editor", department: "Sales", offDashboardByDefault: true });
+
+  const unknown = applyEdit([ana], [{ ...ana, department: "Finance" }], ["digitalremedy.com"], ["Sales"]);
+  assert.ok("error" in unknown && unknown.error.includes("Finance"));
+  const badRole = applyEdit([ana], [{ ...ana, role: "owner" }], ["digitalremedy.com"], []);
+  assert.ok("error" in badRole);
+});
+
+test("setting someone back to user stores no role at all", () => {
+  const ana: Person = { email: "ana@digitalremedy.com", displayName: "Ana Smith", aliases: [], role: "editor", department: "Sales" };
+  const edit = applyEdit([ana], [{ ...ana, role: "user", department: "" }], ["digitalremedy.com"], ["Sales"]);
+  assert.ok("people" in edit);
+  assert.deepEqual(edit.people[0], { email: "ana@digitalremedy.com", displayName: "Ana Smith", aliases: [] });
 });

@@ -327,9 +327,49 @@ function UserFilter({ allUsers, selected, onChange }: { allUsers: string[]; sele
   );
 }
 
-// TJ's account is used for testing, so the dashboard opens without it. It stays in the user filter,
-// one click away, rather than being hidden for good like Settings' excluded names.
-const DEFAULT_UNCHECKED_USERS = ["tj"];
+/**
+ * Narrows the user filter to one department's people (Settings -> People). People set to open
+ * unchecked stay out of a department too, unless they are all it has.
+ */
+function DepartmentFilter({ allUsers, people, selected, onChange }: { allUsers: string[]; people: api.DashboardPeople; selected: string; onChange: (department: string, users: string[] | null) => void }) {
+  const departmentOf = (name: string) => people.byName[name]?.department ?? "";
+  const present = people.departments.filter((d) => allUsers.some((n) => departmentOf(n) === d));
+  const hasUnassigned = allUsers.some((n) => !departmentOf(n));
+  if (present.length === 0) return null;
+  const choose = (department: string) => {
+    if (!department) {
+      onChange("", defaultSelection(allUsers, people));
+      return;
+    }
+    const members = allUsers.filter((n) => departmentOf(n) === (department === NO_DEPARTMENT ? "" : department));
+    const shown = members.filter((n) => !people.byName[n]?.offByDefault);
+    onChange(department, shown.length ? shown : members);
+  };
+  return (
+    <label className="relative inline-flex items-center gap-2 rounded-xl bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/15 transition hover:bg-white/15 print:hidden">
+      {selected ? <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-brand-purple-900" aria-label="Filter active" /> : null}
+      <Building2 className="h-4 w-4" />
+      <select
+        value={selected}
+        onChange={(e) => choose(e.target.value)}
+        aria-label="Department"
+        className="max-w-48 cursor-pointer bg-transparent font-semibold text-white focus:outline-none [&>option]:text-slate-900"
+      >
+        <option value="">All departments</option>
+        {present.map((d) => <option key={d} value={d}>{d}</option>)}
+        {hasUnassigned ? <option value={NO_DEPARTMENT}>No department</option> : null}
+      </select>
+    </label>
+  );
+}
+
+const NO_DEPARTMENT = "\u0000none";
+
+/** Everyone except the people set to open unchecked; null (everyone) when nobody is. */
+function defaultSelection(allUsers: string[], people: api.DashboardPeople | undefined): string[] | null {
+  const shown = allUsers.filter((n) => !people?.byName[n]?.offByDefault);
+  return shown.length > 0 && shown.length < allUsers.length ? shown : null;
+}
 
 export default function DashboardPage() {
   const initial = React.useMemo(readHash, []);
@@ -343,9 +383,11 @@ export default function DashboardPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
   const [selectedUsers, setSelectedUsers] = React.useState<string[] | null>(null);
+  const [dashboardPeople, setDashboardPeople] = React.useState<api.DashboardPeople | null>(null);
+  const [department, setDepartment] = React.useState("");
   const [shareLinkForSummary, setShareLinkForSummary] = React.useState<string | null>(null);
   const firstLoad = React.useRef(true);
-  // Applied once: after someone picks "All users" the test account must not be taken out again.
+  // Applied once: after someone picks "All users" the people set to open unchecked must not be taken out again.
   const defaultFilterApplied = React.useRef(false);
 
   // Take the key out of the visible address once read, so a screenshot or screen-share of the
@@ -370,10 +412,11 @@ export default function DashboardPage() {
       const result = await api.getDashboardData(range, { key: effectiveKey, firstLoad: firstLoad.current, users: selectedUsers });
       if (!defaultFilterApplied.current) {
         defaultFilterApplied.current = true;
-        const others = result.data.allUsers.filter((n) => !DEFAULT_UNCHECKED_USERS.includes(n.trim().toLowerCase()));
-        if (selectedUsers === null && others.length > 0 && others.length < result.data.allUsers.length) {
-          // Refetch without the test account instead of showing numbers that include it first.
+        const others = defaultSelection(result.data.allUsers, result.people);
+        if (selectedUsers === null && others) {
+          // Refetch without them instead of showing numbers that include them first.
           // firstLoad stays set so the visit is still counted once, on the load that is shown.
+          setDashboardPeople(result.people ?? null);
           setSelectedUsers(others);
           return;
         }
@@ -384,6 +427,7 @@ export default function DashboardPage() {
         trackScreen("dashboard");
       }
       setData(result.data);
+      setDashboardPeople(result.people ?? null);
       setViewer(result.viewer);
       setHoursPerPlan((h) => h ?? result.data.hoursPerPlan);
       setStatus("ready");
@@ -543,11 +587,19 @@ export default function DashboardPage() {
                 aria-label="End date"
               />
             </div>
+            {data && data.allUsers.length > 0 && dashboardPeople ? (
+              <DepartmentFilter
+                allUsers={data.allUsers}
+                people={dashboardPeople}
+                selected={department}
+                onChange={(d, users) => { setDepartment(d); setSelectedUsers(users); track("dashboard_user_filter", { selected: users?.length ?? 0 }); }}
+              />
+            ) : null}
             {data && data.allUsers.length > 0 ? (
               <UserFilter
                 allUsers={data.allUsers}
                 selected={selectedUsers}
-                onChange={(users) => { setSelectedUsers(users); track("dashboard_user_filter", { selected: users?.length ?? 0 }); }}
+                onChange={(users) => { setDepartment(""); setSelectedUsers(users); track("dashboard_user_filter", { selected: users?.length ?? 0 }); }}
               />
             ) : null}
             {data ? (

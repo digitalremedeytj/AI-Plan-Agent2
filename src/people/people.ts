@@ -12,6 +12,14 @@ import { toPersonKey } from "../usage/usageSummary";
  * A wrong merge is undone by removing the alias, and nothing is lost either way.
  */
 
+/**
+ * What someone may do. "admin" also manages this directory; "editor" changes global settings;
+ * "user" plans. ADMIN_EMAILS are always admins, whatever is stored, so the directory can never
+ * lock its last admin out.
+ */
+export type Role = "admin" | "editor" | "user";
+export const ROLES: Role[] = ["admin", "editor", "user"];
+
 export interface Person {
   /** Lowercased Google email; the person's identity. */
   email: string;
@@ -20,18 +28,36 @@ export interface Person {
   /** Older names whose records belong to this person. */
   aliases: string[];
   firstSignInAt?: string;
+  /** Absent means "user". */
+  role?: Role;
+  /** One of the directory's departments, for the dashboard's department filter. */
+  department?: string;
+  /** Left unchecked when the dashboard opens (test and internal accounts). One click brings them back. */
+  offDashboardByDefault?: boolean;
 }
 
-export interface PeopleRecord {
+export interface PeopleDirectory {
+  people: Person[];
+  departments: string[];
+}
+
+export interface PeopleRecord extends PeopleDirectory {
   /** Compare-and-swap counter; 0 means nobody has been saved yet. */
   revision: number;
-  people: Person[];
   updatedAt: string;
   updatedBy: string;
 }
 
-export const EMPTY_PEOPLE: PeopleRecord = { revision: 0, people: [], updatedAt: "", updatedBy: "" };
+export const EMPTY_PEOPLE: PeopleRecord = { revision: 0, people: [], departments: [], updatedAt: "", updatedBy: "" };
 
+const MAX_DEPARTMENTS = 50;
+const MAX_DEPARTMENT_LENGTH = 40;
+
+/** A person's role, with ADMIN_EMAILS taking precedence over what the directory says. */
+export function roleFor(email: string, person: Pick<Person, "role"> | undefined, adminEmails: string[]): Role {
+  if (adminEmails.includes(normalizeEmail(email))) return "admin";
+  return person?.role && ROLES.includes(person.role) ? person.role : "user";
+}
 const MAX_NAME_LENGTH = 60;
 const MAX_ALIASES = 30;
 
@@ -140,8 +166,20 @@ export function parsePeopleList(text: string): { people: Array<{ email: string; 
  * someone who has signed in is never removed here. A renamed person who has signed in keeps their
  * old display name as an alias, because their past records were written under it.
  */
-export function applyPeopleEdit(stored: Person[], edited: unknown, allowedDomains: string[]): { people: Person[] } | { error: string } {
+export function applyPeopleEdit(
+  stored: Person[],
+  edited: unknown,
+  allowedDomains: string[],
+  editedDepartments: unknown = [],
+): PeopleDirectory | { error: string } {
   if (!Array.isArray(edited)) return { error: "The people list is missing." };
+  if (!Array.isArray(editedDepartments)) return { error: "The department list is missing." };
+  const departments = new Map<string, string>();
+  for (const raw of editedDepartments) {
+    const name = cleanName(raw).slice(0, MAX_DEPARTMENT_LENGTH);
+    if (name && !departments.has(name.toLowerCase())) departments.set(name.toLowerCase(), name);
+  }
+  if (departments.size > MAX_DEPARTMENTS) return { error: `There can be at most ${MAX_DEPARTMENTS} departments.` };
   const byEmail = new Map(stored.map((p) => [normalizeEmail(p.email), p]));
   const people: Person[] = [];
   const claimedBy = new Map<string, string>();
@@ -175,7 +213,21 @@ export function applyPeopleEdit(stored: Person[], edited: unknown, allowedDomain
       if (owner && owner !== email) return { error: `"${name}" is given to both ${owner} and ${email}. A name can belong to one person.` };
       claimedBy.set(key, email);
     }
-    people.push({ ...current, displayName, aliases: [...unique.values()] });
+    const role = raw.role === undefined || raw.role === null || raw.role === "" ? "user" : raw.role;
+    if (!ROLES.includes(role)) return { error: `"${role}" is not a role. Use admin, editor or user.` };
+    const departmentName = cleanName(raw.department);
+    const department = departmentName ? departments.get(departmentName.toLowerCase()) : undefined;
+    if (departmentName && !department) return { error: `${displayName}'s department "${departmentName}" is not in the department list.` };
+
+    const { role: _role, department: _department, offDashboardByDefault: _off, ...rest } = current;
+    people.push({
+      ...rest,
+      displayName,
+      aliases: [...unique.values()],
+      ...(role !== "user" ? { role } : {}),
+      ...(department ? { department } : {}),
+      ...(raw.offDashboardByDefault === true ? { offDashboardByDefault: true } : {}),
+    });
     byEmail.delete(email);
   }
   // Someone who has signed in is kept even if the edit left them out; their records are theirs.
@@ -185,7 +237,8 @@ export function applyPeopleEdit(stored: Person[], edited: unknown, allowedDomain
       const owner = claimedBy.get(toPersonKey(name));
       if (owner) return { error: `"${name}" already belongs to ${person.email}.` };
     }
-    people.push(person);
+    // Kept as they were, except a department that no longer exists.
+    people.push(person.department && !departments.has(person.department.toLowerCase()) ? { ...person, department: undefined } : person);
   }
-  return { people };
+  return { people, departments: [...departments.values()].sort((a, b) => a.localeCompare(b)) };
 }

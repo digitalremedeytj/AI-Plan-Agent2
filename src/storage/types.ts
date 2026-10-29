@@ -1,7 +1,7 @@
 import type { PlanningSettings } from "../planning/settings";
 import type { CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import type { ScoutPrompt } from "../assistant/promptLibrary";
-import type { Person, PeopleRecord } from "../people/people";
+import type { PeopleDirectory, PeopleRecord } from "../people/people";
 
 /**
  * Shared, server-authoritative storage contract.
@@ -509,5 +509,5 @@ export interface StorageAdapter {
   /** The people directory (src/people/people.ts). Revision 0 until the first person signs in with Google. */
   getPeople(): Promise<PeopleRecord>;
   /** Throws RevisionConflictError if expectedRevision is stale. */
-  savePeople(people: Person[], actor: string, expectedRevision: number): Promise<PeopleRecord>;
+  savePeople(directory: PeopleDirectory, actor: string, expectedRevision: number): Promise<PeopleRecord>;
 }

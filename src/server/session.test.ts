@@ -5,6 +5,7 @@ import {
   createSessionToken,
   getSession,
   isAdminRequestAllowed,
+  isPeopleAdminAllowed,
   parseCookies,
   createStaffDeviceToken,
   sanitizeDisplayName,
@@ -164,4 +165,22 @@ test("ADMIN_EMAILS alone locks settings to administrators", () => {
 test("the analytics id for a Google sign-in follows the email, not the display name", () => {
   assert.equal(analyticsIdFor("TJ Pascal", "tpascal@digitalremedy.com"), analyticsIdFor("Tj P.", "TPascal@digitalremedy.com"));
   assert.notEqual(analyticsIdFor("TJ Pascal", "tpascal@digitalremedy.com"), analyticsIdFor("TJ Pascal"));
+});
+
+test("an editor may change settings but not manage people; an admin may do both", () => {
+  process.env.ADMIN_EMAILS = "tpascal@digitalremedy.com";
+  try {
+    const editor = { name: "Ana", email: "ana@digitalremedy.com", isAdmin: true, role: "editor" as const, issuedAt: now() };
+    assert.equal(isAdminRequestAllowed(editor), true);
+    assert.equal(isPeopleAdminAllowed(editor), false);
+    assert.equal(isPeopleAdminAllowed({ ...editor, role: "admin" }), true);
+    assert.equal(isPeopleAdminAllowed({ ...editor, isAdmin: false, role: "user" }), false);
+  } finally {
+    delete process.env.ADMIN_EMAILS;
+  }
+});
+
+test("a session issued before roles existed keeps the access it had", () => {
+  assert.equal(verifySessionToken(createSessionToken({ name: "TJ", isAdmin: true, issuedAt: now() }))?.role, "admin");
+  assert.equal(verifySessionToken(createSessionToken({ name: "Ana", isAdmin: false, issuedAt: now() }))?.role, "user");
 });

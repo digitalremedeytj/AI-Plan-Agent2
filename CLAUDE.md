@@ -162,9 +162,14 @@ an actor from a request body.
 - All `/api/*` routes require a session except `/api/health` and `/api/auth/*`.
   This matters: the Cloud Run service is public (`invoker-iam-disabled: true`), so an
   unguarded route is open to the internet.
-- `ADMIN_EMAILS` (Google sign-ins) and `ADMIN_PASSWORD` (team-password sign-ins) gate global
-  settings writes (`requireAdmin`). If both are unset, every signed-in user can write —
-  deliberate, so deploying cannot brick settings.
+- **Roles** (Settings -> People): `admin` (settings and people), `editor` (settings), `user`.
+  `requireAdmin` admits admins and editors; `requirePeopleAdmin` admits admins only.
+  `ADMIN_EMAILS` are always admins whatever the directory says, so nobody can lock the last
+  admin out. A Google session's name and role are refreshed from the directory on every
+  request (`setSessionRefresher`), so a role change applies within 30s, not at session end.
+  A team-password sign-in is an admin only with `ADMIN_PASSWORD`. If neither `ADMIN_EMAILS`
+  nor `ADMIN_PASSWORD` is set, every signed-in user can write — deliberate, so deploying
+  cannot brick settings.
 
 ## Deployment
 

@@ -28,7 +28,10 @@ export interface SessionUser {
   name: string;
   /** Set when signed in with Google. */
   email?: string;
+  role?: "admin" | "editor" | "user";
   isAdmin: boolean;
+  /** Admins only: Settings -> People. */
+  canManagePeople?: boolean;
   /** True when this user may write global settings (see ADMIN_PASSWORD on the server). */
   canEditSettings: boolean;
   /** Pseudonymous Google Analytics user_id: a keyed hash of the name, never the name itself. */
@@ -383,7 +386,13 @@ export async function getUsageSummary(days: number): Promise<UsageSummary> {
 export type DashboardViewer = { via: "admin" | "member"; name: string } | { via: "link"; label: string; sharedBy: string };
 
 /** `key` is a view-only dashboard link's key; without one the signed-in session is used. */
-export async function getDashboardData(range: { from: string; to: string }, options: { key?: string | null; firstLoad?: boolean; users?: string[] | null } = {}): Promise<{ data: DashboardData; viewer: DashboardViewer }> {
+/** Settings -> People, as the dashboard needs it: departments and who opens unchecked. */
+export interface DashboardPeople {
+  departments: string[];
+  byName: Record<string, { department?: string; offByDefault?: boolean }>;
+}
+
+export async function getDashboardData(range: { from: string; to: string }, options: { key?: string | null; firstLoad?: boolean; users?: string[] | null } = {}): Promise<{ data: DashboardData; viewer: DashboardViewer; people?: DashboardPeople }> {
   const headers: Record<string, string> = {};
   if (options.key) headers["x-dashboard-key"] = options.key;
   if (options.firstLoad) headers["x-dashboard-visit"] = "1";
@@ -395,28 +404,36 @@ export async function getDashboardData(range: { from: string; to: string }, opti
 
 // --- people directory (admin) --------------------------------------------------
 
+export type Role = "admin" | "editor" | "user";
+
 export interface DirectoryPerson {
   email: string;
   displayName: string;
   aliases: string[];
   firstSignInAt?: string;
+  role?: Role;
+  department?: string;
+  offDashboardByDefault?: boolean;
 }
 
 export interface PeopleDirectory {
   people: DirectoryPerson[];
+  departments: string[];
   revision: number;
   updatedAt: string;
   updatedBy: string;
   /** Every name recorded on a plan or in the usage log, as typed. */
   names?: Array<{ name: string; plans: number; lastSeenAt: string }>;
+  /** Always admins (ADMIN_EMAILS); their role cannot be changed here. */
+  adminEmails?: string[];
 }
 
 export async function fetchPeople(): Promise<PeopleDirectory> {
   return request("/api/people");
 }
 
-export async function savePeople(people: DirectoryPerson[], revision: number): Promise<PeopleDirectory> {
-  return request("/api/people", { method: "PUT", body: JSON.stringify({ people, revision }) });
+export async function savePeople(people: DirectoryPerson[], departments: string[], revision: number): Promise<PeopleDirectory> {
+  return request("/api/people", { method: "PUT", body: JSON.stringify({ people, departments, revision }) });
 }
 
 export async function listDashboardLinks(): Promise<{ links: DashboardLink[]; config: DashboardConfig }> {

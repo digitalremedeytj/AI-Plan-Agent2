@@ -81,6 +81,8 @@ interface SettingsDrawerProps {
   readOnly?: boolean;
   /** The signed-in planner, so they can turn off the dashboard links they created. */
   userName?: string;
+  /** Admins only (not editors): Settings -> People. */
+  canManagePeople?: boolean;
   /** Error text from the last rejected save attempt, surfaced above the footer. */
   saveError?: string | null;
   /** The tab to show when the drawer opens, e.g. the prompt library from a link on the review page. */
@@ -130,7 +132,7 @@ function ShowToggle({ checked, onChange, label }: { checked: boolean; onChange: 
   );
 }
 
-export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave, readOnly = false, saveError = null, userName = "", initialTab = null }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave, readOnly = false, saveError = null, userName = "", initialTab = null, canManagePeople = false }: SettingsDrawerProps) {
   const [draftSettings, setDraftSettings] = React.useState<PlanningSettings>(() => clonePlanningSettings(settings));
   const [draftPublishers, setDraftPublishers] = React.useState<CtvPublisherSetting[]>(() =>
     Array.isArray(ctvPublishers) && ctvPublishers.length > 0
@@ -729,7 +731,9 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
     // Every planner may share the dashboard; only admins see its counting rules.
     { id: "dashboard", label: "Dashboard" },
     // Names people, so it is shown to the same admins who may edit settings.
-    ...(readOnly ? [] : [{ id: "usage" as const, label: "Usage" }, { id: "people" as const, label: "People" }]),
+    ...(readOnly ? [] : [{ id: "usage" as const, label: "Usage" }]),
+    // Who may do what is for admins; editors change settings but not roles.
+    ...(canManagePeople ? [{ id: "people" as const, label: "People" }] : []),
   ];
 
   const currentEditingPub = editingLogoPubId
@@ -800,14 +804,14 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                 <p className="font-bold">These settings are shared and read-only for you.</p>
                 <p className="text-xs text-amber-800 mt-0.5">
                   They apply to every user and every plan, so only administrators can change them.
-                  Sign in with the administrator password to edit.
+                  Ask an admin for the Editor role to change them.
                 </p>
               </div>
             </div>
           )}
           {/* A report, not a setting: outside the fieldset, so its range buttons are never disabled. */}
           {activeTab === "usage" && <UsageReport />}
-          {activeTab === "people" && <PeoplePanel />}
+          {activeTab === "people" && canManagePeople && <PeoplePanel />}
           {activeTab === "dashboard" && <DashboardLinksPanel isAdmin={!readOnly} userName={userName} />}
           {/* min-w-0: a fieldset defaults to min-content width, which lets a wide table stretch the drawer instead of scrolling in its own box. */}
           <fieldset disabled={readOnly} className={`min-w-0 ${readOnly ? "opacity-90" : ""}`}>

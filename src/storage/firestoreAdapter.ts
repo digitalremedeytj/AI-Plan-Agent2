@@ -33,7 +33,7 @@ import {
   type PlanVersion,
   type PlanVersionSummary,
 } from "./types";
-import { EMPTY_PEOPLE, type Person, type PeopleRecord } from "../people/people";
+import { EMPTY_PEOPLE, type PeopleDirectory, type PeopleRecord } from "../people/people";
 
 /**
  * Production driver: Firestore in Native mode, over the REST API.
@@ -772,16 +772,16 @@ export class FirestoreAdapter implements StorageAdapter {
     return doc ? this.documentToPeople(doc) : { ...EMPTY_PEOPLE };
   }
 
-  async savePeople(people: Person[], actor: string, expectedRevision: number): Promise<PeopleRecord> {
+  async savePeople({ people, departments }: PeopleDirectory, actor: string, expectedRevision: number): Promise<PeopleRecord> {
     const currentDoc = await this.getDocument(PEOPLE, CURRENT_DOC);
     const currentRevision = currentDoc ? this.documentToPeople(currentDoc).revision : 0;
     if (currentRevision !== expectedRevision) throw new RevisionConflictError(currentRevision, "The people list was changed by someone else.");
-    const record: PeopleRecord = { revision: currentRevision + 1, people, updatedAt: new Date().toISOString(), updatedBy: actor };
+    const record: PeopleRecord = { revision: currentRevision + 1, people, departments, updatedAt: new Date().toISOString(), updatedBy: actor };
     try {
       await this.putDocument(
         PEOPLE,
         CURRENT_DOC,
-        { revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy, peopleJson: JSON.stringify(people) },
+        { revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy, peopleJson: JSON.stringify(people), departmentsJson: JSON.stringify(departments) },
         currentDoc ? { expectedUpdateTime: currentDoc.updateTime } : { requireAbsent: true },
       );
     } catch (err) {
@@ -794,7 +794,14 @@ export class FirestoreAdapter implements StorageAdapter {
   private documentToPeople(doc: FirestoreDocument): PeopleRecord {
     const fields = decodeFields(doc.fields || {}) as Record<string, any>;
     try {
-      return { revision: Number(fields.revision) || 0, people: JSON.parse(fields.peopleJson), updatedAt: fields.updatedAt, updatedBy: fields.updatedBy };
+      return {
+        revision: Number(fields.revision) || 0,
+        people: JSON.parse(fields.peopleJson),
+        // Written before departments existed: none yet.
+        departments: fields.departmentsJson ? JSON.parse(fields.departmentsJson) : [],
+        updatedAt: fields.updatedAt,
+        updatedBy: fields.updatedBy,
+      };
     } catch (err) {
       // Refuse rather than return an empty list: saving over it would drop everyone.
       throw new Error(`The people directory could not be read: ${(err as Error)?.message || err}`);
