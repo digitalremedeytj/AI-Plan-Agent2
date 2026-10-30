@@ -6,6 +6,7 @@ import {
   generateGroundedText,
   generateStructuredJsonWithFallback,
   generateText,
+  describeFailedAttempts,
   describeQuota,
   isQuotaError,
   toGeminiJsonSchema,
@@ -276,4 +277,15 @@ test("a grounded call that fails for any reason other than quota is not retried 
 test("if 2.5 grounding is out of quota too, that 429 is what the caller sees", async () => {
   const client = stubWithLegacy([quotaError()], quotaError("gemini-2.5-flash"));
   await assert.rejects(generateGroundedText(client, { input: "q", thinkingLevel: "high", timeoutMs: 90000 }), (err) => isQuotaError(err) && /gemini-2\.5-flash/.test(describeQuota(err)));
+});
+
+test("a failed fallback call says which attempts timed out and which errored, so a slow day and an outage read differently", () => {
+  const err = Object.assign(new Error("429 RESOURCE_EXHAUSTED"), {
+    attempts: [
+      { thinkingLevel: "medium", seconds: 75, error: "Gemini call timed out after 75000ms" },
+      { thinkingLevel: "low", seconds: 12, error: "429 RESOURCE_EXHAUSTED" },
+    ],
+  });
+  assert.equal(describeFailedAttempts(err), "medium timed out after 75s; low failed after 12s (429 RESOURCE_EXHAUSTED)");
+  assert.equal(describeFailedAttempts(new Error("bad schema")), "bad schema");
 });

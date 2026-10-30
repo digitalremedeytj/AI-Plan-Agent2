@@ -74,6 +74,7 @@ import {
 import { filterCitationPool, RESEARCH_SOURCE_GUIDANCE } from "./src/research/sourceFilter";
 import { settlePublisherSelection, withUploadedPublishers } from "./src/qa/publisherSelection";
 import { describeChannelPlan, describeCharts, describePersonas, researchForPrompt } from "./src/qa/planContext";
+import { buildRunCheckpoint, parseRunCheckpoint } from "./src/research/runCheckpoint";
 import { PROSE_OWNERS, normalizeAudit, openFindingsAsFlags, type NormalizedAudit, type NormalizedVerify } from "./src/qa/planAudit";
 import { applyPatches, describeAppliedFixes, getAtPath, type AppliedPatch } from "./src/qa/planRemediation";
 import {
@@ -201,6 +202,7 @@ import {
   generateGroundedText,
   isQuotaError,
   generateStructuredJsonWithFallback,
+  describeFailedAttempts,
   generateText,
   GEMINI_FLASH_MODEL,
   toGeminiJsonSchema,
@@ -243,8 +245,16 @@ const SCORING_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; timeoutMs: n
   { thinkingLevel: "medium", timeoutMs: 75000 },
   { thinkingLevel: "low", timeoutMs: 60000 },
 ];
-const TIMEOUT_SCORING_MS = SCORING_ATTEMPTS.reduce((sum, attempt) => sum + attempt.timeoutMs, 0);
 const SCORING_GUARD_GRACE_MS = 5000;
+// 2026-10-28: both attempts came back empty and the run lost its channel plan. One more, cheaper
+// try (low, on a shorter research excerpt) before giving up, made only when the run can afford
+// it: what it needs, plus enough left over for QA to run and the plan to be saved.
+const SCORING_LAST_ATTEMPT: { thinkingLevel: GeminiThinkingLevel; timeoutMs: number } = { thinkingLevel: "low", timeoutMs: 45000 };
+const SCORING_LAST_ATTEMPT_RESERVE_MS = 90000;
+// Research per dossier in the scoring prompt. At the shared 25k cap the four dossiers were ~50k
+// chars of the prompt, most of it; scoring needs the findings it cites, and the narrative and QA still read them in full.
+const SCORING_RESEARCH_CHARS = 8000;
+const SCORING_LAST_ATTEMPT_RESEARCH_CHARS = 4000;
 // QA runs on a different provider from the writer so the two do not share blind spots. Chosen
 // from a side-by-side run on a saved PetSmart plan (2026-09-23): Sol at high found real issues
 // medium missed in 92-123s; xhigh took 142-183s for no clearly better findings.
@@ -281,6 +291,8 @@ const QUICK_NARRATIVE_ATTEMPTS: Array<{ thinkingLevel: GeminiThinkingLevel; time
 // The whole generation must finish inside Cloud Run's 900s request timeout. Late stages check
 // what is left and step aside (with an alert) rather than be cut off mid-response.
 const RUN_BUDGET_MS = 870000;
+// The research dossiers, in the order a run produces them. A retry's checkpoint must match.
+const RESEARCH_LABELS = ["Demographics", "Digital Touchpoints", "CTV & Devices", "Temporal & Purchase"] as const;
 // Segment recommendations run after the profile is delivered, so they favour quality: high
 // thinking first, one medium-thinking fallback. Together they stay inside Cloud Run's 300s.
 const TIMEOUT_SEGMENTS_HIGH_MS = 90000;
@@ -1144,7 +1156,14 @@ function aiCandidateProducts(settings: any) {
     .filter((product) => product.digitalRemedyExecutable && product.recommendationEligible && product.status === "live");
 }
 
-async function generateCandidateSignals(audienceProfile: any, facts: any, research: Array<ResearchDossierText & { failed?: boolean }> = [], history = ""): Promise<AiCandidateSignal[]> {
+async function generateCandidateSignals(
+  audienceProfile: any,
+  facts: any,
+  research: Array<ResearchDossierText & { failed?: boolean }> = [],
+  history = "",
+  /** Whether a further attempt of this length still fits; a generation run checks its budget. */
+  canTryAgain: (timeoutMs: number) => boolean = () => true,
+): Promise<AiCandidateSignal[]> {
   const customNotes = new Map(
     (facts?.settings?.customProducts || []).map((product: any) => [product.productId, product.planningNotes]),
   );
@@ -1167,7 +1186,7 @@ async function generateCandidateSignals(audienceProfile: any, facts: any, resear
           : { catalogSource: "digital_remedy_workbook", ...plannerGuidanceField(facts.settings, product.id) }),
       };
     });
-  const prompt = `You are ScoutAI's media-strategy reasoning layer. Evaluate only the supplied, Digital Remedy-executable product candidates.
+  const promptFor = (researchChars: number) => `You are ScoutAI's media-strategy reasoning layer. Evaluate only the supplied, Digital Remedy-executable product candidates.
 
 Code—not you—owns eligibility, availability, budget tiers, product minimums, portfolio selection, and allocation arithmetic. Do not add products, change IDs, or claim a prerequisite is present when it is unknown.
 
@@ -1215,35 +1234,52 @@ ${JSON.stringify({
   sources: audienceProfile?.sources?.slice?.(0, 15),
 }, null, 2)}
 
-${research.length > 0 ? `RESEARCH DOSSIERS (the evidence your rationale may cite):\n${researchForPrompt(research)}\n\n` : ""}${history ? `${history}\n\n` : ""}ALLOWED PRODUCT CANDIDATES:
+${research.length > 0 ? `RESEARCH DOSSIERS (the evidence your rationale may cite):\n${researchForPrompt(research, researchChars)}\n\n` : ""}${history ? `${history}\n\n` : ""}ALLOWED PRODUCT CANDIDATES:
 ${JSON.stringify(candidates, null, 2)}
 
 Return one signal object per allowed candidate and no other products.`;
 
   // Medium, not high: in testing high took ~49s of a 60s budget for near-identical scores. A slow
-  // medium attempt falls back once to low (SCORING_ATTEMPTS). If both fail it throws: the channel
-  // strategy is then reported as failed rather than built from formula scores that would read as
-  // AI analysis.
-  {
+  // medium attempt falls back once to low (SCORING_ATTEMPTS), then once more to a cheaper low
+  // try when time allows. If every try fails it throws: the run then stops and offers a retry,
+  // rather than ship formula scores that would read as AI analysis.
+  // What each try ran into, so the failure says whether Gemini was slow or erroring.
+  const failures: string[] = [];
+  const ask = async (researchChars: number, attempts: typeof SCORING_ATTEMPTS) => {
+    const input = promptFor(researchChars);
+    const guardMs = attempts.reduce((sum, attempt) => sum + attempt.timeoutMs, 0) + SCORING_GUARD_GRACE_MS;
+    console.log(`[CHANNELS] Candidate reasoning prompt: ${input.length} chars (research capped at ${researchChars}/dossier, ${candidates.length} candidates).`);
+    let settled = false;
     const response: any = await withTimeout(
-      generateStructuredJsonWithFallback(
-        getAiClient(),
-        { input: prompt, schema: candidateSignalResponseSchema },
-        SCORING_ATTEMPTS,
-      ).then((r) => r.data).catch((err) => {
-        console.warn(`[CHANNELS] Candidate reasoning failed: ${err?.message || err}`);
-        return null;
-      }),
-      TIMEOUT_SCORING_MS + SCORING_GUARD_GRACE_MS,
+      generateStructuredJsonWithFallback(getAiClient(), { input, schema: candidateSignalResponseSchema }, attempts)
+        .then((r) => r.data)
+        .catch((err) => {
+          failures.push(describeFailedAttempts(err));
+          return null;
+        })
+        .finally(() => { settled = true; }),
+      guardMs,
       null,
     );
-    const parsed = response?.signals;
-    if (!Array.isArray(parsed)) {
-      throw new Error(`AI candidate reasoning returned no signals (no answer within ${TIMEOUT_SCORING_MS / 1000}s across two tries, or failed).`);
+    if (!settled) failures.push(`no answer within ${guardMs / 1000}s`);
+    else if (response && !Array.isArray(response.signals)) failures.push("answered without a signals list");
+    return Array.isArray(response?.signals) ? response.signals as any[] : null;
+  };
+  let parsed = await ask(SCORING_RESEARCH_CHARS, SCORING_ATTEMPTS);
+  if (!parsed) {
+    if (canTryAgain(SCORING_LAST_ATTEMPT.timeoutMs + SCORING_GUARD_GRACE_MS)) {
+      console.warn(`[CHANNELS] Candidate reasoning failed (${failures.join("; ")}); one last low-thinking try on shorter research.`);
+      parsed = await ask(SCORING_LAST_ATTEMPT_RESEARCH_CHARS, [SCORING_LAST_ATTEMPT]);
+    } else {
+      failures.push("no time left in the run for a third try");
     }
-    const allowedIds = new Set(candidates.map((candidate) => candidate.channelId));
-    return parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId));
   }
+  if (!parsed) {
+    console.warn(`[CHANNELS] Candidate reasoning failed: ${failures.join("; ")}`);
+    throw new Error(`AI candidate reasoning returned no signals (${failures.join("; ")}).`);
+  }
+  const allowedIds = new Set(candidates.map((candidate) => candidate.channelId));
+  return parsed.filter((signal): signal is AiCandidateSignal => signal && allowedIds.has(signal.channelId));
 }
 
 async function buildChannelStrategy(
@@ -1273,6 +1309,8 @@ async function buildChannelStrategy(
     research?: Array<ResearchDossierText & { failed?: boolean }>;
     /** Past campaigns the planner chose, for the channel reasoning (see src/research/pastPerformance). */
     history?: string;
+    /** See generateCandidateSignals: whether the run has time for a further scoring try. */
+    canTryAgain?: (timeoutMs: number) => boolean;
   },
 ) {
   const totalRfpBudget = selectedPlanOptions.reduce((acc, opt) => acc + (opt.budget || 0), 0);
@@ -1339,7 +1377,7 @@ async function buildChannelStrategy(
   const suppliedSignals = Array.isArray(options?.candidateSignals)
     ? options.candidateSignals.filter((signal) => signal && allowedSignalIds.has(signal.channelId))
     : [];
-  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts, options?.research ?? audienceProfile?.researchSnapshot?.dossiers ?? [], options?.history ?? "");
+  const aiSignals = suppliedSignals.length > 0 ? suppliedSignals : await generateCandidateSignals(audienceProfile, facts, options?.research ?? audienceProfile?.researchSnapshot?.dossiers ?? [], options?.history ?? "", options?.canTryAgain);
   // Every candidate must carry real AI reasoning. The engine can score a product without one,
   // but those formula scores and stock rationales would be shown as analysis.
   const signalled = new Set(aiSignals.map((signal) => signal.channelId));
@@ -5324,6 +5362,9 @@ app.post("/api/generate-profile", async (req, res) => {
   const pastCampaignIds: string[] = Array.isArray(req.body?.pastCampaignIds)
     ? req.body.pastCampaignIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 10)
     : [];
+  // "Retry channel plan": the research and synthesis of a run whose channel plan failed, sent back
+  // so this run starts at the channel plan instead of redoing ~7 minutes of work that succeeded.
+  const resume = parseRunCheckpoint(req.body?.resumeCheckpoint, RESEARCH_LABELS);
 
   // SSE Setup Headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -5333,7 +5374,8 @@ app.post("/api/generate-profile", async (req, res) => {
 
   let lastEventTime = Date.now();
   // Every step the console shows, saved with the plan so it can be reviewed after the run.
-  const generationLog: GenerationLogEntry[] = [];
+  // A retry continues the failed run's log, so the saved plan shows the whole story.
+  const generationLog: GenerationLogEntry[] = resume ? [...resume.log] : [];
   const sendEvent = (type: string, data: any) => {
     lastEventTime = Date.now();
     if ((type === "status" || type === "research_result") && generationLog.length < GENERATION_LOG_MAX_ENTRIES) {
@@ -5371,7 +5413,7 @@ app.post("/api/generate-profile", async (req, res) => {
       advertiserName: typeof advertiserName === "string" ? advertiserName : undefined,
       durationMs: Date.now() - runStartedAt,
       ok,
-      detail: detail ?? (regenerateType ? `regenerate_${regenerateType}` : quickMode ? "quick" : undefined),
+      detail: detail ?? (resume ? "channel_retry" : regenerateType ? `regenerate_${regenerateType}` : quickMode ? "quick" : undefined),
     });
   };
   // A planner who closes the tab mid-run never sees an error; count it as a failed run.
@@ -5411,6 +5453,15 @@ app.post("/api/generate-profile", async (req, res) => {
     return;
   }
 
+  if (req.body?.resumeCheckpoint && !resume) {
+    sendEvent("error", { error: "This run's saved research could not be reused. Generate the plan again." });
+    logGeneration(false, "channel_retry_invalid");
+    clearInterval(keepAlive);
+    clearInterval(watchdog);
+    res.end();
+    return;
+  }
+
   try {
     // Sanitize and trim prompt inputs for search grounding to strictly prevent token limit (1,048,576 tokens) errors
     const cleanAdvertiserName = (advertiserName || "").slice(0, 300);
@@ -5423,13 +5474,16 @@ app.post("/api/generate-profile", async (req, res) => {
       : [];
 
     const audienceSnippet = cleanAudienceDesc ? `"${cleanAudienceDesc.slice(0, 50)}${cleanAudienceDesc.length > 50 ? '...' : ''}"` : "Target Audience";
-    sendEvent("status", { message: `Initializing campaign parameters for ${audienceSnippet} in ${geography || 'United States'}...` });
+    sendEvent("status", { message: resume
+      ? `Retrying the channel plan for ${audienceSnippet}, reusing this run's website crawl, research and synthesis...`
+      : `Initializing campaign parameters for ${audienceSnippet} in ${geography || 'United States'}...` });
 
-    // Everything that failed or was not found, carried on the delivered profile.
-    const generationAlerts: GenerationAlert[] = [];
+    // Everything that failed or was not found, carried on the delivered profile. A retry keeps
+    // what its research and synthesis raised.
+    const generationAlerts: GenerationAlert[] = resume ? [...resume.alerts] : [];
 
     let crawl: CrawlResult | null = null;
-    if (url) {
+    if (url && !resume) {
       sendEvent("status", { message: `Crawling website ${url} to extract brand positioning, offering details, and market context...` });
       crawl = await crawlSite(url);
       if (crawl.ok) {
@@ -5451,7 +5505,9 @@ app.post("/api/generate-profile", async (req, res) => {
     const pinnedBrief = req.body?.pinnedBriefOfRecord
       ? normalizeBriefOfRecord(req.body.pinnedBriefOfRecord, ["brief + website", "brief + web search", "brief only"].includes(req.body.pinnedBriefOfRecord?.basis) ? req.body.pinnedBriefOfRecord.basis : "brief only")
       : null;
-    if (pinnedBrief) {
+    if (resume) {
+      briefOfRecord = resume.briefOfRecord;
+    } else if (pinnedBrief) {
       briefOfRecord = pinnedBrief;
       sendEvent("status", { message: `Using the planner's edited brief of record: ${pinnedBrief.primaryAudience}` });
     } else try {
@@ -5680,7 +5736,7 @@ INSTRUCTIONS:
     const targetFocusLabel = campaignFocus ? `for ${campaignFocus}` : "";
 
     // Execute research queries in parallel to stream progress instantly
-    const [demoResult, webResult, deviceResult, temporalResult] = await Promise.all([
+    const [demoResult, webResult, deviceResult, temporalResult] = resume ? resume.research : await Promise.all([
       handleResearchStep(promptDemographics, "Demographics", `Querying Census, Pew & GWI data for ${targetDescLabel} demographic cohorts in ${geography}...`),
       handleResearchStep(promptWebAffinity, "Digital Touchpoints", `Scanning Comscore, Similarweb & Semrush for domain traffic affinities ${targetFocusLabel}...`),
       handleResearchStep(promptDevices, "CTV & Devices", `Analyzing eMarketer, Nielsen & Wurl streaming shares across Smart TVs & streaming hardware...`),
@@ -5696,46 +5752,51 @@ INSTRUCTIONS:
       if (result.failed) console.warn(`[RESEARCH] ${result.label} dossier failed: ${result.reason}`);
     }
 
-    // Aggregate and deduplicate the search grounding links collected from all parallel operations
-    const allCitations = [
-      ...demoResult.sources,
-      ...webResult.sources,
-      ...deviceResult.sources,
-      ...temporalResult.sources
-    ];
+    let deduplicatedSources: Array<{ title: string; uri: string }>;
+    if (resume) {
+      deduplicatedSources = resume.groundingSources;
+    } else {
+      // Aggregate and deduplicate the search grounding links collected from all parallel operations
+      const allCitations = [
+        ...demoResult.sources,
+        ...webResult.sources,
+        ...deviceResult.sources,
+        ...temporalResult.sources
+      ];
 
-    const uniqueSourcesMap = new Map<string, { title: string; uri: string }>();
-    for (const src of allCitations) {
-      if (src && src.uri) {
-        const normUri = src.uri.trim();
-        // Avoid duplicate URIs to keep the list clean and pristine
-        if (!uniqueSourcesMap.has(normUri)) {
-          uniqueSourcesMap.set(normUri, src);
+      const uniqueSourcesMap = new Map<string, { title: string; uri: string }>();
+      for (const src of allCitations) {
+        if (src && src.uri) {
+          const normUri = src.uri.trim();
+          // Avoid duplicate URIs to keep the list clean and pristine
+          if (!uniqueSourcesMap.has(normUri)) {
+            uniqueSourcesMap.set(normUri, src);
+          }
         }
       }
-    }
-    const redirectSources = Array.from(uniqueSourcesMap.values());
-    console.log(`Consolidated all parallel search sources. Deduplicated count: ${redirectSources.length}`);
+      const redirectSources = Array.from(uniqueSourcesMap.values());
+      console.log(`Consolidated all parallel search sources. Deduplicated count: ${redirectSources.length}`);
 
-    // Trade the grounding redirects for publisher deep links before anything downstream reads
-    // them. Synthesis cites from this pool, so leaving it full of vertexaisearch redirects gave
-    // the QA scorer an "opaque sourcing" red flag and the remediation agent an excuse to replace
-    // the citation registry with URLs it made up. Bounded and non-fatal: whatever does not
-    // resolve keeps its original link.
-    sendEvent("status", { message: "Resolving research citations to their original publisher URLs..." });
-    const resolveStartedAt = Date.now();
-    const resolvedSources = await resolveGroundingUrls(redirectSources, {
-      timeoutMs: TIMEOUT_URL_RESOLUTION_MS,
-      concurrency: URL_RESOLUTION_CONCURRENCY,
-    });
-    const resolvedCount = resolvedSources.filter((src, idx) => src.uri !== redirectSources[idx].uri).length;
-    console.log(`Resolved ${resolvedCount}/${resolvedSources.length} grounding redirects to publisher URLs in ${Date.now() - resolveStartedAt}ms.`);
-    // Social, forum and homework domains are never evidence, so they never reach the pool the
-    // registry is curated from. Filtered after resolution: before it, every URL is a redirect.
-    const citationPool = filterCitationPool(resolvedSources);
-    const deduplicatedSources = citationPool.kept;
-    if (citationPool.excluded.length > 0) {
-      console.log(`[SOURCES] Excluded ${citationPool.excluded.length} non-evidence source(s) from the citation pool: ${citationPool.excluded.map((src) => `${src.uri} (${src.reason})`).join(", ")}`);
+      // Trade the grounding redirects for publisher deep links before anything downstream reads
+      // them. Synthesis cites from this pool, so leaving it full of vertexaisearch redirects gave
+      // the QA scorer an "opaque sourcing" red flag and the remediation agent an excuse to replace
+      // the citation registry with URLs it made up. Bounded and non-fatal: whatever does not
+      // resolve keeps its original link.
+      sendEvent("status", { message: "Resolving research citations to their original publisher URLs..." });
+      const resolveStartedAt = Date.now();
+      const resolvedSources = await resolveGroundingUrls(redirectSources, {
+        timeoutMs: TIMEOUT_URL_RESOLUTION_MS,
+        concurrency: URL_RESOLUTION_CONCURRENCY,
+      });
+      const resolvedCount = resolvedSources.filter((src, idx) => src.uri !== redirectSources[idx].uri).length;
+      console.log(`Resolved ${resolvedCount}/${resolvedSources.length} grounding redirects to publisher URLs in ${Date.now() - resolveStartedAt}ms.`);
+      // Social, forum and homework domains are never evidence, so they never reach the pool the
+      // registry is curated from. Filtered after resolution: before it, every URL is a redirect.
+      const citationPool = filterCitationPool(resolvedSources);
+      deduplicatedSources = citationPool.kept;
+      if (citationPool.excluded.length > 0) {
+        console.log(`[SOURCES] Excluded ${citationPool.excluded.length} non-evidence source(s) from the citation pool: ${citationPool.excluded.map((src) => `${src.uri} (${src.reason})`).join(", ")}`);
+      }
     }
 
     // Build dynamic CTV Publisher guidance based on active enabled publishers, tiers, and settings
@@ -5964,37 +6025,43 @@ Map the discovered real web source citations to the 'sources' field inside the J
 Ensure that all chart arrays are fully populated with exact numbers (percentages should be numbers like 45, not strings like "45%").
 Return ONLY the formatted JSON matching the schema. No markdown wrapping except a raw JSON string, or standard JSON formatting.`;
 
-    sendEvent("status", { message: "Synthesizing research dossiers and mapping audience indices..." });
-    console.log("Launching final Synthesis Call to build the comprehensive profile JSON...");
-    const synthesisStartedAt = Date.now();
-    const synthesisThoughts = thoughtsFor("Synthesis");
-    const synthesisPromise = generateStructuredJsonWithFallback(
-      ai,
-      { systemInstruction: synthesisSystemInstruction, input: synthesisUserPrompt, schema: audienceProfileJsonSchema, onThought: synthesisThoughts.onThought },
-      SYNTHESIS_ATTEMPTS,
-      (failed, next) => sendEvent("status", { message: `Deep synthesis (${failed} reasoning) ran long; retrying with ${next} reasoning...` }),
-    ).catch((err) => {
-      // Timeouts get the user-facing message below; anything else is a real failure to surface.
-      if (/timed? ?out|timeout|abort/i.test(`${err?.name} ${err?.message || err}`)) return null;
-      throw err;
-    });
+    // A retry starts from the plan as it stood when the channel plan failed.
+    let originalData: any;
+    if (resume) {
+      originalData = resume.profile;
+    } else {
+      sendEvent("status", { message: "Synthesizing research dossiers and mapping audience indices..." });
+      console.log("Launching final Synthesis Call to build the comprehensive profile JSON...");
+      const synthesisStartedAt = Date.now();
+      const synthesisThoughts = thoughtsFor("Synthesis");
+      const synthesisPromise = generateStructuredJsonWithFallback(
+        ai,
+        { systemInstruction: synthesisSystemInstruction, input: synthesisUserPrompt, schema: audienceProfileJsonSchema, onThought: synthesisThoughts.onThought },
+        SYNTHESIS_ATTEMPTS,
+        (failed, next) => sendEvent("status", { message: `Deep synthesis (${failed} reasoning) ran long; retrying with ${next} reasoning...` }),
+      ).catch((err) => {
+        // Timeouts get the user-facing message below; anything else is a real failure to surface.
+        if (/timed? ?out|timeout|abort/i.test(`${err?.name} ${err?.message || err}`)) return null;
+        throw err;
+      });
 
-    const synthesisResult = await withTimeout(
-      synthesisPromise,
-      TIMEOUT_SYNTHESIS_MS + SYNTHESIS_GUARD_GRACE_MS,
-      null
-    ).finally(synthesisThoughts.done);
+      const synthesisResult = await withTimeout(
+        synthesisPromise,
+        TIMEOUT_SYNTHESIS_MS + SYNTHESIS_GUARD_GRACE_MS,
+        null
+      ).finally(synthesisThoughts.done);
 
-    if (!synthesisResult) {
-      throw new Error(`Synthesis stage exceeded the safety limit of ${TIMEOUT_SYNTHESIS_MS / 1000}s. Please simplify your input parameters and try again.`);
+      if (!synthesisResult) {
+        throw new Error(`Synthesis stage exceeded the safety limit of ${TIMEOUT_SYNTHESIS_MS / 1000}s. Please simplify your input parameters and try again.`);
+      }
+      console.log(`Synthesis input ${synthesisUserPrompt.length} chars (pool ${JSON.stringify(deduplicatedSources).length}); output ${JSON.stringify(synthesisResult.data).length} chars.`);
+      console.log(`Synthesis complete via ${GEMINI_FLASH_MODEL} (${synthesisResult.thinkingLevel} thinking) in ${((Date.now() - synthesisStartedAt) / 1000).toFixed(1)}s.`);
+
+      originalData = synthesisResult.data as any;
+      if (briefOfRecord) originalData.briefOfRecord = briefOfRecord;
+      // Before anything downstream (narrative, channel reasoning, QA) refers to personas by name.
+      stripPersonaNames(originalData.personas);
     }
-    console.log(`Synthesis input ${synthesisUserPrompt.length} chars (pool ${JSON.stringify(deduplicatedSources).length}); output ${JSON.stringify(synthesisResult.data).length} chars.`);
-    console.log(`Synthesis complete via ${GEMINI_FLASH_MODEL} (${synthesisResult.thinkingLevel} thinking) in ${((Date.now() - synthesisStartedAt) / 1000).toFixed(1)}s.`);
-
-    const originalData = synthesisResult.data as any;
-    if (briefOfRecord) originalData.briefOfRecord = briefOfRecord;
-    // Before anything downstream (narrative, channel reasoning, QA) refers to personas by name.
-    stripPersonaNames(originalData.personas);
     // Headshot casting briefs, written beside the rest of the run (see personaPortraits.ts).
     const synthesizedPersonas: any[] = Array.isArray(originalData.personas) ? originalData.personas : [];
     const portraitsPromise: Promise<unknown> = synthesizedPersonas.length === 0
@@ -6014,7 +6081,8 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
 
     // Publisher picks are settled here, before the channel strategy snapshots them: in the
     // enabled pool, each once, with the admin's category.
-    for (const alert of settlePublisherSelection(originalData, enabledPublishers, targetPublisherCount)) pushAlert(generationAlerts, alert);
+    // A retry's picks were settled by the run it continues.
+    if (!resume) for (const alert of settlePublisherSelection(originalData, enabledPublishers, targetPublisherCount)) pushAlert(generationAlerts, alert);
 
     // The RFP section is the upload's own analysis, not rewritten by synthesis (rewriting it added
     // output the model had to generate while synthesis was running out of time).
@@ -6022,7 +6090,7 @@ Return ONLY the formatted JSON matching the schema. No markdown wrapping except 
 
     // Populate Audience Analysis paragraph if uploaded media plan contains audience target descriptions
     const planAudiences = selectedPlanOptions ? extractPlanAudiences(selectedPlanOptions) : [];
-    if (selectedPlanOptions && selectedPlanOptions.length > 0 && planAudiences.length > 0) {
+    if (!resume && selectedPlanOptions && selectedPlanOptions.length > 0 && planAudiences.length > 0) {
       if (!originalData.audienceAnalysis || !originalData.audienceAnalysis.trim()) {
         console.log("Generating Audience Analysis paragraph for uploaded media plan audiences...");
         try {
@@ -6054,7 +6122,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
           pushAlert(generationAlerts, { section: "audienceAnalysis", severity: "failed", message: `The uploaded-plan audience analysis could not be written (${err?.message || err}).` });
         }
       }
-    } else {
+    } else if (!resume) {
       // Ensure empty string if no media plan was uploaded or no audiences in plan
       originalData.audienceAnalysis = "";
     }
@@ -6086,6 +6154,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
               ...(history?.dossier ? [{ ...history.dossier, failed: false }] : []),
             ],
             history: history?.channelBrief,
+            canTryAgain: (timeoutMs) => RUN_BUDGET_MS - (Date.now() - runStartedAt) > timeoutMs + SCORING_LAST_ATTEMPT_RESERVE_MS,
           },
         );
         originalData.channelStrategy = channelStrategy;
@@ -6098,9 +6167,28 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         if (thin) pushAlert(generationAlerts, { section: "geo", severity: "flagged", message: thin });
         sendEvent("status", { message: "Media portfolio and allocation constraints validated successfully." });
       } catch (channelErr: any) {
+        // The run stops here. Without a channel plan the narrative recommends spend nothing backs
+        // and QA spends minutes re-reporting the gap (2026-10-28: a Syracuse plan shipped at 59/100
+        // for it). The research and synthesis go back to the browser so a retry starts here.
+        const detail = channelErr?.message || String(channelErr);
         console.error("Error generating media recommendation plan:", channelErr);
-        pushAlert(generationAlerts, { section: "channelStrategy", severity: "failed", message: `The media plan could not be built: ${channelErr?.message || channelErr}` });
-        sendEvent("status", { message: "Media plan failed. The profile will be delivered without a channel strategy and marked accordingly." });
+        sendEvent("status", { message: `• [FAILED] The channel plan could not be built: ${detail}` });
+        const checkpoint = buildRunCheckpoint({
+          profile: originalData,
+          research: researchResults,
+          groundingSources: deduplicatedSources,
+          briefOfRecord,
+          crawl: crawl ? { url: crawl.url, ok: crawl.ok, chars: crawl.text.length } : resume?.crawl,
+          alerts: generationAlerts,
+          log: generationLog,
+        });
+        logGeneration(false, "channel_failed");
+        sendEvent("channel_failed", {
+          error: "The channel plan could not be built, so the run stopped before writing and auditing the plan. The research is kept: retry the channel plan to finish it.",
+          details: detail,
+          checkpoint,
+        });
+        return;
       }
     }
 
@@ -6417,7 +6505,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
         // Kept with the plan so a later manual QA audit traces the same figures.
         ...(history?.dossier ? [{ label: history.dossier.label, failed: false, text: history.dossier.text.slice(0, RESEARCH_SNAPSHOT_MAX_CHARS) }] : []),
       ],
-      ...(crawl ? { crawl: { url: crawl.url, ok: crawl.ok, chars: crawl.text.length } } : {}),
+      ...(crawl ? { crawl: { url: crawl.url, ok: crawl.ok, chars: crawl.text.length } } : resume?.crawl ? { crawl: resume.crawl } : {}),
     };
 
     // Persona headshots are deliberately NOT generated here. Four sequential image calls

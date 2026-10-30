@@ -1153,6 +1153,10 @@ export default function App() {
   const [profileData, setProfileData] = useState<AudienceProfile | null>(null);
   const [groundingSources, setGroundingSources] = useState<Array<{ title: string; uri: string }> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A run whose channel plan failed: what the server kept of it, and the request it came from,
+  // so "Retry channel plan" resumes at the channel plan (server.ts, runCheckpoint) rather than
+  // redoing the research. Held only until the next run starts.
+  const [channelRetry, setChannelRetry] = useState<{ checkpoint: unknown; body: Record<string, unknown>; typeOverride?: string; details: string } | null>(null);
   // Failures of actions taken on a delivered plan (re-analysis, slide export). Shown above the
   // plan, since the brief panel that carries `error` is usually collapsed by then.
   const [actionError, setActionError] = useState<string | null>(null);
@@ -3191,13 +3195,20 @@ export default function App() {
   };
 
   // Submit handler
-  const handleGenerate = async (e?: React.FormEvent, typeOverride?: string, { pinBrief = false }: { pinBrief?: boolean } = {}) => {
+  const handleGenerate = async (
+    e?: React.FormEvent,
+    typeOverride?: string,
+    { pinBrief = false, resume }: { pinBrief?: boolean; resume?: { checkpoint: unknown; body: Record<string, unknown> } } = {},
+  ) => {
     if (e) e.preventDefault();
     // Regenerating a plan whose Brief of Record a planner edited keeps their brief. A run from the
     // Brief tab is a new plan and writes its own.
     const pinnedBriefOfRecord = (typeOverride || pinBrief) && profileData?.briefOfRecordEdited ? profileData.briefOfRecord : undefined;
 
-    if (briefMode === "upload") {
+    // A retry re-sends the failed run's own request, which passed these checks when it started.
+    if (resume) {
+      // Nothing to check.
+    } else if (briefMode === "upload") {
       if (!uploadedFileText && !rfpAnalysis && extractedPlacements.length === 0) {
         setError("The attached files have not been read yet. Wait for them, or remove them to run from the text alone.");
         return;
@@ -3218,7 +3229,7 @@ export default function App() {
     }
 
     // Asked once more here, since a run takes minutes and every number in it is sized to the geography.
-    if (!typeOverride && geoMismatch) {
+    if (!typeOverride && !resume && geoMismatch) {
       if (!window.confirm(`The RFP targets ${geoMismatch.rfp}, but this plan is set to ${geoMismatch.brief}. Generate for ${geoMismatch.brief} anyway?`)) {
         document.getElementById("brief-geography")?.scrollIntoView({ behavior: "smooth", block: "center" });
         return;
@@ -3228,11 +3239,12 @@ export default function App() {
 
     setLoading(true);
     setError(null);
+    setChannelRetry(null);
     setRegenType(typeOverride || null);
     const generationStartedAt = Date.now();
     const generationParams = {
       advertiser_name: advertiserName,
-      mode: typeOverride ? `regenerate_${typeOverride}` : briefMode === "upload" ? "media_plan_upload" : "brief",
+      mode: resume ? "channel_retry" : typeOverride ? `regenerate_${typeOverride}` : briefMode === "upload" ? "media_plan_upload" : "brief",
       quick_mode: quickMode,
     };
     track("plan_generate_start", generationParams);
@@ -3259,7 +3271,9 @@ export default function App() {
         id: "init",
         timestamp: new Date().toLocaleTimeString(),
         type: "status",
-        message: `Establishing research channel connection for ${targetBriefSummary} in ${geography || 'United States'}...`
+        message: resume
+          ? `Retrying the channel plan for ${targetBriefSummary} with this run's research...`
+          : `Establishing research channel connection for ${targetBriefSummary} in ${geography || 'United States'}...`
       }
     ]);
 
@@ -3275,48 +3289,50 @@ export default function App() {
     const abortController = new AbortController();
     const hardTimeout = setTimeout(() => abortController.abort(), CLIENT_GENERATION_TIMEOUT_MS);
 
+    let channelFailure: { checkpoint: unknown; details: string } | null = null;
     try {
       const selectedOpts = (planOptions && planOptions.length > 0) ? planOptions.filter(p => p.selected) : undefined;
+      const requestBody: Record<string, unknown> = resume ? resume.body : {
+        advertiserName,
+        kpis: kpis.filter((k) => k.trim().length > 0),
+        audienceDescription: briefMode === "upload" ? uploadBriefWithNotes(uploadBriefText(uploadedFileName, rfpAnalysis, uploadedFileText || ""), audienceDescription) : audienceDescription,
+        url,
+        geography,
+        campaignFocus,
+        // Picks become planner-required media types; "only these" excludes the rest. The server
+        // returns them as manualIncluded/ExcludedChannelIds, so later re-plans keep them.
+        requiredChannelIds: activeBriefMediaTypes,
+        requiredChannelsOnly: briefMediaTypesOnly && activeBriefMediaTypes.length > 0,
+        additionalContext,
+        targetPersonas: targetPersonas.map(p => p.trim()).filter(p => p.length > 0),
+        regenerateType: typeOverride,
+        pinnedBriefOfRecord,
+        selectedPlanOptions: selectedOpts,
+        budgetStrategyMode,
+        additionalBudget: modeNeedsAdditionalBudget(budgetStrategyMode) ? parseCurrencyInput(additionalBudgetInput) : 0,
+        rfpAnalysis,
+        workingMediaBudget: budgetNormalization.workingMediaBudget,
+        campaignFlightDays: budgetNormalization.campaignFlightDays,
+        planningSettings,
+        ctvPublishers,
+        quickMode,
+        pastCampaignIds: pastCampaignSelection ?? pastCampaignOptions,
+        // What the server needs, beyond the brief above, to save the finished run as a draft.
+        draft: {
+          title: advertiserName.trim()
+            ? (/\bplans?\b/i.test(advertiserName.trim()) ? advertiserName.trim() : `${advertiserName.trim()} Plan`)
+            : (saveTitle.trim() || undefined),
+          settingsRevision,
+          geographyConfig: { type: geographyType, targets: geoTargets, rawInput: geoRawInput },
+          budget,
+          campaignLength,
+        },
+      };
       const response = await api.authFetch("/api/generate-profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: abortController.signal,
-        body: JSON.stringify({
-          advertiserName,
-          kpis: kpis.filter((k) => k.trim().length > 0),
-          audienceDescription: briefMode === "upload" ? uploadBriefWithNotes(uploadBriefText(uploadedFileName, rfpAnalysis, uploadedFileText || ""), audienceDescription) : audienceDescription,
-          url,
-          geography,
-          campaignFocus,
-          // Picks become planner-required media types; "only these" excludes the rest. The server
-          // returns them as manualIncluded/ExcludedChannelIds, so later re-plans keep them.
-          requiredChannelIds: activeBriefMediaTypes,
-          requiredChannelsOnly: briefMediaTypesOnly && activeBriefMediaTypes.length > 0,
-          additionalContext,
-          targetPersonas: targetPersonas.map(p => p.trim()).filter(p => p.length > 0),
-          regenerateType: typeOverride,
-          pinnedBriefOfRecord,
-          selectedPlanOptions: selectedOpts,
-          budgetStrategyMode,
-          additionalBudget: modeNeedsAdditionalBudget(budgetStrategyMode) ? parseCurrencyInput(additionalBudgetInput) : 0,
-          rfpAnalysis,
-          workingMediaBudget: budgetNormalization.workingMediaBudget,
-          campaignFlightDays: budgetNormalization.campaignFlightDays,
-          planningSettings,
-          ctvPublishers,
-          quickMode,
-          pastCampaignIds: pastCampaignSelection ?? pastCampaignOptions,
-          // What the server needs, beyond the brief above, to save the finished run as a draft.
-          draft: {
-            title: advertiserName.trim()
-              ? (/\bplans?\b/i.test(advertiserName.trim()) ? advertiserName.trim() : `${advertiserName.trim()} Plan`)
-              : (saveTitle.trim() || undefined),
-            settingsRevision,
-            geographyConfig: { type: geographyType, targets: geoTargets, rawInput: geoRawInput },
-            budget,
-            campaignLength,
-          },
-        })
+        body: JSON.stringify(resume ? { ...requestBody, resumeCheckpoint: resume.checkpoint } : requestBody),
       });
 
       if (!response.ok) {
@@ -3387,6 +3403,9 @@ export default function App() {
               groundingSources: event.groundingSources || null,
               savedPlanId: event.savedPlanId || null,
             });
+          } else if (event.type === "channel_failed") {
+            channelFailure = { checkpoint: event.checkpoint, details: String(event.details || "") };
+            serverError = event.error || "The channel plan could not be built.";
           } else if (event.type === "error") {
             serverError = event.details || event.error || "An error occurred during profile generation.";
           } else {
@@ -3399,6 +3418,7 @@ export default function App() {
       // without a completion event as a failure too (Cloud Run deadline, proxy cut, restart).
       // Without these, the loop simply falls through, `loading` stays true, and the thought
       // ticker keeps inventing progress forever.
+      if (channelFailure) setChannelRetry({ ...channelFailure, body: requestBody, typeOverride });
       if (serverError) throw new Error(serverError);
       if (!sawComplete) {
         throw new Error("The research stream ended before a profile was returned. The server may have timed out or restarted. Please try again.");
@@ -3409,7 +3429,7 @@ export default function App() {
       track("plan_generate_fail", {
         ...generationParams,
         duration_sec: Math.round((Date.now() - generationStartedAt) / 1000),
-        reason: err?.name === "AbortError" ? "client_timeout" : "error",
+        reason: err?.name === "AbortError" ? "client_timeout" : channelFailure ? "channel_failed" : "error",
       });
       const message = err?.name === "AbortError"
         ? `Generation exceeded ${Math.round(CLIENT_GENERATION_TIMEOUT_MS / 60000)} minutes and was cancelled. Please try again, or simplify the brief.`
@@ -6174,7 +6194,25 @@ export default function App() {
                 {error && (
                   <div className="p-3 bg-rose-50 border border-rose-100 rounded-xl text-xs text-rose-700 flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>{error}</span>
+                    <div className="min-w-0">
+                      <span>{error}</span>
+                      {channelRetry && (
+                        <>
+                          {channelRetry.details && (
+                            <span className="block mt-1 text-[10px] text-rose-500 break-words">{channelRetry.details}</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleGenerate(undefined, channelRetry.typeOverride, { resume: channelRetry })}
+                            disabled={loading}
+                            className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-rose-200 rounded-lg text-[11px] font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50 transition-colors"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            Retry channel plan
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

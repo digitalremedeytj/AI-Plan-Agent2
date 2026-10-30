@@ -242,6 +242,21 @@ export async function generateStructuredJsonWithFallback(
   throw lastError;
 }
 
+/**
+ * One line on how each attempt of a failed generateStructuredJsonWithFallback call ended, e.g.
+ * "medium timed out after 75s; low failed after 12s (429 RESOURCE_EXHAUSTED)", so a slow day
+ * and a real error can be told apart from the log alone.
+ */
+export function describeFailedAttempts(err: unknown): string {
+  const attempts = (err as { attempts?: Array<{ thinkingLevel: string; seconds: number; error: string }> } | null)?.attempts;
+  if (!Array.isArray(attempts) || attempts.length === 0) return (err as Error)?.message || String(err);
+  return attempts
+    .map((a) => /timed? ?out|timeout|abort/i.test(a.error)
+      ? `${a.thinkingLevel} timed out after ${a.seconds}s`
+      : `${a.thinkingLevel} failed after ${a.seconds}s (${a.error.slice(0, 200)})`)
+    .join("; ");
+}
+
 export interface TextRequest extends InteractionRequest {
   tools?: Array<Record<string, unknown>>;
 }
