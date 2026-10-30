@@ -101,6 +101,7 @@ import { CtvExportDropdown } from "./components/CtvExportDropdown";
 import { PersonaSlideExportModal } from "./components/PersonaSlideExportModal";
 import { clearPlanSlides, movePlanSlides, UNSAVED_PLAN_SLIDE_KEY } from "./utils/planSlideStore";
 import { PersonaAvatarModal } from "./components/PersonaAvatarModal";
+import { HEADSHOT_PX, HEADSHOT_QUALITY, THUMBNAIL_PX, THUMBNAIL_QUALITY, settleAvatarHistory } from "./components/personaHeadshots";
 import { SegmentRecommendations, SEGMENT_DIMENSION_STYLES, type SegmentStatus } from "./components/SegmentRecommendations";
 import {
   createUserSegment,
@@ -511,9 +512,10 @@ const extractMetadata = (rows: any[][]) => {
 const CLIENT_GENERATION_TIMEOUT_MS = 900000; // 15 minutes
 
 // Helper to compress base64 avatar images using Canvas with object-cover center cropping
-async function compressAvatarUrl(url?: string, maxDim = 120, quality = 0.65): Promise<string | undefined> {
+async function compressAvatarUrl(url?: string, maxDim = HEADSHOT_PX, quality = HEADSHOT_QUALITY): Promise<string | undefined> {
   if (!url || !url.startsWith("data:image/")) return url;
-  if (url.length < 10000) return url; // Already compact
+  // Already compact. Below every headshot size, so a thumbnail is never re-encoded.
+  if (url.length < 10000) return url;
 
   return new Promise((resolve) => {
     const img = new Image();
@@ -1465,21 +1467,22 @@ export default function App() {
     setEditingAvatarPersonaIndex(null);
   };
 
-  const handleSelectPersonaAvatar = (
+  const handleSelectPersonaAvatar = async (
     personaIndex: number,
     avatarUrl: string,
     updatedHistory: PersonaAvatarVersion[]
   ) => {
     if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return;
-    const updatedPersonas = [...profileData.personas];
-    updatedPersonas[personaIndex] = {
-      ...updatedPersonas[personaIndex],
+    const settled = await settleAvatarHistory(
       avatarUrl,
-      avatarHistory: updatedHistory,
-    };
-    setProfileData({
-      ...profileData,
-      personas: updatedPersonas,
+      updatedHistory,
+      async (url) => (await compressAvatarUrl(url, THUMBNAIL_PX, THUMBNAIL_QUALITY)) || url,
+    );
+    setProfileData((prev) => {
+      if (!prev || !prev.personas || !prev.personas[personaIndex]) return prev;
+      const updatedPersonas = [...prev.personas];
+      updatedPersonas[personaIndex] = { ...updatedPersonas[personaIndex], ...settled };
+      return { ...prev, personas: updatedPersonas };
     });
   };
 
