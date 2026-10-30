@@ -306,3 +306,26 @@ test("markdown bullets in a proposed text edit are stored as plain '- ' lines, b
   const [reverted] = parseOps([{ type: "edit_text", path: "publisherInsights", value }], { allowRestore: true }).ops as Array<{ value: string }>;
   assert.equal(reverted.value, value);
 });
+
+test("ScoutAI rewrites a publisher's justification by name, in both publisher lists, and its revert puts the old one back", () => {
+  const before = payload();
+  (before.profile as any).ctvPublishers = [...before.profile.ctvPublishers, { publisher: "BET", category: "Network", why: "", isUserAdded: true }];
+  (before.profile.channelStrategy as any).ctvPublishers = before.profile.ctvPublishers;
+  const { ops } = parseOps([{ type: "edit_ctv_publisher", publisher: "bet", why: "Adds incremental household reach." }]);
+  const changed = applyOps(before, ops);
+  assert.equal(changed.rejected.length, 0, JSON.stringify(changed.rejected));
+  const bet = changed.payload.profile.ctvPublishers.find((p: any) => p.publisher === "BET");
+  assert.deepEqual(bet, { publisher: "BET", category: "Network", why: "Adds incremental household reach.", isUserAdded: true });
+  assert.equal(changed.payload.profile.channelStrategy.ctvPublishers.find((p: any) => p.publisher === "BET").why, "Adds incremental household reach.");
+  assert.equal(changed.changes[0].before, "No justification");
+
+  // The revert restores an empty justification, which the model itself may never send.
+  const reverted = applyOps(changed.payload, parseOps(changed.revertOps, { allowRestore: true }).ops);
+  assert.equal(reverted.payload.profile.ctvPublishers.find((p: any) => p.publisher === "BET").why, "");
+  assert.equal(parseOps([{ type: "edit_ctv_publisher", publisher: "BET", why: "" }]).ops.length, 0);
+});
+
+test("a justification for a publisher the plan does not hold is refused", () => {
+  const result = applyOps(payload(), [{ type: "edit_ctv_publisher", publisher: "ESPN", why: "Live sports." }]);
+  assert.match(result.rejected[0].reason, /not one of the plan's CTV publishers/);
+});

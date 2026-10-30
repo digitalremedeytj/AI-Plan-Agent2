@@ -102,7 +102,8 @@ const SegmentTag: React.FC<{
     segment.tier,
     segment.source === 'RFP' ? 'From media plan' : undefined,
   ].filter(Boolean);
-  const justification = segment.justification || (segment.source === 'User' ? 'Added by planner.' : '');
+  // The placeholder tells a planner the segment is theirs; a client would read it as filler.
+  const justification = segment.justification || (segment.source === 'User' && !readOnly ? 'Added by planner.' : '');
 
   return (
     <span

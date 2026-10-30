@@ -36,13 +36,28 @@ export function publishersNeedingRationale<T extends { publisher: string; why?: 
 const clip = (value: unknown, max: number) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
 
 /**
+ * The plan's audience as the browser sends it, for any justification written from it (publishers
+ * here, segments in ./segmentRationale). Empty audience when the plan describes none.
+ */
+export function rationaleAudience(body: any): { audience: string; personas: string[] } {
+  const brief = normalizeBriefOfRecord(body?.briefOfRecord, body?.briefOfRecord?.basis);
+  // Plans made before the brief of record have only the intro to describe their audience.
+  const audience = brief ? formatBriefOfRecord(brief) : clip(body?.intro, 1500);
+  const personas = (Array.isArray(body?.personas) ? body.personas : []).slice(0, 6).map((p: any) => {
+    const head = [clip(p?.name, 100), clip(p?.age, 40), clip(p?.gender, 60)].filter(Boolean).join(", ");
+    const watch = clip(p?.watch, 300);
+    const buy = clip(p?.buy, 300);
+    return head ? `${head}${watch ? ` - watches: ${watch}` : ""}${buy ? ` - buys: ${buy}` : ""}` : "";
+  }).filter(Boolean);
+  return { audience, personas };
+}
+
+/**
  * The browser sends the plan's audience and the publishers to explain. Targeting notes come from
  * the server's own publisher list, never the request. Null when there is nothing to write.
  */
 export function sanitizePublisherRationaleRequest(body: any, pool: Array<PoolPublisher & { notes?: string }>): PublisherRationaleRequest | null {
-  const brief = normalizeBriefOfRecord(body?.briefOfRecord, body?.briefOfRecord?.basis);
-  // Plans made before the brief of record have only the intro to describe their audience.
-  const audience = brief ? formatBriefOfRecord(brief) : clip(body?.intro, 1500);
+  const { audience, personas } = rationaleAudience(body);
   const byKey = new Map(pool.filter((p) => p?.name).map((p) => [publisherKey(p.name), p]));
   const seen = new Set<string>();
   const publishers: RationalePublisher[] = [];
@@ -60,11 +75,6 @@ export function sanitizePublisherRationaleRequest(body: any, pool: Array<PoolPub
     if (publishers.length >= MAX_RATIONALE_PUBLISHERS) break;
   }
   if (!audience || publishers.length === 0) return null;
-  const personas = (Array.isArray(body?.personas) ? body.personas : []).slice(0, 6).map((p: any) => {
-    const head = [clip(p?.name, 100), clip(p?.age, 40), clip(p?.gender, 60)].filter(Boolean).join(", ");
-    const watch = clip(p?.watch, 300);
-    return head ? `${head}${watch ? ` - watches: ${watch}` : ""}` : "";
-  }).filter(Boolean);
   const examples = (Array.isArray(body?.examples) ? body.examples : [])
     .map((why: unknown) => clip(why, MAX_WHY_CHARS))
     .filter((why: string) => why && !isStockPublisherNote(why))
@@ -110,12 +120,12 @@ export const publisherRationaleSchema = {
 };
 
 /** Drops sentences that break a rule the client must never see broken (tiers, statistics). */
-function scrubWhy(why: string): string {
+export function scrubRationale(why: string, maxChars = MAX_WHY_CHARS): string {
   const sentences = why.replace(/\s+/g, " ").trim().match(/[^.!?]+[.!?]*/g) || [];
   const kept = sentences.map((s) => s.trim()).filter((s) => s && !/\btiers?\b/i.test(s) && !/%|\bpercent\b/i.test(s));
   let text = "";
   for (const sentence of kept) {
-    if ((text ? `${text} ${sentence}` : sentence).length > MAX_WHY_CHARS) break;
+    if ((text ? `${text} ${sentence}` : sentence).length > maxChars) break;
     text = text ? `${text} ${sentence}` : sentence;
   }
   return text;
@@ -128,7 +138,7 @@ export function normalizePublisherRationale(raw: unknown, requested: RationalePu
   for (const answer of answers) {
     // The model sometimes echoes the category it was shown: "AMC Networks (Network)".
     const key = publisherKey(String(answer?.publisher ?? "").replace(/\s*\([^)]*\)\s*$/, ""));
-    const why = typeof answer?.why === "string" ? scrubWhy(answer.why) : "";
+    const why = typeof answer?.why === "string" ? scrubRationale(answer.why) : "";
     if (key && why.length >= 20 && !whyByKey.has(key)) whyByKey.set(key, why);
   }
   return requested.flatMap((pub) => {

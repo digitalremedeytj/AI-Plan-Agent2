@@ -170,6 +170,7 @@ import { PlanText } from "./components/PlanText";
 import { PublisherInsightsPanel } from "./components/PublisherInsightsPanel";
 import { syncCtvChannelPublishers } from "./planning/ctvChannel";
 import { publishersNeedingRationale } from "./research/publisherRationale";
+import { segmentsNeedingRationale } from "./research/segmentRationale";
 import { publisherKey } from "./qa/publisherSelection";
 import { briefMediaTypeOptions } from "./planning/briefMediaTypes";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
@@ -4335,6 +4336,38 @@ export default function App() {
       .finally(() => setWritingRationaleKeys((prev) => prev.filter((key) => !keys.includes(key))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileData?.ctvPublishers, isCtvPublishersModalOpen, isShareView, loading, activeSavedId]);
+
+  // The same for an audience segment a planner added without a justification: one is written as
+  // soon as it is added, or when a plan holding such a segment is opened.
+  const segmentRationaleAttemptedRef = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    if (isShareView || loading || !profileData) return;
+    const planId = activeSavedId;
+    const attemptKey = (id: string) => `${planId ?? "draft"}:${id}`;
+    const needing = segmentsNeedingRationale(profileData.segmentRecommendations ?? []).filter((s) => !segmentRationaleAttemptedRef.current.has(attemptKey(s.id)));
+    if (needing.length === 0) return;
+    needing.forEach((s) => segmentRationaleAttemptedRef.current.add(attemptKey(s.id)));
+    api.authFetch("/api/segment-rationale", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        briefOfRecord: profileData.briefOfRecord,
+        intro: profileData.intro,
+        personas: (profileData.personas || []).map(({ name, age, gender, buy }) => ({ name, age, gender, buy })),
+        segments: needing.map(({ id, name, dimension }) => ({ id, name, dimension })),
+        examples: (profileData.segmentRecommendations ?? []).map((s) => s.justification).filter(Boolean),
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        const byId = new Map<string, string>((data?.segments || []).map((s: any) => [s.id, s.justification]));
+        if (byId.size === 0 || rationalePlanRef.current !== planId) return;
+        // Only a segment still without one: the planner or ScoutAI may have written it meanwhile.
+        updateSegments((current) => current.map((s) => (byId.has(s.id) && segmentsNeedingRationale([s]).length > 0 ? { ...s, justification: byId.get(s.id)! } : s)));
+      })
+      .catch((err) => console.error("Could not write segment justifications:", err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileData?.segmentRecommendations, isShareView, loading, activeSavedId]);
 
   const handleUpdateChannelOverrides = (overrides: ChannelOverridesMap) => {
     channelOverridesDirtyRef.current = true;

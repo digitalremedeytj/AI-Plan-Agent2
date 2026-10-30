@@ -92,6 +92,7 @@ import { PORTRAIT_SYSTEM_INSTRUCTION, applyPortraits, buildPortraitInput, buildP
 import { briefForShare, personasForShare, personasForSlides } from "./src/research/personaVisibility";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeChannelKey, narrativeSchema, planNarrativeNote } from "./src/research/planNarrative";
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
+import { SEGMENT_RATIONALE_SYSTEM_INSTRUCTION, buildSegmentRationaleInput, normalizeSegmentRationale, segmentRationaleSchema, sanitizeSegmentRationaleRequest } from "./src/research/segmentRationale";
 import { PUBLISHER_RATIONALE_SYSTEM_INSTRUCTION, buildPublisherRationaleInput, normalizePublisherRationale, publisherRationaleSchema, sanitizePublisherRationaleRequest } from "./src/research/publisherRationale";
 import { PROOFREAD_SYSTEM_INSTRUCTION, buildSlideImagePrompt, normalizeProofread, proofreadSchema, type BriefSlideLayout, type BriefSlideStyle, type ProofreadResult } from "./src/research/executiveBriefSlides";
 import { openAiJson, type OpenAiEffort } from "./src/server/openaiJson";
@@ -327,7 +328,7 @@ const SCOUT_ANALYSIS_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeout
 const PERFORMANCE_QUESTION = /\b(perform|past|previous|last|prior|historic|campaign|report|results?|data|worked|analy[sz]|learn|cpa|roas|pm|conversions?|checkouts?|pac(e|ing)|track|live|optimi[sz]|deliver)/i;
 // Short rewrites at low thinking. Both have a non-AI fallback, so a stall should end quickly.
 const TIMEOUT_SUMMARIZE_INSIGHTS_MS = 30000;
-// A few sentences for publishers a planner added. The card simply stays without one on a stall.
+// A few sentences for publishers or segments a planner added. The card simply stays without one on a stall.
 const TIMEOUT_PUBLISHER_RATIONALE_MS = 30000;
 const TIMEOUT_AUDIENCE_ANALYSIS_MS = 30000;
 // Per-dossier cap on the research text saved with a plan. Four at this size is ~100KB.
@@ -3383,7 +3384,7 @@ async function scoutApplyContext(storage: StorageAdapter, plan: { id: string; ad
   // and again when they are applied, so a campaign unlinked in between cannot slip one through.
   const linked = await linkedCampaigns(storage, plan.id);
   return {
-    publisherCatalog: publishers.map((p) => ({ name: p.name, category: p.category, enabled: p.enabled })),
+    publisherCatalog: publishers.map((p) => ({ name: p.name, category: p.category, enabled: p.enabled, notes: p.notes })),
     planningSettings: validated.valid && validated.settings ? validated.settings : DEFAULT_PLANNING_SETTINGS,
     linked,
     learningCampaigns: linked.map((l) => toLearningCampaign(l, plan.advertiserName || "")),
@@ -5348,6 +5349,31 @@ app.post("/api/publisher-rationale", async (req, res) => {
   } catch (err: any) {
     console.error("[PUBLISHER RATIONALE] Failed:", err?.message || err);
     res.status(502).json({ error: "Could not write the publisher justifications.", details: err?.message || String(err) });
+  }
+});
+
+// API: Justification for audience segments a planner added without one. Same contract as
+// /api/publisher-rationale: returns the text, and the browser's auto-save writes it.
+app.post("/api/segment-rationale", async (req, res) => {
+  try {
+    const request = sanitizeSegmentRationaleRequest(req.body);
+    if (!request) {
+      res.status(400).json({ error: "Segments and the plan's audience are required." });
+      return;
+    }
+    const data = await generateStructuredJson(getAiClient(), {
+      systemInstruction: SEGMENT_RATIONALE_SYSTEM_INSTRUCTION,
+      input: buildSegmentRationaleInput(request),
+      schema: segmentRationaleSchema,
+      thinkingLevel: "low",
+      timeoutMs: TIMEOUT_PUBLISHER_RATIONALE_MS,
+    });
+    const segments = normalizeSegmentRationale(data, request.segments);
+    console.log(`[SEGMENT RATIONALE] Wrote ${segments.length} of ${request.segments.length}.`);
+    res.json({ segments });
+  } catch (err: any) {
+    console.error("[SEGMENT RATIONALE] Failed:", err?.message || err);
+    res.status(502).json({ error: "Could not write the segment justifications.", details: err?.message || String(err) });
   }
 });
 

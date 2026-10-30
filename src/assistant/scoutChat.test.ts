@@ -130,3 +130,23 @@ test("add on top of RFP: ScoutAI sees the plan total and the RFP media types kep
   // A kept media type is already in the plan, so it is not offered as one to add.
   assert.doesNotMatch(context.split("MEDIA TYPES THAT CAN BE ADDED")[1] || "", /channelId: channel\.ctv\)/);
 });
+
+test("ScoutAI is told who chose each publisher and segment, which have no justification yet, and the internal targeting notes", () => {
+  const plan = storedPlan();
+  const profile = plan.payload.profile as any;
+  profile.ctvPublishers = [
+    { publisher: "Hulu", category: "App", why: "Reaches cord-cutting parents." },
+    { publisher: "BET", category: "Network", why: "", isUserAdded: true },
+    { publisher: "Roku", category: "OS", why: "Part of your media plan." },
+  ];
+  profile.segmentRecommendations = [
+    { id: "user-pet-owners", name: "Pet Owners", dimension: "Demographics", justification: "", personaIndices: [], source: "User" },
+  ];
+  const context = buildPlanContext(plan, { publisherCatalog: [{ name: "BET", category: "Network", enabled: true, notes: "Include for multicultural reach" }] });
+  assert.ok(context.includes("* Hulu (App) - picked by ScoutAI; why: Reaches cord-cutting parents."));
+  assert.ok(context.includes("* BET (Network) - added by a planner; why: (no justification yet); targeting note (internal, never quote): Include for multicultural reach"));
+  assert.ok(context.includes("* Roku (OS) - from the uploaded media plan"));
+  assert.match(context, /Pet Owners \(segmentId: user-pet-owners\) - Demographics; added by a planner; personas: none; why: \(no justification yet\)/);
+  // A path in the context ends up quoted in replies; publishers are edited by name instead.
+  assert.ok(!context.includes("[ctvPublishers["));
+});

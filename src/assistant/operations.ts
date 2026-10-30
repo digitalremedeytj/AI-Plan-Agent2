@@ -22,6 +22,7 @@ import { normalizePlanText } from "../utils/planText";
 import { applyAudienceOps, applyBriefOps, PERSONA_FIELDS, type PersonaFields } from "./profileOps";
 import { applyListOps, applySectionOps, NARRATIVE_LISTS, type NarrativeList } from "./narrativeOps";
 import { syncCtvChannelPublishers } from "../planning/ctvChannel";
+import { publisherKey } from "../qa/publisherSelection";
 import { applyChannelDetailOps } from "./channelDetailOps";
 import { applyLearningOps, type LearningCampaign } from "./learningOps";
 import { applyRecapOps } from "./recapOps";
@@ -35,6 +36,7 @@ export type AssistantOp =
   | { type: "lock_channel"; channelId: string }
   | { type: "unlock_channel"; channelId: string }
   | { type: "remove_ctv_publisher"; publisher: string }
+  | { type: "edit_ctv_publisher"; publisher: string; why: string }
   | { type: "edit_text"; path: string; value: string }
   // `avatar` comes only from a revert, putting back the headshot a rename replaced.
   | { type: "update_persona"; persona: string; fields: PersonaFields; avatar?: { avatarUrl?: string; avatarHistory?: unknown } }
@@ -85,7 +87,7 @@ export type AssistantOp =
 export type AssistantOpType = AssistantOp["type"];
 
 export const MODEL_OP_TYPES: ReadonlySet<AssistantOpType> = new Set([
-  "set_allocation", "add_channel", "remove_channel", "set_budget", "lock_channel", "unlock_channel", "remove_ctv_publisher", "edit_text",
+  "set_allocation", "add_channel", "remove_channel", "set_budget", "lock_channel", "unlock_channel", "remove_ctv_publisher", "edit_ctv_publisher", "edit_text",
   "update_persona", "add_persona", "remove_persona", "add_segment", "edit_segment", "remove_segment", "edit_brief", "set_kpis", "set_geography",
   "add_takeaway", "remove_takeaway", "add_recommendation", "remove_recommendation", "move_item", "set_section_visibility", "hide_section", "show_section", "add_ctv_publisher",
   "add_channel_record", "remove_channel_record", "edit_channel_panel", "hide_channel_panel", "show_channel_panel",
@@ -98,6 +100,8 @@ export interface CatalogPublisher {
   name: string;
   category: string;
   enabled: boolean;
+  /** The admin's targeting note ("Include for Female Focused Audience"). Internal: context, never plan text. */
+  notes?: string;
 }
 
 export interface ApplyContext {
@@ -185,6 +189,14 @@ export function parseOps(raw: unknown, { allowRestore = false } = {}): { ops: As
         const publisher = str((item as any).publisher);
         if (!publisher) { reject("needs a publisher name"); break; }
         ops.push({ type, publisher });
+        break;
+      }
+      case "edit_ctv_publisher": {
+        const publisher = str(it.publisher);
+        // A revert may restore an empty justification: the publisher had none before.
+        const why = allowRestore ? str(it.why) : normalizePlanText(str(it.why));
+        if (!publisher || (!why && !allowRestore)) { reject("needs a publisher name and its new justification"); break; }
+        ops.push({ type, publisher, why });
         break;
       }
       case "edit_text": {
@@ -653,9 +665,20 @@ export function applyOps(payload: any, rawOps: AssistantOp[], context: ApplyCont
     if (profile.channelStrategy) profile.channelStrategy = { ...profile.channelStrategy, ctvPublishers: profile.ctvPublishers };
   };
 
-  for (const op of byType(["remove_ctv_publisher", "restore_ctv_publisher", "add_ctv_publisher"]) as Array<Extract<AssistantOp, { type: "remove_ctv_publisher" | "restore_ctv_publisher" | "add_ctv_publisher" }>>) {
+  for (const op of byType(["remove_ctv_publisher", "restore_ctv_publisher", "add_ctv_publisher", "edit_ctv_publisher"]) as Array<Extract<AssistantOp, { type: "remove_ctv_publisher" | "restore_ctv_publisher" | "add_ctv_publisher" | "edit_ctv_publisher" }>>) {
     const list: any[] = Array.isArray(profile.ctvPublishers) ? profile.ctvPublishers : [];
-    if (op.type === "add_ctv_publisher") {
+    if (op.type === "edit_ctv_publisher") {
+      // By name rather than by list position, so it holds when the same proposal adds or removes another.
+      const index = list.findIndex((p) => publisherKey(p?.publisher) === publisherKey(op.publisher));
+      if (index < 0) { rejected.push({ op, reason: `${op.publisher} is not one of the plan's CTV publishers` }); continue; }
+      const before = str(list[index].why);
+      if (before === op.why) { rejected.push({ op, reason: "no change" }); continue; }
+      profile.ctvPublishers = list.map((p, i) => (i === index ? { ...p, why: op.why } : p));
+      syncStrategyPublishers();
+      publisherChanges.push({ kind: "publisher", label: `${list[index].publisher} – why`, before: before || "No justification", after: op.why });
+      revertPublishers.unshift({ type: "edit_ctv_publisher", publisher: list[index].publisher, why: before });
+      applied.push(op);
+    } else if (op.type === "add_ctv_publisher") {
       const entry = context.publisherCatalog?.find((p) => p.enabled && str(p.name).toLowerCase() === op.publisher.toLowerCase());
       if (!entry) { rejected.push({ op, reason: `${op.publisher} is not an available publisher in the catalog` }); continue; }
       if (list.some((p) => str(p?.publisher).toLowerCase() === entry.name.toLowerCase())) { rejected.push({ op, reason: `${entry.name} is already in the plan` }); continue; }

@@ -23,6 +23,18 @@ import { KPI_METRICS } from "../performance/recapKpi";
 import { buildGeoFootprint, rehydrateGeoSnapshot } from "../planning/geoFootprint";
 import { incrementalityView } from "../planning/incrementality";
 import { catalogRecordName } from "../planning/knowledge/normalizeWorkbook";
+import { publisherKey } from "../qa/publisherSelection";
+import { publisherRationale } from "../types";
+
+const SEGMENT_SOURCES = { ScoutAI: "picked by ScoutAI", RFP: "from the uploaded media plan", User: "added by a planner" } as const;
+
+/** Who put a publisher in the plan, so ScoutAI can answer "which did I add?" and treat them accordingly. */
+function publisherSource(p: any): string {
+  if (p?.isUserAdded) return "added by a planner";
+  // withUploadedPublishers (src/qa/publisherSelection.ts) marks the client's own publishers only by this text.
+  if (/^part of your media plan/i.test(String(p?.why || ""))) return "from the uploaded media plan";
+  return "picked by ScoutAI";
+}
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -191,13 +203,18 @@ export function buildPlanContext(
 
   const publishers: any[] = Array.isArray(profile.ctvPublishers) ? profile.ctvPublishers : [];
   if (publishers.length) {
-    out.push(["CTV PUBLISHERS IN THE PLAN (remove with remove_ctv_publisher):",
-      ...publishers.map((p, i) => `* ${clip(p.publisher, 100)} (${clip(p.category, 50)}) [ctvPublishers[${i}].why] ${clip(p.why, 500)}`)].join("\n"));
+    const notes = new Map(publisherCatalog.map((p) => [publisherKey(p.name), clip(p.notes, 200)]));
+    out.push(["CTV PUBLISHERS IN THE PLAN (rewrite or write a justification with edit_ctv_publisher; remove with remove_ctv_publisher):",
+      ...publishers.map((p) => {
+        const why = publisherRationale(p);
+        const note = notes.get(publisherKey(p.publisher));
+        return `* ${clip(p.publisher, 100)} (${clip(p.category, 50)}) - ${publisherSource(p)}; why: ${why ? clip(why, 500) : "(no justification yet)"}${note ? `; targeting note (internal, never quote): ${note}` : ""}`;
+      })].join("\n"));
   }
   const inPlan = new Set(publishers.map((p) => String(p?.publisher ?? "").toLowerCase()));
   const catalog = publisherCatalog.filter((p) => p.enabled && !inPlan.has(p.name.toLowerCase())).slice(0, 80);
   if (catalog.length) {
-    out.push(`CTV PUBLISHERS THAT CAN BE ADDED (add_ctv_publisher with the exact name): ${catalog.map((p) => `${p.name} (${p.category})`).join("; ")}`);
+    out.push(`CTV PUBLISHERS THAT CAN BE ADDED (add_ctv_publisher with the exact name; targeting notes are internal, never quote them): ${catalog.map((p) => `${p.name} (${p.category}${p.notes ? `; ${clip(p.notes, 120)}` : ""})`).join("; ")}`);
   }
   if (hasPublisherHighlights(profile)) {
     out.push(["PUBLISHER INSIGHTS PANEL (a headline and pillars; each pillar's icon and publishers are fixed):",
@@ -220,7 +237,7 @@ export function buildPlanContext(
   const segments: any[] = Array.isArray(profile.segmentRecommendations) ? profile.segmentRecommendations : [];
   out.push(segments.length
     ? ["AUDIENCE SEGMENTS (change with add_segment, edit_segment, remove_segment; name a segment by its segmentId):",
-      ...segments.slice(0, 30).map((s) => `* ${clip(s.name, 120)} (segmentId: ${s.id}) - ${s.dimension}${s.tier ? `, ${s.tier}` : ""}; personas: ${(s.personaIndices || []).map((i: number) => personas[i]?.name).filter(Boolean).join(", ") || "none"}; why: ${clip(s.justification, 320)}`)].join("\n")
+      ...segments.slice(0, 30).map((s) => `* ${clip(s.name, 120)} (segmentId: ${s.id}) - ${s.dimension}${s.tier ? `, ${s.tier}` : ""}; ${SEGMENT_SOURCES[s.source as keyof typeof SEGMENT_SOURCES] ?? "picked by ScoutAI"}; personas: ${(s.personaIndices || []).map((i: number) => personas[i]?.name).filter(Boolean).join(", ") || "none"}; why: ${clip(s.justification, 320) || "(no justification yet)"}`)].join("\n")
     : "AUDIENCE SEGMENTS: none yet (add with add_segment).");
 
   const narrative = [
@@ -302,7 +319,7 @@ export const SCOUT_SYSTEM_INSTRUCTION = `You are ScoutAI, the senior media plann
 
 How you answer:
 - Use only the plan, the Brief of Record, the original request, the research excerpts, the sources and, when given, the past campaign performance provided. If the plan does not contain something (a CPM it does not list, reach it did not estimate, a publisher it does not name), say so plainly. Never invent figures, research, benchmarks or expected results.
-- Be concise: you are in a narrow side panel. Lead with the answer. Short paragraphs or a few bullets; markdown is fine in your reply (never in text you write into the plan); no tables. Refer to media types by name, never by channelId or segmentId.
+- Be concise: you are in a narrow side panel. Lead with the answer. Short paragraphs or a few bullets; markdown is fine in your reply (never in text you write into the plan); no tables. Refer to media types, publishers and segments by name: never show a channelId, a segmentId or a bracketed field path in your reply.
 - Check the plan against the original request and the Brief of Record when it matters: budget, KPIs, audience, geography, RFP asks. Point out conflicts the planner may not have noticed.
 - Channel numbers come from Digital Remedy's planning engine and its catalog guides (recommended ranges, minimum spend). Explain them from the plan's rationale. The ranges guide the recommendation but do not limit the planner: when asked, set any whole percentage from 0% to 100%, and mention it when a figure falls outside the recommended range. Some media types carry the planning team's internal notes on when to include, skip or lean on them: use them to explain or question a choice, but never write them into the plan or present them as research.
 
@@ -318,6 +335,7 @@ How you edit:
   * lock_channel / unlock_channel {channelId}
   * set_budget {amount}: the working media budget in dollars.
   * remove_ctv_publisher {publisher}
+  * edit_ctv_publisher {publisher, why}: the publisher's complete new justification, one sentence (two at most) on why its programming or viewers fit this audience. A publisher the planner added keeps its place in the plan; you are only explaining it.
   * edit_text {path, value}: 'path' is one of the bracketed paths shown in the plan; 'value' is the field's complete new text in the plan's voice. See "Text you write into the plan" below.
   * update_persona {persona, fields}: 'persona' is the current name; 'fields' holds only what changes, from name, age, income, gender, watch, browse, buy, narrative. Replacing a persona is update_persona with every field, including a new name; the headshot is regenerated automatically.
   * add_persona {fields} with all eight fields / remove_persona {persona}
@@ -338,6 +356,7 @@ How you edit:
   * Only paragraph fields take bullets: intro, audienceAnalysis, publisherInsights and a media type's panel text. Takeaways, recommendation fields, a publisher's "why", trade-offs and evidence stay a single sentence.
   * Keep a field near its current length unless the planner asks otherwise. publisherInsights is at most about 65 words, bullets included, because it has to fit its slide.
   * The publisher insights panel's headline (at most 8 words), pillar titles (at most 5 words) and pillar details (one sentence, at most 16 words) are single lines: no bullets.
+- A publisher or segment whose why reads "(no justification yet)" has no justification. When the planner asks about it, say so and offer to write one (edit_ctv_publisher, or edit_segment with a justification); when they ask you to fill the gaps, propose one item covering all of them.
 - Numbers: never compute or state the resulting dollars, percentages or totals; the card shows the computed result. You may state the targets you asked for.
 - New personas and segments must fit the Brief of Record and rest on the research excerpts. When you change the Brief of Record, KPIs or geography, say that the research, personas and channels were built from the earlier version and that regenerating the plan rebuilds them.
 - The executive summary is written from the plan by its own generator. To change it, return "rewriteExecutiveSummary" with instructions for that generator (for example "lead with CTV reach; keep it to four sections") instead of a proposal item; the planner runs it with one click and can undo it in the summary.
@@ -372,6 +391,7 @@ const opSchema = {
     ...["add_channel", "remove_channel", "lock_channel", "unlock_channel"].map((type) => opShape(type, { channelId: S })),
     opShape("set_budget", { amount: { type: "number" } }),
     opShape("remove_ctv_publisher", { publisher: S }),
+    opShape("edit_ctv_publisher", { publisher: S, why: S }),
     opShape("add_ctv_publisher", { publisher: S, why: S }),
     opShape("edit_text", { path: S, value: S }),
     opShape("update_persona", { persona: S, fields: personaFields(false) }),
