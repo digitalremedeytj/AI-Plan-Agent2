@@ -531,7 +531,7 @@ export async function updatePlan(
 export interface PlanVersionSummary {
   id: string;
   planId: string;
-  reason: "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore" | "media_plan" | "content_refresh";
+  reason: "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore" | "media_plan" | "content_refresh" | "regenerate";
   createdAt: string;
   createdBy: string;
   planRevision: number;

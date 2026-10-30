@@ -20,7 +20,7 @@ import { geoPlanFacts, geoSnapshotFromBrief, leadMediaType, rehydrateGeoSnapshot
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, displaySettingsOf, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
-import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink, type ScoutLog } from "./src/storage";
+import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink, type ScoutLog, type StoredPlan } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
 import { buildScoutLog, sanitizeConversationId, scoutReviewUpdate, type ScoutLogInput } from "./src/assistant/scoutLog";
 import { buildTopicInput, normalizeTopicTags, TOPIC_BATCH, TOPIC_SYSTEM_INSTRUCTION, topicResponseSchema } from "./src/assistant/scoutTopics";
@@ -5365,6 +5365,10 @@ app.post("/api/generate-profile", async (req, res) => {
   // "Retry channel plan": the research and synthesis of a run whose channel plan failed, sent back
   // so this run starts at the channel plan instead of redoing ~7 minutes of work that succeeded.
   const resume = parseRunCheckpoint(req.body?.resumeCheckpoint, RESEARCH_LABELS);
+  // "Regenerate This Plan": the open plan, and the revision it was at when the run started.
+  const replacePlan = typeof req.body?.replacePlan?.id === "string" && Number.isInteger(req.body.replacePlan.revision)
+    ? { id: req.body.replacePlan.id as string, revision: req.body.replacePlan.revision as number }
+    : null;
 
   // SSE Setup Headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -5413,7 +5417,7 @@ app.post("/api/generate-profile", async (req, res) => {
       advertiserName: typeof advertiserName === "string" ? advertiserName : undefined,
       durationMs: Date.now() - runStartedAt,
       ok,
-      detail: detail ?? (resume ? "channel_retry" : regenerateType ? `regenerate_${regenerateType}` : quickMode ? "quick" : undefined),
+      detail: detail ?? (resume ? "channel_retry" : regenerateType ? `regenerate_${regenerateType}` : replacePlan ? "regenerate_plan" : quickMode ? "quick" : undefined),
     });
   };
   // A planner who closes the tab mid-run never sees an error; count it as a failed run.
@@ -6530,39 +6534,57 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // edits onto it. A failed save is reported but never blocks delivering the plan.
     let savedPlanId: string | null = null;
     try {
+      const storage = await getStorage();
       const advertiserLabel = cleanAdvertiserName || cleanUrl || "Audience";
       const baseTitle = typeof draft?.title === "string" && draft.title.trim() ? draft.title.trim() : `${advertiserLabel} Plan`;
-      const record = await (await getStorage()).createPlan({
-        ...planPayloadFromBody({
-          // No "(draft)" suffix: plans auto-save as they are edited, so every plan is as saved as
-          // any other, and the history keeps this run as the plan's "original" version.
-          title: baseTitle.slice(0, 200),
-          advertiserName: cleanAdvertiserName || undefined,
-          settingsRevision: draft?.settingsRevision,
-          payload: {
-            kpis: cleanKpis,
-            audienceDescription: audienceDescription || "",
-            url: url || "",
-            geography,
-            geographyConfig: draft?.geographyConfig,
-            campaignFocus,
-            briefMediaTypes: briefMediaTypeIds,
-            briefMediaTypesOnly,
-            additionalContext: additionalContext || "",
-            targetPersonas: cleanTargetPersonas,
-            budget: draft?.budget,
-            campaignLength: draft?.campaignLength,
-            planningSettings,
-            profile: finalProfile,
-            groundingSources: deduplicatedSources,
-            autoSavedDraft: true,
-          },
-        }),
-        actor: actorName(req),
+      const planInput = planPayloadFromBody({
+        // No "(draft)" suffix: plans auto-save as they are edited, so every plan is as saved as
+        // any other, and the history keeps this run as the plan's "original" version.
+        title: baseTitle.slice(0, 200),
+        advertiserName: cleanAdvertiserName || undefined,
+        settingsRevision: draft?.settingsRevision,
+        payload: {
+          kpis: cleanKpis,
+          audienceDescription: audienceDescription || "",
+          url: url || "",
+          geography,
+          geographyConfig: draft?.geographyConfig,
+          campaignFocus,
+          briefMediaTypes: briefMediaTypeIds,
+          briefMediaTypesOnly,
+          additionalContext: additionalContext || "",
+          targetPersonas: cleanTargetPersonas,
+          budget: draft?.budget,
+          campaignLength: draft?.campaignLength,
+          planningSettings,
+          profile: finalProfile,
+          groundingSources: deduplicatedSources,
+          autoSavedDraft: true,
+        },
       });
+      let record: StoredPlan | null = null;
+      if (replacePlan) {
+        // Replaced only if nobody changed the plan during the run: a run takes minutes, and an edit
+        // made meanwhile must not vanish under it. The plan as it was stays in its History.
+        try {
+          const existing = await storage.getPlan(replacePlan.id);
+          if (!existing || existing.archived) throw new Error("it was deleted");
+          if (existing.revision !== replacePlan.revision) throw new Error("it was edited while this run was working");
+          await checkpointBeforeWrite(storage, existing.id, "regenerate", actorName(req), { existing });
+          // The planner's title for the plan stays; everything else is the new run's.
+          record = await storage.updatePlan(existing.id, { ...planInput, title: existing.title, actor: actorName(req) }, existing.revision);
+          console.log(`[DRAFT] Replaced plan ${record.id} ("${record.title}") with the finished run.`);
+        } catch (err: any) {
+          console.error(`[DRAFT] Could not replace plan ${replacePlan.id}:`, err?.message || err);
+          sendEvent("status", { message: `• [CHECK] The open plan was not replaced (${err instanceof RevisionConflictError ? "it was edited while this run was working" : err?.message || err}), so this run was saved as a new plan. The earlier plan is unchanged.` });
+        }
+      }
+      if (!record) {
+        record = await storage.createPlan({ ...planInput, actor: actorName(req) });
+        await recordOriginal(storage, record, actorName(req));
+        console.log(`[DRAFT] Saved the finished run as plan ${record.id} ("${record.title}").`);
+      }
       savedPlanId = record.id;
-      await recordOriginal(await getStorage(), record, actorName(req));
-      console.log(`[DRAFT] Saved the finished run as plan ${record.id} ("${record.title}").`);
       // The campaigns the plan was built from stay linked to it, so ScoutAI reads them and their
       // learnings can go to the client. Linking is best effort: the plan is already saved.
       for (const used of history?.used ?? []) {

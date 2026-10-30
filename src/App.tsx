@@ -2523,10 +2523,21 @@ export default function App() {
     setBudgetStrategyMode(normalizeBudgetStrategyMode(body.profile?.channelStrategy?.budgetStrategyMode));
     setAdditionalBudgetInput(body.profile?.channelStrategy?.additionalBudget ? Math.round(body.profile.channelStrategy.additionalBudget).toLocaleString() : "");
     setGroundingSources(body.groundingSources || null);
-    if (body.extractedPlacements) setExtractedPlacements(body.extractedPlacements);
-    if (body.planOptions) setPlanOptions(body.planOptions);
-    if (body.rfpAnalysis) setRfpAnalysis(body.rfpAnalysis);
-    if (body.uploadedFileName) setUploadedFileName(body.uploadedFileName);
+    // The plan's brief replaces the workspace's whole, uploads included: files attached to a brief
+    // the planner abandoned would otherwise stay attached and steer this plan's next run. Bumping
+    // the run counter also stops a parse still in flight from landing on this plan.
+    packageUploadRunRef.current++;
+    setPackageFiles([]);
+    setPackageFileStatus({});
+    setAppliedGeoFile(null);
+    setIsParsingPlan(false);
+    setParsingError(null);
+    setUploadedFileText("");
+    setParsedSheetsData([]);
+    setExtractedPlacements(body.extractedPlacements || []);
+    setPlanOptions(body.planOptions || []);
+    setRfpAnalysis(body.rfpAnalysis || null);
+    setUploadedFileName(body.uploadedFileName || "");
     setContentRefresh({ running: false, error: null });
     setActiveSavedId(saved.id);
     markPlanPersisted(saved);
@@ -3195,10 +3206,16 @@ export default function App() {
   };
 
   // Submit handler
+  const canSubmitBrief = !loading && !(briefMode === "upload" && (
+    isParsingPlan || !uploadedFileName || (!uploadedFileText && !rfpAnalysis && extractedPlacements.length === 0)
+  ));
+  // A saved plan is open, so the brief offers to rebuild it in place as well as to start a new one.
+  const canRegenerateOpenPlan = Boolean(activeSavedId && profileData) && !loading;
+
   const handleGenerate = async (
     e?: React.FormEvent,
     typeOverride?: string,
-    { pinBrief = false, resume }: { pinBrief?: boolean; resume?: { checkpoint: unknown; body: Record<string, unknown> } } = {},
+    { pinBrief = false, resume, replaceOpenPlan = false }: { pinBrief?: boolean; resume?: { checkpoint: unknown; body: Record<string, unknown> }; replaceOpenPlan?: boolean } = {},
   ) => {
     if (e) e.preventDefault();
     // Regenerating a plan whose Brief of Record a planner edited keeps their brief. A run from the
@@ -3237,6 +3254,16 @@ export default function App() {
       setKeptGeographyMismatch(geoMismatch.key);
     }
 
+    // "Regenerate This Plan" writes the run over the open plan rather than beside it. Its pending
+    // edits are saved first, and the server replaces it only if it is still at this revision when
+    // the run finishes; otherwise the run is saved as a new plan and nothing is overwritten.
+    let replacePlan: { id: string; revision: number } | undefined;
+    if (replaceOpenPlan && !resume && activeSavedId) {
+      await queueAutoSave(activeSavedId).catch(() => undefined);
+      const revision = activePlanRevisionRef.current;
+      if (revision !== null) replacePlan = { id: activeSavedId, revision };
+    }
+
     setLoading(true);
     setError(null);
     setChannelRetry(null);
@@ -3244,7 +3271,7 @@ export default function App() {
     const generationStartedAt = Date.now();
     const generationParams = {
       advertiser_name: advertiserName,
-      mode: resume ? "channel_retry" : typeOverride ? `regenerate_${typeOverride}` : briefMode === "upload" ? "media_plan_upload" : "brief",
+      mode: resume ? "channel_retry" : typeOverride ? `regenerate_${typeOverride}` : replacePlan ? "regenerate_plan" : briefMode === "upload" ? "media_plan_upload" : "brief",
       quick_mode: quickMode,
     };
     track("plan_generate_start", generationParams);
@@ -3278,6 +3305,8 @@ export default function App() {
     ]);
 
     // Clear the active save tracking on a completely new run (non-regenerated version)
+    // A regenerate in place lets go of its plan too: an auto-save during the run would move its
+    // revision, and the server would then save the run as a new plan instead of replacing it.
     adoptDraftRef.current = !typeOverride || !activeSavedId;
     if (!typeOverride) {
       setActiveSavedId(null);
@@ -3317,6 +3346,7 @@ export default function App() {
         ctvPublishers,
         quickMode,
         pastCampaignIds: pastCampaignSelection ?? pastCampaignOptions,
+        replacePlan,
         // What the server needs, beyond the brief above, to save the finished run as a draft.
         draft: {
           title: advertiserName.trim()
@@ -3790,9 +3820,8 @@ export default function App() {
   };
 
   // Reset workspace to a fresh blank brief and clear the active plan
-  const handleNewPlan = async () => {
-    if (!(await confirmDiscardUnsaved())) return;
-    // Reset brief input fields
+  // The brief's own fields, back to a blank brief's defaults. Attached files are cleared by the caller.
+  const resetBriefFields = () => {
     setAdvertiserName("");
     setPastCampaignSelection(null);
     setBudget("$100,000");
@@ -3814,6 +3843,26 @@ export default function App() {
     setAdditionalContext("");
     setIsAdvancedPersonaOpen(false);
     setTargetPersonas(["", "", "", ""]);
+  };
+
+  /**
+   * Empties the brief, attachments included, for a planner who wants to start it over. The open
+   * plan stays open: like any brief edit, the cleared brief is what it regenerates from.
+   */
+  const handleClearBrief = () => {
+    if (!window.confirm("Clear the brief? Every field and attached file will be emptied.")) return;
+    resetBriefFields();
+    clearUploadedPackage();
+    setPackageFileStatus({});
+    setParsingError(null);
+    setError(null);
+    if (geoFileInputRef.current) geoFileInputRef.current.value = "";
+    if (mediaPlanFileInputRef.current) mediaPlanFileInputRef.current.value = "";
+  };
+
+  const handleNewPlan = async () => {
+    if (!(await confirmDiscardUnsaved())) return;
+    resetBriefFields();
 
     // Reset media plan upload & parsing states
     setUploadedFileName("");
@@ -5188,6 +5237,16 @@ export default function App() {
                 <div className="flex items-center gap-2 mb-3">
                   <Target className="w-4 h-4 text-indigo-600" />
                   <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Media Brief Parameters</h2>
+                  <button
+                    type="button"
+                    onClick={handleClearBrief}
+                    disabled={loading}
+                    title="Empty every field and attached file in the brief"
+                    className="ml-auto text-[10px] font-semibold text-slate-500 hover:text-red-600 hover:underline flex items-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <X className="w-3 h-3" />
+                    Clear Brief
+                  </button>
                 </div>
 
                 {/* Input 1: the brief, typed, uploaded as an RFP with its attachments, or both */}
@@ -6232,16 +6291,23 @@ export default function App() {
                     <span className="block text-[10px] text-slate-400">For live demos: skips the QA audit (about 4-6 min faster). Run QA Audit before sharing with a client.</span>
                   </span>
                 </label>
+                {/* With a saved plan open, the brief can rebuild that plan or start another from it. */}
+                {canRegenerateOpenPlan && (
+                  <button
+                    type="button"
+                    onClick={() => handleGenerate(undefined, undefined, { replaceOpenPlan: true })}
+                    disabled={!canSubmitBrief}
+                    title="Rebuild the open plan from this brief. Its current version stays in History."
+                    className="w-full mb-2 bg-white hover:bg-indigo-50 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-indigo-700 border border-indigo-300 font-semibold py-3 px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer text-xs uppercase tracking-wider"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Regenerate This Plan</span>
+                  </button>
+                )}
                 <button
                   type="submit"
-                  disabled={
-                    loading || 
-                    (briefMode === "upload" && (
-                      isParsingPlan || 
-                      !uploadedFileName || 
-                      (!uploadedFileText && !rfpAnalysis && extractedPlacements.length === 0)
-                    ))
-                  }
+                  disabled={!canSubmitBrief}
+                  title={canRegenerateOpenPlan ? "Run this brief as a separate plan. The open plan stays as it is." : undefined}
                   className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:border disabled:border-slate-300 disabled:shadow-none disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-xl shadow-xs hover:shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer text-xs uppercase tracking-wider"
                 >
                   {loading && !regenType ? (
@@ -6263,9 +6329,11 @@ export default function App() {
                     <>
                       <Sparkles className="w-4 h-4" />
                       <span>
-                        {briefMode === "upload" || extractedPlacements.length > 0
-                          ? "Run Analysis"
-                          : "Generate Plan"}
+                        {canRegenerateOpenPlan
+                          ? "Generate New Plan"
+                          : briefMode === "upload" || extractedPlacements.length > 0
+                            ? "Run Analysis"
+                            : "Generate Plan"}
                       </span>
                     </>
                   )}
