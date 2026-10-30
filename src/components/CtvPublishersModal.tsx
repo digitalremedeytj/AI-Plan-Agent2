@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import {
   type CtvPublisherRecommendation,
-  isUserAddedPublisher,
+  publisherRationale,
 } from '../types';
 import {
   type CtvPublisherSetting,
@@ -434,8 +434,8 @@ export const CtvPublishersModal: React.FC<CtvPublishersModalProps> = ({
               ) : (
                 selectedPublishers.map((pub, idx) => {
                   const logoSrc = resolvePublisherLogo(pub.publisher, catalogPublishers);
-                  const isUserAdded = isUserAddedPublisher(pub);
-                  const hasRationale = !isUserAdded && Boolean(pub.why && pub.why.trim());
+                  const rationale = publisherRationale(pub);
+                  const hasRationale = Boolean(rationale);
 
                   return (
                     <div
@@ -457,12 +457,12 @@ export const CtvPublishersModal: React.FC<CtvPublishersModalProps> = ({
                         />
                       </div>
 
-                      {/* Name (plus rationale if AI recommended) */}
+                      {/* Name, plus its justification when it has one */}
                       <div className={`flex-1 min-w-0 ${hasRationale ? 'space-y-0.5' : ''}`}>
                         <span className="text-xs font-bold text-slate-900 truncate block">{pub.publisher}</span>
                         {hasRationale && (
                           <p className="text-[11px] text-slate-600 leading-normal">
-                            {pub.why}
+                            {rationale}
                           </p>
                         )}
                       </div>

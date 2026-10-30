@@ -1,6 +1,6 @@
 import React, { forwardRef, useState, useEffect, useMemo } from 'react';
 import { Tv, TrendingUp, Sparkles } from 'lucide-react';
-import { type CtvPublisherRecommendation } from '../types';
+import { type CtvPublisherRecommendation, publisherRationale } from '../types';
 import { PlanText } from './PlanText';
 import { type CtvPublisherSetting, getPublisherLogo } from '../planning/knowledge/ctvPublishers';
 import { pillarPublishersInPlan, publisherMixStats, type PublisherHighlights } from '../planning/publisherHighlights';
@@ -410,7 +410,7 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                       </div>
 
                       {/* Card Rationale */}
-                      {pub.why && (
+                      {publisherRationale(pub) && (
                         <p
                           style={{
                             fontSize: '16.5px',
@@ -420,7 +420,7 @@ export const CtvSlideExportView = forwardRef<HTMLDivElement, CtvSlideExportViewP
                             margin: 0,
                           }}
                         >
-                          {pub.why}
+                          {publisherRationale(pub)}
                         </p>
                       )}
                     </div>

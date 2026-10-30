@@ -87,8 +87,9 @@ src/research/           Crawl, Brief of Record (the audience every step is built
                         citation-pool filter, segment recommendations, planNarrative
                         (the narrative, written last against the settled plan), and
                         executiveBrief (the post-delivery executive summary: plan snapshot,
-                        fingerprint for the out-of-date badge, fact guards, hand edits), and
-                        rfpPackage (an RFP uploaded with its attachments: file roles, the
+                        fingerprint for the out-of-date badge, fact guards, hand edits),
+                        publisherRationale (the 'why' for a CTV publisher a planner adds;
+                        the browser merges it in and auto-save writes it), and rfpPackage (an RFP uploaded with its attachments: file roles, the
                         brief text built from the reading, missing attachments, conflicts).
 src/api/                Typed browser client for the shared store + one-time
                         localStorage migration.

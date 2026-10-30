@@ -1,21 +1,24 @@
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { type CtvPublisherRecommendation, isUserAddedPublisher } from '../types';
+import { type CtvPublisherRecommendation, publisherRationale } from '../types';
 
 interface CtvPublisherCardProps {
   pub: CtvPublisherRecommendation;
   logoSrc: string;
   className?: string;
+  /** A justification for this publisher is being written (a planner just added it). */
+  isWritingRationale?: boolean;
 }
 
 export const CtvPublisherCard: React.FC<CtvPublisherCardProps> = ({
   pub,
   logoSrc,
   className = '',
+  isWritingRationale = false,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const isUserAdded = isUserAddedPublisher(pub);
-  const hasRationale = !isUserAdded && Boolean(pub.why && pub.why.trim());
+  const rationale = publisherRationale(pub);
+  const hasRationale = Boolean(rationale);
 
   return (
     <div
@@ -55,7 +58,12 @@ export const CtvPublisherCard: React.FC<CtvPublisherCardProps> = ({
           </div>
 
           {/* Name - NO type tag */}
-          <span className="text-sm font-bold text-slate-800 truncate">{pub.publisher}</span>
+          <div className="min-w-0">
+            <span className="block text-sm font-bold text-slate-800 truncate">{pub.publisher}</span>
+            {!hasRationale && isWritingRationale && (
+              <span className="block text-[11px] text-slate-400 animate-pulse">Writing justification…</span>
+            )}
+          </div>
         </div>
 
         {/* Expand Caret on the right (only when there is rationale text to reveal) */}
@@ -81,7 +89,7 @@ export const CtvPublisherCard: React.FC<CtvPublisherCardProps> = ({
       {/* Expanded Rationale Text (hidden collapsed by default, shown on expand) */}
       {hasRationale && isExpanded && (
         <div className="mt-3 pt-3 border-t border-slate-200/70 text-[11px] text-slate-600 leading-normal">
-          <p>{pub.why}</p>
+          <p>{rationale}</p>
         </div>
       )}
     </div>

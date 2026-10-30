@@ -59,7 +59,7 @@ import {
 } from "lucide-react";
 import Markdown from "react-markdown";
 
-import { AudienceProfile, type AudienceNarrowing, type Persona, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, isUserAddedPublisher } from "./types";
+import { AudienceProfile, type AudienceNarrowing, type Persona, PersonaAvatarVersion, ExtractedPlacement, GenerateProfileResponse, ParsedPlanOption, TaxonomyMapping, CanonicalMediaType, RfpAnalysis, type ChannelStrategyData, type ChannelOverridesMap, GeographyType, GeographyTargetConfig, publisherRationale } from "./types";
 import { parseGeoTextInput, extractGeoFromSpreadsheetRows, splitPlacesFromNotes } from "./utils/geoReference";
 import { GEOGRAPHY_NOTES_MAX_CHARS, footprintReadout } from "./planning/reach/briefGeography";
 import { docxLines } from "./utils/docxText";
@@ -169,6 +169,8 @@ import type { AssistantOp } from "./assistant/operations";
 import { PlanText } from "./components/PlanText";
 import { PublisherInsightsPanel } from "./components/PublisherInsightsPanel";
 import { syncCtvChannelPublishers } from "./planning/ctvChannel";
+import { publishersNeedingRationale } from "./research/publisherRationale";
+import { publisherKey } from "./qa/publisherSelection";
 import { briefMediaTypeOptions } from "./planning/briefMediaTypes";
 import { ErrorBoundary, PlanRenderError, RenderBelow } from "./components/ErrorBoundary";
 import { DEFAULT_PLANNING_SETTINGS } from "./planning/settings";
@@ -4279,6 +4281,61 @@ export default function App() {
     handleUpdateCtvPublishers(toRestore);
   };
 
+  // A publisher a planner added has no justification of its own, so one is written for it once the
+  // publisher picker closes (one request for everything added) or when a plan with such a
+  // publisher is opened. Each publisher is tried once per plan per session, so a failure leaves the
+  // card as it was rather than retrying in a loop. Never from a share link: the client cannot save.
+  const [writingRationaleKeys, setWritingRationaleKeys] = useState<string[]>([]);
+  const rationaleAttemptedRef = React.useRef(new Set<string>());
+  const rationalePlanRef = React.useRef(activeSavedId);
+  rationalePlanRef.current = activeSavedId;
+  React.useEffect(() => {
+    if (isShareView || loading || !profileData || isCtvPublishersModalOpen) return;
+    const planId = activeSavedId;
+    const attemptKey = (name: string) => `${planId ?? "draft"}:${publisherKey(name)}`;
+    const needing = publishersNeedingRationale(profileData.ctvPublishers ?? []).filter((pub) => !rationaleAttemptedRef.current.has(attemptKey(pub.publisher)));
+    if (needing.length === 0) return;
+    const keys = needing.map((pub) => publisherKey(pub.publisher));
+    needing.forEach((pub) => rationaleAttemptedRef.current.add(attemptKey(pub.publisher)));
+    setWritingRationaleKeys((prev) => [...new Set([...prev, ...keys])]);
+    api.authFetch("/api/publisher-rationale", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        briefOfRecord: profileData.briefOfRecord,
+        intro: profileData.intro,
+        personas: (profileData.personas || []).map(({ name, age, gender, watch }) => ({ name, age, gender, watch })),
+        publishers: needing.map(({ publisher, category }) => ({ publisher, category })),
+        examples: (profileData.ctvPublishers ?? []).map(publisherRationale).filter(Boolean),
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        const whyByKey = new Map<string, string>((data?.publishers || []).map((p: any) => [publisherKey(p.publisher), p.why]));
+        if (whyByKey.size === 0 || rationalePlanRef.current !== planId) return;
+        setProfileData((prev) => {
+          if (!prev?.ctvPublishers) return prev;
+          let changed = false;
+          // Only a publisher still without one: the planner may have removed it, or ScoutAI rewritten it, meanwhile.
+          const updated = prev.ctvPublishers.map((pub) => {
+            const why = whyByKey.get(publisherKey(pub.publisher));
+            if (!why || publishersNeedingRationale([pub]).length === 0) return pub;
+            changed = true;
+            return { ...pub, why };
+          });
+          if (!changed) return prev;
+          return syncCtvChannelPublishers({
+            ...prev,
+            ctvPublishers: updated,
+            channelStrategy: prev.channelStrategy ? { ...prev.channelStrategy, ctvPublishers: updated } : undefined,
+          });
+        });
+      })
+      .catch((err) => console.error("Could not write CTV publisher justifications:", err))
+      .finally(() => setWritingRationaleKeys((prev) => prev.filter((key) => !keys.includes(key))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileData?.ctvPublishers, isCtvPublishersModalOpen, isShareView, loading, activeSavedId]);
+
   const handleUpdateChannelOverrides = (overrides: ChannelOverridesMap) => {
     channelOverridesDirtyRef.current = true;
     setProfileData((previous) => {
@@ -7748,6 +7805,7 @@ export default function App() {
                               key={`${pub.publisher}-${idx}`}
                               pub={pub}
                               logoSrc={getPublisherLogo(pub.publisher, ctvPublishers)}
+                              isWritingRationale={writingRationaleKeys.includes(publisherKey(pub.publisher))}
                             />
                           ))}
                         </div>
@@ -7923,6 +7981,7 @@ export default function App() {
                                 key={`${pub.publisher}-${idx}`}
                                 pub={pub}
                                 logoSrc={getPublisherLogo(pub.publisher, ctvPublishers)}
+                                isWritingRationale={writingRationaleKeys.includes(publisherKey(pub.publisher))}
                               />
                             ))}
                           </div>

@@ -234,14 +234,12 @@ export interface CtvPublisherRecommendation {
 }
 
 /**
- * Checks if a CTV publisher is user-added rather than an AI-generated recommendation.
- * User-added publishers display cleanly without targeting rationale text notes.
+ * The catalog's internal targeting notes ("Include as often as possible") were once copied into a
+ * publisher's 'why'. They are planning rules, not a reason to show a client.
  */
-export function isUserAddedPublisher(pub: CtvPublisherRecommendation): boolean {
-  if (pub.isUserAdded) return true;
-  if (!pub.why || !pub.why.trim()) return true;
-  const lower = pub.why.trim().toLowerCase();
-  if (
+export function isStockPublisherNote(why: string | undefined): boolean {
+  const lower = (why || '').trim().toLowerCase();
+  return (
     lower.startsWith('include as often') ||
     lower.startsWith('include often') ||
     lower.startsWith('include for') ||
@@ -249,10 +247,20 @@ export function isUserAddedPublisher(pub: CtvPublisherRecommendation): boolean {
     lower.startsWith('premium, include') ||
     lower.startsWith('custom targeted ctv') ||
     lower.startsWith('targeted ctv')
-  ) {
-    return true;
-  }
-  return false;
+  );
+}
+
+/** The publisher's justification to display, or '' when it has none worth showing. */
+export function publisherRationale(pub: CtvPublisherRecommendation): string {
+  const why = (pub.why || '').trim();
+  return why && !isStockPublisherNote(why) ? why : '';
+}
+
+/** Checks if a CTV publisher was added by a planner rather than picked by the AI. */
+export function isUserAddedPublisher(pub: CtvPublisherRecommendation): boolean {
+  if (pub.isUserAdded) return true;
+  // Plans saved before the flag existed mark a planner's addition only by its missing 'why'.
+  return !publisherRationale(pub);
 }
 
 export interface ExtractedPlacement {
