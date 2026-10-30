@@ -835,8 +835,9 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
       const pct = row.percentOfTotal !== null ? ` (${row.percentOfTotal.toFixed(0)}%)` : '';
       const rfp = row.rfpDollars !== null ? ` | RFP ${money(row.rfpDollars)}${row.changeDollars ? `, ${signedMoney(row.changeDollars)}` : ''}` : '';
       const scores = row.score !== null ? ` | Score ${row.score}/100, Audience Fit ${row.audienceFit}/100, Goal Match ${row.goalMatch}/100` : '';
-      const label = row.outsideCatalog ? 'Uploaded, outside ScoutAI catalog' : row.keptAtRfp ? 'RFP, kept at RFP budget' : view.asIs && row.source === 'rfp' ? 'Uploaded plan' : SOURCE_LABELS[row.source];
-      return `- ${row.channelName} [${label}]${money$}${pct}${rfp}${scores}`
+      // The client never added anything, so "Added by you" would misattribute the planner's choice.
+      const label = row.outsideCatalog ? 'Uploaded, outside ScoutAI catalog' : row.keptAtRfp ? 'RFP, kept at RFP budget' : view.asIs && row.source === 'rfp' ? 'Uploaded plan' : readOnly && row.source === 'planner' ? null : SOURCE_LABELS[row.source];
+      return `- ${row.channelName}${label ? ` [${label}]` : ''}${money$}${pct}${rfp}${scores}`
         + `${row.evidence ? `\n  Evidence: ${row.evidence}` : ''}${row.why ? `\n  ${row.whyLabel}: ${row.why}` : ''}`;
     };
     const section = (title: string, rows: AllocationRow[]) => rows.length > 0 ? `\n\n${title}\n${rows.map(rowLine).join('\n')}` : '';
@@ -856,7 +857,8 @@ export const ChannelStrategySection: React.FC<ChannelStrategySectionProps> = ({
     if (row.outsideCatalog) return readOnly ? null : <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600">Outside ScoutAI catalog</span>;
     if (row.source === 'rfp' && view.asIs) return null;
     if (row.source === 'rfp') return <span className="rounded-full border border-slate-800 bg-slate-900 px-2 py-0.5 text-[10px] font-bold text-white">RFP</span>;
-    if (row.source === 'planner') return <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Added by you</span>;
+    // On a share link "you" would read as the client, who added nothing.
+    if (row.source === 'planner') return readOnly ? null : <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Added by you</span>;
     // On a plan without an RFP every media type is ScoutAI's, so the badge would say nothing.
     if (!view.hasRfp) return null;
     return <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-gradient-to-r from-indigo-600 to-indigo-700 px-2 py-0.5 text-[10px] font-bold text-white"><Sparkles className="h-3 w-3" />ScoutAI added</span>;

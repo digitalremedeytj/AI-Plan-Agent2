@@ -337,6 +337,16 @@ test("add on top of RFP lists RFP media types at their RFP dollars with no remov
   assert.match(markup, /Added to your plan/);
 });
 
+test("a media type the planner added is tagged for the planner but not on the share link", () => {
+  const data = rfpStrategy("reallocation");
+  // RFP media types keep their RFP tag, so only the added ones become the planner's.
+  data.manualIncludedChannelIds = (data.mediaPlan?.channels || []).map((channel) => channel.channelId);
+  assert.match(renderToStaticMarkup(<ChannelStrategySection data={data} />), /Added by you/);
+  const shared = renderToStaticMarkup(<ChannelStrategySection data={data} readOnly />);
+  assert.doesNotMatch(shared, /Added by you/);
+  assert.match(shared, />RFP</);
+});
+
 test("the share link shows what the plan leaves out, with why, but no planner controls", () => {
   const markup = renderToStaticMarkup(<ChannelStrategySection data={rfpStrategy("reallocation")} readOnly />);
   assert.match(markup, /ScoutAI recommendations not in this plan/);
