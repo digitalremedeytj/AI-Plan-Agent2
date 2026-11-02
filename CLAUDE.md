@@ -139,6 +139,12 @@ Rules that follow from this:
   `recordOriginal` after any new `createPlan`, or that write cannot be undone from History.
 - **Deletes are soft** (`archived: true`). Nothing destroys a plan record. (Old version-history
   checkpoints are pruned; that is the one exception, and it never touches the plan itself.)
+- **Images live outside the plan** (`src/storage/imageStore.ts`): a Cloud Storage bucket
+  when plans are in Firestore, `data/store/images/` otherwise. The plan keeps
+  `/api/images/<id>`; images are immutable. Reads need no session (an `<img>` cannot send
+  the header token): the random id is the access check, so never list images or put an id
+  anywhere a plan's reader could not already see it. Older plans still hold data URLs, and
+  both forms must keep working.
 - Plan payloads are stored as one JSON string field, which sidesteps Firestore's
   no-nested-arrays rule and keeps drivers independent of the app schema. Keep payloads
   under Firestore's 1MB document limit.

@@ -550,6 +550,33 @@ async function compressAvatarUrl(url?: string, maxDim = HEADSHOT_PX, quality = H
   });
 }
 
+// Stored outside the plan, so a headshot no longer has to fit the plan's 1MB document. 768px is
+// sharp wherever one is drawn and a good reference face when an edit or a slide is made from it.
+const STORED_HEADSHOT_PX = 768;
+const STORED_HEADSHOT_QUALITY = 0.85;
+
+/** A generated headshot as the plan keeps it: a stored-image URL, or a small data URL if storing failed. */
+async function storeHeadshot(url?: string): Promise<string | undefined> {
+  if (!url || !url.startsWith("data:image/")) return url;
+  const sized = (await compressAvatarUrl(url, STORED_HEADSHOT_PX, STORED_HEADSHOT_QUALITY)) || url;
+  try {
+    const res = await api.authFetch("/api/images", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataUrl: sized }),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && typeof data?.url === "string") return data.url;
+    console.warn("Headshot could not be stored, keeping it in the plan:", data?.error || res.status);
+  } catch (err) {
+    console.warn("Headshot could not be stored, keeping it in the plan:", err);
+  }
+  return compressAvatarUrl(url);
+}
+
+/** A persona already has a real headshot: one stored, or one kept in the plan from before. */
+const hasHeadshot = (url?: string) => Boolean(url && (url.startsWith("data:image/") || url.startsWith("/api/images/")));
+
 const LAST_DISPLAY_NAME_KEY = "apa_last_display_name";
 
 // One view in the upload preview: a sheet shows as a grid, a document as text, a PDF in the
@@ -1284,7 +1311,7 @@ export default function App() {
     // Immediately mark all personas without an image as actively generating
     const pendingIndices: number[] = [];
     personas.forEach((persona, index) => {
-      if (!persona?.avatarUrl || !persona.avatarUrl.startsWith("data:image/")) {
+      if (!hasHeadshot(persona?.avatarUrl)) {
         pendingIndices.push(index);
       }
     });
@@ -1293,7 +1320,7 @@ export default function App() {
     }
 
     personas.forEach((persona, index) => {
-      if (persona?.avatarUrl && persona.avatarUrl.startsWith("data:image/")) return;
+      if (hasHeadshot(persona?.avatarUrl)) return;
       markAvatarFailed(index, false);
       api.authFetch("/api/generate-persona-avatar", {
         method: "POST",
@@ -1306,7 +1333,7 @@ export default function App() {
             markAvatarFailed(index, true);
             return;
           }
-          const compressed = await compressAvatarUrl(data.avatarUrl);
+          const compressed = await storeHeadshot(data.avatarUrl);
           const finalAvatar = compressed || data.avatarUrl;
           setProfileData((prev) => {
             if (!prev || !prev.personas || !prev.personas[index]) return prev;
@@ -1502,13 +1529,15 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          persona: targetPersona,
+          // The images themselves stay out of the persona: only an edit needs one, as its reference.
+          persona: { ...targetPersona, avatarUrl: undefined, avatarHistory: undefined },
           instruction: instruction && instruction.trim() ? instruction.trim() : undefined,
+          referenceUrl: instruction && instruction.trim() ? targetPersona.avatarUrl : undefined,
         }),
       });
       const data = await res.json();
       if (data.success && data.avatarUrl) {
-        const compressed = await compressAvatarUrl(data.avatarUrl);
+        const compressed = await storeHeadshot(data.avatarUrl);
         const finalAvatar = compressed || data.avatarUrl;
         return finalAvatar;
       } else {
@@ -2590,7 +2619,7 @@ export default function App() {
             .then(res => res.json())
             .then(async data => {
               if (data.success && data.avatarUrl) {
-                const compressed = await compressAvatarUrl(data.avatarUrl);
+                const compressed = await storeHeadshot(data.avatarUrl);
                 const finalAvatar = compressed || data.avatarUrl;
                 setProfileData(prev => {
                   if (!prev || !prev.personas) return prev;
@@ -3769,7 +3798,7 @@ export default function App() {
         .then((res) => res.json())
         .then(async (data) => {
           if (!data.success || !data.avatarUrl) { markAvatarFailed(index, true); return; }
-          const avatarUrl = (await compressAvatarUrl(data.avatarUrl)) || data.avatarUrl;
+          const avatarUrl = (await storeHeadshot(data.avatarUrl)) || data.avatarUrl;
           const version: PersonaAvatarVersion = {
             id: `v-${Date.now()}`,
             url: avatarUrl,

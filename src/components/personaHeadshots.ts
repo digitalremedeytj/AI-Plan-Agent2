@@ -4,9 +4,9 @@ import type { PersonaAvatarVersion } from "../types";
 // screen and gives the slide generator a usable reference face. ~24KB as a JPEG data URL.
 export const HEADSHOT_PX = 384;
 export const HEADSHOT_QUALITY = 0.75;
-// History versions are only shown as small thumbnails. Every image is stored inside the plan's
-// one Firestore document (1MB, and plans already run ~500KB), so up to 8 versions x 4 personas
-// cannot all be full size. ~4KB each.
+// History versions are only shown as small thumbnails. These sizes are for headshots kept inside
+// the plan's one Firestore document (1MB, and plans already run ~500KB): older plans, or a
+// headshot the image store could not take. Stored headshots are URLs and pass through untouched.
 export const THUMBNAIL_PX = 120;
 export const THUMBNAIL_QUALITY = 0.65;
 

@@ -15,7 +15,9 @@ import crypto from "crypto";
  */
 
 const METADATA_HOST = process.env.GCE_METADATA_HOST || "metadata.google.internal";
-const TOKEN_SCOPE = "https://www.googleapis.com/auth/datastore";
+// Firestore for plans, Cloud Storage for images (./imageStore). The metadata server ignores this:
+// a Cloud Run token already carries the cloud-platform scope.
+const TOKEN_SCOPE = "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/devstorage.read_write";
 /** Refresh a minute early so a token never expires mid-request. */
 const EXPIRY_SKEW_MS = 60_000;
 

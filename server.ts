@@ -20,6 +20,8 @@ import { geoPlanFacts, geoSnapshotFromBrief, leadMediaType, rehydrateGeoSnapshot
 import { validatePlanningKnowledgeBase } from "./src/planning/knowledge/normalizeWorkbook";
 import { DEFAULT_PLANNING_SETTINGS, displaySettingsOf, migrateStoredSettings, validatePlanningSettings } from "./src/planning/settings";
 import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
+import { IMAGE_URL_PREFIX, MAX_IMAGE_BYTES, createImageStore, decodeImageDataUrl, imageIdFromUrl, imageUrl, isImageId, type ImageStore, type StoredImage } from "./src/storage/imageStore";
+import { resolveProjectId } from "./src/storage/googleAuth";
 import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink, type ScoutLog, type StoredPlan } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
 import { buildScoutLog, sanitizeConversationId, scoutReviewUpdate, type ScoutLogInput } from "./src/assistant/scoutLog";
@@ -432,6 +434,36 @@ async function getStorage(): Promise<StorageAdapter> {
   return storageInitPromise;
 }
 
+let imageStorePromise: Promise<ImageStore> | null = null;
+
+/** Headshots live beside the plan store: the bucket when plans are in Firestore, disk otherwise. */
+async function getImageStore(): Promise<ImageStore> {
+  if (!imageStorePromise) {
+    imageStorePromise = (async () => {
+      const storage = await getStorage();
+      return createImageStore(storage.name, storage.name === "firestore" ? await resolveProjectId() : null);
+    })().catch((err) => {
+      imageStorePromise = null;
+      throw err;
+    });
+  }
+  return imageStorePromise;
+}
+
+/** The bytes behind a headshot as a plan holds it: a stored-image URL or a legacy data URL. */
+async function loadImageFromUrl(url: unknown): Promise<StoredImage | null> {
+  const id = imageIdFromUrl(url);
+  if (id) {
+    try {
+      return await (await getImageStore()).get(id);
+    } catch (err: any) {
+      console.warn(`[IMAGES] Could not read ${id}:`, err?.message || err);
+      return null;
+    }
+  }
+  return decodeImageDataUrl(url);
+}
+
 // Unauthenticated endpoints. Everything else under /api requires a session cookie -
 // the previous login was a client-side gate only, which left these routes open to the
 // internet on a service deployed with invoker-iam-disabled.
@@ -457,7 +489,8 @@ app.use("/api", async (req, res, next) => {
   // A session's role and access come from the directory, so make sure it is loaded (cached) first.
   if (readSession(req)) await loadPeople().catch((err) => console.error("[PEOPLE] Directory could not be loaded:", err?.message || err));
   // req.path is relative to the "/api" mount point.
-  if (PUBLIC_API_PATHS.has(`/api${req.path}`)) {
+  // Image reads need no session: the unguessable id is the access check (see imageStore.ts).
+  if (PUBLIC_API_PATHS.has(`/api${req.path}`) || (req.method === "GET" && `/api${req.path}`.startsWith(IMAGE_URL_PREFIX))) {
     next();
     return;
   }
@@ -472,6 +505,7 @@ app.get("/api/health", async (_req, res) => {
     res.json({
       ok: true,
       storageDriver: storage.name,
+      imageDriver: (await getImageStore()).name,
       shared: storage.name !== "local-file",
       adminPasswordConfigured: isAdminPasswordConfigured(),
       googleSignIn: Boolean(googleClientId()),
@@ -3942,6 +3976,50 @@ app.post("/api/plans/:id/restore", async (req, res) => {
   }
 });
 
+// --- images -------------------------------------------------------------------
+
+// Stores a headshot the browser has already sized, and returns the URL the plan keeps.
+app.post("/api/images", async (req, res) => {
+  try {
+    const image = decodeImageDataUrl(req.body?.dataUrl);
+    if (!image) {
+      res.status(400).json({ error: "A JPEG, PNG or WebP data URL is required." });
+      return;
+    }
+    if (image.bytes.length > MAX_IMAGE_BYTES) {
+      res.status(413).json({ error: "That image is too large to store." });
+      return;
+    }
+    const id = await (await getImageStore()).put(image.bytes, image.contentType);
+    res.json({ success: true, url: imageUrl(id) });
+  } catch (err: any) {
+    console.error("[IMAGES] Upload failed:", err?.message || err);
+    res.status(500).json({ error: "The image could not be stored.", details: err?.message || String(err) });
+  }
+});
+
+app.get("/api/images/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!isImageId(id)) {
+      res.status(404).end();
+      return;
+    }
+    const image = await (await getImageStore()).get(id);
+    if (!image) {
+      res.status(404).end();
+      return;
+    }
+    // Images are never overwritten (an edit makes a new one), so the browser can keep them.
+    res.set("Cache-Control", "private, max-age=31536000, immutable");
+    res.set("X-Robots-Tag", "noindex, nofollow");
+    res.type(image.contentType).send(image.bytes);
+  } catch (err: any) {
+    console.error("[IMAGES] Read failed:", err?.message || err);
+    res.status(502).end();
+  }
+});
+
 // --- plan sharing -----------------------------------------------------------
 
 // Public, unauthenticated view of an actively shared plan
@@ -4031,7 +4109,12 @@ app.post("/api/plans/:id/unshare", async (req, res) => {
 });
 
 // Helper: Generate a realistic profile photo headshot using Gemini 3.1 Flash Image (Nano Banana 2)
-async function generatePersonaHeadshot(persona: any, instruction?: string, retryCount: number = 0): Promise<string | null> {
+/**
+ * With a reference, the instruction edits that photo and the person stays the same; without one
+ * (a first headshot, or Regenerate) a new face is cast from the persona. Edits used to be sent as
+ * text only, so "add glasses" came back as a stranger in glasses.
+ */
+async function generatePersonaHeadshot(persona: any, instruction?: string, retryCount: number = 0, reference: StoredImage | null = null): Promise<string | null> {
   try {
     const ai = getAiClient();
     
@@ -4060,12 +4143,23 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
         ].filter(Boolean).join(" ")
       : `A clean, authentic, high-quality 1:1 square photographic studio headshot portrait of a ${rawAge} year old ${rawGender}, styled as ${personaName}.${customDirective} Professional portrait lighting, neutral soft-focus studio background, warm, confident, approachable facial expression facing directly toward camera. Single subject, tightly centered on head and shoulders.`;
 
-    console.log(`[GEMINI IMAGE GEN] Generating headshot photo for persona: '${personaName}' (attempt ${retryCount + 1})${instruction ? ` [Instruction: ${instruction.slice(0, 60)}]` : ""}...`);
+    const editPrompt = reference && instruction?.trim()
+      ? [
+          "Edit this headshot photograph. It must remain the same individual: keep their face, facial features, skin tone, apparent age, hairline and identity exactly as they are.",
+          `Apply only this change: ${instruction.trim()}.`,
+          "Leave everything the change does not mention as it is. Keep it a 1:1 square photorealistic head-and-shoulders portrait with natural lighting, a single subject, and no text, captions or name tags.",
+        ].join(" ")
+      : null;
+    const contents = editPrompt && reference
+      ? [{ role: "user", parts: [{ text: editPrompt }, { inlineData: { mimeType: reference.contentType, data: reference.bytes.toString("base64") } }] }]
+      : prompt;
+
+    console.log(`[GEMINI IMAGE GEN] ${editPrompt ? "Editing" : "Generating"} headshot photo for persona: '${personaName}' (attempt ${retryCount + 1})${instruction ? ` [Instruction: ${instruction.slice(0, 60)}]` : ""}...`);
     
     const response: any = await withTimeout(
       ai.models.generateContent({
         model: "gemini-3.1-flash-image",
-        contents: prompt,
+        contents: contents as any,
         config: {
           responseModalities: ["IMAGE"],
           thinkingConfig: {
@@ -4085,7 +4179,7 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
       console.warn(`[GEMINI IMAGE GEN] Timed out for persona '${personaName}'.`);
       if (retryCount === 0) {
         console.log(`[GEMINI IMAGE GEN] Retrying headshot for persona '${personaName}'...`);
-        return await generatePersonaHeadshot(persona, instruction, retryCount + 1);
+        return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference);
       }
       return null;
     }
@@ -4101,13 +4195,13 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
     }
     console.warn(`[GEMINI IMAGE GEN] No image data found in response for persona '${personaName}'.`);
     if (retryCount === 0) {
-      return await generatePersonaHeadshot(persona, instruction, retryCount + 1);
+      return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference);
     }
   } catch (err: any) {
     console.error(`[GEMINI IMAGE GEN ERROR] Failed to generate headshot for persona '${persona?.name}':`, err?.message || err);
     if (retryCount === 0) {
       console.log(`[GEMINI IMAGE GEN] Retrying after error for persona '${persona?.name}'...`);
-      return await generatePersonaHeadshot(persona, instruction, retryCount + 1);
+      return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference);
     }
   }
   return null;
@@ -4116,13 +4210,15 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
 // API: Generate individual persona headshot avatar on demand
 app.post("/api/generate-persona-avatar", async (req, res) => {
   try {
-    const { persona, instruction } = req.body;
+    const { persona, instruction, referenceUrl } = req.body;
     if (!persona || !persona.name) {
       res.status(400).json({ error: "Persona details required." });
       return;
     }
-    console.log(`[API /api/generate-persona-avatar] Generating headshot for ${persona.name}${instruction ? ` with custom instruction` : ""}...`);
-    const avatarUrl = await generatePersonaHeadshot(persona, instruction);
+    // Only an edit sends a reference. If it cannot be read the edit still runs, from text alone.
+    const reference = typeof instruction === "string" && instruction.trim() ? await loadImageFromUrl(referenceUrl) : null;
+    console.log(`[API /api/generate-persona-avatar] Generating headshot for ${persona.name}${instruction ? ` with custom instruction${reference ? " on the current photo" : ""}` : ""}...`);
+    const avatarUrl = await generatePersonaHeadshot(persona, instruction, 0, reference);
     if (avatarUrl) {
       res.json({ success: true, avatarUrl });
     } else {
@@ -4334,13 +4430,12 @@ CORE BRAND DESIGN GUIDE & AESTHETIC SPECIFICATION (MANDATORY FOR ALL LAYOUTS):
         : "ScoutAI Reach Expansion Segment";
 
       // Check if avatar image is available
-      if (targetPersona.avatarUrl && typeof targetPersona.avatarUrl === "string" && targetPersona.avatarUrl.startsWith("data:image/")) {
+      const spotlightAvatar = await loadImageFromUrl(targetPersona.avatarUrl);
+      if (spotlightAvatar) {
         try {
-          const parts = targetPersona.avatarUrl.split(",");
-          const mime = targetPersona.avatarUrl.split(";")[0].replace("data:", "") || "image/png";
-          const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : "png";
-          const buf = Buffer.from(parts[1], "base64");
-          const file = await toFile(buf, `persona_${pIdx + 1}.${ext}`, { type: mime });
+          const mime = spotlightAvatar.contentType;
+          const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
+          const file = await toFile(spotlightAvatar.bytes, `persona_${pIdx + 1}.${ext}`, { type: mime });
           referenceFiles.push(file);
           console.log(`[API /api/personas/generate-slide] Added avatar reference for spotlight persona: ${personaName}`);
         } catch (bufErr) {
@@ -4458,13 +4553,12 @@ ${customNotes ? `ADDITIONAL USER DIRECTIVE: ${customNotes}` : ""}`;
       // Collect avatar references if available
       for (let i = 0; i < candidatePersonas.length; i++) {
         const p = candidatePersonas[i];
-        if (p.avatarUrl && typeof p.avatarUrl === "string" && p.avatarUrl.startsWith("data:image/")) {
+        const avatar = await loadImageFromUrl(p.avatarUrl);
+        if (avatar) {
           try {
-            const parts = p.avatarUrl.split(",");
-            const mime = p.avatarUrl.split(";")[0].replace("data:", "") || "image/png";
-            const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : "png";
-            const buf = Buffer.from(parts[1], "base64");
-            const file = await toFile(buf, `persona_${i + 1}.${ext}`, { type: mime });
+            const mime = avatar.contentType;
+            const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
+            const file = await toFile(avatar.bytes, `persona_${i + 1}.${ext}`, { type: mime });
             referenceFiles.push(file);
           } catch (bufErr) {
             console.warn(`[API /api/personas/generate-slide] Could not convert avatar ${i + 1} to file:`, bufErr);
