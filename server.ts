@@ -31,6 +31,7 @@ import { filterScoutLogs, sanitizeReviewFilters } from "./src/scoutReview/scoutR
 import { buildDashboard, planBudgetFields } from "./src/usage/dashboard";
 import { backfillUsageFromPlans } from "./src/usage/backfill";
 import { holdOpenForLongRequest, sendLongRequestProgress } from "./src/server/longRequest";
+import { DEFAULT_CANONICAL_ORIGIN, canonicalRedirect } from "./src/server/canonicalHost";
 import { knownPeople, suggestNames, type KnownPerson } from "./src/usage/knownPeople";
 import { applyPeopleEdit, canonicalName, ensurePerson, indexPeople, removedPersonNamed, roleFor, withCanonicalActors, withCanonicalAuthors, type PeopleIndex } from "./src/people/people";
 import { GoogleTokenError, verifyGoogleIdToken } from "./src/server/googleIdToken";
@@ -406,6 +407,24 @@ app.set("trust proxy", 1);
 // Cloud Run (and most PaaS hosts) inject the port to listen on via $PORT and will fail the
 // health check if the container binds anything else. 3000 stays the local default.
 const PORT = Number(process.env.PORT) || 3000;
+
+// Before anything else, so the AI Studio address never serves the sign-in page Google rejects there.
+// CANONICAL_ORIGIN="" turns it off.
+app.use((req, res, next) => {
+  const target = canonicalRedirect({
+    method: req.method,
+    path: req.path,
+    originalUrl: req.originalUrl,
+    host: req.get("host"),
+    forwardedHost: req.get("x-forwarded-host"),
+    cfRay: req.get("cf-ray"),
+  }, process.env.CANONICAL_ORIGIN ?? DEFAULT_CANONICAL_ORIGIN);
+  if (target) {
+    res.redirect(302, target);
+    return;
+  }
+  next();
+});
 
 // Enable JSON parsing with a generous limit for additional context if needed
 app.use(express.json({ limit: "10mb" }));
