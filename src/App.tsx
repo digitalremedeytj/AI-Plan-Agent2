@@ -7681,29 +7681,29 @@ export default function App() {
                                           <span>Purchasing Focus:</span>
                                         </div>
                                         <span className="text-slate-600 block pl-5">{persona.buy}</span>
-                                        {personaSegments.length > 0 ? (
-                                          <div className="pl-5 mt-2">
-                                            <div className="text-slate-700 text-[11px] font-semibold mb-1">Recommended Segments That Align:</div>
-                                            <div className="flex flex-wrap gap-1.5">
-                                              {personaSegments.map((segment) => (
-                                                <span
-                                                  key={segment.id}
-                                                  title={segment.justification || segment.dimension}
-                                                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${SEGMENT_DIMENSION_STYLES[segment.dimension].chip}`}
-                                                >
-                                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${SEGMENT_DIMENSION_STYLES[segment.dimension].dot}`} aria-hidden="true" />
-                                                  {segment.name}
-                                                </span>
-                                              ))}
-                                            </div>
-                                          </div>
-                                        ) : segmentStatus === "loading" && !isShareView ? (
-                                          <div className="pl-5 mt-2 flex items-center gap-1.5 text-[11px] text-slate-400">
-                                            <Loader2 className="w-3 h-3 animate-spin" />
-                                            <span>Matching segments…</span>
-                                          </div>
-                                        ) : null}
                                       </div>
+                                      {personaSegments.length > 0 ? (
+                                        <div className="px-2.5 pt-1">
+                                          <div className="text-slate-700 text-[11px] font-semibold mb-1">Recommended Segments That Align:</div>
+                                          <div className="flex flex-wrap gap-1.5">
+                                            {personaSegments.map((segment) => (
+                                              <span
+                                                key={segment.id}
+                                                title={segment.justification || segment.dimension}
+                                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${SEGMENT_DIMENSION_STYLES[segment.dimension].chip}`}
+                                              >
+                                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${SEGMENT_DIMENSION_STYLES[segment.dimension].dot}`} aria-hidden="true" />
+                                                {segment.name}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ) : segmentStatus === "loading" && !isShareView ? (
+                                        <div className="px-2.5 pt-1 flex items-center gap-1.5 text-[11px] text-slate-400">
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                          <span>Matching segments…</span>
+                                        </div>
+                                      ) : null}
                                     </div>
 
                                     {/* Narrative Quote */}
