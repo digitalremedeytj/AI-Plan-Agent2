@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { PersonaAvatarVersion } from "../types";
-import { activeHeadshotStyle, settleAvatarHistory } from "./personaHeadshots";
+import { activeHeadshotStyle, latestPhotoVersion, settleAvatarHistory } from "./personaHeadshots";
 
 const toThumbnail = async (url: string) => (url.startsWith("thumb:") ? url : `thumb:${url.slice(0, 3)}`);
 const version = (id: string, url: string): PersonaAvatarVersion => ({ id, url, createdAt: "10:00" });
@@ -40,4 +40,14 @@ test("an edit to an illustrated headshot stays illustrated, while older photos s
   assert.equal(activeHeadshotStyle("/api/images/b", history), "illustration");
   assert.equal(activeHeadshotStyle("/api/images/a", history), "photo");
   assert.equal(activeHeadshotStyle(undefined, []), "photo");
+});
+
+test("going back to photos picks the newest photo, skipping every illustration", () => {
+  const history = [
+    { id: "c", url: "/api/images/c", createdAt: "", style: "illustration" as const },
+    { id: "b", url: "/api/images/b", createdAt: "" },
+    { id: "a", url: "/api/images/a", createdAt: "" },
+  ];
+  assert.equal(latestPhotoVersion(history)?.id, "b");
+  assert.equal(latestPhotoVersion([history[0]]), undefined);
 });

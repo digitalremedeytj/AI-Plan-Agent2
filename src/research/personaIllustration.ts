@@ -10,8 +10,8 @@ export const ILLUSTRATION_STYLE = [
   "Add subtle tonal variation or gentle gradient shading for depth, but avoid realistic textures, photographic lighting, or fine detail.",
   "The overall look should feel sophisticated, fashionable, playful, and contemporary—similar to an upscale editorial magazine illustration or modernized 1960s–1970s advertising artwork.",
   "Composition: centered head-and-shoulders portrait, front-facing or slight three-quarter view, cropped around the upper torso.",
-  "Use a simple solid-color background with strong contrast against the subject. No scenery, text, logos, borders, or unnecessary objects.",
-  "Color palette use: #5856fd, #00B3AA, #b2cb3b, #006987.",
+  "Background: always one flat, solid slate-teal #006987 filling the whole frame, with no gradient, pattern, or second color. No scenery, text, logos, borders, or unnecessary objects.",
+  "Color the person with the other brand colors, #5856fd, #00B3AA and #b2cb3b, alongside natural skin and hair tones, so the subject stands out clearly against the #006987 background.",
   "Maintain this exact illustration language across every persona so the full set feels like one consistent campaign portrait series.",
 ].join(" ");
 

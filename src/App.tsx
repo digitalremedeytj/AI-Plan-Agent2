@@ -24,6 +24,7 @@ import {
   BookOpen,
   Loader2,
   Palette,
+  Image as ImageIcon,
   Check,
   AlertTriangle,
   HelpCircle,
@@ -102,7 +103,7 @@ import { CtvExportDropdown } from "./components/CtvExportDropdown";
 import { PersonaSlideExportModal } from "./components/PersonaSlideExportModal";
 import { clearPlanSlides, movePlanSlides, UNSAVED_PLAN_SLIDE_KEY } from "./utils/planSlideStore";
 import { PersonaAvatarModal } from "./components/PersonaAvatarModal";
-import { HEADSHOT_PX, HEADSHOT_QUALITY, THUMBNAIL_PX, THUMBNAIL_QUALITY, activeHeadshotStyle, settleAvatarHistory } from "./components/personaHeadshots";
+import { HEADSHOT_PX, HEADSHOT_QUALITY, THUMBNAIL_PX, THUMBNAIL_QUALITY, activeHeadshotStyle, latestPhotoVersion, settleAvatarHistory } from "./components/personaHeadshots";
 import type { HeadshotStyle } from "./research/personaIllustration";
 import { SegmentRecommendations, SEGMENT_DIMENSION_STYLES, type SegmentStatus } from "./components/SegmentRecommendations";
 import {
@@ -1483,6 +1484,7 @@ export default function App() {
   const [copySourcesCopied, setCopySourcesCopied] = useState(false);
   const [regenType, setRegenType] = useState<string | null>(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [isHeadshotStyleMenuOpen, setIsHeadshotStyleMenuOpen] = useState(false);
   const [pdfGenerating, setPdfGenerating] = useState(false);
   // Deliberately not persisted: the same people demo and plan for real, so forgetting to
   // untick it should fall back to the full, audited run.
@@ -1510,6 +1512,7 @@ export default function App() {
       updatedHistory,
       async (url) => (await compressAvatarUrl(url, THUMBNAIL_PX, THUMBNAIL_QUALITY)) || url,
     );
+    headshotsDirtyRef.current = true;
     setProfileData((prev) => {
       if (!prev || !prev.personas || !prev.personas[personaIndex]) return prev;
       const updatedPersonas = [...prev.personas];
@@ -1610,6 +1613,30 @@ export default function App() {
         style: "illustration",
       };
       handleSelectPersonaAvatar(personaIndex, finalAvatar, [newVersion, ...currentHistory].slice(0, 8));
+    });
+  };
+
+  // Puts every illustrated persona back on its most recent photo, the same face the planner had
+  // before. Only a persona that never had a photo in its history gets a new one generated.
+  const handlePhotographAllPersonas = () => {
+    const personas = profileData?.personas || [];
+    personas.forEach(async (persona, personaIndex) => {
+      const history = persona.avatarHistory || [];
+      if (hasHeadshot(persona.avatarUrl) && activeHeadshotStyle(persona.avatarUrl, history) === "photo") return;
+      const photo = latestPhotoVersion(history);
+      if (photo) {
+        handleSelectPersonaAvatar(personaIndex, photo.url, history);
+        return;
+      }
+      const finalAvatar = await handleGeneratePersonaAvatar(personaIndex, undefined, "photo");
+      if (!finalAvatar) return;
+      const newVersion: PersonaAvatarVersion = {
+        id: `v-${Date.now()}-${personaIndex}`,
+        url: finalAvatar,
+        prompt: "Studio portrait",
+        createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      handleSelectPersonaAvatar(personaIndex, finalAvatar, [newVersion, ...history].slice(0, 8));
     });
   };
 
@@ -1937,6 +1964,9 @@ export default function App() {
   // Covers the target audience and the reach panel's share-link eye: both are reach display
   // choices saved straight onto the plan.
   const reachPrefsDirtyRef = React.useRef(false);
+  // The auto-save baseline ignores headshots (they arrive after a run), so a planner's own
+  // headshot change is flagged here or it would show "Saved" and be gone on reload.
+  const headshotsDirtyRef = React.useRef(false);
   const autoSaveQueueRef = React.useRef<Promise<void>>(Promise.resolve());
 
   const handleToggleSectionActive = (sectionKey: string, inactive: boolean) => {
@@ -2108,6 +2138,7 @@ export default function App() {
     channelOverridesDirtyRef.current = false;
     hiddenSectionsDirtyRef.current = false;
     reachPrefsDirtyRef.current = false;
+    headshotsDirtyRef.current = false;
     if (segmentUndoTimerRef.current) clearTimeout(segmentUndoTimerRef.current);
     setSegmentUndoName(null);
     setSegmentStatus("idle");
@@ -2311,7 +2342,7 @@ export default function App() {
   // (src/storage/planHistory.ts), so auto-saving often costs no history.
   const profileDataRef = React.useRef(profileData);
   profileDataRef.current = profileData;
-  const autoSaveDirtyRefs = [segmentsDirtyRef, channelOverridesDirtyRef, hiddenSectionsDirtyRef, reachPrefsDirtyRef, executiveBriefDirtyRef];
+  const autoSaveDirtyRefs = [segmentsDirtyRef, channelOverridesDirtyRef, hiddenSectionsDirtyRef, reachPrefsDirtyRef, executiveBriefDirtyRef, headshotsDirtyRef];
   // The profile object the last successful auto-save wrote. Right after a save the server's copy
   // can differ from it (the Campaign Recap is re-checked on every save) until React re-renders
   // with the server's recap, so "is this exactly what was just saved" is asked by identity.
@@ -2437,6 +2468,7 @@ export default function App() {
       segmentsDirtyRef.current = false;
       hiddenSectionsDirtyRef.current = false;
       reachPrefsDirtyRef.current = false;
+      headshotsDirtyRef.current = false;
 
       await refreshPlans();
       setIsSaving(false);
@@ -3592,7 +3624,8 @@ export default function App() {
       || channelOverridesDirtyRef.current
       || hiddenSectionsDirtyRef.current
       || reachPrefsDirtyRef.current
-      || executiveBriefDirtyRef.current;
+      || executiveBriefDirtyRef.current
+      || headshotsDirtyRef.current;
   };
   const hasUnsavedChangesRef = React.useRef(hasUnsavedChanges);
   hasUnsavedChangesRef.current = hasUnsavedChanges;
@@ -7340,19 +7373,49 @@ export default function App() {
                             </button>
 
                             {!isShareView && (
-                              <button
-                                type="button"
-                                id="btn-illustrate-all-personas"
-                                onClick={handleIllustrateAllPersonas}
-                                disabled={generatingAvatarIndices.length > 0}
-                                className="p-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer transition-all shadow-2xs hover:shadow-xs active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-                                title={generatingAvatarIndices.length > 0 ? "Headshots are generating..." : "Recreate all persona headshots as illustrations"}
-                                aria-label="Recreate all persona headshots as illustrations"
-                              >
-                                {generatingAvatarIndices.length > 0
-                                  ? <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
-                                  : <Palette className="w-4 h-4 text-indigo-600" />}
-                              </button>
+                              <div className="relative">
+                                <button
+                                  type="button"
+                                  id="btn-persona-headshot-style"
+                                  onClick={() => setIsHeadshotStyleMenuOpen((open) => !open)}
+                                  disabled={generatingAvatarIndices.length > 0}
+                                  className="p-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/90 rounded-lg inline-flex items-center justify-center gap-0.5 cursor-pointer transition-all shadow-2xs hover:shadow-xs active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                                  title={generatingAvatarIndices.length > 0 ? "Headshots are generating..." : "Switch all persona headshots between illustrations and photos"}
+                                  aria-label="Persona headshot style"
+                                  aria-haspopup="menu"
+                                  aria-expanded={isHeadshotStyleMenuOpen}
+                                >
+                                  {generatingAvatarIndices.length > 0
+                                    ? <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+                                    : <Palette className="w-4 h-4 text-indigo-600" />}
+                                  <ChevronDown className={`w-3 h-3 text-indigo-600 transition-transform duration-200 ${isHeadshotStyleMenuOpen ? 'rotate-180' : ''}`} />
+                                </button>
+                                {isHeadshotStyleMenuOpen && (
+                                  <>
+                                    <div className="fixed inset-0 z-40 cursor-default" onClick={() => setIsHeadshotStyleMenuOpen(false)} />
+                                    <div role="menu" className="absolute right-0 mt-2 w-60 bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 z-50 text-left">
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => { setIsHeadshotStyleMenuOpen(false); handleIllustrateAllPersonas(); }}
+                                        className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-2 cursor-pointer transition-colors"
+                                      >
+                                        <Palette className="w-4 h-4 text-indigo-600 shrink-0" />
+                                        <span>Make all personas illustrations</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => { setIsHeadshotStyleMenuOpen(false); handlePhotographAllPersonas(); }}
+                                        className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-2 cursor-pointer transition-colors"
+                                      >
+                                        <ImageIcon className="w-4 h-4 text-indigo-600 shrink-0" />
+                                        <span>Make all personas photos</span>
+                                      </button>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
                             )}
 
                             <button

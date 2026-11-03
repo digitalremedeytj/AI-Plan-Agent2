@@ -47,3 +47,8 @@ export async function settleAvatarHistory(
 export function activeHeadshotStyle(activeUrl: string | undefined, history: PersonaAvatarVersion[] = []): HeadshotStyle {
   return history.find((version) => version.url === activeUrl)?.style === "illustration" ? "illustration" : "photo";
 }
+
+/** The newest photo in a persona's history, the one "Make all personas photos" goes back to. */
+export function latestPhotoVersion(history: PersonaAvatarVersion[] = []): PersonaAvatarVersion | undefined {
+  return history.find((version) => version.style !== "illustration" && Boolean(version.url));
+}

@@ -7,7 +7,8 @@ test("a redraw keeps the person in the reference and carries the full art direct
   assert.match(prompt, /same individual/);
   assert.match(prompt, /add a scarf/);
   assert.ok(prompt.includes(ILLUSTRATION_STYLE));
-  assert.match(prompt, /#5856fd, #00B3AA, #b2cb3b, #006987/);
+  assert.match(prompt, /solid slate-teal #006987/);
+  assert.match(prompt, /#5856fd, #00B3AA and #b2cb3b/);
 });
 
 test("a fresh illustration is cast from the brief but never takes the photo setting", () => {
