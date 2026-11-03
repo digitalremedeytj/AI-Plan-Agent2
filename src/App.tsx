@@ -23,6 +23,7 @@ import {
   Award,
   BookOpen,
   Loader2,
+  Palette,
   Check,
   AlertTriangle,
   HelpCircle,
@@ -101,7 +102,8 @@ import { CtvExportDropdown } from "./components/CtvExportDropdown";
 import { PersonaSlideExportModal } from "./components/PersonaSlideExportModal";
 import { clearPlanSlides, movePlanSlides, UNSAVED_PLAN_SLIDE_KEY } from "./utils/planSlideStore";
 import { PersonaAvatarModal } from "./components/PersonaAvatarModal";
-import { HEADSHOT_PX, HEADSHOT_QUALITY, THUMBNAIL_PX, THUMBNAIL_QUALITY, settleAvatarHistory } from "./components/personaHeadshots";
+import { HEADSHOT_PX, HEADSHOT_QUALITY, THUMBNAIL_PX, THUMBNAIL_QUALITY, activeHeadshotStyle, settleAvatarHistory } from "./components/personaHeadshots";
+import type { HeadshotStyle } from "./research/personaIllustration";
 import { SegmentRecommendations, SEGMENT_DIMENSION_STYLES, type SegmentStatus } from "./components/SegmentRecommendations";
 import {
   createUserSegment,
@@ -1516,15 +1518,22 @@ export default function App() {
     });
   };
 
+  /**
+   * Without a style the headshot keeps the one on show. Passing "illustration" redraws the
+   * current headshot as an illustration of the same person.
+   */
   const handleGeneratePersonaAvatar = async (
     personaIndex: number,
-    instruction?: string
+    instruction?: string,
+    redrawAs?: HeadshotStyle
   ): Promise<string | null> => {
     if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return null;
     setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, personaIndex])));
     markAvatarFailed(personaIndex, false);
     try {
       const targetPersona = profileData.personas[personaIndex];
+      const style = redrawAs || activeHeadshotStyle(targetPersona.avatarUrl, targetPersona.avatarHistory);
+      const editing = Boolean(instruction && instruction.trim()) || redrawAs === "illustration";
       const res = await api.authFetch("/api/generate-persona-avatar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1532,7 +1541,8 @@ export default function App() {
           // The images themselves stay out of the persona: only an edit needs one, as its reference.
           persona: { ...targetPersona, avatarUrl: undefined, avatarHistory: undefined },
           instruction: instruction && instruction.trim() ? instruction.trim() : undefined,
-          referenceUrl: instruction && instruction.trim() ? targetPersona.avatarUrl : undefined,
+          referenceUrl: editing && hasHeadshot(targetPersona.avatarUrl) ? targetPersona.avatarUrl : undefined,
+          style,
         }),
       });
       const data = await res.json();
@@ -1558,6 +1568,7 @@ export default function App() {
     const finalAvatar = await handleGeneratePersonaAvatar(personaIndex);
     if (finalAvatar) {
       const targetPersona = profileData.personas[personaIndex];
+      const illustrated = activeHeadshotStyle(targetPersona.avatarUrl, targetPersona.avatarHistory) === "illustration";
       const currentHistory = targetPersona.avatarHistory || (targetPersona.avatarUrl ? [
         {
           id: `v-prev-${Date.now()}`,
@@ -1569,12 +1580,37 @@ export default function App() {
       const newVersion: PersonaAvatarVersion = {
         id: `v-${Date.now()}`,
         url: finalAvatar,
-        prompt: "Regenerated studio portrait",
+        prompt: illustrated ? "Regenerated illustration" : "Regenerated studio portrait",
         createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        ...(illustrated ? { style: "illustration" as const } : {}),
       };
       const updatedHistory = [newVersion, ...currentHistory].slice(0, 8);
       handleSelectPersonaAvatar(personaIndex, finalAvatar, updatedHistory);
     }
+  };
+
+  // Redraws every persona's current headshot as an illustration, all at once. The photos stay in
+  // each persona's version history, so switching back is a click in the headshot modal.
+  const handleIllustrateAllPersonas = () => {
+    const personas = profileData?.personas || [];
+    personas.forEach(async (persona, personaIndex) => {
+      const finalAvatar = await handleGeneratePersonaAvatar(personaIndex, undefined, "illustration");
+      if (!finalAvatar) return;
+      const currentHistory = persona.avatarHistory?.length ? persona.avatarHistory : persona.avatarUrl ? [{
+        id: `v-prev-${Date.now()}-${personaIndex}`,
+        url: persona.avatarUrl,
+        prompt: "Initial archetype portrait",
+        createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      }] : [];
+      const newVersion: PersonaAvatarVersion = {
+        id: `v-${Date.now()}-${personaIndex}`,
+        url: finalAvatar,
+        prompt: "Illustrated portrait",
+        createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        style: "illustration",
+      };
+      handleSelectPersonaAvatar(personaIndex, finalAvatar, [newVersion, ...currentHistory].slice(0, 8));
+    });
   };
 
   // --- SHARED PLANS ---------------------------------------------------------
@@ -7302,6 +7338,22 @@ export default function App() {
                             >
                               <Download className="w-4 h-4 text-indigo-600" />
                             </button>
+
+                            {!isShareView && (
+                              <button
+                                type="button"
+                                id="btn-illustrate-all-personas"
+                                onClick={handleIllustrateAllPersonas}
+                                disabled={generatingAvatarIndices.length > 0}
+                                className="p-1.5 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer transition-all shadow-2xs hover:shadow-xs active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                                title={generatingAvatarIndices.length > 0 ? "Headshots are generating..." : "Recreate all persona headshots as illustrations"}
+                                aria-label="Recreate all persona headshots as illustrations"
+                              >
+                                {generatingAvatarIndices.length > 0
+                                  ? <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+                                  : <Palette className="w-4 h-4 text-indigo-600" />}
+                              </button>
+                            )}
 
                             <button
                               type="button"

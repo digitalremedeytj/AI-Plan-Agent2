@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { PersonaAvatarVersion } from "../types";
-import { settleAvatarHistory } from "./personaHeadshots";
+import { activeHeadshotStyle, settleAvatarHistory } from "./personaHeadshots";
 
 const toThumbnail = async (url: string) => (url.startsWith("thumb:") ? url : `thumb:${url.slice(0, 3)}`);
 const version = (id: string, url: string): PersonaAvatarVersion => ({ id, url, createdAt: "10:00" });
@@ -30,4 +30,14 @@ test("a version with no full-size copy this session stays a thumbnail rather tha
   const settled = await settleAvatarHistory("thumb:OLD", [version("x", "thumb:OLD")], toThumbnail, new Map());
   assert.equal(settled.avatarUrl, "thumb:OLD");
   assert.deepEqual(settled.avatarHistory.map((v) => v.url), ["thumb:OLD"]);
+});
+
+test("an edit to an illustrated headshot stays illustrated, while older photos stay photos", () => {
+  const history = [
+    { id: "b", url: "/api/images/b", createdAt: "", style: "illustration" as const },
+    { id: "a", url: "/api/images/a", createdAt: "" },
+  ];
+  assert.equal(activeHeadshotStyle("/api/images/b", history), "illustration");
+  assert.equal(activeHeadshotStyle("/api/images/a", history), "photo");
+  assert.equal(activeHeadshotStyle(undefined, []), "photo");
 });

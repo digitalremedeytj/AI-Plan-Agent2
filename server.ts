@@ -92,6 +92,7 @@ import {
 } from "./src/qa/auditRunner";
 import { PORTRAIT_SYSTEM_INSTRUCTION, applyPortraits, buildPortraitInput, buildPortraitResponseSchema } from "./src/research/personaPortraits";
 import { briefForShare, personasForShare, personasForSlides } from "./src/research/personaVisibility";
+import { buildIllustrationPrompt, isHeadshotStyle, type HeadshotStyle } from "./src/research/personaIllustration";
 import { NARRATIVE_SYSTEM_INSTRUCTION, applyNarrative, buildNarrativeInput, currentNarrative, narrativeChannelKey, narrativeSchema, planNarrativeNote } from "./src/research/planNarrative";
 import { buildBriefPrompt, buildBriefResponseSchema, normalizeBrief, sanitizeBriefSnapshot } from "./src/research/executiveBrief";
 import { SEGMENT_RATIONALE_SYSTEM_INSTRUCTION, buildSegmentRationaleInput, normalizeSegmentRationale, segmentRationaleSchema, sanitizeSegmentRationaleRequest } from "./src/research/segmentRationale";
@@ -4113,8 +4114,10 @@ app.post("/api/plans/:id/unshare", async (req, res) => {
  * With a reference, the instruction edits that photo and the person stays the same; without one
  * (a first headshot, or Regenerate) a new face is cast from the persona. Edits used to be sent as
  * text only, so "add glasses" came back as a stranger in glasses.
+ * The illustration style redraws the reference (with or without an instruction) in the fixed
+ * campaign art direction, or casts a new illustrated face when there is none.
  */
-async function generatePersonaHeadshot(persona: any, instruction?: string, retryCount: number = 0, reference: StoredImage | null = null): Promise<string | null> {
+async function generatePersonaHeadshot(persona: any, instruction?: string, retryCount: number = 0, reference: StoredImage | null = null, style: HeadshotStyle = "photo"): Promise<string | null> {
   try {
     const ai = getAiClient();
     
@@ -4143,7 +4146,10 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
         ].filter(Boolean).join(" ")
       : `A clean, authentic, high-quality 1:1 square photographic studio headshot portrait of a ${rawAge} year old ${rawGender}, styled as ${personaName}.${customDirective} Professional portrait lighting, neutral soft-focus studio background, warm, confident, approachable facial expression facing directly toward camera. Single subject, tightly centered on head and shoulders.`;
 
-    const editPrompt = reference && instruction?.trim()
+    const illustrated = style === "illustration";
+    const editPrompt = illustrated && reference
+      ? buildIllustrationPrompt(persona, { hasReference: true, instruction })
+      : reference && instruction?.trim()
       ? [
           "Edit this headshot photograph. It must remain the same individual: keep their face, facial features, skin tone, apparent age, hairline and identity exactly as they are.",
           `Apply only this change: ${instruction.trim()}.`,
@@ -4152,9 +4158,11 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
       : null;
     const contents = editPrompt && reference
       ? [{ role: "user", parts: [{ text: editPrompt }, { inlineData: { mimeType: reference.contentType, data: reference.bytes.toString("base64") } }] }]
+      : illustrated
+      ? buildIllustrationPrompt(persona, { hasReference: false, instruction })
       : prompt;
 
-    console.log(`[GEMINI IMAGE GEN] ${editPrompt ? "Editing" : "Generating"} headshot photo for persona: '${personaName}' (attempt ${retryCount + 1})${instruction ? ` [Instruction: ${instruction.slice(0, 60)}]` : ""}...`);
+    console.log(`[GEMINI IMAGE GEN] ${editPrompt ? "Editing" : "Generating"} headshot ${illustrated ? "illustration" : "photo"} for persona: '${personaName}' (attempt ${retryCount + 1})${instruction ? ` [Instruction: ${instruction.slice(0, 60)}]` : ""}...`);
     
     const response: any = await withTimeout(
       ai.models.generateContent({
@@ -4179,7 +4187,7 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
       console.warn(`[GEMINI IMAGE GEN] Timed out for persona '${personaName}'.`);
       if (retryCount === 0) {
         console.log(`[GEMINI IMAGE GEN] Retrying headshot for persona '${personaName}'...`);
-        return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference);
+        return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference, style);
       }
       return null;
     }
@@ -4195,13 +4203,13 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
     }
     console.warn(`[GEMINI IMAGE GEN] No image data found in response for persona '${personaName}'.`);
     if (retryCount === 0) {
-      return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference);
+      return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference, style);
     }
   } catch (err: any) {
     console.error(`[GEMINI IMAGE GEN ERROR] Failed to generate headshot for persona '${persona?.name}':`, err?.message || err);
     if (retryCount === 0) {
       console.log(`[GEMINI IMAGE GEN] Retrying after error for persona '${persona?.name}'...`);
-      return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference);
+      return await generatePersonaHeadshot(persona, instruction, retryCount + 1, reference, style);
     }
   }
   return null;
@@ -4211,14 +4219,17 @@ async function generatePersonaHeadshot(persona: any, instruction?: string, retry
 app.post("/api/generate-persona-avatar", async (req, res) => {
   try {
     const { persona, instruction, referenceUrl } = req.body;
+    const style: HeadshotStyle = isHeadshotStyle(req.body?.style) ? req.body.style : "photo";
     if (!persona || !persona.name) {
       res.status(400).json({ error: "Persona details required." });
       return;
     }
-    // Only an edit sends a reference. If it cannot be read the edit still runs, from text alone.
-    const reference = typeof instruction === "string" && instruction.trim() ? await loadImageFromUrl(referenceUrl) : null;
-    console.log(`[API /api/generate-persona-avatar] Generating headshot for ${persona.name}${instruction ? ` with custom instruction${reference ? " on the current photo" : ""}` : ""}...`);
-    const avatarUrl = await generatePersonaHeadshot(persona, instruction, 0, reference);
+    // Only an edit or an illustration redraw uses a reference. If it cannot be read the request
+    // still runs, from text alone.
+    const wantsReference = style === "illustration" || (typeof instruction === "string" && instruction.trim());
+    const reference = wantsReference ? await loadImageFromUrl(referenceUrl) : null;
+    console.log(`[API /api/generate-persona-avatar] Generating ${style} headshot for ${persona.name}${instruction ? ` with custom instruction${reference ? " on the current photo" : ""}` : ""}...`);
+    const avatarUrl = await generatePersonaHeadshot(persona, instruction, 0, reference, style);
     if (avatarUrl) {
       res.json({ success: true, avatarUrl });
     } else {

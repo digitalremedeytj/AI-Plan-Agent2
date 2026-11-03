@@ -1,4 +1,5 @@
 import type { PersonaAvatarVersion } from "../types";
+import type { HeadshotStyle } from "../research/personaIllustration";
 
 // The live headshot is drawn up to 176 CSS px (the edit modal), so 384px stays sharp on a 2x
 // screen and gives the slide generator a usable reference face. ~24KB as a JPEG data URL.
@@ -37,4 +38,12 @@ export async function settleAvatarHistory(
     history.map(async (version) => ({ ...version, url: version === active ? avatarUrl : await toThumbnail(version.url) })),
   );
   return { avatarUrl, avatarHistory };
+}
+
+/**
+ * The style of the headshot on show, read from its history entry. Edits and Regenerate keep it,
+ * so "add glasses" on an illustration comes back illustrated rather than as a photo.
+ */
+export function activeHeadshotStyle(activeUrl: string | undefined, history: PersonaAvatarVersion[] = []): HeadshotStyle {
+  return history.find((version) => version.url === activeUrl)?.style === "illustration" ? "illustration" : "photo";
 }

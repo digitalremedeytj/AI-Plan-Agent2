@@ -10,9 +10,12 @@ import {
   Trash2,
   Wand2,
   ArrowRight,
-  Info
+  Info,
+  Palette
 } from "lucide-react";
 import type { Persona, PersonaAvatarVersion } from "../types";
+import type { HeadshotStyle } from "../research/personaIllustration";
+import { activeHeadshotStyle } from "./personaHeadshots";
 
 interface PersonaAvatarModalProps {
   isOpen: boolean;
@@ -20,7 +23,7 @@ interface PersonaAvatarModalProps {
   persona: Persona | null;
   personaIndex: number;
   onSelectAvatar: (personaIndex: number, avatarUrl: string, updatedHistory: PersonaAvatarVersion[]) => void;
-  onGenerateNew: (personaIndex: number, instruction: string) => Promise<string | null>;
+  onGenerateNew: (personaIndex: number, instruction: string, redrawAs?: HeadshotStyle) => Promise<string | null>;
   isGenerating: boolean;
 }
 
@@ -80,17 +83,21 @@ export const PersonaAvatarModal: React.FC<PersonaAvatarModalProps> = ({
 
   if (!isOpen || !persona) return null;
 
-  const handleGenerate = async (textToUse?: string) => {
+  const currentStyle = activeHeadshotStyle(activeUrl, history);
+
+  const handleGenerate = async (textToUse?: string, redrawAs?: HeadshotStyle) => {
     const textPrompt = textToUse !== undefined ? textToUse : instruction;
+    const style = redrawAs || currentStyle;
     setErrorMsg(null);
     try {
-      const newUrl = await onGenerateNew(personaIndex, textPrompt);
+      const newUrl = await onGenerateNew(personaIndex, textPrompt, redrawAs);
       if (newUrl) {
         const newVersion: PersonaAvatarVersion = {
           id: `v-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
           url: newUrl,
-          prompt: textPrompt.trim() || "Default archetype portrait",
+          prompt: textPrompt.trim() || (style === "illustration" ? "Illustrated portrait" : "Default archetype portrait"),
           createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          ...(style === "illustration" ? { style: "illustration" as const } : {}),
         };
         // Keep up to 8 recent versions to respect storage
         const updatedHistory = [newVersion, ...history].slice(0, 8);
@@ -198,7 +205,7 @@ export const PersonaAvatarModal: React.FC<PersonaAvatarModalProps> = ({
                 )}
               </div>
               <p className="text-[11px] text-slate-400 text-center mt-2 flex items-center gap-1">
-                <Info className="w-3 h-3" /> Centered 1:1 photorealistic studio portrait
+                <Info className="w-3 h-3" /> {currentStyle === "illustration" ? "Centered 1:1 editorial illustration" : "Centered 1:1 photorealistic studio portrait"}
               </p>
             </div>
 
@@ -280,6 +287,16 @@ export const PersonaAvatarModal: React.FC<PersonaAvatarModalProps> = ({
                   </button>
                 )}
               </div>
+              <button
+                type="button"
+                onClick={() => handleGenerate(undefined, "illustration")}
+                disabled={isGenerating}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 text-xs font-semibold rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+                title="Redraw this persona in the illustrated campaign style, applying any instructions above"
+              >
+                <Palette className="w-4 h-4" />
+                <span>{currentStyle === "illustration" ? "Redraw Illustration" : "Recreate as Illustration"}</span>
+              </button>
 
               {errorMsg && (
                 <div className="text-xs text-rose-600 bg-rose-50 border border-rose-100 p-2.5 rounded-lg flex items-center gap-2">

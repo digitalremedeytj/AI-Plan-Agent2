@@ -11,6 +11,8 @@ export interface PersonaAvatarVersion {
   url: string;
   prompt?: string;
   createdAt: string;
+  /** Absent on photos and on every version made before illustrations existed. */
+  style?: "illustration";
 }
 
 export type SlideAspectRatio = "21:9" | "2:1" | "16:9" | "3:2" | "4:3" | "1:1" | "3:4" | "2:3" | "9:16";
