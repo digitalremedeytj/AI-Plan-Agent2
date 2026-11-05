@@ -1305,11 +1305,96 @@ export default function App() {
     setFailedAvatarIndices((prev) => failed ? Array.from(new Set([...prev, index])) : prev.filter((i) => i !== index));
   }, []);
 
+  // A headshot takes up to ~45s, and the planner may open another plan meanwhile. Each request
+  // keeps the workspace it started in (a new one per plan opened, run started or brief reset), so
+  // the result goes to the plan that asked for it and never onto whichever plan is open now.
+  // planId follows the open plan's id, which a new run only gets once its draft is adopted.
+  const headshotWorkspaceRef = React.useRef<{ planId: string | null }>({ planId: null });
+
+  const startHeadshotWorkspace = (planId: string | null) => {
+    headshotWorkspaceRef.current = { planId };
+    // Spinners and failures are tracked by persona position, so the last plan's must not show here.
+    setGeneratingAvatarIndices([]);
+    setFailedAvatarIndices([]);
+  };
+
+  /** The workspace is still on screen: the same one, or its plan opened again since. */
+  const isHeadshotWorkspaceOpen = (workspace: { planId: string | null }) =>
+    workspace === headshotWorkspaceRef.current
+    || (workspace.planId !== null && workspace.planId === headshotWorkspaceRef.current.planId);
+
+  /**
+   * Gives a finished headshot to the plan it was generated for. Open: it goes into the workspace
+   * and auto-save writes it. Since left: it is written straight onto that saved plan. Either way
+   * the persona is found by name, since `update` may run long after its position was known, and
+   * `update` returns null to leave a persona as it is (e.g. it got a headshot another way).
+   */
+  const deliverHeadshot = (
+    workspace: { planId: string | null },
+    personaName: string,
+    update: (persona: Persona) => Persona | null,
+  ) => {
+    if (isHeadshotWorkspaceOpen(workspace)) {
+      setProfileData((prev) => {
+        if (!prev?.personas) return prev;
+        let changed = false;
+        const personas = prev.personas.map((persona) => {
+          if (persona.name !== personaName) return persona;
+          const next = update(persona);
+          if (!next) return persona;
+          changed = true;
+          return next;
+        });
+        if (!changed) return prev;
+        // Auto-save ignores headshots unless told, and an unsaved one is redrawn on the next open.
+        headshotsDirtyRef.current = true;
+        return { ...prev, personas };
+      });
+      return;
+    }
+    // A run the planner left before its draft was adopted has no saved plan to write to.
+    if (!workspace.planId) return;
+    void saveHeadshotToPlan(workspace.planId, personaName, update).catch((err) =>
+      console.error("Could not save the headshot onto the plan it was generated for:", err));
+  };
+
+  // Read fresh and written with its revision like any other write; a conflict means someone saved
+  // in between, so it reads again once rather than overwriting them.
+  const saveHeadshotToPlan = async (planId: string, personaName: string, update: (persona: Persona) => Persona | null) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const plan = await api.getPlan(planId);
+      const profile = plan.payload.profile as AudienceProfile | undefined;
+      if (!profile?.personas) return;
+      let changed = false;
+      const personas = profile.personas.map((persona) => {
+        if (persona.name !== personaName) return persona;
+        const next = update(persona);
+        if (!next) return persona;
+        changed = true;
+        return next;
+      });
+      if (!changed) return;
+      try {
+        await api.updatePlan(planId, plan.revision, {
+          title: plan.title,
+          advertiserName: plan.advertiserName,
+          settingsRevision: plan.settingsRevision,
+          payload: { ...plan.payload, profile: { ...profile, personas } },
+        });
+        return;
+      } catch (err) {
+        if (attempt === 0 && err instanceof ApiError && err.isConflict) continue;
+        throw err;
+      }
+    }
+  };
+
   // Persona portraits are generated off the critical path. The server returns the profile
   // as soon as it is ready and the client fills in headshots as they arrive, in parallel,
   // so up to 4 x 45s of image generation no longer gates the run.
   const hydratePersonaAvatars = React.useCallback((personas: any[]) => {
     if (!Array.isArray(personas)) return;
+    const workspace = headshotWorkspaceRef.current;
 
     // Immediately mark all personas without an image as actively generating
     const pendingIndices: number[] = [];
@@ -1325,6 +1410,7 @@ export default function App() {
     personas.forEach((persona, index) => {
       if (hasHeadshot(persona?.avatarUrl)) return;
       markAvatarFailed(index, false);
+      const failed = () => { if (isHeadshotWorkspaceOpen(workspace)) markAvatarFailed(index, true); };
       api.authFetch("/api/generate-persona-avatar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1333,39 +1419,32 @@ export default function App() {
         .then((res) => res.json())
         .then(async (data) => {
           if (!data?.success || !data.avatarUrl) {
-            markAvatarFailed(index, true);
+            failed();
             return;
           }
           const compressed = await storeHeadshot(data.avatarUrl);
           const finalAvatar = compressed || data.avatarUrl;
-          setProfileData((prev) => {
-            // By name as well as index: the planner may have opened another plan meanwhile, and
-            // this headshot is now saved, so it must not land on someone else's persona.
-            if (!prev || !prev.personas || !prev.personas[index] || prev.personas[index].name !== persona.name) return prev;
-            // Saved straight onto the plan, or it lives only in this tab and is redrawn next open.
-            headshotsDirtyRef.current = true;
-            const updated = [...prev.personas];
-            const existingHistory = updated[index].avatarHistory || [];
-            const newHistory = existingHistory.length > 0
-              ? existingHistory
-              : [{
-                  id: `v-init-${Date.now()}`,
-                  url: finalAvatar,
-                  prompt: "Initial archetype portrait",
-                  createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                }];
-            updated[index] = { ...updated[index], avatarUrl: finalAvatar, avatarHistory: newHistory };
-            return { ...prev, personas: updated };
+          deliverHeadshot(workspace, persona.name, (current) => hasHeadshot(current.avatarUrl) ? null : {
+            ...current,
+            avatarUrl: finalAvatar,
+            avatarHistory: current.avatarHistory?.length ? current.avatarHistory : [{
+              id: `v-init-${Date.now()}`,
+              url: finalAvatar,
+              prompt: "Initial archetype portrait",
+              createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            }],
           });
         })
         .catch((err) => {
           console.error("Error generating persona headshot:", err);
-          markAvatarFailed(index, true);
+          failed();
         })
         .finally(() => {
-          setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index));
+          if (isHeadshotWorkspaceOpen(workspace)) setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index));
         });
     });
+    // deliverHeadshot reads only refs and state setters, so the first render's copy stays correct.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markAvatarFailed]);
 
   // Queue and live-log ticker Effect
@@ -1505,24 +1584,27 @@ export default function App() {
     setEditingAvatarPersonaIndex(null);
   };
 
+  // Where each newly generated headshot came from, by its URL. The modal and the bulk actions only
+  // learn the URL, then hand it to handleSelectPersonaAvatar by persona position, which by then
+  // may belong to another plan.
+  const headshotOriginsRef = React.useRef(new Map<string, { workspace: { planId: string | null }; personaName: string }>());
+
   const handleSelectPersonaAvatar = async (
     personaIndex: number,
     avatarUrl: string,
     updatedHistory: PersonaAvatarVersion[]
   ) => {
-    if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return;
+    const origin = headshotOriginsRef.current.get(avatarUrl);
+    headshotOriginsRef.current.delete(avatarUrl);
+    const workspace = origin?.workspace || headshotWorkspaceRef.current;
+    const personaName = origin?.personaName || profileData?.personas?.[personaIndex]?.name;
+    if (!personaName) return;
     const settled = await settleAvatarHistory(
       avatarUrl,
       updatedHistory,
       async (url) => (await compressAvatarUrl(url, THUMBNAIL_PX, THUMBNAIL_QUALITY)) || url,
     );
-    headshotsDirtyRef.current = true;
-    setProfileData((prev) => {
-      if (!prev || !prev.personas || !prev.personas[personaIndex]) return prev;
-      const updatedPersonas = [...prev.personas];
-      updatedPersonas[personaIndex] = { ...updatedPersonas[personaIndex], ...settled };
-      return { ...prev, personas: updatedPersonas };
-    });
+    deliverHeadshot(workspace, personaName, (persona) => ({ ...persona, ...settled }));
   };
 
   /**
@@ -1535,6 +1617,8 @@ export default function App() {
     redrawAs?: HeadshotStyle
   ): Promise<string | null> => {
     if (!profileData || !profileData.personas || !profileData.personas[personaIndex]) return null;
+    const workspace = headshotWorkspaceRef.current;
+    const isOpen = () => isHeadshotWorkspaceOpen(workspace);
     setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, personaIndex])));
     markAvatarFailed(personaIndex, false);
     try {
@@ -1556,17 +1640,18 @@ export default function App() {
       if (data.success && data.avatarUrl) {
         const compressed = await storeHeadshot(data.avatarUrl);
         const finalAvatar = compressed || data.avatarUrl;
+        headshotOriginsRef.current.set(finalAvatar, { workspace, personaName: targetPersona.name });
         return finalAvatar;
       } else {
-        markAvatarFailed(personaIndex, true);
+        if (isOpen()) markAvatarFailed(personaIndex, true);
         return null;
       }
     } catch (err) {
       console.error("Failed to generate persona headshot photo:", err);
-      markAvatarFailed(personaIndex, true);
+      if (isOpen()) markAvatarFailed(personaIndex, true);
       return null;
     } finally {
-      setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== personaIndex));
+      if (isOpen()) setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== personaIndex));
     }
   };
 
@@ -1750,6 +1835,8 @@ export default function App() {
   /** Id of the plan currently being fetched, so the list can show a spinner on that row. */
   const [loadingPlanId, setLoadingPlanId] = useState<string | null>(null);
   const [activeSavedId, setActiveSavedId] = useState<string | null>(null);
+  // A new run's headshots belong to its draft once adopted, and to the plan a first Save creates.
+  React.useEffect(() => { headshotWorkspaceRef.current.planId = activeSavedId; }, [activeSavedId]);
 
   // A different plan starts a different ScoutAI conversation; land on its overview as usual.
   React.useEffect(() => {
@@ -2623,7 +2710,7 @@ export default function App() {
     setBudget(body.budget || "");
     setCampaignLength(body.campaignLength || "");
     resetSegmentSession();
-    setFailedAvatarIndices([]);
+    startHeadshotWorkspace(saved.id);
     setActionError(null);
     setProfileData(body.profile);
     // The plan's own budget approach, so a regenerate keeps it rather than the last one used.
@@ -2671,6 +2758,7 @@ export default function App() {
 
     // Auto-generate missing headshots in background if authenticated and not in shared view
     if (!isSharedViewMode && body.profile && body.profile.personas) {
+      const workspace = headshotWorkspaceRef.current;
       const pendingIndices: number[] = [];
       body.profile.personas.forEach((persona: any, index: number) => {
         if (!persona.avatarUrl || persona.avatarUrl.includes("example.com")) {
@@ -2693,31 +2781,23 @@ export default function App() {
               if (data.success && data.avatarUrl) {
                 const compressed = await storeHeadshot(data.avatarUrl);
                 const finalAvatar = compressed || data.avatarUrl;
-                setProfileData(prev => {
-                  if (!prev || !prev.personas) return prev;
-                  const updated = [...prev.personas];
-                  // Same guards as hydratePersonaAvatars: the right persona, and saved onto the plan
-                  // so opening it again does not draw a different person.
-                  if (updated[index] && updated[index].name === persona.name) {
-                    headshotsDirtyRef.current = true;
-                    const existingHistory = updated[index].avatarHistory || [];
-                    const newHistory = existingHistory.length > 0
-                      ? existingHistory
-                      : [{
-                          id: `v-init-${Date.now()}`,
-                          url: finalAvatar,
-                          prompt: "Initial archetype portrait",
-                          createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                        }];
-                    updated[index] = { ...updated[index], avatarUrl: finalAvatar, avatarHistory: newHistory };
-                  }
-                  return { ...prev, personas: updated };
-                });
+                // Only a persona still without one: the planner may have made one by hand meanwhile.
+                deliverHeadshot(workspace, persona.name, (current) =>
+                  current.avatarUrl && !current.avatarUrl.includes("example.com") ? null : {
+                    ...current,
+                    avatarUrl: finalAvatar,
+                    avatarHistory: current.avatarHistory?.length ? current.avatarHistory : [{
+                      id: `v-init-${Date.now()}`,
+                      url: finalAvatar,
+                      prompt: "Initial archetype portrait",
+                      createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    }],
+                  });
               }
             })
             .catch(err => console.error("Error generating missing persona headshot:", err))
             .finally(() => {
-              setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index));
+              if (isHeadshotWorkspaceOpen(workspace)) setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index));
             });
         }
       });
@@ -3389,9 +3469,9 @@ export default function App() {
     setArePersonasExpanded(false);
     setIsDomainAffinityExpanded(false);
     setIsEditingBlueprintTitle(false);
-    setGeneratingAvatarIndices([]);
     resetSegmentSession();
-    setFailedAvatarIndices([]);
+    // A regenerate in place keeps its plan; a new run has none until its draft is adopted.
+    startHeadshotWorkspace(typeOverride ? activeSavedId : null);
     setActionError(null);
 
     // Reset the queue reference and server completion state
@@ -3862,6 +3942,7 @@ export default function App() {
   // faceless on a reload or a share link.
   const generateScoutHeadshots = (plan: api.StoredPlan) => {
     const personas = (plan.payload.profile?.personas || []) as Persona[];
+    const workspace = headshotWorkspaceRef.current;
     personas.forEach((persona, index) => {
       if (persona.avatarUrl) return;
       setGeneratingAvatarIndices((prev) => Array.from(new Set([...prev, index])));
@@ -3873,7 +3954,7 @@ export default function App() {
       })
         .then((res) => res.json())
         .then(async (data) => {
-          if (!data.success || !data.avatarUrl) { markAvatarFailed(index, true); return; }
+          if (!data.success || !data.avatarUrl) { if (isHeadshotWorkspaceOpen(workspace)) markAvatarFailed(index, true); return; }
           const avatarUrl = (await storeHeadshot(data.avatarUrl)) || data.avatarUrl;
           const version: PersonaAvatarVersion = {
             id: `v-${Date.now()}`,
@@ -3882,6 +3963,12 @@ export default function App() {
             createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           };
           const withHeadshot = (p: Persona): Persona => ({ ...p, avatarUrl, avatarHistory: [version, ...(p.avatarHistory || [])].slice(0, 8) });
+          // The planner has left this plan: write it there rather than onto the one now open.
+          if (!isHeadshotWorkspaceOpen(workspace)) {
+            void saveHeadshotToPlan(plan.id, persona.name, (p) => (p.avatarUrl ? null : withHeadshot(p))).catch((err) =>
+              console.error("Could not save the new persona headshot:", err));
+            return;
+          }
           // Matched by name: the persona may have moved, or been changed again, since.
           setProfileData((prev) => prev ? { ...prev, personas: prev.personas.map((p) => (p.name === persona.name && !p.avatarUrl ? withHeadshot(p) : p)) } : prev);
           autoSaveQueueRef.current = autoSaveQueueRef.current.then(async () => {
@@ -3910,9 +3997,9 @@ export default function App() {
         })
         .catch((err) => {
           console.error("Could not generate a headshot for the new persona:", err);
-          markAvatarFailed(index, true);
+          if (isHeadshotWorkspaceOpen(workspace)) markAvatarFailed(index, true);
         })
-        .finally(() => setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index)));
+        .finally(() => { if (isHeadshotWorkspaceOpen(workspace)) setGeneratingAvatarIndices((prev) => prev.filter((i) => i !== index)); });
     });
   };
 
@@ -3997,7 +4084,7 @@ export default function App() {
 
     // Reset active profile output & generation states
     resetSegmentSession();
-    setFailedAvatarIndices([]);
+    startHeadshotWorkspace(null);
     setActionError(null);
     setProfileData(null);
     setGroundingSources(null);
@@ -4011,7 +4098,6 @@ export default function App() {
     setIsDomainAffinityExpanded(false);
     setResearchLogs([]);
     setServerCompleteData(null);
-    setGeneratingAvatarIndices([]);
     setSummarizedPublisherInsights(null);
     if (initialCtvPublishersRef.current) initialCtvPublishersRef.current = null;
 
