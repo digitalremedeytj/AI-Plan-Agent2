@@ -1339,7 +1339,11 @@ export default function App() {
           const compressed = await storeHeadshot(data.avatarUrl);
           const finalAvatar = compressed || data.avatarUrl;
           setProfileData((prev) => {
-            if (!prev || !prev.personas || !prev.personas[index]) return prev;
+            // By name as well as index: the planner may have opened another plan meanwhile, and
+            // this headshot is now saved, so it must not land on someone else's persona.
+            if (!prev || !prev.personas || !prev.personas[index] || prev.personas[index].name !== persona.name) return prev;
+            // Saved straight onto the plan, or it lives only in this tab and is redrawn next open.
+            headshotsDirtyRef.current = true;
             const updated = [...prev.personas];
             const existingHistory = updated[index].avatarHistory || [];
             const newHistory = existingHistory.length > 0
@@ -2692,7 +2696,10 @@ export default function App() {
                 setProfileData(prev => {
                   if (!prev || !prev.personas) return prev;
                   const updated = [...prev.personas];
-                  if (updated[index]) {
+                  // Same guards as hydratePersonaAvatars: the right persona, and saved onto the plan
+                  // so opening it again does not draw a different person.
+                  if (updated[index] && updated[index].name === persona.name) {
+                    headshotsDirtyRef.current = true;
                     const existingHistory = updated[index].avatarHistory || [];
                     const newHistory = existingHistory.length > 0
                       ? existingHistory
