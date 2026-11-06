@@ -2,6 +2,18 @@ import type { PlanningSettings } from "../planning/settings";
 import type { CtvPublisherSetting } from "../planning/knowledge/ctvPublishers";
 import type { ScoutPrompt } from "../assistant/promptLibrary";
 import type { PeopleDirectory, PeopleRecord } from "../people/people";
+import {
+  countFacts,
+  toAdvertiserKey as toResearchAdvertiserKey,
+  type PartnerProviderId,
+  type PartnerProviderOverride,
+  type ResearchDataset,
+  type ResearchDatasetSummary,
+  type ResearchFact,
+  type ResearchFileRef,
+} from "../research/partnerData";
+
+export type { ResearchDataset, ResearchDatasetSummary } from "../research/partnerData";
 
 /**
  * Shared, server-authoritative storage contract.
@@ -87,7 +99,7 @@ export interface UpdatePlanInput extends PlanPreviewFields {
  * Why a checkpoint was taken. Each one holds the plan as it stood just before that event, so
  * restoring it undoes the event. "original" is the plan as generation (or the first save) wrote it.
  */
-export type PlanVersionReason = "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore" | "media_plan" | "content_refresh" | "regenerate";
+export type PlanVersionReason = "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore" | "media_plan" | "content_refresh" | "regenerate" | "partner_research";
 
 /** A checkpoint without its payload: what the history list shows. */
 export interface PlanVersionSummary {
@@ -291,6 +303,91 @@ export function toCampaignSummary(campaign: PerformanceCampaign): PerformanceCam
   return summary;
 }
 
+// --- partner research library -------------------------------------------------------
+
+/**
+ * Uploaded partner research (src/research/partnerData.ts): one record per upload, holding the
+ * extracted facts and references to the original files (kept in the research file store, never in
+ * the record). Shared across advertisers, linked to plans rather than stored in them, like past
+ * campaigns.
+ */
+export interface ResearchDatasetInput {
+  title: string;
+  provider: PartnerProviderId;
+  providerLabel: string;
+  advertiserName: string;
+  category: string;
+  markets: string[];
+  period: string;
+  description: string;
+  notes?: string;
+  extraction: ResearchDataset["extraction"];
+  files: ResearchFileRef[];
+  facts: ResearchFact[];
+  actor: string;
+}
+
+/** A dataset is one Firestore document; its facts must stay well under the 1MB limit. */
+export const MAX_RESEARCH_DATASET_BYTES = 800_000;
+
+export class ResearchDatasetNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Research '${id}' was not found.`);
+    this.name = "ResearchDatasetNotFoundError";
+  }
+}
+
+export class ResearchDatasetTooLargeError extends Error {
+  constructor(bytes: number) {
+    super(`This research takes ${Math.round(bytes / 1000)}KB, more than the ${Math.round(MAX_RESEARCH_DATASET_BYTES / 1000)}KB one upload can hold. Upload fewer files at a time.`);
+    this.name = "ResearchDatasetTooLargeError";
+  }
+}
+
+export function buildResearchDatasetRecord(
+  id: string,
+  input: ResearchDatasetInput,
+  existing: Pick<ResearchDataset, "revision" | "createdAt" | "createdBy" | "archived"> | null,
+  now: string,
+): ResearchDataset {
+  const dataset: ResearchDataset = {
+    id,
+    revision: existing ? existing.revision + 1 : 1,
+    title: input.title,
+    provider: input.provider,
+    providerLabel: input.providerLabel,
+    advertiserName: input.advertiserName,
+    advertiserKey: toResearchAdvertiserKey(input.advertiserName),
+    category: input.category,
+    markets: input.markets,
+    period: input.period,
+    description: input.description,
+    notes: input.notes ?? "",
+    fileCount: input.files.length,
+    fileHashes: input.files.map((f) => f.sha256),
+    factCounts: countFacts(input.facts),
+    extraction: input.extraction,
+    createdAt: existing?.createdAt ?? now,
+    createdBy: existing?.createdBy ?? input.actor,
+    updatedAt: now,
+    updatedBy: input.actor,
+    archived: existing?.archived ?? false,
+    files: input.files,
+    facts: input.facts,
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(dataset)).length;
+  if (bytes > MAX_RESEARCH_DATASET_BYTES) throw new ResearchDatasetTooLargeError(bytes);
+  return dataset;
+}
+
+/** The admin's provider logos and descriptions. */
+export interface PartnerProvidersRecord {
+  revision: number;
+  overrides: PartnerProviderOverride[];
+  updatedAt: string;
+  updatedBy: string;
+}
+
 // --- ScoutAI conversation log -------------------------------------------------------
 
 /** How long a ScoutAI turn is kept. Firestore deletes it at `expireAt` (a TTL policy on that field). */
@@ -486,6 +583,20 @@ export interface StorageAdapter {
   updatePerformanceCampaign(id: string, input: PerformanceCampaignInput, expectedRevision: number): Promise<PerformanceCampaign>;
   /** Soft delete, like plans. */
   archivePerformanceCampaign(id: string, actor: string): Promise<void>;
+
+  /** Summaries only: listing never downloads facts. */
+  listResearchDatasets(options?: ListPlansOptions): Promise<ResearchDatasetSummary[]>;
+  getResearchDataset(id: string): Promise<ResearchDataset | null>;
+  /** Throws ResearchDatasetTooLargeError if it would not fit in one document. */
+  createResearchDataset(input: ResearchDatasetInput): Promise<ResearchDataset>;
+  /** Replaces the dataset. Throws RevisionConflictError if stale, ResearchDatasetNotFoundError if absent. */
+  updateResearchDataset(id: string, input: ResearchDatasetInput, expectedRevision: number): Promise<ResearchDataset>;
+  /** Soft delete, like plans. */
+  archiveResearchDataset(id: string, actor: string): Promise<void>;
+  /** Null until an admin first changes a provider's logo or description. */
+  getPartnerProviders(): Promise<PartnerProvidersRecord | null>;
+  /** Throws RevisionConflictError if expectedRevision (0 for a first save) is stale. */
+  savePartnerProviders(overrides: PartnerProviderOverride[], actor: string, expectedRevision: number): Promise<PartnerProvidersRecord>;
 
   /** Throws (from the driver) if an event with this id already exists, so backfills cannot double up. */
   recordUsageEvent(event: UsageEvent): Promise<void>;

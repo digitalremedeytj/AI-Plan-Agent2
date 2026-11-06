@@ -62,6 +62,7 @@ import type { AudienceShareFilter, ReachMediaTypeSetting } from "../planning/rea
 import { DMA_MARKETS, DMA_SOURCE_LABEL } from "../planning/knowledge/dmaMarkets";
 import { NATIONAL_TV_HOUSEHOLDS, STATE_HOUSEHOLDS, STATE_HOUSEHOLDS_SOURCE_LABEL } from "../planning/knowledge/stateHouseholds";
 import { ScoutPromptsSettings } from "./ScoutPromptsSettings";
+import { DataPartnersSettings } from "./DataPartnersSettings";
 import { UsageReport } from "./UsageReport";
 import { DashboardLinksPanel } from "./DashboardLinksPanel";
 import { PeoplePanel } from "./PeoplePanel";
@@ -89,7 +90,7 @@ interface SettingsDrawerProps {
   initialTab?: SettingsTab | null;
 }
 
-export type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "enhancements" | "measurement" | "prompts" | "dashboard" | "usage" | "people";
+export type SettingsTab = "visibility" | "budgets" | "reach" | "products" | "publishers" | "partners" | "enhancements" | "measurement" | "prompts" | "dashboard" | "usage" | "people";
 
 const MEASUREMENT_AVAILABILITY_OPTIONS: Array<{ id: MeasurementAvailability; label: string; hint: string }> = [
   { id: "recommend", label: "Recommend", hint: "ScoutAI attaches it when the campaign fits." },
@@ -721,6 +722,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
 
   const tabs: Array<{ id: SettingsTab; label: string; count?: number }> = [
     { id: "publishers", label: "Recommended CTV Publishers", count: safePublishers.length },
+    { id: "partners", label: "Data Partners" },
     { id: "budgets", label: "Budget & Media-Type Limits" },
     { id: "reach", label: "Reach & Frequency" },
     { id: "products", label: "Product Rules", count: safeProducts.length },
@@ -818,6 +820,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
           
           {/* ScoutAI prompt library: its own record, saved from inside the tab */}
           {activeTab === "prompts" && <ScoutPromptsSettings readOnly={readOnly} />}
+          {activeTab === "partners" && <DataPartnersSettings readOnly={readOnly} />}
 
           {/* TAB 1: RECOMMENDED CTV PUBLISHERS */}
           {activeTab === "publishers" && (
@@ -2749,7 +2752,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
             <button
               type="button"
               disabled={readOnly}
-              hidden={activeTab === "prompts" || activeTab === "dashboard" || activeTab === "usage" || activeTab === "people"}
+              hidden={activeTab === "prompts" || activeTab === "partners" || activeTab === "dashboard" || activeTab === "usage" || activeTab === "people"}
               onClick={() => {
                 if (confirm("Reset planning settings to defaults?")) {
                   setDraftSettings(clonePlanningSettings(DEFAULT_PLANNING_SETTINGS));
@@ -2773,7 +2776,7 @@ export function SettingsDrawer({ open, settings, ctvPublishers, onClose, onSave,
                 type="button"
                 onClick={handleSave}
                 disabled={readOnly}
-                hidden={activeTab === "prompts" || activeTab === "dashboard" || activeTab === "usage" || activeTab === "people"}
+                hidden={activeTab === "prompts" || activeTab === "partners" || activeTab === "dashboard" || activeTab === "usage" || activeTab === "people"}
                 title={readOnly ? "Only administrators can change global settings." : undefined}
                 className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-bold text-white hover:bg-indigo-700 shadow-sm sm:flex-none disabled:cursor-not-allowed disabled:bg-slate-300"
               >

@@ -82,6 +82,8 @@ window) from a client. GA's `share_view` is skipped for the same views.
 
 `media_plan_upload` is a media plan approved onto a finished plan (`detail`: the budget approach
 chosen, e.g. `asIs`), and `content_refresh` is a rewrite of the plan's content for its channels.
+`research_upload` is a partner research upload read into fact cards, and `partner_research` is
+partner research added to a finished plan (`count`: the figures used, `detail`: the partners' ids).
 `export` and `slide_generate` carry the format or slide in `detail`. ScoutAI events carry more,
 never the question's text:
 

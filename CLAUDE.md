@@ -88,6 +88,14 @@ src/research/           Crawl, Brief of Record (the audience every step is built
                         (the narrative, written last against the settled plan), and
                         executiveBrief (the post-delivery executive summary: plan snapshot,
                         fingerprint for the out-of-date badge, fact guards, hand edits),
+                        partnerData (licensed partner research: GWI, Resonate, MediaRadar,
+                        Statista, Census. Files are read into fact cards at upload, a person
+                        approves them, and only approved facts reach a plan, as a fifth "Partner
+                        Data" dossier credited to the partner; another client's deliverable never
+                        names that client in the plan), partnerReinforcement (partner research on
+                        a finished plan: narrative rewrite, budget moves that must cite approved
+                        figures, the competitive landscape whose values code reads from facts,
+                        and library suggestions for a brief),
                         publisherRationale (the 'why' for a CTV publisher a planner adds;
                         the browser merges it in and auto-save writes it), and rfpPackage (an RFP uploaded with its attachments: file roles, the
                         brief text built from the reading, missing attachments, conflicts).
@@ -139,6 +147,10 @@ Rules that follow from this:
   `recordOriginal` after any new `createPlan`, or that write cannot be undone from History.
 - **Deletes are soft** (`archived: true`). Nothing destroys a plan record. (Old version-history
   checkpoints are pruned; that is the one exception, and it never touches the plan itself.)
+- **Partner research lives outside the plan** (`research_datasets`, originals in the bucket via
+  `src/storage/researchFileStore.ts`). Unlike images, original files are read only through an
+  authenticated route: they are licensed, and some were prepared for another client. A plan keeps
+  only `partnerEvidence`, which is client-safe by construction.
 - **Images live outside the plan** (`src/storage/imageStore.ts`): a Cloud Storage bucket
   when plans are in Firestore, `data/store/images/` otherwise. The plan keeps
   `/api/images/<id>`; images are immutable. Reads need no session (an `<img>` cannot send

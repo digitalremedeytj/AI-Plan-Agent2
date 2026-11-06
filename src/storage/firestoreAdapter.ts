@@ -32,7 +32,14 @@ import {
   type DashboardLink,
   type PlanVersion,
   type PlanVersionSummary,
+  buildResearchDatasetRecord,
+  ResearchDatasetNotFoundError,
+  type PartnerProvidersRecord,
+  type ResearchDataset,
+  type ResearchDatasetInput,
+  type ResearchDatasetSummary,
 } from "./types";
+import { toDatasetSummary, type PartnerProviderOverride } from "../research/partnerData";
 import { EMPTY_PEOPLE, type PeopleDirectory, type PeopleRecord } from "../people/people";
 
 /**
@@ -49,6 +56,8 @@ import { EMPTY_PEOPLE, type PeopleDirectory, type PeopleRecord } from "../people
  *   dashboard_links/{token}     view-only links to the leadership dashboard
  *   dashboard_config/current    hours-per-plan and excluded test accounts
  *   people/current              the people directory: emails, display names, old names
+ *   research_datasets/{id}      partner research: summaryJson + bodyJson (files and facts)
+ *   partner_providers/current   the admin's data-partner logos and descriptions
  *
  * Concurrency is compare-and-swap: every write carries a currentDocument precondition
  * on the updateTime we read, so two people saving the same plan cannot silently clobber
@@ -68,6 +77,8 @@ const SCOUT_LOGS = "scout_logs";
 const DASHBOARD_LINKS = "dashboard_links";
 const DASHBOARD_CONFIG = "dashboard_config";
 const PEOPLE = "people";
+const RESEARCH = "research_datasets";
+const PARTNER_PROVIDERS = "partner_providers";
 
 const PLAN_VERSIONS = "versions";
 const PLAN_VERSION_SUMMARY_FIELDS = ["id", "planId", "reason", "createdAt", "createdBy", "planRevision", "savedAt", "savedBy", "title"];
@@ -634,6 +645,115 @@ export class FirestoreAdapter implements StorageAdapter {
       if (this.isPreconditionFailure(err)) throw new RevisionConflictError(existing.revision, "This campaign was changed by someone else.");
       throw err;
     }
+  }
+
+  // --- partner research library ------------------------------------------------
+
+  // The summary is its own JSON field so the library lists without downloading every fact.
+  async listResearchDatasets(options: ListPlansOptions = {}): Promise<ResearchDatasetSummary[]> {
+    const docs = await this.listDocuments(RESEARCH, ["summaryJson"]);
+    const summaries = docs
+      .map((doc) => this.parseResearchJson<ResearchDatasetSummary>(doc, "summaryJson"))
+      .filter((d): d is ResearchDatasetSummary => Boolean(d?.id))
+      .filter((d) => options.includeArchived || !d.archived);
+    return sortByUpdatedDesc(summaries);
+  }
+
+  async getResearchDataset(id: string): Promise<ResearchDataset | null> {
+    const doc = await this.getDocument(RESEARCH, id);
+    return doc ? this.documentToResearch(doc) : null;
+  }
+
+  async createResearchDataset(input: ResearchDatasetInput): Promise<ResearchDataset> {
+    const dataset = buildResearchDatasetRecord(crypto.randomUUID(), input, null, new Date().toISOString());
+    await this.putDocument(RESEARCH, dataset.id, this.researchToFields(dataset), { requireAbsent: true });
+    return dataset;
+  }
+
+  async updateResearchDataset(id: string, input: ResearchDatasetInput, expectedRevision: number): Promise<ResearchDataset> {
+    const doc = await this.getDocument(RESEARCH, id);
+    const existing = doc ? this.documentToResearch(doc) : null;
+    if (!doc || !existing) throw new ResearchDatasetNotFoundError(id);
+    if (existing.revision !== expectedRevision) throw new RevisionConflictError(existing.revision, "This research was changed by someone else.");
+    const dataset = buildResearchDatasetRecord(id, input, existing, new Date().toISOString());
+    await this.putResearchGuarded(id, dataset, doc.updateTime, existing.revision);
+    return dataset;
+  }
+
+  async archiveResearchDataset(id: string, actor: string): Promise<void> {
+    const doc = await this.getDocument(RESEARCH, id);
+    const existing = doc ? this.documentToResearch(doc) : null;
+    if (!doc || !existing) throw new ResearchDatasetNotFoundError(id);
+    const archived: ResearchDataset = { ...existing, archived: true, revision: existing.revision + 1, updatedAt: new Date().toISOString(), updatedBy: actor };
+    await this.putResearchGuarded(id, archived, doc.updateTime, existing.revision);
+  }
+
+  async getPartnerProviders(): Promise<PartnerProvidersRecord | null> {
+    const doc = await this.getDocument(PARTNER_PROVIDERS, CURRENT_DOC);
+    if (!doc) return null;
+    const fields = decodeFields(doc.fields || {}) as Record<string, any>;
+    try {
+      return { revision: Number(fields.revision) || 1, overrides: JSON.parse(fields.overridesJson), updatedAt: fields.updatedAt, updatedBy: fields.updatedBy };
+    } catch (err) {
+      console.error("[STORAGE:firestore] Could not parse partner provider overrides:", err);
+      return null;
+    }
+  }
+
+  async savePartnerProviders(overrides: PartnerProviderOverride[], actor: string, expectedRevision: number): Promise<PartnerProvidersRecord> {
+    const currentDoc = await this.getDocument(PARTNER_PROVIDERS, CURRENT_DOC);
+    const currentRevision = currentDoc ? Number((decodeFields(currentDoc.fields || {}) as any).revision) || 0 : 0;
+    if (currentRevision !== expectedRevision) throw new RevisionConflictError(currentRevision, "The data partners were changed by someone else.");
+    const record: PartnerProvidersRecord = { revision: currentRevision + 1, overrides, updatedAt: new Date().toISOString(), updatedBy: actor };
+    try {
+      await this.putDocument(
+        PARTNER_PROVIDERS,
+        CURRENT_DOC,
+        { revision: record.revision, updatedAt: record.updatedAt, updatedBy: record.updatedBy, overridesJson: JSON.stringify(overrides) },
+        currentDoc ? { expectedUpdateTime: currentDoc.updateTime } : { requireAbsent: true },
+      );
+    } catch (err) {
+      if (this.isPreconditionFailure(err)) throw new RevisionConflictError(currentRevision + 1, "The data partners were changed by someone else.");
+      throw err;
+    }
+    return record;
+  }
+
+  private async putResearchGuarded(id: string, dataset: ResearchDataset, updateTime: string | undefined, readRevision: number): Promise<void> {
+    try {
+      await this.putDocument(RESEARCH, id, this.researchToFields(dataset), { expectedUpdateTime: updateTime });
+    } catch (err) {
+      if (this.isPreconditionFailure(err)) throw new RevisionConflictError(readRevision + 1, "This research was changed by someone else.");
+      throw err;
+    }
+  }
+
+  private researchToFields(dataset: ResearchDataset): Record<string, unknown> {
+    return {
+      id: dataset.id,
+      revision: dataset.revision,
+      archived: dataset.archived,
+      updatedAt: dataset.updatedAt,
+      summaryJson: JSON.stringify(toDatasetSummary(dataset)),
+      bodyJson: JSON.stringify({ files: dataset.files, facts: dataset.facts }),
+    };
+  }
+
+  private parseResearchJson<T>(doc: FirestoreDocument, field: string): T | null {
+    const fields = decodeFields(doc.fields || {}) as Record<string, any>;
+    try {
+      return typeof fields[field] === "string" ? (JSON.parse(fields[field]) as T) : null;
+    } catch (err) {
+      console.error(`[STORAGE:firestore] Research ${fields.id} has unparseable ${field}:`, err);
+      return null;
+    }
+  }
+
+  private documentToResearch(doc: FirestoreDocument): ResearchDataset | null {
+    const summary = this.parseResearchJson<ResearchDatasetSummary>(doc, "summaryJson");
+    const body = this.parseResearchJson<Pick<ResearchDataset, "files" | "facts">>(doc, "bodyJson");
+    if (!summary?.id) return null;
+    return { ...summary, files: body?.files ?? [], facts: body?.facts ?? [] };
   }
 
   // --- usage log -------------------------------------------------------------

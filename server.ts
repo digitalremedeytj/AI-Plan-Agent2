@@ -22,7 +22,7 @@ import { DEFAULT_PLANNING_SETTINGS, displaySettingsOf, migrateStoredSettings, va
 import { checkpointBeforeWrite, recordOriginal } from "./src/storage/planHistory";
 import { IMAGE_URL_PREFIX, MAX_IMAGE_BYTES, createImageStore, decodeImageDataUrl, imageIdFromUrl, imageUrl, isImageId, type ImageStore, type StoredImage } from "./src/storage/imageStore";
 import { resolveProjectId } from "./src/storage/googleAuth";
-import { CampaignNotFoundError, CampaignTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink, type ScoutLog, type StoredPlan } from "./src/storage";
+import { CampaignNotFoundError, CampaignTooLargeError, ResearchDatasetNotFoundError, ResearchDatasetTooLargeError, createStorage, PlanNotFoundError, RevisionConflictError, SCOUT_LOG_RETENTION_DAYS, SHARE_VIEWER_ACTOR, toAdvertiserKey, type PerformanceCampaign, type StorageAdapter, type UsageEvent, type DashboardLink, type ScoutLog, type StoredPlan } from "./src/storage";
 import { isClientUsageAction, summarizeUsage, toPersonKey, type UsageAction } from "./src/usage/usageSummary";
 import { buildScoutLog, sanitizeConversationId, scoutReviewUpdate, type ScoutLogInput } from "./src/assistant/scoutLog";
 import { buildTopicInput, normalizeTopicTags, TOPIC_BATCH, TOPIC_SYSTEM_INSTRUCTION, topicResponseSchema } from "./src/assistant/scoutTopics";
@@ -115,6 +115,46 @@ import { buildPerformanceContext, canSummarize, isOwnCampaign, LIVE_INSTRUCTION,
 import { assembleRecap, buildRecapInput, channelBenchmarks, clientRecap, hasCampaignRecap, normalizeRecapCopy, RECAP_SECTION, RECAP_SYSTEM_INSTRUCTION, recapSchema, refreshRecapProposals } from "./src/performance/recap";
 import { LEARNINGS_SECTION } from "./src/assistant/learningOps";
 import { buildGenerationHistory, type GenerationHistory } from "./src/research/pastPerformance";
+import {
+  applyDatasetEdit,
+  buildPartnerDossier,
+  extractionInstructions,
+  fileRoleOf,
+  guessProvider,
+  isPartnerProviderId,
+  isResearchFileType,
+  normalizeExtraction,
+  resolveProviders,
+  MAX_RESEARCH_FILES,
+  PARTNER_DATA_RULES,
+  PARTNER_DOSSIER_LABEL,
+  type PartnerEvidence,
+  type PartnerProvider,
+  type PartnerProviderOverride,
+  type ResearchDataset,
+  type ResearchFileRef,
+} from "./src/research/partnerData";
+import {
+  allocationInput,
+  allocationSchema,
+  applyNarrativeChanges,
+  attachPartnerResearch,
+  competitiveInput,
+  competitiveSchema,
+  competitiveSource,
+  factRefs,
+  narrativeChanges,
+  normalizeAllocationProposals,
+  normalizeCompetitive,
+  proposalOps,
+  verifyCompetitive,
+  verifyProposal,
+  ALLOCATION_SYSTEM_INSTRUCTION,
+  COMPETITIVE_SYSTEM_INSTRUCTION,
+  type CompetitiveLandscape,
+  type PartnerAllocationChange,
+} from "./src/research/partnerReinforcement";
+import { createResearchFileStore, type ResearchFileStore } from "./src/storage/researchFileStore";
 import { SCOUT_SYSTEM_INSTRUCTION, buildPlanContext, buildScoutInput, normalizeScoutResponse, sanitizeTurns, scoutResponseSchema } from "./src/assistant/scoutChat";
 import { throttledProgress } from "./src/server/thoughtProgress";
 import { EVIDENCE_RULES } from "./src/qa/evidenceRules";
@@ -3777,6 +3817,503 @@ app.post("/api/performance/campaigns/:id/review", async (req, res) => {
 // it), summarised for the client. Figures are fixed from the data in code; the model writes the
 // words, which are checked (see src/performance/recap). A campaign with no current review gets
 // one first. Written onto the saved plan with the usual revision check.
+// --- partner research library ---------------------------------------------------------
+// Licensed third-party research (src/research/partnerData.ts). Uploading reads the files once into
+// fact cards; a person approves them; generation uses only approved facts. Nothing here runs
+// inside a generation run.
+
+let researchFileStorePromise: Promise<ResearchFileStore> | null = null;
+
+/** Originals live where headshots do: the bucket when plans are in Firestore, disk otherwise. */
+async function getResearchFileStore(): Promise<ResearchFileStore> {
+  if (!researchFileStorePromise) {
+    researchFileStorePromise = (async () => {
+      const storage = await getStorage();
+      return createResearchFileStore(storage.name, storage.name === "firestore" ? await resolveProjectId() : null);
+    })().catch((err) => {
+      researchFileStorePromise = null;
+      throw err;
+    });
+  }
+  return researchFileStorePromise;
+}
+
+async function currentPartnerProviders() {
+  const record = await (await getStorage()).getPartnerProviders();
+  return { providers: resolveProviders(record?.overrides ?? []), revision: record?.revision ?? 0 };
+}
+
+function respondToResearchError(res: any, err: any, context: string) {
+  if (err instanceof RevisionConflictError) {
+    res.status(409).json({ error: "This research was changed by someone else. Reload it and try again.", code: "REVISION_CONFLICT", currentRevision: err.currentRevision });
+    return;
+  }
+  if (err instanceof ResearchDatasetNotFoundError) {
+    res.status(404).json({ error: err.message, code: "NOT_FOUND" });
+    return;
+  }
+  if (err instanceof ResearchDatasetTooLargeError) {
+    res.status(413).json({ error: err.message, code: "TOO_LARGE" });
+    return;
+  }
+  console.error(`Error in ${context}:`, err);
+  res.status(500).json({ error: `Failed to ${context}`, details: err?.message || String(err) });
+}
+
+app.get("/api/research/providers", async (_req, res) => {
+  try {
+    res.json(await currentPartnerProviders());
+  } catch (err) {
+    respondToResearchError(res, err, "load the data partners");
+  }
+});
+
+// Admins set each partner's logo (an /api/images URL) and the line the client reads under it.
+app.put("/api/research/providers", requireAdmin, async (req, res) => {
+  try {
+    const overrides: PartnerProviderOverride[] = (Array.isArray(req.body?.overrides) ? req.body.overrides : [])
+      .filter((o: any) => isPartnerProviderId(o?.id))
+      .map((o: any) => ({
+        id: o.id,
+        // Only a stored image: a data URL would put the logo in every plan that shows it.
+        logoUrl: typeof o.logoUrl === "string" && (o.logoUrl === "" || imageIdFromUrl(o.logoUrl)) ? o.logoUrl : "",
+        description: typeof o.description === "string" ? o.description.trim().slice(0, 200) : "",
+      }));
+    await (await getStorage()).savePartnerProviders(overrides, actorName(req), Number(req.body?.revision) || 0);
+    res.json(await currentPartnerProviders());
+  } catch (err) {
+    respondToResearchError(res, err, "save the data partners");
+  }
+});
+
+app.get("/api/research/datasets", async (_req, res) => {
+  try {
+    res.json({ datasets: await (await getStorage()).listResearchDatasets() });
+  } catch (err) {
+    respondToResearchError(res, err, "list research");
+  }
+});
+
+app.get("/api/research/datasets/:id", async (req, res) => {
+  try {
+    const dataset = await (await getStorage()).getResearchDataset(req.params.id);
+    if (!dataset || dataset.archived) throw new ResearchDatasetNotFoundError(req.params.id);
+    res.json({ dataset });
+  } catch (err) {
+    respondToResearchError(res, err, "load research");
+  }
+});
+
+// The original file, for a reviewer checking a fact against its source.
+app.get("/api/research/datasets/:id/files/:fileId", async (req, res) => {
+  try {
+    const dataset = await (await getStorage()).getResearchDataset(req.params.id);
+    const file = dataset?.files.find((f) => f.id === req.params.fileId);
+    const stored = file ? await (await getResearchFileStore()).get(file.storedId) : null;
+    if (!file || !stored) {
+      res.status(404).json({ error: "That file was not found." });
+      return;
+    }
+    res.set("Content-Type", stored.contentType);
+    res.set("Content-Disposition", `inline; filename="${file.fileName.replace(/[^\w .()-]/g, "_")}"`);
+    res.set("Cache-Control", "private, max-age=300");
+    res.send(stored.bytes);
+  } catch (err) {
+    respondToResearchError(res, err, "load the research file");
+  }
+});
+
+const researchUpload = multer({ dest: os.tmpdir(), limits: { fileSize: MAX_PACKAGE_FILE_BYTES, files: MAX_RESEARCH_FILES } });
+const receiveResearchFiles: express.RequestHandler = (req, res, next) => {
+  researchUpload.array("files", MAX_RESEARCH_FILES)(req, res, (err: any) => {
+    if (!err) return next();
+    const message = err?.code === "LIMIT_FILE_SIZE"
+      ? `Each file must be under ${Math.round(MAX_PACKAGE_FILE_BYTES / 1024 / 1024)} MB.`
+      : err?.code === "LIMIT_FILE_COUNT" || err?.code === "LIMIT_UNEXPECTED_FILE"
+        ? `Upload at most ${MAX_RESEARCH_FILES} files at once.`
+        : "The upload could not be read.";
+    res.status(400).json({ error: message });
+  });
+};
+
+// One call reads every file of an upload together, so a write-up and the export it describes are
+// read side by side. Images go in as images; everything else as files the code interpreter opens.
+async function runResearchExtraction(
+  openai: OpenAI,
+  files: Array<{ name: string; buffer: Buffer; mimeType: string; role: ResearchFileRef["role"] }>,
+  providerHint: string | null,
+  uploaded: string[],
+): Promise<string> {
+  const content: any[] = [];
+  for (const file of files) {
+    if (file.mimeType.startsWith("image/")) {
+      content.push({ type: "input_image", image_url: `data:${file.mimeType};base64,${file.buffer.toString("base64")}`, detail: "high" });
+      content.push({ type: "input_text", text: `(The image above is the file "${file.name}".)` });
+      continue;
+    }
+    const stored = await openai.files.create({ file: await toFile(file.buffer, file.name, { type: file.mimeType }), purpose: "assistants" });
+    uploaded.push(stored.id);
+    content.push({ type: "input_file", file_id: stored.id });
+  }
+  content.push({ type: "input_text", text: "Read these research files and return the JSON object described." });
+  const response = await openai.responses.create({
+    model: "gpt-5.6",
+    tools: [{ type: "code_interpreter", container: { type: "auto", memory_limit: "4g" } }],
+    input: [{ role: "user", content }],
+    instructions: extractionInstructions(files.map((f) => ({ fileName: f.name, role: f.role })), isPartnerProviderId(providerHint) ? providerHint : null),
+  } as any);
+  return response.output_text || "";
+}
+
+app.post("/api/research/datasets", receiveResearchFiles, async (req, res) => {
+  req.socket.setTimeout(0);
+  // Reading a few PDFs and spreadsheets takes minutes, past Cloudflare's 100-second limit.
+  holdOpenForLongRequest(req, res);
+  logUsageOnFinish(req, res, "research_upload", { advertiserName: typeof req.body?.advertiserName === "string" ? req.body.advertiserName : undefined });
+  const received = (req.files as Express.Multer.File[] | undefined) ?? [];
+  const openaiFileIds: string[] = [];
+  let openai: OpenAI | null = null;
+  try {
+    if (received.length === 0) {
+      res.status(400).json({ error: "No file was uploaded." });
+      return;
+    }
+    const rejected = received.filter((f) => !isResearchFileType(f.originalname || ""));
+    if (rejected.length > 0) {
+      res.status(400).json({ error: `These files are not a type the library reads: ${rejected.map((f) => f.originalname).join(", ")}. Use PDF, Word, Excel, CSV or an image.` });
+      return;
+    }
+    const files = received.map((f) => {
+      const buffer = fs.readFileSync(f.path);
+      return {
+        name: f.originalname,
+        buffer,
+        mimeType: f.mimetype || "application/octet-stream",
+        role: fileRoleOf(f.originalname),
+        sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
+      };
+    });
+
+    // The same file twice in the library would double its facts in a plan.
+    const storage = await getStorage();
+    const library = await storage.listResearchDatasets();
+    const duplicates = files.flatMap((f) => {
+      const match = library.find((d) => (d.fileHashes ?? []).includes(f.sha256));
+      return match ? [`"${f.name}" is already in the library as "${match.title}"`] : [];
+    });
+    const fresh = files.filter((f, i) => !library.some((d) => (d.fileHashes ?? []).includes(f.sha256)) && files.findIndex((g) => g.sha256 === f.sha256) === i);
+    if (fresh.length === 0) {
+      res.status(409).json({ error: `${duplicates.join("; ")}.`, code: "DUPLICATE" });
+      return;
+    }
+
+    const actor = actorName(req);
+    const now = new Date().toISOString();
+    const fileStore = await getResearchFileStore();
+    sendLongRequestProgress(res, { status: "storing", files: fresh.length });
+    const refs: ResearchFileRef[] = await Promise.all(fresh.map(async (f) => ({
+      id: crypto.randomUUID(),
+      fileName: f.name,
+      sizeBytes: f.buffer.length,
+      contentType: f.mimeType,
+      sha256: f.sha256,
+      storedId: await fileStore.put(f.buffer, f.name),
+      role: f.role,
+      uploadedAt: now,
+      uploadedBy: actor,
+    })));
+
+    const providerHint = typeof req.body?.provider === "string" && req.body.provider !== "auto" ? req.body.provider : null;
+    sendLongRequestProgress(res, { status: "reading", files: fresh.length });
+    let extraction: ResearchDataset["extraction"] = { status: "done", at: now };
+    let parsed: any = null;
+    try {
+      openai = getOpenaiClient();
+      const output = await runResearchExtraction(openai, fresh, providerHint, openaiFileIds);
+      parsed = parseModelJson(output, fresh[0].name);
+    } catch (err: any) {
+      // The files are kept: the upload is not lost, and the reviewer can add the facts by re-reading later.
+      console.error("[RESEARCH] Extraction failed:", err?.message || err);
+      extraction = { status: "failed", at: now, error: String(err?.message || err).slice(0, 300) };
+    }
+    const read = normalizeExtraction(parsed, refs, () => crypto.randomUUID());
+    const advertiserName = typeof req.body?.advertiserName === "string" ? req.body.advertiserName.trim().slice(0, 120) : "";
+    const dataset = await storage.createResearchDataset({
+      title: read.title,
+      provider: isPartnerProviderId(providerHint) ? providerHint : read.provider !== "other" ? read.provider : guessProvider(...fresh.map((f) => f.name)),
+      providerLabel: read.providerLabel,
+      // The uploader's advertiser wins; otherwise whom the material says it was prepared for.
+      advertiserName: advertiserName || read.preparedFor,
+      category: read.category,
+      markets: read.markets,
+      period: read.period,
+      description: read.description,
+      notes: read.notes,
+      extraction,
+      files: refs,
+      facts: read.facts,
+      actor,
+    });
+    console.log(`[RESEARCH] ${dataset.id} "${dataset.title}" by ${actor}: ${refs.length} file(s), ${dataset.facts.length} fact(s), extraction ${extraction.status}.`);
+    res.json({ dataset, duplicates });
+  } catch (err) {
+    respondToResearchError(res, err, "upload research");
+  } finally {
+    for (const f of received) {
+      try {
+        if (fs.existsSync(f.path)) fs.unlinkSync(f.path);
+      } catch {}
+    }
+    for (const id of openaiFileIds) {
+      openai?.files.delete(id).catch((err: any) => console.error("[RESEARCH] Could not delete OpenAI file:", err?.message || err));
+    }
+  }
+});
+
+// The reviewer's changes: metadata, and each fact's wording, measure and approval.
+app.put("/api/research/datasets/:id", async (req, res) => {
+  try {
+    const storage = await getStorage();
+    const existing = await storage.getResearchDataset(req.params.id);
+    if (!existing || existing.archived) throw new ResearchDatasetNotFoundError(req.params.id);
+    const expected = Number(req.get("If-Match") ?? req.body?.revision);
+    if (!Number.isInteger(expected)) {
+      res.status(428).json({ error: "The research revision is required." });
+      return;
+    }
+    const actor = actorName(req);
+    const edited = applyDatasetEdit(existing, req.body, actor, new Date().toISOString());
+    const dataset = await storage.updateResearchDataset(existing.id, { ...edited, extraction: existing.extraction, files: existing.files, actor }, expected);
+    res.json({ dataset });
+  } catch (err) {
+    respondToResearchError(res, err, "save research");
+  }
+});
+
+app.post("/api/research/datasets/:id/archive", async (req, res) => {
+  try {
+    await (await getStorage()).archiveResearchDataset(req.params.id, actorName(req));
+    res.json({ success: true });
+  } catch (err) {
+    respondToResearchError(res, err, "remove research");
+  }
+});
+
+// ---- Partner research on a finished plan ----
+// The same partner dossier generation uses, added after the fact: the narrative is rewritten by the
+// generation writer with the partner figures, the competitive landscape is drawn from spend data,
+// and the model may propose budget moves the figures argue for. Preview changes nothing; the planner
+// keeps what they want, and /apply re-checks each piece against the plan and the facts as they now
+// stand before one compare-and-swap write.
+
+const PARTNER_SIDE_ATTEMPTS: Array<{ thinkingLevel: "high" | "medium"; timeoutMs: number }> = [
+  { thinkingLevel: "medium", timeoutMs: 75000 },
+  { thinkingLevel: "medium", timeoutMs: 45000 },
+];
+
+async function loadPartnerDatasets(storage: StorageAdapter, rawIds: unknown): Promise<ResearchDataset[]> {
+  const ids = [...new Set((Array.isArray(rawIds) ? rawIds : []).filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0, 20);
+  const datasets = await Promise.all(ids.map((id) => storage.getResearchDataset(id)));
+  return datasets.filter((d): d is ResearchDataset => Boolean(d && !d.archived));
+}
+
+/** The competitive landscape for a plan, or null when no dataset has the spend figures for one. */
+async function buildCompetitiveLandscape(datasets: ResearchDataset[], planAdvertiser: string, providers: PartnerProvider[]): Promise<CompetitiveLandscape | null> {
+  const source = competitiveSource(datasets);
+  if (!source) return null;
+  const { input, refs } = competitiveInput(source, planAdvertiser, providers);
+  const { data } = await generateStructuredJsonWithFallback(getAiClient(), { systemInstruction: COMPETITIVE_SYSTEM_INSTRUCTION, input, schema: competitiveSchema }, PARTNER_SIDE_ATTEMPTS);
+  return normalizeCompetitive(data, source, refs, { planAdvertiser, providers });
+}
+
+function allocationChannelsOf(profile: any) {
+  const mediaPlan = profile?.channelStrategy?.mediaPlan;
+  const locked: string[] = profile?.channelStrategy?.lockedAllocationChannelIds || [];
+  return {
+    channels: (mediaPlan?.channels || []).map((c: any) => ({
+      channelId: c.channelId,
+      channelName: c.channelName,
+      allocationPercent: c.allocationPercent,
+      minPercent: c.manuallyForced ? 1 : c.minimumAllocationPercent,
+      maxPercent: c.maximumAllocationPercent,
+      locked: locked.includes(c.channelId),
+    })),
+    addable: addableChannels(mediaPlan).map((c) => ({ channelId: c.product.id, channelName: c.product.displayName })),
+  };
+}
+
+app.post("/api/plans/:id/partner-research/preview", async (req, res) => {
+  req.socket.setTimeout(0);
+  holdOpenForLongRequest(req, res);
+  try {
+    const expectedRevision = Number(req.body?.expectedRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "The plan's current revision is required.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    if (plan.revision !== expectedRevision) {
+      res.status(409).json({ error: "This plan changed since you opened it. Reload it and try again.", code: "REVISION_CONFLICT", currentRevision: plan.revision });
+      return;
+    }
+    const advertiser = plan.advertiserName || "";
+    const [datasets, { providers }] = await Promise.all([loadPartnerDatasets(storage, req.body?.datasetIds), currentPartnerProviders()]);
+    const partner = buildPartnerDossier(datasets, { advertiserName: advertiser, providers });
+    if (!partner) {
+      res.status(422).json({ error: "None of the chosen research has approved figures yet. Approve its figures in the research library first.", code: "NO_APPROVED_FACTS" });
+      return;
+    }
+    const { profile, inputs } = auditInputsFromPlan(plan);
+    const research = [...inputs.research.filter((d) => d.label !== PARTNER_DOSSIER_LABEL), { ...partner.dossier, failed: false }];
+
+    const narrativeTask = (async () => {
+      const draft = JSON.parse(JSON.stringify(profile));
+      const { data } = await generateStructuredJsonWithFallback(
+        getAiClient(),
+        {
+          systemInstruction: NARRATIVE_SYSTEM_INSTRUCTION,
+          input: buildNarrativeInput({
+            briefBlock: inputs.briefBlock,
+            campaign: inputs.campaignLine,
+            personas: describePersonas(profile),
+            charts: describeCharts(profile),
+            channelPlan: describeChannelPlan(profile),
+            publishers: publishersLine(profile),
+            ledger: ledgerFor(profile, { ...inputs, research }),
+            research: `${PARTNER_DATA_RULES}\n\n${researchForPrompt(research)}`,
+            draft: currentNarrative(profile),
+            planNote: planNarrativeNote(profile),
+          }),
+          schema: narrativeSchema,
+        },
+        NARRATIVE_ATTEMPTS,
+      );
+      applyNarrative(draft, data);
+      return narrativeChanges(profile, draft);
+    })();
+
+    const { channels, addable } = allocationChannelsOf(profile);
+    const allocationTask = (async () => {
+      if (channels.length < 2) return [];
+      const refs = factRefs(datasets, providers);
+      const { data } = await generateStructuredJsonWithFallback(
+        getAiClient(),
+        { systemInstruction: ALLOCATION_SYSTEM_INSTRUCTION, input: allocationInput({ campaign: inputs.campaignLine, channels, addable, refs, planAdvertiser: advertiser }), schema: allocationSchema },
+        PARTNER_SIDE_ATTEMPTS,
+      );
+      const proposals = normalizeAllocationProposals(data, { channels, addable, refs, planAdvertiser: advertiser, newId: () => crypto.randomBytes(5).toString("hex") });
+      // Each is dry-run through the plan's own operations, so the planner sees the exact result.
+      const context = await scoutApplyContext(storage, plan);
+      const current = channels.map((c: any) => c.channelId);
+      return proposals.flatMap((p) => {
+        const result = applyOps(plan.payload, proposalOps(p, current), context);
+        return result.rejected.length === 0 && result.changes.length > 0 ? [{ ...p, changes: result.changes }] : [];
+      });
+    })();
+
+    const [narrative, proposals, competitive] = await Promise.allSettled([narrativeTask, allocationTask, buildCompetitiveLandscape(datasets, advertiser, providers)]);
+    const failure = (r: PromiseSettledResult<unknown>) => (r.status === "rejected" ? (r.reason?.message || String(r.reason)) : null);
+    if (narrative.status === "rejected") console.error("[PARTNER RESEARCH] Narrative rewrite failed:", narrative.reason);
+    if (proposals.status === "rejected") console.error("[PARTNER RESEARCH] Budget proposals failed:", proposals.reason);
+    if (competitive.status === "rejected") console.error("[PARTNER RESEARCH] Competitive landscape failed:", competitive.reason);
+    console.log(`[PARTNER RESEARCH] Preview for plan ${plan.id} r${plan.revision}: ${partner.evidence.factCount} figures, ${narrative.status === "fulfilled" ? narrative.value.length : "no"} narrative change(s), ${proposals.status === "fulfilled" ? proposals.value.length : "no"} budget proposal(s), ${competitive.status === "fulfilled" && competitive.value ? "a" : "no"} competitive landscape.`);
+    res.json({
+      success: true,
+      revision: plan.revision,
+      evidence: partner.evidence,
+      narrative: narrative.status === "fulfilled" ? narrative.value : [],
+      proposals: proposals.status === "fulfilled" ? proposals.value : [],
+      competitive: competitive.status === "fulfilled" ? competitive.value : null,
+      errors: { narrative: failure(narrative), proposals: failure(proposals), competitive: failure(competitive) },
+    });
+  } catch (err: any) {
+    console.error("[PARTNER RESEARCH] Preview failed:", err);
+    respondToStorageError(res, err, "prepare the partner research for this plan");
+  }
+});
+
+app.post("/api/plans/:id/partner-research/apply", async (req, res) => {
+  logUsageOnFinish(req, res, "partner_research", { planId: req.params.id });
+  try {
+    const expectedRevision = Number(req.body?.expectedRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      res.status(428).json({ error: "The revision this was prepared against is required.", code: "REVISION_REQUIRED" });
+      return;
+    }
+    const storage = await getStorage();
+    const plan = await storage.getPlan(req.params.id);
+    if (!plan || plan.archived) {
+      res.status(404).json({ error: `Plan '${req.params.id}' was not found.`, code: "NOT_FOUND" });
+      return;
+    }
+    if (plan.revision !== expectedRevision) {
+      res.status(409).json({ error: "This plan changed after the partner research was prepared. Prepare it again.", code: "REVISION_CONFLICT", currentRevision: plan.revision });
+      return;
+    }
+    res.locals.usage = { advertiserName: plan.advertiserName };
+    const advertiser = plan.advertiserName || "";
+    const [datasets, { providers }] = await Promise.all([loadPartnerDatasets(storage, req.body?.datasetIds), currentPartnerProviders()]);
+    // Rebuilt from the facts as they stand now, not taken from the browser.
+    const partner = buildPartnerDossier(datasets, { advertiserName: advertiser, providers });
+    if (!partner) {
+      res.status(422).json({ error: "None of the chosen research has approved figures any more.", code: "NO_APPROVED_FACTS" });
+      return;
+    }
+    const payload = JSON.parse(JSON.stringify(plan.payload)) as any;
+    const profile = payload.profile;
+    if (!profile || typeof profile !== "object") {
+      res.status(422).json({ error: "This plan has no profile to add research to." });
+      return;
+    }
+    const { applied, stale } = applyNarrativeChanges(profile, req.body?.narrative);
+    const competitive = verifyCompetitive(req.body?.competitive, datasets.find((d) => d.id === req.body?.competitive?.datasetId), advertiser, providers);
+    attachPartnerResearch(profile, partner, { competitive, snapshotMaxChars: RESEARCH_SNAPSHOT_MAX_CHARS });
+
+    // Budget moves: every kept proposal's operations are solved together, and if any part no
+    // longer applies, none of them is (the planner approved a combined result).
+    const accepted = (Array.isArray(req.body?.proposals) ? req.body.proposals : []).slice(0, 2);
+    const verified = accepted.map((p: any) => verifyProposal(p, datasets, advertiser, providers));
+    if (verified.some((p: unknown) => !p)) {
+      res.status(422).json({ error: "A budget move no longer matches the partner figures it cites, so nothing was changed. Prepare the research again.", code: "PROPOSAL_STALE" });
+      return;
+    }
+    let finalPayload = payload;
+    let budgetChanges = 0;
+    if (verified.length > 0) {
+      const current = (profile.channelStrategy?.mediaPlan?.channels || []).map((c: any) => c.channelId);
+      const ops = verified.flatMap((p: any) => proposalOps(p, current));
+      const result = applyOps(payload, ops, await scoutApplyContext(storage, plan));
+      if (result.rejected.length > 0 || result.changes.length === 0) {
+        res.status(422).json({ error: "A budget move no longer applies to the plan, so nothing was changed.", reasons: result.rejected.map((r) => r.reason), code: "PROPOSAL_STALE" });
+        return;
+      }
+      finalPayload = result.payload;
+      budgetChanges = result.changes.length;
+      const at = new Date().toISOString();
+      const made: PartnerAllocationChange[] = verified.map((p: any) => ({ title: p.title, reason: p.reason, credits: p.credits, appliedAt: at, by: actorName(req) }));
+      const evidence = finalPayload.profile.partnerEvidence;
+      evidence.allocationChanges = [...(evidence.allocationChanges || []), ...made].slice(-6);
+      await refreshCampaignRecap(storage, plan, finalPayload);
+    }
+
+    await checkpointBeforeWrite(storage, plan.id, "partner_research", actorName(req), { existing: plan });
+    const updated = await storage.updatePlan(plan.id, {
+      ...planPayloadFromBody({ title: plan.title, advertiserName: plan.advertiserName, settingsRevision: plan.settingsRevision, payload: finalPayload }),
+      actor: actorName(req),
+    }, expectedRevision);
+    res.locals.usage = { advertiserName: plan.advertiserName, count: partner.evidence.factCount, detail: [...new Set(partner.evidence.providers.map((p) => p.id))].join(",") };
+    console.log(`[PARTNER RESEARCH] Plan ${plan.id}: ${partner.evidence.factCount} figures, ${applied.length} narrative field(s) (${stale.length} stale), ${competitive ? "competitive landscape" : "no landscape"}, ${budgetChanges} budget change(s); r${expectedRevision} -> r${updated.revision}.`);
+    res.json({ success: true, plan: updated, applied, stale, budgetChanges });
+  } catch (err: any) {
+    respondToStorageError(res, err, "add the partner research to this plan");
+  }
+});
+
 app.post("/api/plans/:id/campaign-recap", async (req, res) => {
   req.socket.setTimeout(0);
   holdOpenForLongRequest(req, res);
@@ -4084,7 +4621,11 @@ app.get("/api/share/plan", async (req, res) => {
     // The link cannot read settings itself (no session), and the plan's pinned revision holds the
     // show/hide switches as they were when it was made, not as the admin has them now.
     const displaySettings = displaySettingsOf((await storage.getCurrentSettings()).settings);
-    res.json({ success: true, plan: withoutHiddenClientSections(plan), displaySettings, staffPreview: Boolean(staff) });
+    // The link cannot read the partner list itself either; logos uploaded since the plan was made should show.
+    const partnerProviders = plan.payload?.profile && (plan.payload.profile as any).partnerEvidence
+      ? (await currentPartnerProviders()).providers.map(({ id, name, logoUrl, color }) => ({ id, name, logoUrl, color }))
+      : undefined;
+    res.json({ success: true, plan: withoutHiddenClientSections(plan), displaySettings, staffPreview: Boolean(staff), partnerProviders });
   } catch (err: any) {
     respondToStorageError(res, err, "load shared plan");
   }
@@ -5541,6 +6082,10 @@ app.post("/api/generate-profile", async (req, res) => {
   const pastCampaignIds: string[] = Array.isArray(req.body?.pastCampaignIds)
     ? req.body.pastCampaignIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 10)
     : [];
+  // Partner research the planner ticked in the brief. Only its approved facts are used.
+  const researchDatasetIds: string[] = Array.isArray(req.body?.researchDatasetIds)
+    ? [...new Set<string>(req.body.researchDatasetIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0))].slice(0, 20)
+    : [];
   // "Retry channel plan": the research and synthesis of a run whose channel plan failed, sent back
   // so this run starts at the channel plan instead of redoing ~7 minutes of work that succeeded.
   const resume = parseRunCheckpoint(req.body?.resumeCheckpoint, RESEARCH_LABELS);
@@ -6031,6 +6576,39 @@ INSTRUCTIONS:
       }
     }
 
+    // Partner research: the approved facts of the ticked datasets, as a fifth dossier. Read here,
+    // not extracted: extraction happened at upload, so this costs no model call.
+    let partner: ReturnType<typeof buildPartnerDossier> = null;
+    // The competitive landscape is drawn alongside the research and synthesis, so it adds no time to
+    // the run unless it is still going at the end; it is then skipped rather than waited on.
+    let competitivePromise: Promise<CompetitiveLandscape | null> = Promise.resolve(null);
+    if (researchDatasetIds.length > 0) {
+      try {
+        const storage = await getStorage();
+        const [datasets, { providers }] = await Promise.all([
+          Promise.all(researchDatasetIds.map((id) => storage.getResearchDataset(id))),
+          currentPartnerProviders(),
+        ]);
+        const found = datasets.filter((d): d is ResearchDataset => Boolean(d && !d.archived));
+        partner = buildPartnerDossier(found, { advertiserName: cleanAdvertiserName, providers });
+        if (partner) {
+          sendEvent("status", { message: `Reading ${partner.evidence.factCount} verified figures from partner research: ${[...new Set(partner.evidence.datasets.map((d) => d.providerLabel))].join(", ")}.` });
+          const usedIds = new Set(partner.evidence.datasets.map((d) => d.id));
+          competitivePromise = buildCompetitiveLandscape(found.filter((d) => usedIds.has(d.id)), cleanAdvertiserName, providers).catch((err) => {
+            console.error("[GENERATE] Competitive landscape failed:", err?.message || err);
+            return null;
+          });
+        }
+        if (found.length < researchDatasetIds.length) pushAlert(generationAlerts, { section: "partnerData", severity: "flagged", message: `${researchDatasetIds.length - found.length} chosen partner research upload(s) could not be found and were left out.` });
+        const unapproved = found.filter((d) => !d.facts.some((f) => f.status === "approved"));
+        if (unapproved.length > 0) pushAlert(generationAlerts, { section: "partnerData", severity: "flagged", message: `No approved figures yet in ${unapproved.map((d) => `"${d.title}"`).join(", ")}, so ${unapproved.length === 1 ? "it was" : "they were"} not used. Approve its figures in the research library and regenerate.` });
+      } catch (err: any) {
+        console.error("[GENERATE] Could not read partner research:", err?.message || err);
+        pushAlert(generationAlerts, { section: "partnerData", severity: "failed", message: `The chosen partner research could not be read (${err?.message || err}); the plan was built without it.` });
+      }
+    }
+    const partnerDossier = partner ? [{ ...partner.dossier, failed: false }] : [];
+
     const formatPublisherLine = (p: any) => `      - '${p.name}' (Category: '${p.category}'${p.notes ? ` | Targeting Rules / When to Include: "${p.notes}"` : ''})`;
 
     const ctvPublishersSection = `9. CTV PUBLISHER RECOMMENDATIONS (MANDATORY & TARGETING RULE GROUNDED):
@@ -6092,7 +6670,7 @@ CRITICAL STRUCTURAL, COHESIVENESS & QUALITY RULES:
 
 8b. ${EVIDENCE_RULES}
    These apply to every field you write: personas, takeaways, recommendations, overviews, chart sources and publisher rationales.
-
+${partner ? `\n8c. ${PARTNER_DATA_RULES}\n` : ""}
 ${ctvPublishersSection}
 
 10. EXACTLY 4 PERSONAS (MANDATORY & USER SPECIFICATION / ORIGIN RULES):
@@ -6178,7 +6756,11 @@ ${deviceResult.text}
 --------------------------------------------------
 DOSSIER 4: TEMPORAL PATTERNS & PURCHASING HABITS
 ${temporalResult.text}
-
+${partner ? `
+--------------------------------------------------
+DOSSIER 5: PARTNER DATA (licensed research, checked by a person; the strongest evidence here)
+${partner.dossier.text}
+` : ""}
 --------------------------------------------------
 POOL OF REAL WEB SOURCE CITATIONS DISCOVERED:
 ${JSON.stringify(deduplicatedSources, null, 2)}
@@ -6334,6 +6916,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
             requiredChannelsOnly: briefMediaTypesOnly,
             research: [
               ...researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
+              ...partnerDossier,
               ...(history?.dossier ? [{ ...history.dossier, failed: false }] : []),
             ],
             history: history?.channelBrief,
@@ -6380,7 +6963,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     // targeted revision, then every point the research does not state is labelled as an
     // estimate. All of it runs on the values as synthesis wrote them, before rescaling.
     for (const alert of clearSectionsForFailedDossiers(originalData, failedDossiers)) pushAlert(generationAlerts, alert);
-    const researchText = researchResults.filter((result) => !result.failed).map((result) => result.text).join("\n");
+    // Partner text counts as research: a chart value copied from it is reported data, not an estimate.
+    const researchText = [...researchResults.filter((result) => !result.failed).map((result) => result.text), ...(partner ? [partner.dossier.text] : [])].join("\n");
     // Label what the research did not state first, so the baseline step can tell a chart that
     // reports this audience's figures (kept) from one that is estimated anyway (rebuilt).
     labelEstimatedPoints(originalData, researchText);
@@ -6499,6 +7083,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       // number check would flag every figure taken from it as unsupported.
       research: [
         ...researchResults.map((result) => ({ label: result.label, text: result.failed ? "" : result.text, failed: Boolean(result.failed) })),
+        ...partnerDossier,
         ...(history?.dossier ? [{ ...history.dossier, failed: false }] : []),
       ],
       planInputs: { workingMediaBudget: Number(originalData.channelStrategy?.mediaPlan?.workingMediaBudget ?? workingMediaBudget) || 0, flightDays: Number(campaignFlightDays) || null },
@@ -6535,7 +7120,7 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
               channelPlan: describeChannelPlan(originalData),
               publishers: publishersLine(originalData),
               ledger: ledgerFor(originalData, auditInputs),
-              research: researchForPrompt(auditInputs.research),
+              research: `${partner ? `${PARTNER_DATA_RULES}\n\n` : ""}${researchForPrompt(auditInputs.research)}`,
               draft: currentNarrative(originalData),
               planNote: planNarrativeNote(originalData),
             }),
@@ -6654,6 +7239,13 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
     if (!finalProfile.sources.some((src: any) => src?.name === DIGITAL_REMEDY_SOURCE.name)) {
       finalProfile.sources.unshift({ ...DIGITAL_REMEDY_SOURCE });
     }
+    // The data partners head the registry: what the client should see first is that the plan
+    // rests on named, licensed data. Synthesis may have listed a partner from the web pool too.
+    // The research snapshot attachPartnerResearch writes is replaced below with the full one.
+    const competitive = partner
+      ? await Promise.race([competitivePromise, new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000))])
+      : null;
+    attachPartnerResearch(finalProfile, partner, { competitive, snapshotMaxChars: RESEARCH_SNAPSHOT_MAX_CHARS });
 
     if (Array.isArray(finalProfile.personas)) {
       const attached = applyPortraits(finalProfile.personas, await portraitsPromise);
@@ -6685,6 +7277,8 @@ Return ONLY the plain text paragraph. No markdown headings or quote blocks.`;
       capturedAt: new Date().toISOString(),
       dossiers: [
         ...researchResults.map((result) => ({ label: result.label, failed: Boolean(result.failed), text: result.failed ? "" : result.text.slice(0, RESEARCH_SNAPSHOT_MAX_CHARS) })),
+        // Kept so a later audit traces partner figures too. Already scrubbed of other clients' names.
+        ...(partner ? [{ label: partner.dossier.label, failed: false, text: partner.dossier.text.slice(0, RESEARCH_SNAPSHOT_MAX_CHARS) }] : []),
         // Kept with the plan so a later manual QA audit traces the same figures.
         ...(history?.dossier ? [{ label: history.dossier.label, failed: false, text: history.dossier.text.slice(0, RESEARCH_SNAPSHOT_MAX_CHARS) }] : []),
       ],

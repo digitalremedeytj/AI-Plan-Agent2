@@ -10,6 +10,7 @@ import type { PerformanceReview, ReviewFinding } from "../performance/review";
 import type { PlanVsActual } from "../performance/planVsActual";
 import type { PreparedFile } from "../performance/browserFiles";
 import type { PerformanceCampaignSummary } from "../storage/types";
+import type { PartnerProvider, PartnerProviderOverride, ResearchDataset, ResearchDatasetSummary } from "../research/partnerData";
 import type { UsageSummary } from "../usage/usageSummary";
 import type { DashboardData } from "../usage/dashboard";
 import type { DashboardConfig, DashboardLink, ScoutLog } from "../storage/types";
@@ -531,7 +532,7 @@ export async function updatePlan(
 export interface PlanVersionSummary {
   id: string;
   planId: string;
-  reason: "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore" | "media_plan" | "content_refresh" | "regenerate";
+  reason: "original" | "editing" | "scout" | "qa_fixes" | "recap" | "restore" | "media_plan" | "content_refresh" | "regenerate" | "partner_research";
   createdAt: string;
   createdBy: string;
   planRevision: number;
@@ -851,9 +852,9 @@ export async function parseMediaPlan(file: File): Promise<{ placements: Extracte
   return { placements: body.placements, rfpAnalysis: body.rfpAnalysis || null };
 }
 
-export async function fetchSharedPlan(token: string): Promise<{ plan: StoredPlan; displaySettings: DisplaySettings | null; staffPreview: boolean }> {
-  const body = await request<{ plan: StoredPlan; displaySettings?: DisplaySettings; staffPreview?: boolean }>(`/api/share/plan?token=${encodeURIComponent(token)}`);
-  return { plan: body.plan, displaySettings: body.displaySettings || null, staffPreview: Boolean(body.staffPreview) };
+export async function fetchSharedPlan(token: string): Promise<{ plan: StoredPlan; displaySettings: DisplaySettings | null; staffPreview: boolean; partnerProviders?: PartnerProvider[] }> {
+  const body = await request<{ plan: StoredPlan; displaySettings?: DisplaySettings; staffPreview?: boolean; partnerProviders?: PartnerProvider[] }>(`/api/share/plan?token=${encodeURIComponent(token)}`);
+  return { plan: body.plan, displaySettings: body.displaySettings || null, staffPreview: Boolean(body.staffPreview), partnerProviders: body.partnerProviders };
 }
 
 export async function enablePlanShare(
@@ -1002,4 +1003,88 @@ export function reviewPerformanceCampaign(id: string, expectedRevision: number):
 export async function getPlanLive(planId: string): Promise<{ campaign: PerformanceCampaignView; comparison: PlanVsActual } | null> {
   const body = await request<{ live: { campaign: PerformanceCampaignView; comparison: PlanVsActual } | null }>(`/api/plans/${encodeURIComponent(planId)}/live`);
   return body.live;
+}
+
+// --- partner research library ---------------------------------------------------
+
+/** The data partners with the admin's logos applied, and the record's revision for saving. */
+export function getPartnerProviders(): Promise<{ providers: PartnerProvider[]; revision: number }> {
+  return request(`/api/research/providers`);
+}
+
+export function savePartnerProviders(overrides: PartnerProviderOverride[], revision: number): Promise<{ providers: PartnerProvider[]; revision: number }> {
+  return request(`/api/research/providers`, { method: "PUT", body: JSON.stringify({ overrides, revision }) });
+}
+
+export async function listResearchDatasets(): Promise<ResearchDatasetSummary[]> {
+  const body = await request<{ datasets: ResearchDatasetSummary[] }>(`/api/research/datasets`);
+  return body.datasets || [];
+}
+
+export async function getResearchDataset(id: string): Promise<ResearchDataset> {
+  const body = await request<{ dataset: ResearchDataset }>(`/api/research/datasets/${encodeURIComponent(id)}`);
+  return body.dataset;
+}
+
+/** Stores the files and reads them into fact cards for review. Takes a minute or more. */
+export function uploadResearch(
+  files: File[],
+  details: { provider: string; advertiserName: string },
+  onProgress?: (event: any) => void,
+): Promise<{ dataset: ResearchDataset; duplicates: string[] }> {
+  const form = new FormData();
+  for (const file of files) form.append("files", file, file.name);
+  form.append("provider", details.provider);
+  form.append("advertiserName", details.advertiserName);
+  return longRequest(`/api/research/datasets`, { method: "POST", body: form }, onProgress);
+}
+
+export async function updateResearchDataset(id: string, expectedRevision: number, edit: Partial<ResearchDataset>): Promise<ResearchDataset> {
+  const body = await request<{ dataset: ResearchDataset }>(`/api/research/datasets/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "If-Match": String(expectedRevision) },
+    body: JSON.stringify(edit),
+  });
+  return body.dataset;
+}
+
+export async function archiveResearchDataset(id: string): Promise<void> {
+  await request(`/api/research/datasets/${encodeURIComponent(id)}/archive`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export interface PartnerResearchPreview {
+  revision: number;
+  evidence: import("../research/partnerData").PartnerEvidence;
+  narrative: import("../research/partnerReinforcement").NarrativeChange[];
+  proposals: Array<import("../research/partnerReinforcement").AllocationProposal & { changes: Array<{ kind: string; label: string; before: string; after: string; channelId?: string }> }>;
+  competitive: import("../research/partnerReinforcement").CompetitiveLandscape | null;
+  errors: { narrative: string | null; proposals: string | null; competitive: string | null };
+}
+
+/** Prepares partner research for a finished plan: rewritten narrative, landscape, budget moves. Changes nothing. */
+export async function previewPartnerResearch(planId: string, body: { expectedRevision: number; datasetIds: string[] }): Promise<PartnerResearchPreview> {
+  return longRequest<PartnerResearchPreview>(`/api/plans/${encodeURIComponent(planId)}/partner-research/preview`, { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Saves what the planner kept from a preview, re-checked on the server against the plan as it is now. */
+export async function applyPartnerResearch(
+  planId: string,
+  body: {
+    expectedRevision: number;
+    datasetIds: string[];
+    narrative: PartnerResearchPreview["narrative"];
+    competitive: PartnerResearchPreview["competitive"];
+    proposals: PartnerResearchPreview["proposals"];
+  },
+): Promise<{ plan: StoredPlan; applied: string[]; stale: string[]; budgetChanges: number }> {
+  return request(`/api/plans/${encodeURIComponent(planId)}/partner-research/apply`, { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Opens an original file in a new tab. The route needs the session, so it is fetched, not linked. */
+export async function openResearchFile(datasetId: string, fileId: string): Promise<void> {
+  const res = await authFetch(`/api/research/datasets/${encodeURIComponent(datasetId)}/files/${encodeURIComponent(fileId)}`);
+  if (!res.ok) throw new ApiError(res.status, "That file could not be opened.", null);
+  const url = URL.createObjectURL(await res.blob());
+  window.open(url, "_blank", "noopener");
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

@@ -31,7 +31,14 @@ import {
   type DashboardLink,
   type PlanVersion,
   type PlanVersionSummary,
+  buildResearchDatasetRecord,
+  ResearchDatasetNotFoundError,
+  type PartnerProvidersRecord,
+  type ResearchDataset,
+  type ResearchDatasetInput,
+  type ResearchDatasetSummary,
 } from "./types";
+import { toDatasetSummary, type PartnerProviderOverride } from "../research/partnerData";
 import { EMPTY_PEOPLE, type PeopleDirectory, type PeopleRecord } from "../people/people";
 
 /**
@@ -53,6 +60,7 @@ export class LocalFileAdapter implements StorageAdapter {
   private readonly dashboardDir: string;
   private readonly scoutLogsDir: string;
   private readonly planVersionsDir: string;
+  private readonly researchDir: string;
 
   constructor(rootDir: string = path.join(process.cwd(), "data", "store")) {
     this.rootDir = rootDir;
@@ -65,10 +73,11 @@ export class LocalFileAdapter implements StorageAdapter {
     this.dashboardDir = path.join(rootDir, "dashboard");
     this.scoutLogsDir = path.join(rootDir, "scout-logs");
     this.planVersionsDir = path.join(rootDir, "plan-versions");
+    this.researchDir = path.join(rootDir, "research");
   }
 
   async init(): Promise<void> {
-    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir, this.dashboardDir, this.scoutLogsDir, this.planVersionsDir]) {
+    for (const dir of [this.plansDir, this.settingsDir, this.publishersDir, this.performanceDir, this.promptsDir, this.usageDir, this.dashboardDir, this.scoutLogsDir, this.planVersionsDir, this.researchDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
@@ -513,6 +522,67 @@ export class LocalFileAdapter implements StorageAdapter {
     const record: PeopleRecord = { revision: current.revision + 1, people, departments, updatedAt: new Date().toISOString(), updatedBy: actor };
     writeJsonAtomic(path.join(this.dashboardDir, "people.json"), record);
     return record;
+  }
+
+  // --- partner research library ------------------------------------------------
+
+  async listResearchDatasets(options: ListPlansOptions = {}): Promise<ResearchDatasetSummary[]> {
+    await this.init();
+    const summaries: ResearchDatasetSummary[] = [];
+    for (const file of fs.readdirSync(this.researchDir).filter((f) => f.endsWith(".json") && f !== "providers.json")) {
+      const dataset = readJson<ResearchDataset>(path.join(this.researchDir, file));
+      if (!dataset?.id || (dataset.archived && !options.includeArchived)) continue;
+      summaries.push(toDatasetSummary(dataset));
+    }
+    return sortByUpdatedDesc(summaries);
+  }
+
+  async getResearchDataset(id: string): Promise<ResearchDataset | null> {
+    await this.init();
+    return readJson<ResearchDataset>(this.researchPath(id));
+  }
+
+  async createResearchDataset(input: ResearchDatasetInput): Promise<ResearchDataset> {
+    await this.init();
+    const dataset = buildResearchDatasetRecord(crypto.randomUUID(), input, null, new Date().toISOString());
+    writeJsonAtomic(this.researchPath(dataset.id), dataset);
+    return dataset;
+  }
+
+  async updateResearchDataset(id: string, input: ResearchDatasetInput, expectedRevision: number): Promise<ResearchDataset> {
+    await this.init();
+    const existing = readJson<ResearchDataset>(this.researchPath(id));
+    if (!existing) throw new ResearchDatasetNotFoundError(id);
+    if (existing.revision !== expectedRevision) throw new RevisionConflictError(existing.revision, "This research was changed by someone else.");
+    const dataset = buildResearchDatasetRecord(id, input, existing, new Date().toISOString());
+    writeJsonAtomic(this.researchPath(id), dataset);
+    return dataset;
+  }
+
+  async archiveResearchDataset(id: string, actor: string): Promise<void> {
+    await this.init();
+    const existing = readJson<ResearchDataset>(this.researchPath(id));
+    if (!existing) throw new ResearchDatasetNotFoundError(id);
+    writeJsonAtomic(this.researchPath(id), { ...existing, archived: true, revision: existing.revision + 1, updatedAt: new Date().toISOString(), updatedBy: actor });
+  }
+
+  async getPartnerProviders(): Promise<PartnerProvidersRecord | null> {
+    await this.init();
+    return readJson<PartnerProvidersRecord>(path.join(this.researchDir, "providers.json"));
+  }
+
+  async savePartnerProviders(overrides: PartnerProviderOverride[], actor: string, expectedRevision: number): Promise<PartnerProvidersRecord> {
+    const currentRevision = (await this.getPartnerProviders())?.revision ?? 0;
+    if (currentRevision !== expectedRevision) throw new RevisionConflictError(currentRevision, "The data partners were changed by someone else.");
+    const record: PartnerProvidersRecord = { revision: currentRevision + 1, overrides, updatedAt: new Date().toISOString(), updatedBy: actor };
+    writeJsonAtomic(path.join(this.researchDir, "providers.json"), record);
+    return record;
+  }
+
+  // Dataset ids are UUIDs; "providers" is reserved for the provider record in the same folder.
+  private researchPath(id: string): string {
+    const safe = safeFileId(id);
+    return path.join(this.researchDir, `${safe === "providers" ? "_providers" : safe}.json`);
   }
 
   private campaignPath(id: string): string {

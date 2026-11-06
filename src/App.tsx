@@ -20,6 +20,7 @@ import {
   ExternalLink,
   Info,
   ShieldCheck,
+  Database,
   Award,
   BookOpen,
   Loader2,
@@ -89,6 +90,14 @@ import { PerformanceLearningsSection } from "./components/PerformanceLearningsSe
 import { disableGoogleAutoSelect, GoogleSignInButton } from "./components/GoogleSignInButton";
 import { switchViewAs } from "./components/ViewAsBanner";
 import { PastCampaignPicker } from "./components/PastCampaignPicker";
+import { PartnerResearchPicker } from "./components/PartnerResearchPicker";
+import { ResearchLibraryModal } from "./components/ResearchLibraryModal";
+import { DataPartnersPanel, DATA_PARTNERS_SECTION } from "./components/DataPartnersPanel";
+import { CompetitiveLandscapePanel, COMPETITIVE_SECTION } from "./components/CompetitiveLandscapePanel";
+import { AddPartnerResearchModal } from "./components/AddPartnerResearchModal";
+import { PartnerLogo } from "./components/PartnerLogo";
+import { PartnerEvidenceContext } from "./components/partnerContext";
+import { isPartnerTier, type PartnerProvider } from "./research/partnerData";
 import { PastPerformanceModal } from "./components/PastPerformanceModal";
 import { OverviewMetricsTab } from "./components/OverviewMetricsTab";
 import { SettingsDrawer, type SettingsTab } from "./components/SettingsDrawer";
@@ -707,6 +716,14 @@ export default function App() {
   const [pastCampaignSelection, setPastCampaignSelection] = useState<string[] | null>(null);
   const [pastCampaignOptions, setPastCampaignOptions] = useState<string[]>([]);
   const [showBriefLibrary, setShowBriefLibrary] = useState(false);
+  // Partner research for the next run. null: the advertiser's own approved research.
+  const [researchSelection, setResearchSelection] = useState<string[] | null>(null);
+  const [researchDefaults, setResearchDefaults] = useState<string[]>([]);
+  // undefined: closed; null: open on the list; a string: open on that upload.
+  const [researchLibraryTarget, setResearchLibraryTarget] = useState<string | null | undefined>(undefined);
+  const [researchLibraryVersion, setResearchLibraryVersion] = useState(0);
+  // The data partners' current logos: from the share response on a link, fetched otherwise.
+  const [partnerProviders, setPartnerProviders] = useState<PartnerProvider[] | undefined>(undefined);
   const [briefLibraryVersion, setBriefLibraryVersion] = useState(0);
   const [budget, setBudget] = useState("$100,000");
   const [campaignLength, setCampaignLength] = useState("30");
@@ -1251,6 +1268,7 @@ export default function App() {
   // draft stays in the list as a backup.
   const adoptDraftRef = React.useRef(true);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [isPartnerResearchOpen, setIsPartnerResearchOpen] = useState(false);
 
   // Segment recommendations. They are requested after the profile renders (like headshots),
   // live on profileData.segmentRecommendations, and auto-save onto an already-saved plan.
@@ -2204,6 +2222,20 @@ export default function App() {
     return facts;
   }, [profileData?.channelStrategy?.mediaPlan, briefPlan, profileData?.briefOfRecord, kpis, slideGeography]);
   const isSourcesHidden = hiddenSections.has("sources");
+  const isDataPartnersHidden = hiddenSections.has(DATA_PARTNERS_SECTION);
+  const isCompetitiveHidden = hiddenSections.has(COMPETITIVE_SECTION);
+  const competitive = profileData?.partnerEvidence?.competitive ?? null;
+  // What the brief says, so the research picker can suggest other advertisers' research that fits.
+  const researchBrief = React.useMemo(
+    () => ({ text: [campaignFocus, audienceDescription, additionalContext, url].filter(Boolean).join(" "), geography }),
+    [campaignFocus, audienceDescription, additionalContext, url, geography],
+  );
+  const partnerEvidence = profileData?.partnerEvidence ?? null;
+  const partnerContextValue = React.useMemo(() => ({ evidence: partnerEvidence, liveProviders: partnerProviders }), [partnerEvidence, partnerProviders]);
+  React.useEffect(() => {
+    if (isShareView || !session || !partnerEvidence || partnerProviders) return;
+    api.getPartnerProviders().then((r) => setPartnerProviders(r.providers)).catch(() => {});
+  }, [isShareView, session, partnerEvidence, partnerProviders, researchLibraryVersion]);
   const isGeoHidden = hiddenSections.has("geo");
 
   const markPlanPersisted = (plan: api.StoredPlan) => {
@@ -2686,6 +2718,10 @@ export default function App() {
     // campaigns existed has no record, so it starts from the advertiser's whole library.
     const used = body?.profile?.pastCampaignsUsed;
     setPastCampaignSelection(Array.isArray(used) ? used.map((c: { id: string }) => c.id) : null);
+    // Likewise the partner research it was built with. A plan built without any regenerates with
+    // the advertiser's approved research, so research uploaded since is picked up.
+    const partnerDatasets = body?.profile?.partnerEvidence?.datasets;
+    setResearchSelection(Array.isArray(partnerDatasets) && partnerDatasets.length > 0 ? partnerDatasets.map((d: { id: string }) => d.id) : null);
     setKpis(body.kpis && body.kpis.length > 0 ? body.kpis : [""]);
     setAudienceDescription(body.audienceDescription || "");
     setUrl(body.url || "");
@@ -2817,8 +2853,9 @@ export default function App() {
     setSharedPlanError(null);
     api
       .fetchSharedPlan(shareToken)
-      .then(({ plan: stored, displaySettings: shared, staffPreview }) => {
+      .then(({ plan: stored, displaySettings: shared, staffPreview, partnerProviders: liveProviders }) => {
         if (shared) setLiveDisplaySettings(shared);
+        if (liveProviders) setPartnerProviders(liveProviders);
         applyPlanToWorkspace(stored, true);
         setLeftTab("overview");
         // GA's share_view counts client opens, like the usage log; a planner's check is not one.
@@ -3536,6 +3573,7 @@ export default function App() {
         ctvPublishers,
         quickMode,
         pastCampaignIds: pastCampaignSelection ?? pastCampaignOptions,
+        researchDatasetIds: researchSelection ?? researchDefaults,
         replacePlan,
         // What the server needs, beyond the brief above, to save the finished run as a draft.
         draft: {
@@ -3667,6 +3705,23 @@ export default function App() {
 
   // The manual audit saved the plan with the approved fixes and a new audit; show that version.
   // Headshots generated in this session are kept: a server-saved draft does not carry them.
+  /** The plan as saved with partner research: shown as-is, and History holds the version before it. */
+  const handlePartnerResearchApplied = (result: { plan: api.StoredPlan; stale: string[]; budgetChanges: number }) => {
+    const profile = result.plan.payload.profile as AudienceProfile | undefined;
+    if (profile) {
+      markPlanPersisted(result.plan);
+      profileDataRef.current = profile;
+      lastAutoSavedProfileRef.current = profile;
+      setProfileData(profile);
+    }
+    refreshPlans().catch(() => undefined);
+    setResearchLibraryVersion((v) => v + 1);
+    setIsPartnerResearchOpen(false);
+    setActionError(result.stale.length > 0
+      ? `Partner research added. ${result.stale.length} rewritten section${result.stale.length === 1 ? " was" : "s were"} skipped because ${result.stale.length === 1 ? "it was" : "they were"} edited while the changes were prepared.`
+      : null);
+  };
+
   const handleAuditApplied = (result: { plan: api.StoredPlan; applied: number; stale: number; verifyError: string | null }) => {
     const saved = result.plan.payload.profile as AudienceProfile | undefined;
     if (saved) {
@@ -4022,6 +4077,7 @@ export default function App() {
   const resetBriefFields = () => {
     setAdvertiserName("");
     setPastCampaignSelection(null);
+    setResearchSelection(null);
     setBudget("$100,000");
     setCampaignLength("30");
     setKpis([""]);
@@ -5174,6 +5230,7 @@ export default function App() {
 }
 
   return (
+    <PartnerEvidenceContext.Provider value={partnerContextValue}>
     <div className="min-h-screen bg-[#fafbfc] text-slate-800 flex flex-col font-sans">
       {/* Header */}
       <header className="bg-white border-b border-slate-100 py-5 px-6 sticky top-0 z-50 shadow-xs">
@@ -5912,6 +5969,7 @@ export default function App() {
                       setAdvertiserName(e.target.value);
                       // A different advertiser has a different library: back to all of theirs.
                       setPastCampaignSelection(null);
+                      setResearchSelection(null);
                     }}
                     placeholder="e.g. Acura, Nike, Digital Remedy (Optional)"
                     className="w-full text-sm px-3 py-2 border border-slate-200 rounded-xl focus:outline-hidden focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all placeholder:text-slate-400"
@@ -5929,6 +5987,22 @@ export default function App() {
                     onClose={() => setShowBriefLibrary(false)}
                     advertiserName={advertiserName}
                     onChanged={() => setBriefLibraryVersion((v) => v + 1)}
+                  />
+                  <PartnerResearchPicker
+                    advertiserName={advertiserName}
+                    selection={researchSelection}
+                    onChange={setResearchSelection}
+                    onDefaults={setResearchDefaults}
+                    onManage={(datasetId) => setResearchLibraryTarget(datasetId ?? null)}
+                    refreshKey={researchLibraryVersion}
+                    brief={researchBrief}
+                  />
+                  <ResearchLibraryModal
+                    isOpen={researchLibraryTarget !== undefined}
+                    initialDatasetId={researchLibraryTarget ?? null}
+                    onClose={() => setResearchLibraryTarget(undefined)}
+                    advertiserName={advertiserName}
+                    onChanged={() => setResearchLibraryVersion((v) => v + 1)}
                   />
                 </div>
 
@@ -7428,6 +7502,31 @@ export default function App() {
                   </div>
                 )}
 
+                {partnerEvidence && partnerEvidence.datasets.length > 0 && (!isShareView || !isDataPartnersHidden) && (
+                  <DataPartnersPanel
+                    evidence={partnerEvidence}
+                    liveProviders={partnerProviders}
+                    isShareView={isShareView}
+                    isHidden={isDataPartnersHidden}
+                    onToggleHidden={handleToggleSectionActive}
+                    onUpdate={activeSavedId ? () => setIsPartnerResearchOpen(true) : undefined}
+                  />
+                )}
+
+                {competitive && (!isShareView || !isCompetitiveHidden) && (
+                  <CompetitiveLandscapePanel
+                    landscape={competitive}
+                    provider={(() => {
+                      const p = partnerEvidence?.providers.find((x) => x.id === competitive.provider);
+                      const live = partnerProviders?.find((x) => x.id === competitive.provider);
+                      return p ? { ...p, logoUrl: live?.logoUrl || p.logoUrl } : undefined;
+                    })()}
+                    isShareView={isShareView}
+                    isHidden={isCompetitiveHidden}
+                    onToggleHidden={handleToggleSectionActive}
+                  />
+                )}
+
                 {!isShareView && profileData.briefOfRecord && <BriefOfRecordCard brief={profileData.briefOfRecord} />}
 
                 {/* Key Personas (Grid of cards) */}
@@ -8783,6 +8882,13 @@ export default function App() {
                               <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold flex items-center justify-center font-mono">
                                 {index + 1}
                               </span>
+                              {isPartnerTier(source.tier) && (() => {
+                                const id = partnerEvidence?.datasets.find((d) => d.providerLabel === source.name)?.provider;
+                                const provider = partnerEvidence?.providers.find((p) => p.id === id);
+                                if (!provider) return null;
+                                const live = partnerProviders?.find((p) => p.id === provider.id);
+                                return <PartnerLogo provider={{ ...provider, logoUrl: live?.logoUrl || provider.logoUrl }} size="sm" />;
+                              })()}
                               {source.url ? (
                                 <a
                                   href={source.url}
@@ -8801,7 +8907,7 @@ export default function App() {
                               )}
                             </div>
                             <div className="flex items-center gap-2">
-                              <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold border border-indigo-100/30">
+                              <span className={`text-[9px] font-mono px-2 py-0.5 rounded font-semibold border ${isPartnerTier(source.tier) ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-indigo-50 text-indigo-700 border-indigo-100/30"}`}>
                                 {source.tier}
                               </span>
                               <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-slate-50 text-slate-600 font-semibold border border-slate-100">
@@ -9249,6 +9355,16 @@ export default function App() {
                     >
                       <ShieldCheck className="w-3.5 h-3.5" />
                       <span>Run QA Audit</span>
+                    </button>
+
+                    <button
+                      onClick={() => setIsPartnerResearchOpen(true)}
+                      disabled={!activeSavedId}
+                      className="inline-flex items-center gap-1.5 text-xs bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 px-4 py-2 rounded-xl transition-all font-semibold shadow-xs hover:shadow-sm cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={activeSavedId ? "Rewrite the plan to cite licensed partner research, and review each change before it is saved" : "Save the plan first to add partner research"}
+                    >
+                      <Database className="w-3.5 h-3.5" />
+                      <span>{partnerEvidence ? "Update Partner Research" : "Add Partner Research"}</span>
                     </button>
 
                     <button
@@ -10142,6 +10258,23 @@ export default function App() {
         </div>
       )}
 
+      {isPartnerResearchOpen && activeSavedId && (
+        <AddPartnerResearchModal
+          planId={activeSavedId}
+          advertiserName={advertiserName}
+          brief={researchBrief}
+          currentDatasetIds={(partnerEvidence?.datasets || []).map((d) => d.id)}
+          getRevision={async () => {
+            await queueAutoSave(activeSavedId);
+            const revision = activePlanRevisionRef.current;
+            if (revision === null) throw new Error("Save the plan first.");
+            return revision;
+          }}
+          onClose={() => setIsPartnerResearchOpen(false)}
+          onApplied={handlePartnerResearchApplied}
+        />
+      )}
+
       {isAuditModalOpen && activeSavedId && (
         <PlanAuditModal
           planId={activeSavedId}
@@ -10356,6 +10489,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </PartnerEvidenceContext.Provider>
   );
 }
 

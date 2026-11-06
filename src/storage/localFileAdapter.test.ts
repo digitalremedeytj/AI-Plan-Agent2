@@ -287,3 +287,57 @@ test("expired ScoutAI records are removed on the next write, like Firestore's TT
   assert.equal(await adapter.getScoutLog("old"), null);
   assert.ok(await adapter.getScoutLog("new"));
 });
+
+const researchInput = (overrides: Record<string, unknown> = {}) => ({
+  title: "Bulldog Media x Gateway Fiber - Audience Insights",
+  provider: "resonate" as const,
+  providerLabel: "",
+  advertiserName: "Gateway Fiber ",
+  category: "Home internet",
+  markets: ["Albany, NY DMA"],
+  period: "2026",
+  description: "Life stage across four DMAs.",
+  extraction: { status: "done" as const, at: "2026-11-05T00:00:00.000Z" },
+  files: [],
+  facts: [
+    { id: "f1", statement: "34% of Albany adults are 65+.", figure: "34%", measure: "share" as const, population: "", geography: "", period: "", location: "", fileName: "a.pdf", fromSummary: false, status: "pending" as const },
+  ],
+  actor: "Ana",
+  ...overrides,
+});
+
+test("partner research lists as summaries without its facts, and a stale edit is refused", async () => {
+  const adapter = freshAdapter();
+  const created = await adapter.createResearchDataset(researchInput());
+  assert.equal(created.advertiserKey, "gateway fiber");
+  assert.deepEqual(created.factCounts, { pending: 1, approved: 0, rejected: 0 });
+
+  const [summary] = await adapter.listResearchDatasets();
+  assert.equal(summary.id, created.id);
+  assert.equal("facts" in summary, false);
+
+  const approved = researchInput({ facts: [{ ...researchInput().facts[0], status: "approved" }], actor: "Ben" });
+  const updated = await adapter.updateResearchDataset(created.id, approved, created.revision);
+  assert.equal(updated.revision, 2);
+  assert.equal(updated.createdBy, "Ana");
+  assert.equal(updated.updatedBy, "Ben");
+  await assert.rejects(adapter.updateResearchDataset(created.id, approved, created.revision), RevisionConflictError);
+});
+
+test("archived research leaves the library but is never destroyed", async () => {
+  const adapter = freshAdapter();
+  const created = await adapter.createResearchDataset(researchInput());
+  await adapter.archiveResearchDataset(created.id, "Ana");
+  assert.equal((await adapter.listResearchDatasets()).length, 0);
+  assert.equal((await adapter.listResearchDatasets({ includeArchived: true })).length, 1);
+  assert.equal((await adapter.getResearchDataset(created.id))?.archived, true);
+});
+
+test("provider logos save with a revision check, and the record does not show up as research", async () => {
+  const adapter = freshAdapter();
+  assert.equal(await adapter.getPartnerProviders(), null);
+  const saved = await adapter.savePartnerProviders([{ id: "gwi", logoUrl: "/api/images/x.png" }], "Ana", 0);
+  assert.equal(saved.revision, 1);
+  await assert.rejects(adapter.savePartnerProviders([], "Ana", 0), RevisionConflictError);
+  assert.deepEqual(await adapter.listResearchDatasets(), []);
+});

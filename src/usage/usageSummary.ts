@@ -26,6 +26,8 @@ export const SERVER_USAGE_ACTIONS = [
   "media_plan_upload",
   "content_refresh",
   "performance_upload",
+  "research_upload",
+  "partner_research",
   "settings_save",
   "scout_review_ask",
 ] as const;
@@ -57,6 +59,8 @@ export const USAGE_ACTION_LABELS: Record<UsageAction, string> = {
   media_plan_upload: "Media plans uploaded to finished plans",
   content_refresh: "Plan content rewritten for new channels",
   performance_upload: "Performance uploads",
+  research_upload: "Partner research uploads",
+  partner_research: "Partner research added to a finished plan",
   settings_save: "Settings saves",
   scout_review_ask: "ScoutAI review questions",
   plan_open: "Plans opened",

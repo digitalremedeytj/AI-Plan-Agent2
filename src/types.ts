@@ -1,3 +1,4 @@
+import type { PartnerEvidence } from "./research/partnerData";
 import type { ExecutiveBrief } from "./research/executiveBrief";
 import type { PlanningSettings } from "./planning/settings";
 import type { MediaRecommendationPlan, RecommendationStatus, ConfidenceLevel } from "./planning/types";
@@ -454,6 +455,12 @@ export interface AudienceProfile {
   /** The structured executive summary, written after the plan is delivered. See src/research/executiveBrief.ts. */
   executiveBrief?: ExecutiveBrief;
   sources: Source[];
+  /**
+   * The licensed partner research the plan was built with (src/research/partnerData.ts): which
+   * partners, which datasets, how many verified figures. Client-safe; drives the Data Partners panel
+   * and the partner badges on charts. Absent when no partner research was used.
+   */
+  partnerEvidence?: PartnerEvidence;
   ctvPublishers: CtvPublisherRecommendation[];
   /** Legacy one-paragraph insight. Shown only when the plan has no publisherHighlights. */
   publisherInsights: string;

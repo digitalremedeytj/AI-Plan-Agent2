@@ -12,7 +12,8 @@ import {
   PieChart,
   Pie
 } from "recharts";
-import { Table, Eye, EyeOff, Info } from "lucide-react";
+import { Table, Eye, EyeOff, Info, ShieldCheck } from "lucide-react";
+import { usePartnerForSource } from "./partnerContext";
 import { DomainMetric, DeviceMetric, AgeMetric, GenderMetric, IncomeMetric, TemporalMetric } from "../types";
 
 const CHART_COLORS = ["#5856fd", "#00B3AA", "#b2cb3b", "#006987", "#ec4899", "#f59e0b", "#8b5cf6"];
@@ -34,12 +35,20 @@ interface ChartCardProps {
 // Reusable card with a toggleable raw data table underneath for transparency
 export function ChartCard({ title, source, isModeled, children, tableData, tableColumns, footerNote, hideModeledBadge, hideSourceFooter }: ChartCardProps) {
   const [showTable, setShowTable] = useState(false);
+  // A chart taken from a data partner says so on its face, not only in the source line.
+  const partner = usePartnerForSource(isModeled ? "" : source);
 
   return (
     <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden transition-all duration-200 hover:shadow-md">
       <div className="p-5 border-b border-slate-100 flex items-center justify-between">
         <div>
           <h4 className="font-display font-semibold text-slate-800 text-base">{title}</h4>
+          {partner && (
+            <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200">
+              <ShieldCheck className="w-3 h-3" />
+              Partner data: {partner.name}
+            </span>
+          )}
           {isModeled && !hideModeledBadge && (
             <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-medium bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full border border-amber-100">
               <Info className="w-3 h-3" />
