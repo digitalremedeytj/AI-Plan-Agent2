@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { AlertTriangle, CheckCircle2, Database, FileText, Loader2, Pencil, Search, Trash2, Upload, X, XCircle } from "lucide-react";
 import * as api from "../api/client";
 import {
@@ -68,7 +69,9 @@ export function ResearchLibraryModal({ isOpen, onClose, advertiserName, initialD
   const q = query.trim().toLowerCase();
   const visible = (datasets || []).filter((d) => !q || `${d.title} ${d.advertiserName} ${d.providerLabel} ${providerById(d.provider).name} ${d.markets.join(" ")} ${d.category}`.toLowerCase().includes(q));
 
-  return (
+  // Portalled to the body: opened from the brief sidebar, it would otherwise sit in the sidebar's
+  // stacking context, where no z-index lifts it above the app's sticky header.
+  return createPortal(
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs font-sans" onClick={onClose}>
       <div className="w-full max-w-[1400px] h-[90vh] flex flex-col bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden text-left" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50 shrink-0">
@@ -164,7 +167,8 @@ export function ResearchLibraryModal({ isOpen, onClose, advertiserName, initialD
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
