@@ -66,8 +66,8 @@ export function DataPartnersPanel({ evidence, liveProviders, isShareView, isHidd
           The audience, market and competitive figures in this plan are taken from {credits.length === 1 ? credits[0] : `${credits.slice(0, -1).join(", ")} and ${credits[credits.length - 1]}`}.
           Each was checked against the partner's data by our team before it was used.
         </p>
-        <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
-          {providers.map((p) => <PartnerLogo key={p.id} provider={p} size="lg" />)}
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          {providers.map((p) => <PartnerLogo key={p.id} provider={p} size="lg" framed />)}
         </div>
       </div>
 
@@ -81,8 +81,9 @@ export function DataPartnersPanel({ evidence, liveProviders, isShareView, isHidd
         {evidence.datasets.map((d) => {
           const provider = providerFor(d.provider);
           return (
-            <li key={d.id} className="flex items-start gap-3">
-              <div className="w-24 shrink-0 pt-0.5">{provider && <PartnerLogo provider={provider} size="sm" label={d.providerLabel} />}</div>
+            <li key={d.id} className="flex items-center gap-4">
+              {/* A fixed tile, so every description starts at the same point whatever the logo's shape. */}
+              {provider && <PartnerLogo provider={provider} size="sm" label={d.providerLabel} framed />}
               <div className="min-w-0">
                 <p className="text-xs text-slate-700 leading-snug">{d.description}</p>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-500">

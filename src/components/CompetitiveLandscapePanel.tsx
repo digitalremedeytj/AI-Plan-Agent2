@@ -53,7 +53,7 @@ export function CompetitiveLandscapePanel({ landscape, provider, isShareView, is
         </div>
         {provider && (
           <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-            Source <PartnerLogo provider={provider} size="sm" label={landscape.providerLabel} />
+            Source <PartnerLogo provider={provider} size="sm" label={landscape.providerLabel} framed />
           </div>
         )}
       </div>

@@ -6,6 +6,7 @@ import type { PartnerEvidence, PartnerProvider } from "../research/partnerData";
 import { partnerSlideFileName, partnerSlides, type PartnerSlideKind } from "../research/partnerSlides";
 import { captureElementToCanvas } from "../utils/html2canvasPolyfill";
 import { DataPartnersSlide } from "./DataPartnersSlides";
+import { prepareLogo } from "./useTrimmedLogo";
 
 // Export the Data Partners section as presentation slides in the persona slides' design. Always
 // 16:9 (2560x1440): the slides are dropped into PowerPoint and Google Slides decks, which are 16:9. Unlike the persona studio nothing is generated: the preview is the slide itself,
@@ -53,6 +54,9 @@ export function DataPartnersExportModal({ evidence, providers, hidden, advertise
     if (!el) throw new Error("The slide was not ready to export.");
     // Lexend is the slides' typeface; capturing before it loads would set them in the fallback.
     try { await Promise.all(["400", "600", "700"].map((w) => document.fonts.load(`${w} 24px Lexend`))); } catch { /* fallback font */ }
+    // The logos are drawn once trimmed; wait for them, then for React to put them on the page.
+    await Promise.all(providers.filter((p) => p.logoUrl).map((p) => prepareLogo(p.logoUrl)));
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     return captureElementToCanvas(el, { scale: CAPTURE_SCALE, width, height, backgroundColor: "#ffffff" });
   };
 

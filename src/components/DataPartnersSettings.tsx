@@ -81,7 +81,7 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
       <ul className="space-y-2">
         {providers.filter((p) => p.id !== "other").map((p) => (
           <li key={p.id} className="rounded-xl border border-slate-200 bg-white p-3 flex flex-col md:flex-row md:items-center gap-3">
-            <div className="w-40 shrink-0 flex items-center h-10"><PartnerLogo provider={p} size="lg" /></div>
+            <div className="shrink-0 flex items-center"><PartnerLogo provider={p} size="lg" framed /></div>
             <div className="flex-1 min-w-0">
               <div className="text-xs font-bold text-slate-800">{p.name}</div>
               <input

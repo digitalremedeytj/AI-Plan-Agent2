@@ -2,6 +2,8 @@ import React from "react";
 import { clientPeriod, type PartnerEvidence, type PartnerProvider } from "../research/partnerData";
 import { formatSpend, competitiveHighlights, type CompetitiveRow } from "../research/partnerReinforcement";
 import { clip, type PartnerSlideKind } from "../research/partnerSlides";
+import { fitLogo } from "../utils/logoFit";
+import { useTrimmedLogo } from "./useTrimmedLogo";
 
 // The Data Partners slides, drawn as layout and captured to PNG or PDF. They follow the same brand
 // guide as the persona slides (server.ts, /api/personas/generate-slide): teal #0e8f86, deep teal
@@ -76,19 +78,30 @@ const card = (u: number, extra: React.CSSProperties = {}): React.CSSProperties =
   boxShadow: "0 10px 30px rgba(14, 59, 66, 0.06)", boxSizing: "border-box", ...extra,
 });
 
-function Logo({ provider, u, onDark = false, size = 40 }: { provider: Provider | undefined; u: number; onDark?: boolean; size?: number }) {
+// The same sizing as the plan's logos (PartnerLogo): trimmed, equal area, a fixed tile. The
+// capture cannot do object-fit, so the image gets explicit width and height from fitLogo.
+const LOGO_TILES = {
+  hero: { box: { width: 190, height: 54 }, ref: 40, padX: 22, padY: 14 },
+  card: { box: { width: 136, height: 38 }, ref: 29, padX: 16, padY: 12 },
+  chip: { box: { width: 130, height: 34 }, ref: 26, padX: 0, padY: 0 },
+} as const;
+
+function Logo({ provider, u, tile }: { provider: Provider | undefined; u: number; tile: keyof typeof LOGO_TILES }) {
+  const logo = useTrimmedLogo(provider?.logoUrl || undefined);
   if (!provider) return null;
-  const chip: React.CSSProperties = onDark
-    ? { background: "#FFFFFF", borderRadius: 12 * u, padding: `${10 * u}px ${16 * u}px`, display: "inline-flex", alignItems: "center" }
-    : { display: "inline-flex", alignItems: "center" };
+  const spec = LOGO_TILES[tile];
+  const framed = tile !== "chip";
+  const fit = logo ? fitLogo(logo.aspect, spec.ref, spec.box) : null;
+  const frame: React.CSSProperties = framed
+    ? { background: "#FFFFFF", border: tile === "card" ? `1px solid ${SLIDE.border}` : "none", borderRadius: 14 * u, padding: `${spec.padY * u}px ${spec.padX * u}px`, boxSizing: "content-box" }
+    : {};
   return (
-    <span style={chip}>
+    <span style={{ ...frame, width: (framed ? spec.box.width : fit?.width ?? spec.box.width) * u, height: spec.box.height * u, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
       {provider.logoUrl ? (
-        // max-width and max-height together keep the logo's proportions; the capture cannot do object-fit.
-        <img src={provider.logoUrl} alt={provider.name} style={{ maxHeight: size * u, maxWidth: size * 4.5 * u, width: "auto", height: "auto", display: "block" }} />
+        logo && fit && <img src={logo.src} alt={provider.name} style={{ width: fit.width * u, height: fit.height * u, display: "block", maxWidth: "none" }} />
       ) : (
         // A tight line height makes the capture draw the text low and clip it; 1.3 sits true.
-        <span style={{ display: "block", fontSize: size * 0.62 * u, fontWeight: 700, letterSpacing: "-0.02em", color: provider.color, lineHeight: 1.3 }}>{provider.name}</span>
+        <span style={{ display: "block", fontSize: spec.ref * 0.68 * u, fontWeight: 700, letterSpacing: "-0.02em", color: provider.color, lineHeight: 1.3, whiteSpace: "nowrap" }}>{provider.name}</span>
       )}
     </span>
   );
@@ -115,7 +128,7 @@ function PartnersSlide({ evidence, providers, layout, u }: Ctx) {
         The audience, market and competitive figures in this plan are taken from {creditText}. Each was checked against the partner's data by our team before it was used.
       </p>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14 * u, marginTop: 6 * u }}>
-        {evidence.providers.map((p) => <Logo key={p.id} provider={providerFor(p.id) ?? p} u={u} onDark />)}
+        {evidence.providers.map((p) => <Logo key={p.id} provider={providerFor(p.id) ?? p} u={u} tile="hero" />)}
       </div>
     </div>
   );
@@ -124,7 +137,8 @@ function PartnersSlide({ evidence, providers, layout, u }: Ctx) {
     <div style={{ display: "flex", gap: 18 * u }}>
       {stats.map((s) => (
         <div key={s.label} style={card(u, { flex: 1, padding: 24 * u })}>
-          <div style={{ fontSize: 60 * u, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1, color: SLIDE.teal }}>{s.value.toLocaleString()}</div>
+          {/* lineHeight 1 makes the capture draw the figure low, over its label. */}
+          <div style={{ fontSize: 60 * u, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.25, color: SLIDE.teal }}>{s.value.toLocaleString()}</div>
           <div style={{ ...eyebrow(u, SLIDE.muted), fontSize: 13 * u, marginTop: 10 * u }}>{s.label}</div>
         </div>
       ))}
@@ -139,7 +153,7 @@ function PartnersSlide({ evidence, providers, layout, u }: Ctx) {
       <div style={eyebrow(u)}>What each dataset measured</div>
       {shown.map((d) => (
         <div key={d.id} style={card(u, { display: "flex", gap: 28 * u, alignItems: "center", padding: 28 * u, flex: 1, minHeight: 0 })}>
-          <div style={{ width: 170 * u, flexShrink: 0, paddingTop: 4 * u }}><Logo provider={providerFor(d.provider)} u={u} size={34} /></div>
+          <Logo provider={providerFor(d.provider)} u={u} tile="card" />
           <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ margin: 0, fontSize: descSize * u, lineHeight: 1.5, color: SLIDE.ink }}>{clip(d.description, layout === "wide" ? 200 : 160)}</p>
             <div style={{ marginTop: 14 * u, display: "flex", flexWrap: "wrap", gap: 12 * u, alignItems: "center", fontSize: 15 * u, color: SLIDE.muted }}>
@@ -186,7 +200,7 @@ function SourceChip({ evidence, providers, u, label }: Ctx & { label: string }) 
     <div style={{ display: "flex", alignItems: "center", gap: 12 * u, flexShrink: 0 }}>
       <span style={{ ...eyebrow(u, SLIDE.muted), fontSize: 13 * u }}>Source</span>
       <span style={{ background: "#FFFFFF", border: `1px solid ${SLIDE.border}`, borderRadius: 12 * u, padding: `${10 * u}px ${16 * u}px`, display: "inline-flex", alignItems: "center", gap: 10 * u }}>
-        <Logo provider={provider} u={u} size={30} />
+        <Logo provider={provider} u={u} tile="chip" />
         {provider && label !== provider.name && <span style={{ fontSize: 14 * u, color: SLIDE.muted }}>{label}</span>}
       </span>
     </div>
