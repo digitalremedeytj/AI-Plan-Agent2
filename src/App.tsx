@@ -7519,33 +7519,6 @@ export default function App() {
                   </div>
                 )}
 
-                {partnerEvidence && partnerEvidence.datasets.length > 0 && (!isShareView || !isDataPartnersHidden) && (
-                  <DataPartnersPanel
-                    evidence={partnerEvidence}
-                    liveProviders={partnerProviders}
-                    isShareView={isShareView}
-                    isHidden={isDataPartnersHidden}
-                    onToggleHidden={handleToggleSectionActive}
-                    onUpdate={activeSavedId ? () => setIsPartnerResearchOpen(true) : undefined}
-                    onExport={() => setPartnerExportKind("partners")}
-                  />
-                )}
-
-                {competitive && (!isShareView || !isCompetitiveHidden) && (
-                  <CompetitiveLandscapePanel
-                    landscape={competitive}
-                    provider={(() => {
-                      const p = partnerEvidence?.providers.find((x) => x.id === competitive.provider);
-                      const live = partnerProviders?.find((x) => x.id === competitive.provider);
-                      return p ? { ...p, logoUrl: live?.logoUrl || p.logoUrl } : undefined;
-                    })()}
-                    isShareView={isShareView}
-                    isHidden={isCompetitiveHidden}
-                    onToggleHidden={handleToggleSectionActive}
-                    onExport={() => setPartnerExportKind("competitors")}
-                  />
-                )}
-
                 {!isShareView && profileData.briefOfRecord && <BriefOfRecordCard brief={profileData.briefOfRecord} />}
 
                 {/* Key Personas (Grid of cards) */}
@@ -8823,6 +8796,34 @@ export default function App() {
                     isInactive={isChannelsHidden}
                     onToggleActive={(inactive) => handleToggleSectionActive("channels", inactive)}
                     scoutPreview={!isShareView ? scoutPreview?.changes : null}
+                  />
+                )}
+
+                {/* Data Partners research and its competitive landscape, just above the Executive Summary */}
+                {partnerEvidence && partnerEvidence.datasets.length > 0 && (!isShareView || !isDataPartnersHidden) && (
+                  <DataPartnersPanel
+                    evidence={partnerEvidence}
+                    liveProviders={partnerProviders}
+                    isShareView={isShareView}
+                    isHidden={isDataPartnersHidden}
+                    onToggleHidden={handleToggleSectionActive}
+                    onUpdate={activeSavedId ? () => setIsPartnerResearchOpen(true) : undefined}
+                    onExport={() => setPartnerExportKind("partners")}
+                  />
+                )}
+
+                {competitive && (!isShareView || !isCompetitiveHidden) && (
+                  <CompetitiveLandscapePanel
+                    landscape={competitive}
+                    provider={(() => {
+                      const p = partnerEvidence?.providers.find((x) => x.id === competitive.provider);
+                      const live = partnerProviders?.find((x) => x.id === competitive.provider);
+                      return p ? { ...p, logoUrl: live?.logoUrl || p.logoUrl } : undefined;
+                    })()}
+                    isShareView={isShareView}
+                    isHidden={isCompetitiveHidden}
+                    onToggleHidden={handleToggleSectionActive}
+                    onExport={() => setPartnerExportKind("competitors")}
                   />
                 )}
 
