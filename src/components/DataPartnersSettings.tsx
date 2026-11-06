@@ -15,7 +15,8 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
   const [revision, setRevision] = React.useState(0);
   const [saving, setSaving] = React.useState(false);
   const [uploading, setUploading] = React.useState<string | null>(null);
-  const [message, setMessage] = React.useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  // `id` puts the message on that partner's row: at the foot of a long list it went unseen.
+  const [message, setMessage] = React.useState<{ tone: "ok" | "error"; text: string; id?: string } | null>(null);
   const [dirty, setDirty] = React.useState(false);
 
   const load = React.useCallback(() => {
@@ -38,13 +39,13 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
   const saveLogo = async (id: string, logoUrl: string) => {
     const next = providers.map((p) => (p.id === id ? { ...p, logoUrl } : p));
     setProviders(next);
-    await persist(next, "Logo saved. Plans show it straight away, including shared links.");
+    await persist(next, "Logo saved. Plans show it straight away, including shared links.", id);
   };
 
   const uploadLogo = async (id: string, file: File | undefined) => {
     if (!file) return;
-    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return setMessage({ tone: "error", text: "Use a PNG, JPEG or WebP logo." });
-    if (file.size > MAX_LOGO_BYTES) return setMessage({ tone: "error", text: "That logo is over 2 MB." });
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return setMessage({ tone: "error", text: `That file is ${file.type || "not an image the browser recognises"}; use a PNG, JPEG or WebP logo.`, id });
+    if (file.size > MAX_LOGO_BYTES) return setMessage({ tone: "error", text: "That logo is over 2 MB.", id });
     setUploading(id);
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -58,13 +59,13 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
       if (!res.ok || typeof body?.url !== "string") throw new Error(body?.error || "The logo could not be stored.");
       await saveLogo(id, body.url);
     } catch (err: any) {
-      setMessage({ tone: "error", text: err?.message || "The logo could not be stored." });
+      setMessage({ tone: "error", text: err?.message || "The logo could not be stored.", id });
     } finally {
       setUploading(null);
     }
   };
 
-  const persist = async (list: PartnerProvider[], okText: string) => {
+  const persist = async (list: PartnerProvider[], okText: string, id?: string) => {
     setSaving(true);
     try {
       const overrides: PartnerProviderOverride[] = list.map((p) => ({ id: p.id, logoUrl: p.logoUrl, description: p.description }));
@@ -72,10 +73,10 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
       setProviders(r.providers);
       setRevision(r.revision);
       setDirty(false);
-      setMessage({ tone: "ok", text: okText });
+      setMessage({ tone: "ok", text: okText, id });
     } catch (err: any) {
       setDirty(true);
-      setMessage({ tone: "error", text: err?.status === 409 ? "Someone else changed the data partners. Reload to see their changes." : err?.message || "Could not save." });
+      setMessage({ tone: "error", text: err?.status === 409 ? "Someone else changed the data partners. Reload to see their changes." : err?.message || "Could not save.", id });
     } finally {
       setSaving(false);
     }
@@ -100,6 +101,7 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
                 onChange={(e) => update(p.id, { description: e.target.value })}
                 className="mt-1 w-full text-xs px-2 py-1.5 border border-slate-200 rounded-lg disabled:bg-slate-50"
               />
+              {message?.id === p.id && <p className={`mt-1 text-[11px] font-semibold ${message.tone === "error" ? "text-rose-600" : "text-emerald-700"}`}>{message.text}</p>}
             </div>
             {!readOnly && (
               <div className="flex items-center gap-1.5 shrink-0">
@@ -118,7 +120,7 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
           </li>
         ))}
       </ul>
-      {message && <p className={`text-xs ${message.tone === "error" ? "text-rose-600" : "text-emerald-700"}`}>{message.text}</p>}
+      {message && !message.id && <p className={`text-xs ${message.tone === "error" ? "text-rose-600" : "text-emerald-700"}`}>{message.text}</p>}
       {!readOnly && (
         <div className="flex items-center justify-end gap-2">
           {dirty && <span className="mr-auto text-[11px] font-semibold text-amber-700">Unsaved description changes</span>}

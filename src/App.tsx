@@ -5498,7 +5498,12 @@ export default function App() {
         open={isSettingsOpen}
         settings={drawerSettings}
         ctvPublishers={ctvPublishers}
-        onClose={() => { setIsSettingsOpen(false); setSettingsError(null); setSettingsInitialTab(null); }}
+        onClose={() => {
+          setIsSettingsOpen(false); setSettingsError(null); setSettingsInitialTab(null);
+          // The partner logos may have changed in Settings; dropping them makes an open plan
+          // fetch them again instead of showing the ones it loaded when the session began.
+          setPartnerProviders((cur) => (isShareView ? cur : undefined));
+        }}
         onSave={handleSavePlanningSettings}
         readOnly={!canEditSettings}
         saveError={settingsError}
