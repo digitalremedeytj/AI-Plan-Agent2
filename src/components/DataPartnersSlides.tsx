@@ -93,7 +93,7 @@ function Logo({ provider, u, tile }: { provider: Provider | undefined; u: number
   const framed = tile !== "chip";
   const fit = logo ? fitLogo(logo.aspect, spec.ref, spec.box) : null;
   const frame: React.CSSProperties = framed
-    ? { background: "#FFFFFF", border: tile === "card" ? `1px solid ${SLIDE.border}` : "none", borderRadius: 14 * u, padding: `${spec.padY * u}px ${spec.padX * u}px`, boxSizing: "content-box" }
+    ? { background: "#FFFFFF", borderRadius: 14 * u, padding: `${spec.padY * u}px ${spec.padX * u}px`, boxSizing: "content-box" }
     : {};
   return (
     <span style={{ ...frame, width: (framed ? spec.box.width : fit?.width ?? spec.box.width) * u, height: spec.box.height * u, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>

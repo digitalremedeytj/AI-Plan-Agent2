@@ -32,6 +32,15 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
     setDirty(true);
   };
 
+  // A logo change is saved the moment it is made. The new logo shows here as soon as it uploads,
+  // which read as saved, so a logo left waiting for the Save button was lost on refresh. Unsaved
+  // description edits go with it; they are what the button is for.
+  const saveLogo = async (id: string, logoUrl: string) => {
+    const next = providers.map((p) => (p.id === id ? { ...p, logoUrl } : p));
+    setProviders(next);
+    await persist(next, "Logo saved. Plans show it straight away, including shared links.");
+  };
+
   const uploadLogo = async (id: string, file: File | undefined) => {
     if (!file) return;
     if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return setMessage({ tone: "error", text: "Use a PNG, JPEG or WebP logo." });
@@ -47,8 +56,7 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
       const res = await api.authFetch("/api/images", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dataUrl }) });
       const body = await res.json().catch(() => null);
       if (!res.ok || typeof body?.url !== "string") throw new Error(body?.error || "The logo could not be stored.");
-      update(id, { logoUrl: body.url });
-      setMessage(null);
+      await saveLogo(id, body.url);
     } catch (err: any) {
       setMessage({ tone: "error", text: err?.message || "The logo could not be stored." });
     } finally {
@@ -56,21 +64,23 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
     }
   };
 
-  const save = async () => {
+  const persist = async (list: PartnerProvider[], okText: string) => {
     setSaving(true);
     try {
-      const overrides: PartnerProviderOverride[] = providers.map((p) => ({ id: p.id, logoUrl: p.logoUrl, description: p.description }));
+      const overrides: PartnerProviderOverride[] = list.map((p) => ({ id: p.id, logoUrl: p.logoUrl, description: p.description }));
       const r = await api.savePartnerProviders(overrides, revision);
       setProviders(r.providers);
       setRevision(r.revision);
       setDirty(false);
-      setMessage({ tone: "ok", text: "Saved. Plans show the new logos straight away, including shared links." });
+      setMessage({ tone: "ok", text: okText });
     } catch (err: any) {
+      setDirty(true);
       setMessage({ tone: "error", text: err?.status === 409 ? "Someone else changed the data partners. Reload to see their changes." : err?.message || "Could not save." });
     } finally {
       setSaving(false);
     }
   };
+  const save = () => persist(providers, "Saved. Plans show the new logos straight away, including shared links.");
 
   return (
     <div className="space-y-4">
@@ -96,10 +106,10 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
                 <label className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50 border border-indigo-100 px-2.5 py-1.5 rounded-lg cursor-pointer">
                   {uploading === p.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImagePlus className="w-3.5 h-3.5" />}
                   {p.logoUrl ? "Replace logo" : "Upload logo"}
-                  <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => { void uploadLogo(p.id, e.target.files?.[0]); e.target.value = ""; }} />
+                  <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" disabled={Boolean(uploading) || saving} onChange={(e) => { void uploadLogo(p.id, e.target.files?.[0]); e.target.value = ""; }} />
                 </label>
                 {p.logoUrl && (
-                  <button type="button" onClick={() => update(p.id, { logoUrl: "" })} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer" aria-label={`Remove ${p.name} logo`}>
+                  <button type="button" onClick={() => { if (confirm(`Remove the ${p.name} logo? Plans will show its name instead, including shared links.`)) void saveLogo(p.id, ""); }} disabled={saving} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer" aria-label={`Remove ${p.name} logo`}>
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
@@ -110,7 +120,8 @@ export function DataPartnersSettings({ readOnly }: { readOnly: boolean }) {
       </ul>
       {message && <p className={`text-xs ${message.tone === "error" ? "text-rose-600" : "text-emerald-700"}`}>{message.text}</p>}
       {!readOnly && (
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
+          {dirty && <span className="mr-auto text-[11px] font-semibold text-amber-700">Unsaved description changes</span>}
           {dirty && <button type="button" onClick={load} className="text-xs font-semibold text-slate-600 hover:bg-slate-100 px-3 py-1.5 rounded-lg cursor-pointer">Discard</button>}
           <button type="button" onClick={save} disabled={!dirty || saving} className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 px-4 py-2 rounded-lg cursor-pointer disabled:cursor-not-allowed">
             {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} Save data partners

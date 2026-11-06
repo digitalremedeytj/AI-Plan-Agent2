@@ -7,9 +7,8 @@ import { useTrimmedLogo } from "./useTrimmedLogo";
 // one (Settings -> Data Partners). Used in the brief, the library and on the client's plan.
 //
 // Logos come in every shape, so each is trimmed to its visible pixels and given the same area
-// inside a fixed box (utils/logoFit) rather than the same height. `framed` puts the box in a white
-// tile with a border: where logos sit in a row or a column, the tile edges are what the eye lines
-// up, which hides the differences no sizing can fix (MediaRadar's mark sits above its wordmark).
+// inside a fixed box (utils/logoFit) rather than the same height. `framed` gives every logo the
+// same padded white tile, so a row or column of them lines up whatever each logo's shape.
 
 type ProviderLike = Pick<PartnerProvider, "name" | "logoUrl" | "color">;
 type Size = "sm" | "md" | "lg";
@@ -56,5 +55,5 @@ export function PartnerLogo({ provider, size = "md", label, framed = false }: { 
   }
 
   if (!framed) return inner as React.ReactElement;
-  return <span className={`inline-flex shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white shadow-xs ${spec.pad}`}>{inner}</span>;
+  return <span className={`inline-flex shrink-0 items-center justify-center rounded-xl bg-white ${spec.pad}`}>{inner}</span>;
 }
