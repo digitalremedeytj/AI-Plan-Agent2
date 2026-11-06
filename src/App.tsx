@@ -95,6 +95,8 @@ import { ResearchLibraryModal } from "./components/ResearchLibraryModal";
 import { DataPartnersPanel, DATA_PARTNERS_SECTION } from "./components/DataPartnersPanel";
 import { CompetitiveLandscapePanel, COMPETITIVE_SECTION } from "./components/CompetitiveLandscapePanel";
 import { AddPartnerResearchModal } from "./components/AddPartnerResearchModal";
+import { DataPartnersExportModal } from "./components/DataPartnersExportModal";
+import type { PartnerSlideKind } from "./research/partnerSlides";
 import { PartnerLogo } from "./components/PartnerLogo";
 import { PartnerEvidenceContext } from "./components/partnerContext";
 import { isPartnerTier, type PartnerProvider } from "./research/partnerData";
@@ -1269,6 +1271,8 @@ export default function App() {
   const adoptDraftRef = React.useRef(true);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [isPartnerResearchOpen, setIsPartnerResearchOpen] = useState(false);
+  /** The Data Partners slide export, opened on this slide; undefined when closed. */
+  const [partnerExportKind, setPartnerExportKind] = useState<PartnerSlideKind | undefined>(undefined);
 
   // Segment recommendations. They are requested after the profile renders (like headshots),
   // live on profileData.segmentRecommendations, and auto-save onto an already-saved plan.
@@ -2225,6 +2229,14 @@ export default function App() {
   const isDataPartnersHidden = hiddenSections.has(DATA_PARTNERS_SECTION);
   const isCompetitiveHidden = hiddenSections.has(COMPETITIVE_SECTION);
   const competitive = profileData?.partnerEvidence?.competitive ?? null;
+  // The partners with the logos an admin has now (a share link gets them from the share response).
+  const partnerSlideProviders = React.useMemo(
+    () => (profileData?.partnerEvidence?.providers || []).map((p) => {
+      const live = partnerProviders?.find((x) => x.id === p.id);
+      return { ...p, logoUrl: live?.logoUrl || p.logoUrl };
+    }),
+    [profileData?.partnerEvidence?.providers, partnerProviders],
+  );
   // What the brief says, so the research picker can suggest other advertisers' research that fits.
   const researchBrief = React.useMemo(
     () => ({ text: [campaignFocus, audienceDescription, additionalContext, url].filter(Boolean).join(" "), geography }),
@@ -7510,6 +7522,7 @@ export default function App() {
                     isHidden={isDataPartnersHidden}
                     onToggleHidden={handleToggleSectionActive}
                     onUpdate={activeSavedId ? () => setIsPartnerResearchOpen(true) : undefined}
+                    onExport={() => setPartnerExportKind("partners")}
                   />
                 )}
 
@@ -7524,6 +7537,7 @@ export default function App() {
                     isShareView={isShareView}
                     isHidden={isCompetitiveHidden}
                     onToggleHidden={handleToggleSectionActive}
+                    onExport={() => setPartnerExportKind("competitors")}
                   />
                 )}
 
@@ -10256,6 +10270,18 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {partnerExportKind && partnerEvidence && (
+        <DataPartnersExportModal
+          evidence={partnerEvidence}
+          providers={partnerSlideProviders}
+          hidden={{ dataPartners: isDataPartnersHidden, competitive: isCompetitiveHidden }}
+          advertiserName={advertiserName}
+          initialKind={partnerExportKind}
+          onClose={() => setPartnerExportKind(undefined)}
+          onExported={trackExport}
+        />
       )}
 
       {isPartnerResearchOpen && activeSavedId && (

@@ -1,5 +1,5 @@
 import React from "react";
-import { BarChart3, Trophy } from "lucide-react";
+import { BarChart3, Download, Trophy } from "lucide-react";
 import { clientPeriod, type PartnerProvider } from "../research/partnerData";
 import { competitiveHighlights, formatSpend, type CompetitiveLandscape, type CompetitiveRow } from "../research/partnerReinforcement";
 import { PartnerLogo } from "./PartnerLogo";
@@ -17,9 +17,10 @@ interface Props {
   isShareView: boolean;
   isHidden: boolean;
   onToggleHidden: (sectionKey: string, inactive: boolean) => void;
+  onExport?: () => void;
 }
 
-export function CompetitiveLandscapePanel({ landscape, provider, isShareView, isHidden, onToggleHidden }: Props) {
+export function CompetitiveLandscapePanel({ landscape, provider, isShareView, isHidden, onToggleHidden, onExport }: Props) {
   const { competitors, mediaTypes, markets } = landscape;
   // Recomputed from the rows (pure arithmetic), so a wording fix reaches plans already saved.
   const highlights = competitiveHighlights(landscape);
@@ -34,7 +35,14 @@ export function CompetitiveLandscapePanel({ landscape, provider, isShareView, is
           <BarChart3 className="w-4 h-4" />
           <span>Competitive Landscape</span>
         </div>
-        {!isShareView && <SectionVisibilityButton sectionKey={COMPETITIVE_SECTION} isInactive={isHidden} onToggle={onToggleHidden} />}
+        <div className="flex items-center gap-1">
+          {onExport && (
+            <button type="button" onClick={onExport} className="p-1.5 text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer" title="Export presentation slides" aria-label="Export competitive landscape slides">
+              <Download className="w-4 h-4" />
+            </button>
+          )}
+          {!isShareView && <SectionVisibilityButton sectionKey={COMPETITIVE_SECTION} isInactive={isHidden} onToggle={onToggleHidden} />}
+        </div>
       </div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">

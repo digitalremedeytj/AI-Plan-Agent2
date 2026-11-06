@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRightLeft, Database, MapPin, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowRightLeft, Database, Download, MapPin, RefreshCw, ShieldCheck } from "lucide-react";
 import { clientPeriod, type PartnerEvidence, type PartnerProvider } from "../research/partnerData";
 import { PartnerLogo } from "./PartnerLogo";
 import { SectionVisibilityButton } from "./SectionVisibilityButton";
@@ -17,11 +17,13 @@ interface Props {
   onToggleHidden: (sectionKey: string, inactive: boolean) => void;
   /** Planners only: add or change the plan's partner research. */
   onUpdate?: () => void;
+  /** Opens the slide export; offered on share links too, like the persona slides. */
+  onExport?: () => void;
 }
 
 export const DATA_PARTNERS_SECTION = "dataPartners";
 
-export function DataPartnersPanel({ evidence, liveProviders, isShareView, isHidden, onToggleHidden, onUpdate }: Props) {
+export function DataPartnersPanel({ evidence, liveProviders, isShareView, isHidden, onToggleHidden, onUpdate, onExport }: Props) {
   const providers = evidence.providers.map((p) => {
     const live = liveProviders?.find((l) => l.id === p.id);
     return { ...p, logoUrl: live?.logoUrl || p.logoUrl };
@@ -41,6 +43,12 @@ export function DataPartnersPanel({ evidence, liveProviders, isShareView, isHidd
             <ShieldCheck className="w-4 h-4" />
             <span>Data Partners</span>
           </div>
+          <div className="flex items-center gap-1">
+            {onExport && (
+              <button type="button" onClick={onExport} className="p-1.5 text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/90 rounded-lg inline-flex items-center justify-center cursor-pointer" title="Export presentation slides" aria-label="Export Data Partners slides">
+                <Download className="w-4 h-4" />
+              </button>
+            )}
           {!isShareView && (
             <div className="flex items-center gap-1">
               {onUpdate && (
@@ -51,6 +59,7 @@ export function DataPartnersPanel({ evidence, liveProviders, isShareView, isHidd
               <SectionVisibilityButton sectionKey={DATA_PARTNERS_SECTION} isInactive={isHidden} onToggle={onToggleHidden} />
             </div>
           )}
+          </div>
         </div>
         <h3 className="text-lg font-display font-bold text-slate-900 leading-snug">Built on licensed research from our data partners</h3>
         <p className="mt-1 text-sm text-slate-600 leading-relaxed">

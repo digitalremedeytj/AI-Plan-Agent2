@@ -5,6 +5,8 @@ import { buildAllocationView, type AllocationRow } from "../planning/allocationR
 import { BUDGET_STRATEGY_LABELS, normalizeBudgetStrategyMode } from "../planning/budgetStrategy";
 import { effectiveBriefSections } from "../research/executiveBriefSlides";
 import { isPersonaShared } from "../research/personaVisibility";
+import { clientPeriod } from "../research/partnerData";
+import { competitiveHighlights, formatSpend } from "../research/partnerReinforcement";
 
 export function exportProfileToMarkdown(
   profile: AudienceProfile,
@@ -43,6 +45,36 @@ export function exportProfileToMarkdown(
       markdown += `### Audience Analysis\n`;
       markdown += `${profile.audienceAnalysis}\n\n`;
     }
+  }
+
+  // Data partners: the licensed research the plan rests on, credited as on screen. Section keys
+  // match DATA_PARTNERS_SECTION and COMPETITIVE_SECTION (kept as strings: this file has no React).
+  const partners = profile.partnerEvidence;
+  if (partners && partners.datasets.length > 0 && !hidden.has("dataPartners")) {
+    const credits = [...new Set(partners.datasets.map((d) => d.providerLabel))];
+    markdown += `## Data Partners\n\n`;
+    markdown += `Built on licensed research from ${credits.join(", ")}: ${partners.factCount} verified data points across ${partners.datasets.length} partner dataset${partners.datasets.length === 1 ? "" : "s"}.\n\n`;
+    for (const d of partners.datasets) {
+      const meta = [clientPeriod(d.period), d.markets.slice(0, 6).join(", "), `${d.factCount} data points`].filter(Boolean).join(" · ");
+      markdown += `- **${d.providerLabel}**: ${d.description} (${meta})\n`;
+    }
+    for (const c of partners.allocationChanges || []) markdown += `- **What the partner data changed: ${c.title}**. ${c.reason}\n`;
+    markdown += `\n`;
+  }
+  const landscape = partners?.competitive;
+  if (landscape && !hidden.has("competitiveLandscape")) {
+    markdown += `## Competitive Landscape (${landscape.providerLabel})\n\n`;
+    markdown += `${[landscape.scope, clientPeriod(landscape.period), landscape.totalSpend ? `${formatSpend(landscape.totalSpend)} tracked` : ""].filter(Boolean).join(" · ")}\n\n`;
+    for (const h of competitiveHighlights(landscape)) markdown += `- ${h}\n`;
+    if (landscape.competitors.length) markdown += `\n**Spend by competitor**: ${landscape.competitors.map((c) => `${c.name} ${formatSpend(c.spend)}`).join("; ")}\n`;
+    if (landscape.mediaTypes.length) markdown += `\n**Competitor spend by media type**: ${landscape.mediaTypes.map((c) => `${c.name} ${formatSpend(c.spend)}`).join("; ")}\n`;
+    if (landscape.markets.length) {
+      markdown += `\n| Market | Spend leader | Leader's share | Total tracked |\n| --- | --- | --- | --- |\n`;
+      for (const m of landscape.markets) {
+        markdown += `| ${m.market} | ${m.leader ?? "—"}${m.leaderSpend !== undefined ? ` (${formatSpend(m.leaderSpend)})` : ""} | ${m.leaderShare !== undefined ? `${m.leaderShare}%` : "—"} | ${m.totalSpend !== undefined ? formatSpend(m.totalSpend) : "—"} |\n`;
+      }
+    }
+    markdown += `\n`;
   }
 
   // Key Personas
